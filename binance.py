@@ -1,0 +1,49 @@
+import pandas as pd
+import requests
+import zipfile
+import os
+from sklearn.preprocessing import MinMaxScaler
+
+
+
+
+
+
+def download_and_extract(base_url, month, year, days, coin):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3",
+        "Referer": "https://data.binance.vision/"
+
+    }
+
+    for day in range(1, days + 1):
+        day_str = f"{day:02}"
+        archive_name = f"{coin}-5m-{year}-{month}-{day_str}.zip"
+        url = f"{base_url}{archive_name}"
+
+        # Скачивание файла
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            print(f"Download {url}")
+            with open(archive_name, 'wb') as f:
+                f.write(response.content)
+
+            output_directory = f"history_csv/{coin}/{year}-{month}/"
+
+            # Распаковка архива
+            with zipfile.ZipFile(archive_name, 'r') as zip_ref:
+                zip_ref.extractall(output_directory)  # Распаковка в текущий каталог
+
+            # Удаление .zip файла
+            os.remove(archive_name)
+        else:
+            print(f"Failed to download {url}")
+
+
+# Установка параметров
+
+
+# https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/5m/BTCUSDT-5m-2024-05-01.zip
+# base_url = "https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/5m/" #btc
+base_url = "https://data.binance.vision/data/futures/um/daily/klines/TONUSDT/5m/" #ton
+download_and_extract(base_url, "05", "2024", 31, 'TONUSDT')

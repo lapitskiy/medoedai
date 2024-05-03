@@ -1,0 +1,118 @@
+import os
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')
+from tensorflow.keras.models import load_model
+import joblib
+
+# Загрузка модели
+model = load_model('medoed_model.keras')
+
+window_size = 5
+
+def prepare_new_data(df):
+    df['pct_change'] = df['close'].pct_change(periods=window_size)
+    scaler = joblib.load('scaler.gz')
+    # Предполагается, что new_data уже содержит нужные столбцы и очищен от недостающих значений
+    numeric_features = ['open', 'high', 'low', 'close', 'volume', 'quote_volume', 'count', 'taker_buy_volume', 'taker_buy_quote_volume']
+    new_data_scaled = scaler.transform(df[numeric_features])
+    new_data_df = pd.DataFrame(new_data_scaled, columns=numeric_features)
+    x_new, _ = create_rolling_windows(df, new_data_df)
+    return x_new
+
+def create_rolling_windows(df_not_scaled, df): # with VOLUME
+    x = []
+    y = []
+    threshold = 0.01  # 1% изменение
+    for i in range(len(df) - window_size):
+        start_price = df['close'].iloc[i]
+        end_price = df['close'].iloc[i + window_size]
+        change = df_not_scaled['pct_change'].iloc[i + window_size]  # Использование ранее рассчитанного изменения
+        x.append(df[['open', 'high', 'low', 'close', 'volume', 'count', 'taker_buy_volume']].iloc[i:i + window_size].values)
+        # Создание бинарной целевой переменной
+        y.append(1 if abs(change) >= threshold else 0)
+    return np.array(x), np.array(y)
+
+    # создание датафрейм из csv # WITHOUT V(O
+
+def create_rolling_windows_old(df_not_scaled, df): # without VOLUME
+    x = []
+    y = []
+    threshold = 0.01  # 1% изменение
+    for i in range(len(df) - window_size):
+        start_price = df['close'].iloc[i]
+        end_price = df['close'].iloc[i + window_size]
+        change = df_not_scaled['pct_change'].iloc[i + window_size]  # Использование ранее рассчитанного изменения
+        x.append(df[['open', 'high', 'low', 'close']].iloc[i:i + window_size].values)
+        # Создание бинарной целевой переменной
+        y.append(1 if abs(change) >= threshold else 0)
+    return np.array(x), np.array(y)
+
+    # создание датафрейм из csv # WITHOUT V(O
+
+def create_new_data():
+    # Путь к директории с CSV файлами
+    directory = 'history_csv/test/'  # Укажите путь к вашей директории с CSV файлами
+    # Создаем пустой DataFrame
+    df = pd.DataFrame()
+
+    for file_name in os.listdir(directory):
+        if file_name.endswith('.csv'):
+            file_path = os.path.join(directory, file_name)
+
+            # Определяем количество столбцов в CSV файле, исключая последний
+            use_cols = pd.read_csv(file_path, nrows=1).columns.difference(['open_time', 'close_time', 'ignore'])
+
+            # Считываем данные из CSV, исключая последний столбец
+            data = pd.read_csv(file_path, usecols=use_cols)
+
+            # Преобразуем поля с временными метками в datetime
+            # data['open_time'] = pd.to_datetime(data['open_time'], unit='ms')
+            # data['close_time'] = pd.to_datetime(data['close_time'], unit='ms')
+
+            # Добавляем считанные данные в DataFrame
+            df = pd.concat([df, data], ignore_index=True)
+
+    return df
+
+
+def plot_predictions(new_data, predictions, window_size):
+    # Создание фигуры и оси
+    plt.figure(figsize=(14, 7))
+    plt.plot(new_data['close'], label='Close Price', color='blue')  # Рисуем цену закрытия
+
+    # Расчет индексов, на которых были получены предсказания
+    prediction_indexes = np.arange(window_size, len(predictions) + window_size)
+
+    # Отметка предсказаний модели зелеными метками
+    for i, predicted in enumerate(predictions):
+        if predicted == 1:  # Если модель предсказала движение на 1% или более
+            plt.scatter(prediction_indexes[i], new_data['close'].iloc[prediction_indexes[i]], color='green',
+                        label='Predicted >2% Change' if i == 0 else "")
+
+    # Добавление легенды и заголовка
+    plt.title('Model Predictions on Price Data')
+    plt.xlabel('Time')
+    plt.ylabel('Close Price')
+    plt.legend()
+    plt.savefig('predict.png')
+    plt.close()
+
+
+
+# Использование функции prepare_new_data с новыми данными
+new_data = create_new_data()  # Здесь вам нужно определить, как получать новые данные
+x_new = prepare_new_data(new_data)
+new_predictions = model.predict(x_new)
+new_predicted_classes = (new_predictions > 0.75).astype(int)
+
+# Вызов функции отрисовки
+plot_predictions(new_data, new_predicted_classes.flatten(), window_size=window_size)
+
+print("Predicted classes:", len(new_predicted_classes))
+
+unique, counts = np.unique(new_predicted_classes, return_counts=True)
+print("Unique predicted classes and their counts:", dict(zip(unique, counts)))
