@@ -8,8 +8,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
 
-
-
+#from test import goTest
 from utils import create_dataframe
 
 import matplotlib.pyplot as plt
@@ -17,11 +16,12 @@ import matplotlib
 matplotlib.use('Agg')
 
 import joblib
+window_size = 3
 
-window_size = 5
+threshold = 0.01
 
 def goCNN():
-    df = create_dataframe(coin='TONUSDT', data='2024-04')
+    df = create_dataframe(coin='TONUSDT', period='1h', data='2024-04')
     df['pct_change'] = df['close'].pct_change(periods=window_size)
     scaler = MinMaxScaler()
 
@@ -29,6 +29,7 @@ def goCNN():
     numeric_features = ['open', 'high', 'low', 'close', 'volume', 'quote_volume', 'count', 'taker_buy_volume',
                         'taker_buy_quote_volume']
     df[numeric_features] = scaler.fit_transform(df[numeric_features])
+
     joblib.dump(scaler, 'scaler.gz')
 
     df_scaled = pd.DataFrame(df[numeric_features], columns=numeric_features)
@@ -102,16 +103,18 @@ def goCNN():
 
 def create_rolling_windows(df_not_scaled, df, window_size): # work BTC and TON and VOLUME
     x = []
-    y = []
-    threshold = 0.01  # 1% изменение
+    y = []      # 1% изменение
 
     for i in range(len(df) - window_size):
-        start_price = df['close'].iloc[i]
-        end_price = df['close'].iloc[i + window_size]
+        if i % 4000 == 0:
+            print(f'create window {i} from {len(df)}')
+
+        #start_price = df['close'].iloc[i]
+        #end_price = df['close'].iloc[i + window_size]
         # Вычисление процентного изменения
         change = df_not_scaled['pct_change'].iloc[i + window_size]  # Использование ранее рассчитанного изменения
         #print(f'change {i}: {change}; start_price {start_price}; end_price {end_price}')
-        x.append(df[['open', 'high', 'low', 'close', 'volume', 'count', 'taker_buy_volume']].iloc[i:i + window_size].values)
+        x.append(df[['open', 'high', 'low', 'close', 'taker_buy_volume']].iloc[i:i + window_size].values) # 'volume', 'count', 'taker_buy_volume'
         # Создание бинарной целевой переменной
         y.append(1 if abs(change) >= threshold else 0)
     return np.array(x), np.array(y)
@@ -136,4 +139,5 @@ def create_rolling_windows_old(df_not_scaled, df, window_size): # work BTC and T
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     goCNN()
+    #goTest()
 
