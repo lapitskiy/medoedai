@@ -22,29 +22,33 @@ def combined_loss(y_true, y_pred, beta=0.5):
 
 # создание датафрейм из csv
 def create_dataframe(coin, data, period):
-    # Путь к директории с CSV файлами
-    directory = f'history_csv/{coin}/{period}/{data}/'  # Укажите путь к вашей директории с CSV файлами
+
     # Создаем пустой DataFrame
     df = pd.DataFrame()
 
+
+
     try:
-        for file_name in os.listdir(directory):
-            if file_name.endswith('.csv'):
-                file_path = os.path.join(directory, file_name)
+        for item in data:
+            directory = f'history_csv/{coin}/{period}/{item}/'
+            for file_name in os.listdir(directory):
+                if file_name.endswith('.csv'):
+                    file_path = os.path.join(directory, file_name)
 
-                # Определяем количество столбцов в CSV файле, исключая последний
-                use_cols = pd.read_csv(file_path, nrows=1).columns.difference(['open_time', 'close_time', 'ignore'])
+                    # Определяем количество столбцов в CSV файле, исключая последний
+                    use_cols = pd.read_csv(file_path, nrows=1).columns.difference(['open_time', 'close_time', 'ignore'])
 
-                # Считываем данные из CSV, исключая последний столбец
-                data = pd.read_csv(file_path, usecols=use_cols)
+                    # Считываем данные из CSV, исключая последний столбец
+                    data = pd.read_csv(file_path, usecols=use_cols)
 
 
-                # Преобразуем поля с временными метками в datetime
-                #data['open_time'] = pd.to_datetime(data['open_time'], unit='ms')
-                #data['close_time'] = pd.to_datetime(data['close_time'], unit='ms')
+                    # Преобразуем поля с временными метками в datetime
+                    #data['open_time'] = pd.to_datetime(data['open_time'], unit='ms')
+                    #data['close_time'] = pd.to_datetime(data['close_time'], unit='ms')
 
-                # Добавляем считанные данные в DataFrame
-                df = pd.concat([df, data], ignore_index=True)
+                    # Добавляем считанные данные в DataFrame
+
+                    df = pd.concat([df, data], ignore_index=True)
     except Exception as e:
         print(f'error os load {e}')
     return df

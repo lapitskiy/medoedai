@@ -12,8 +12,8 @@ import joblib
 
 class goTest():
     directory = 'history_csv/test/'  # Укажите путь к вашей директории с CSV файлами
-    window_size = 4
-    predict_percent = 0.45
+    window_size = 3
+    predict_percent = 0.48
     df_scaled: None
     close_prices: None
 
@@ -34,13 +34,14 @@ class goTest():
         print("Predicted classes:", len(new_predicted_classes))
 
         unique, counts = np.unique(new_predicted_classes, return_counts=True)
-        print("Unique predicted classes and their counts:", dict(zip(unique, counts)))
 
         # Вывод предсказанных классов и соответствующих цен закрытия
         print("Predicted classes and closing prices:")
         for predicted_class, close_price in zip(new_predicted_classes.flatten(), self.close_prices):
             if predicted_class == 1:
                 print(f"Class: {predicted_class}, Close Price: {close_price}")
+
+        print("Unique predicted classes and their counts:", dict(zip(unique, counts)))
 
     def prepare_new_data(self):
         self.df['pct_change'] = self.df['close'].pct_change(periods=self.window_size)
