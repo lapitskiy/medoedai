@@ -20,7 +20,7 @@ window_size = 3
 threshold = 0.01
 
 def goCNN():
-    df = create_dataframe(coin='TONUSDT', period='15m', data=['2024-04', '2024-03'])
+    df = create_dataframe(coin='TONUSDT', period='30m', data=['2024-04', '2024-03'])
     df['pct_change'] = df['close'].pct_change(periods=window_size)
     scaler = MinMaxScaler()
 

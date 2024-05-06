@@ -13,9 +13,10 @@ import joblib
 class goTest():
     directory = 'history_csv/test/'  # Укажите путь к вашей директории с CSV файлами
     window_size = 3
-    predict_percent = 0.48
+    predict_percent = 0.6
     df_scaled: None
     close_prices: None
+    threshold = 0.01
 
     def __init__(self):
         self.keras_model = load_model('medoed_model.keras')
@@ -57,8 +58,6 @@ class goTest():
         x = []
         y = []
         close_prices = []
-
-        threshold = 0.01  # 1% изменение
         for i in range(len(self.df_scaled) - self.window_size):
             # Получение цены закрытия на последнем шаге окна
             close_price = self.df['close'].iloc[i + self.window_size - 1]
@@ -67,7 +66,7 @@ class goTest():
             change = self.df['pct_change'].iloc[i + self.window_size]  # Использование ранее рассчитанного изменения
             x.append(self.df_scaled[['open', 'high', 'low', 'close', 'volume']].iloc[i:i + self.window_size].values) # , 'volume', 'count', 'taker_buy_volume'
             # Создание бинарной целевой переменной
-            y.append(1 if abs(change) >= threshold else 0)
+            y.append(1 if abs(change) >= self.threshold else 0)
         return np.array(x), np.array(y), np.array(close_prices)
 
     def load_history_test_data(self):
