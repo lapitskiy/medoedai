@@ -16,12 +16,11 @@ import matplotlib
 matplotlib.use('Agg')
 
 import joblib
-window_size = 3
-
+window_size = 4
 threshold = 0.01
 
 def goCNN():
-    df = create_dataframe(coin='TONUSDT', period='1h', data='2024-04')
+    df = create_dataframe(coin='TONUSDT', period='1m', data='2024-04')
     df['pct_change'] = df['close'].pct_change(periods=window_size)
     scaler = MinMaxScaler()
 
@@ -114,7 +113,7 @@ def create_rolling_windows(df_not_scaled, df, window_size): # work BTC and TON a
         # Вычисление процентного изменения
         change = df_not_scaled['pct_change'].iloc[i + window_size]  # Использование ранее рассчитанного изменения
         #print(f'change {i}: {change}; start_price {start_price}; end_price {end_price}')
-        x.append(df[['open', 'high', 'low', 'close', 'taker_buy_volume']].iloc[i:i + window_size].values) # 'volume', 'count', 'taker_buy_volume'
+        x.append(df[['open', 'high', 'low', 'close', 'volume']].iloc[i:i + window_size].values) # 'volume', 'count', 'taker_buy_volume'
         # Создание бинарной целевой переменной
         y.append(1 if abs(change) >= threshold else 0)
     return np.array(x), np.array(y)
