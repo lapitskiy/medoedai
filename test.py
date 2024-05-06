@@ -12,9 +12,10 @@ import joblib
 
 class goTest():
     directory = 'history_csv/test/'  # Укажите путь к вашей директории с CSV файлами
-    window_size = 3
-    predict_percent = 0.5
+    window_size = 4
+    predict_percent = 0.45
     df_scaled: None
+    close_prices: None
 
     def __init__(self):
         self.keras_model = load_model('medoed_model.keras')
@@ -23,7 +24,7 @@ class goTest():
 
 
     def run(self):
-        x_new, close_prices = self.prepare_new_data()
+        x_new, self.close_prices = self.prepare_new_data()
         new_predictions = self.keras_model.predict(x_new)
         new_predicted_classes = (new_predictions > self.predict_percent).astype(int)  # ton 0.6
 
@@ -37,7 +38,7 @@ class goTest():
 
         # Вывод предсказанных классов и соответствующих цен закрытия
         print("Predicted classes and closing prices:")
-        for predicted_class, close_price in zip(new_predicted_classes.flatten(), close_prices):
+        for predicted_class, close_price in zip(new_predicted_classes.flatten(), self.close_prices):
             if predicted_class == 1:
                 print(f"Class: {predicted_class}, Close Price: {close_price}")
 
@@ -63,7 +64,7 @@ class goTest():
             close_prices.append(close_price)
 
             change = self.df['pct_change'].iloc[i + self.window_size]  # Использование ранее рассчитанного изменения
-            x.append(self.df_scaled[['open', 'high', 'low', 'close', 'taker_buy_volume']].iloc[i:i + self.window_size].values) # , 'volume', 'count', 'taker_buy_volume'
+            x.append(self.df_scaled[['open', 'high', 'low', 'close', 'volume']].iloc[i:i + self.window_size].values) # , 'volume', 'count', 'taker_buy_volume'
             # Создание бинарной целевой переменной
             y.append(1 if abs(change) >= threshold else 0)
         return np.array(x), np.array(y), np.array(close_prices)
@@ -96,7 +97,9 @@ class goTest():
     def plot_predictions(self, predictions):
         # Создание фигуры и оси
         plt.figure(figsize=(14, 7))
+        #np.array(close_prices)
         plt.plot(self.df_scaled['close'], label='Close Price', color='blue')  # Рисуем цену закрытия
+        #plt.plot(self.close_prices, label='Close Price', color='blue')  # Рисуем цену закрытия
 
         # Расчет индексов, на которых были получены предсказания
         prediction_indexes = np.arange(self.window_size, len(predictions) + self.window_size)
