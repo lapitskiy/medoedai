@@ -16,17 +16,16 @@ import matplotlib
 matplotlib.use('Agg')
 
 import joblib
-window_size = 3
+window_size = 10
 threshold = 0.01
 
 def goCNN():
-    df = create_dataframe(coin='TONUSDT', period='30m', data=['2024-04', '2024-03'])
+    df = create_dataframe(coin='TONUSDT', period='1m', data=['2024-04',])
     df['pct_change'] = df['close'].pct_change(periods=window_size)
     scaler = MinMaxScaler()
 
     # Нормализация данных
-    numeric_features = ['open', 'high', 'low', 'close', 'volume', 'quote_volume', 'count', 'taker_buy_volume',
-                        'taker_buy_quote_volume']
+    numeric_features = ['open', 'high', 'low', 'close', 'volume']
     df[numeric_features] = scaler.fit_transform(df[numeric_features])
 
     joblib.dump(scaler, 'scaler.gz')

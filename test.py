@@ -12,8 +12,8 @@ import joblib
 
 class goTest():
     directory = 'history_csv/test/'  # Укажите путь к вашей директории с CSV файлами
-    window_size = 3
-    predict_percent = 0.6
+    window_size = 10
+    predict_percent = 0.5
     df_scaled: None
     close_prices: None
     threshold = 0.01
@@ -47,8 +47,7 @@ class goTest():
     def prepare_new_data(self):
         self.df['pct_change'] = self.df['close'].pct_change(periods=self.window_size)
         # Предполагается, что new_data уже содержит нужные столбцы и очищен от недостающих значений
-        numeric_features = ['open', 'high', 'low', 'close', 'volume', 'quote_volume', 'count', 'taker_buy_volume',
-                            'taker_buy_quote_volume']
+        numeric_features = ['open', 'high', 'low', 'close', 'volume']
         new_data_scaled = self.scaler.transform(self.df[numeric_features])
         self.df_scaled = pd.DataFrame(new_data_scaled, columns=numeric_features)
         x_new, _, close_prices = self.create_rolling_windows()
