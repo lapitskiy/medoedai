@@ -12,11 +12,11 @@ import joblib
 
 class goTest():
     directory = 'history_csv/test/'  # Укажите путь к вашей директории с CSV файлами
-    window_size = 10
-    predict_percent = 0.5
+    window_size = 3
+    predict_percent = 0.45
     df_scaled: None
     close_prices: None
-    threshold = 0.01
+    threshold = 0.02
 
     def __init__(self):
         self.keras_model = load_model('medoed_model.keras')
@@ -89,7 +89,9 @@ class goTest():
 
                 # Добавляем считанные данные в DataFrame
                 df = pd.concat([df, data], ignore_index=True)
-
+        if df.empty:
+            print(f'Не добавлены файлы для теста')
+            exit()
         return df
 
 
