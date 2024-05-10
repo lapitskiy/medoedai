@@ -10,17 +10,23 @@ import joblib
 
 # Загрузка модели
 
+
+
 class goTest():
-    directory = 'history_csv/test/'  # Укажите путь к вашей директории с CSV файлами
-    window_size = 3
-    predict_percent = 0.45
+    directory = 'history_csv/'  # Укажите путь к вашей директории с CSV файлами
+    coin = 'BTCUSDT'
+    window_size = 10
+    predict_percent = 0.3
     df_scaled: None
     close_prices: None
-    threshold = 0.02
+    threshold = 0.01
+    date_test = ['2024-05', ]
+    day_test = 4
+    period = '5m'
 
     def __init__(self):
         self.keras_model = load_model('medoed_model.keras')
-        self.df = self.load_history_test_data()
+        self.df = self.create_dataframe()
         self.scaler = joblib.load('scaler.gz')
 
 
@@ -68,32 +74,35 @@ class goTest():
             y.append(1 if abs(change) >= self.threshold else 0)
         return np.array(x), np.array(y), np.array(close_prices)
 
-    def load_history_test_data(self):
-        # Путь к директории с CSV файлами
+    # создание датафрейм из csv
+    def create_dataframe(self, data, period):
+
         # Создаем пустой DataFrame
         df = pd.DataFrame()
+        try:
+            for item in data:
+                directory = f'history_csv/{self.coin}/{period}/{item}/'
+                for file_name in os.listdir(directory):
+                    if file_name.endswith('.csv'):
+                        file_path = os.path.join(directory, file_name)
 
-        for file_name in os.listdir(self.directory):
-            if file_name.endswith('.csv'):
-                file_path = os.path.join(self.directory, file_name)
+                        # Определяем количество столбцов в CSV файле, исключая последний
+                        use_cols = pd.read_csv(file_path, nrows=1).columns.difference(
+                            ['open_time', 'close_time', 'ignore'])
 
-                # Определяем количество столбцов в CSV файле, исключая последний
-                use_cols = pd.read_csv(file_path, nrows=1).columns.difference(['open_time', 'close_time', 'ignore'])
+                        # Считываем данные из CSV, исключая последний столбец
+                        data = pd.read_csv(file_path, usecols=use_cols)
 
-                # Считываем данные из CSV, исключая последний столбец
-                data = pd.read_csv(file_path, usecols=use_cols)
+                        # Преобразуем поля с временными метками в datetime
+                        # data['open_time'] = pd.to_datetime(data['open_time'], unit='ms')
+                        # data['close_time'] = pd.to_datetime(data['close_time'], unit='ms')
 
-                # Преобразуем поля с временными метками в datetime
-                # data['open_time'] = pd.to_datetime(data['open_time'], unit='ms')
-                # data['close_time'] = pd.to_datetime(data['close_time'], unit='ms')
+                        # Добавляем считанные данные в DataFrame
 
-                # Добавляем считанные данные в DataFrame
-                df = pd.concat([df, data], ignore_index=True)
-        if df.empty:
-            print(f'Не добавлены файлы для теста')
-            exit()
+                        df = pd.concat([df, data], ignore_index=True)
+        except Exception as e:
+            print(f'error os load {e}')
         return df
-
 
     def plot_predictions(self, predictions):
         # Создание фигуры и оси

@@ -16,11 +16,11 @@ import matplotlib
 matplotlib.use('Agg')
 
 import joblib
-window_size = 3
-threshold = 0.02
+window_size = 10
+threshold = 0.01
 
 def goCNN():
-    df = create_dataframe(coin='TONUSDT', period='30m', data=['2024-03','2024-04','2024-04'])
+    df = create_dataframe(coin='BTCUSDT', period='1m', data=['2024-03','2024-04','2024-05'])
     df['pct_change'] = df['close'].pct_change(periods=window_size)
     scaler = MinMaxScaler()
 

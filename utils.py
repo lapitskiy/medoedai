@@ -25,9 +25,6 @@ def create_dataframe(coin, data, period):
 
     # Создаем пустой DataFrame
     df = pd.DataFrame()
-
-
-
     try:
         for item in data:
             directory = f'history_csv/{coin}/{period}/{item}/'
