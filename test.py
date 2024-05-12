@@ -11,23 +11,37 @@ import joblib
 # Загрузка модели
 
 
+directory = 'history_csv/'  # Укажите путь к вашей директории с CSV файлами
+
+coin = 'BTCUSDT'
+window_size = [3, 4, 5, 6, 7, 8, 9, 10]
+predict_percent = [0.3, 0.4, 0.5]
+threshold = [0.01, 0.02, 0.03]
+date_test = '2024-05'
+period = ["1m", "3m", "5m", "15m", "30m"]
+day_test = 4
 
 class goTest():
-    directory = 'history_csv/'  # Укажите путь к вашей директории с CSV файлами
-    coin = 'BTCUSDT'
-    window_size = 10
-    predict_percent = 0.3
     df_scaled: None
     close_prices: None
-    threshold = 0.01
-    date_test = ['2024-05', ]
-    day_test = 4
-    period = '5m'
 
-    def __init__(self):
-        self.keras_model = load_model('medoed_model.keras')
+
+    def __init__(self, current_percent, current_period, current_window, current_threshold):
+        self.directory = 'history_csv'
+        self.directory_model = 'keras_model'
+        self.directory_predict = 'predict_test'
+        self.coin = 'BTCUSDT'
+        self.window_size = current_window
+        self.predict_percent = current_percent
+        self.threshold = current_threshold
+
+        path = f'{self.directory_model}/{self.coin}/{current_period}/{current_window}/{current_threshold}'
+        if not os.path.exists(path):
+            os.makedirs(path)
+        self.keras_model = load_model(f'{path}/{current_period}.keras')
         self.df = self.create_dataframe()
-        self.scaler = joblib.load('scaler.gz')
+        self.scaler = joblib.load(f'{path}/{current_period}.gz')
+        self.period = current_period
 
 
     def run(self):
@@ -75,31 +89,36 @@ class goTest():
         return np.array(x), np.array(y), np.array(close_prices)
 
     # создание датафрейм из csv
-    def create_dataframe(self, data, period):
-
+    def create_dataframe(self):
         # Создаем пустой DataFrame
         df = pd.DataFrame()
         try:
-            for item in data:
-                directory = f'history_csv/{self.coin}/{period}/{item}/'
-                for file_name in os.listdir(directory):
-                    if file_name.endswith('.csv'):
-                        file_path = os.path.join(directory, file_name)
+            directory = f'history_csv/{self.coin}/{self.period}/{date_test}/'
+            i = 0
 
-                        # Определяем количество столбцов в CSV файле, исключая последний
-                        use_cols = pd.read_csv(file_path, nrows=1).columns.difference(
-                            ['open_time', 'close_time', 'ignore'])
+            csv_files = [file for file in sorted(os.listdir(directory), reverse=True) if file.endswith('.csv')]
 
-                        # Считываем данные из CSV, исключая последний столбец
-                        data = pd.read_csv(file_path, usecols=use_cols)
+            for file_name in os.listdir(directory):
+                i++
+                if i > day_test:
+                    break
+                if file_name.endswith('.csv'):
+                    file_path = os.path.join(directory, file_name)
 
-                        # Преобразуем поля с временными метками в datetime
-                        # data['open_time'] = pd.to_datetime(data['open_time'], unit='ms')
-                        # data['close_time'] = pd.to_datetime(data['close_time'], unit='ms')
+                    # Определяем количество столбцов в CSV файле, исключая последний
+                    use_cols = pd.read_csv(file_path, nrows=1).columns.difference(
+                        ['open_time', 'close_time', 'ignore'])
 
-                        # Добавляем считанные данные в DataFrame
+                    # Считываем данные из CSV, исключая последний столбец
+                    data = pd.read_csv(file_path, usecols=use_cols)
 
-                        df = pd.concat([df, data], ignore_index=True)
+                    # Преобразуем поля с временными метками в datetime
+                    # data['open_time'] = pd.to_datetime(data['open_time'], unit='ms')
+                    # data['close_time'] = pd.to_datetime(data['close_time'], unit='ms')
+
+                    # Добавляем считанные данные в DataFrame
+
+                    df = pd.concat([df, data], ignore_index=True)
         except Exception as e:
             print(f'error os load {e}')
         return df
@@ -126,7 +145,10 @@ class goTest():
         plt.xlabel('Time')
         plt.ylabel('Close Price')
         plt.legend()
-        plt.savefig('predict.png')
+        path = f'{self.directory_predict}/{self.coin}'
+        if not os.path.exists(path):
+            os.makedirs(path)
+        plt.savefig(f'{path}/{current_period}-{current_window}-{current_threshold}.png')
         plt.close()
 
 
@@ -134,6 +156,15 @@ class goTest():
 # Использование функции prepare_new_data с новыми данными
 #new_data = create_new_data()  # Здесь вам нужно определить, как получать новые данные
 #x_new = prepare_new_data(new_data)
-go = goTest()
-go.run()
+0.1
+1m
+3
+0.01
+
+for current_percent in predict_percent:
+    for current_period in period:
+        for current_window in window_size:
+            for current_threshold in threshold:
+                go = goTest(current_percent=current_percent, current_period=current_period, current_window=current_window, current_threshold=current_threshold)
+                go.run()
 

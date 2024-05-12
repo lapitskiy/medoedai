@@ -6,9 +6,6 @@ from sklearn.preprocessing import MinMaxScaler
 
 
 
-
-
-
 def download_and_extract(base_url, month, year, days, coin, period):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3",
@@ -38,6 +35,7 @@ def download_and_extract(base_url, month, year, days, coin, period):
             os.remove(archive_name)
         else:
             print(f"Failed to download {url}")
+            break
 
 
 # Установка параметров
@@ -48,8 +46,10 @@ def download_and_extract(base_url, month, year, days, coin, period):
 
 
 period = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"]
-coin = 'BTCUSDT'
+coin = 'TONUSDT'
 
 for time in period:
     base_url = f"https://data.binance.vision/data/futures/um/daily/klines/{coin}/{time}/" #ton
-    download_and_extract(base_url, "05", "2024", 11, f'{coin}', period=f'{time}')
+    download_and_extract(base_url, "03", "2024", 31, f'{coin}', period=f'{time}')
+    download_and_extract(base_url, "04", "2024", 31, f'{coin}', period=f'{time}')
+    download_and_extract(base_url, "05", "2024", 31, f'{coin}', period=f'{time}')
