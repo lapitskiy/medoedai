@@ -13,7 +13,7 @@ import joblib
 
 directory = 'history_csv/'  # Укажите путь к вашей директории с CSV файлами
 
-coin = 'BTCUSDT'
+coin = 'TONUSDT'
 window_size = [3, 4, 5, 6, 7, 8, 9, 10]
 predict_percent = [0.3, 0.4, 0.5]
 threshold = [0.01, 0.02, 0.03]
@@ -30,18 +30,17 @@ class goTest():
         self.directory = 'history_csv'
         self.directory_model = 'keras_model'
         self.directory_predict = 'predict_test'
-        self.coin = 'BTCUSDT'
+        self.coin = coin
         self.window_size = current_window
         self.predict_percent = current_percent
         self.threshold = current_threshold
-
+        self.period = current_period
         path = f'{self.directory_model}/{self.coin}/{current_period}/{current_window}/{current_threshold}'
         if not os.path.exists(path):
             os.makedirs(path)
         self.keras_model = load_model(f'{path}/{current_period}.keras')
         self.df = self.create_dataframe()
         self.scaler = joblib.load(f'{path}/{current_period}.gz')
-        self.period = current_period
 
 
     def run(self):
@@ -58,8 +57,10 @@ class goTest():
 
         # Вывод предсказанных классов и соответствующих цен закрытия
         print("Predicted classes and closing prices:")
+        i = 0
         for predicted_class, close_price in zip(new_predicted_classes.flatten(), self.close_prices):
-            if predicted_class == 1:
+            if predicted_class == 1 and i<3:
+                i += 1
                 print(f"Class: {predicted_class}, Close Price: {close_price}")
 
         print("Unique predicted classes and their counts:", dict(zip(unique, counts)))
@@ -92,35 +93,34 @@ class goTest():
     def create_dataframe(self):
         # Создаем пустой DataFrame
         df = pd.DataFrame()
-        try:
-            directory = f'history_csv/{self.coin}/{self.period}/{date_test}/'
-            i = 0
+        #try:
+        directory = f'history_csv/{self.coin}/{self.period}/{date_test}/'
+        i = 0
 
-            csv_files = [file for file in sorted(os.listdir(directory), reverse=True) if file.endswith('.csv')]
+        csv_files = [file for file in sorted(os.listdir(directory), reverse=True) if file.endswith('.csv')]
+        for file_name in os.listdir(directory):
+            i += 1
+            if i > day_test:
+                break
+            if file_name.endswith('.csv'):
+                file_path = os.path.join(directory, file_name)
 
-            for file_name in os.listdir(directory):
-                i++
-                if i > day_test:
-                    break
-                if file_name.endswith('.csv'):
-                    file_path = os.path.join(directory, file_name)
+                # Определяем количество столбцов в CSV файле, исключая последний
+                use_cols = pd.read_csv(file_path, nrows=1).columns.difference(
+                    ['open_time', 'close_time', 'ignore'])
 
-                    # Определяем количество столбцов в CSV файле, исключая последний
-                    use_cols = pd.read_csv(file_path, nrows=1).columns.difference(
-                        ['open_time', 'close_time', 'ignore'])
+                # Считываем данные из CSV, исключая последний столбец
+                data = pd.read_csv(file_path, usecols=use_cols)
 
-                    # Считываем данные из CSV, исключая последний столбец
-                    data = pd.read_csv(file_path, usecols=use_cols)
+                # Преобразуем поля с временными метками в datetime
+                # data['open_time'] = pd.to_datetime(data['open_time'], unit='ms')
+                # data['close_time'] = pd.to_datetime(data['close_time'], unit='ms')
 
-                    # Преобразуем поля с временными метками в datetime
-                    # data['open_time'] = pd.to_datetime(data['open_time'], unit='ms')
-                    # data['close_time'] = pd.to_datetime(data['close_time'], unit='ms')
+                # Добавляем считанные данные в DataFrame
 
-                    # Добавляем считанные данные в DataFrame
-
-                    df = pd.concat([df, data], ignore_index=True)
-        except Exception as e:
-            print(f'error os load {e}')
+                df = pd.concat([df, data], ignore_index=True)
+        #except Exception as e:
+        #    print(f'error os load {e}')
         return df
 
     def plot_predictions(self, predictions):
@@ -156,10 +156,6 @@ class goTest():
 # Использование функции prepare_new_data с новыми данными
 #new_data = create_new_data()  # Здесь вам нужно определить, как получать новые данные
 #x_new = prepare_new_data(new_data)
-0.1
-1m
-3
-0.01
 
 for current_percent in predict_percent:
     for current_period in period:
