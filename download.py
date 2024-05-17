@@ -19,6 +19,7 @@ def download_and_extract(base_url, month, year, days, coin, period):
         url = f"{base_url}{archive_name}"
 
         # Скачивание файла
+
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
             print(f"Download {url}")
@@ -50,6 +51,6 @@ coin = 'TONUSDT'
 
 for time in period:
     base_url = f"https://data.binance.vision/data/futures/um/daily/klines/{coin}/{time}/" #ton
-    download_and_extract(base_url, "03", "2024", 31, f'{coin}', period=f'{time}')
-    download_and_extract(base_url, "04", "2024", 31, f'{coin}', period=f'{time}')
+    #download_and_extract(base_url, "03", "2024", 31, f'{coin}', period=f'{time}')
+    #download_and_extract(base_url, "04", "2024", 31, f'{coin}', period=f'{time}')
     download_and_extract(base_url, "05", "2024", 31, f'{coin}', period=f'{time}')

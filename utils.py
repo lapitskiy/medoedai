@@ -25,7 +25,12 @@ def create_dataframe(coin, data, period):
 
     # Создаем пустой DataFrame
     df = pd.DataFrame()
+    if period == '1m':
+        date_ = []
+        date_.append(data[0])
+        data = date_
     try:
+        i = 0
         for item in data:
             directory = f'history_csv/{coin}/{period}/{item}/'
             for file_name in os.listdir(directory):
