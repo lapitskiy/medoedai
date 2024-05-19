@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.metrics import Precision, Recall, AUC
 
 #from test import goTest
 from utils import create_dataframe
@@ -78,8 +79,11 @@ def goCNN(current_period: str, current_window: int, current_threshold: float):
     accuracy = model.evaluate(X_test, y_test, verbose=1)
     print(f'Test Accuracy: {accuracy[1] * 100:.2f}%')
 
+
     unique, counts = np.unique(y_train, return_counts=True)
     print("Training class distribution:", dict(zip(unique, counts)))
+
+
 
     model.save(f'{directory_save}/{current_period}.keras')
 
