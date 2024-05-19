@@ -33,7 +33,7 @@ matplotlib.use('Agg')
 import joblib
 date_df = ['2024-03','2024-04','2024-05'] # 1m
 coin = 'TONUSDT'
-layer = '45day-0layer50-Dropout02'
+layer = '75day-3layer200-Dropout02'
 numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
 
 
@@ -43,7 +43,7 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float):
     if not os.path.exists(directory_save):
         os.makedirs(directory_save)
     df = create_dataframe(coin=coin, period=current_period, data=date_df)
-    df['pct_change'] = df['high'].pct_change(periods=current_window)
+    df['pct_change'] = df['close'].pct_change(periods=current_window)
     # Рассчитываем Bullish и Bearish объемы
     df['bullish_volume'] = df.apply(lambda row: row['volume'] if row['close'] > row['open'] else 0, axis=1)
     df['bearish_volume'] = df.apply(lambda row: row['volume'] if row['close'] < row['open'] else 0, axis=1)
@@ -85,10 +85,12 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float):
 
     # Создание модели LSTM
     model = Sequential()
-    model.add(LSTM(50, return_sequences=True, input_shape=(x.shape[1], x.shape[2])))
-    model.add(Dropout(0.2))  # Добавление слоя Dropout
-    model.add(LSTM(50, return_sequences=False))
-    model.add(Dropout(0.2))  # Добавление слоя Dropout
+    model.add(LSTM(200, return_sequences=True, input_shape=(x.shape[1], x.shape[2])))
+    model.add(Dropout(0.3))
+    model.add(LSTM(200, return_sequences=True))
+    model.add(Dropout(0.3))  # Добавление слоя Dropout
+    model.add(LSTM(200, return_sequences=False))
+    model.add(Dropout(0.3))  # Добавление слоя Dropout
     model.add(Dense(25))
     model.add(Dense(1, activation='sigmoid'))  # Используем сигмоидальную функцию активации для бинарной классификации
     model.compile(optimizer='adam', loss='binary_crossentropy',
@@ -221,9 +223,9 @@ def f1_score(y_true, y_pred):
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    window_size = [15,]
-    threshold = [0.01,]
-    period = ["1m",]
+    window_size = [10,]
+    threshold = [0.02,]
+    period = ["5m",]
 
     # Создание списка всех возможных комбинаций параметров
     all_tasks = [(p, w, t) for p in period for w in window_size for t in threshold]
