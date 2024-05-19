@@ -87,8 +87,6 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float):
     model = Sequential()
     model.add(LSTM(200, return_sequences=True, input_shape=(x.shape[1], x.shape[2])))
     model.add(Dropout(0.3))
-    model.add(LSTM(200, return_sequences=True))
-    model.add(Dropout(0.3))  # Добавление слоя Dropout
     model.add(LSTM(200, return_sequences=False))
     model.add(Dropout(0.3))  # Добавление слоя Dropout
     model.add(Dense(25))
