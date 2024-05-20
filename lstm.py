@@ -215,6 +215,8 @@ def create_rolling_windows(df_not_scaled, df, current_threshold ,current_window)
 
     # Создание memmap файлов
     uuid_mmap = generate_uuid()
+    if not os.path.exists('temp'):
+        os.makedirs('temp')
     x_mmap = np.memmap(f'temp/{uuid_mmap}_x.dat', dtype=np.float32, mode='w+', shape=(num_samples, current_window, num_features))
     y_mmap = np.memmap(f'temp/{uuid_mmap}_y.dat', dtype=np.int8, mode='w+', shape=(num_samples,))
 
