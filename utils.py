@@ -2,9 +2,11 @@
 # комплексную функцию потерь, которая одновременно максимизировать прибыль и минимизировать риск.
 # компоненты как профит-базированных потерь, так и элементы, связанные с риском:
 import os
+import shutil
 
 import pandas as pd
 
+import uuid
 
 def combined_loss(y_true, y_pred, beta=0.5):
     # Расчет профит-базированных потерь
@@ -54,3 +56,32 @@ def create_dataframe(coin, data, period):
     except Exception as e:
         print(f'error os load {e}')
     return df
+
+def delete_folder(folder_path):
+    if os.path.exists(folder_path):
+        shutil.rmtree(folder_path)
+        print(f"Папка '{folder_path}' и все её содержимое успешно удалены.")
+    else:
+        print(f"Папка '{folder_path}' не существует.")
+
+
+def delete_empty_folders(path):
+    # Рекурсивная функция для удаления пустых папок
+    def remove_empty_folders(directory):
+        # Проверяем содержимое текущей директории
+        for foldername in os.listdir(directory):
+            folderpath = os.path.join(directory, foldername)
+            if os.path.isdir(folderpath):
+                # Рекурсивно удаляем пустые папки внутри текущей папки
+                remove_empty_folders(folderpath)
+                # Если текущая папка теперь пустая, удаляем её
+                if not os.listdir(folderpath):
+                    os.rmdir(folderpath)
+                    print(f"Пустая папка '{folderpath}' успешно удалена.")
+
+    # Запускаем рекурсивное удаление пустых папок с указанного пути
+    remove_empty_folders(path)
+
+def generate_uuid():
+    short_uuid = str(uuid.uuid4())[:8]  # Берем первые 8 символов UUID
+    return f"{short_uuid}"
