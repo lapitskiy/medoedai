@@ -276,6 +276,7 @@ if __name__ == '__main__':
     epochs_list = [50, 100]
     activations = ['sigmoid', 'relu']
 
+
     task_count = list(product(period, window_size, threshold, neiron, dropout, batch_sizes, epochs_list, activations))
     total_iterations = len(task_count)
 
