@@ -204,6 +204,7 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
                         file.write(f"{key}={value}\n")
             return 'Bad model'
     except Exception as e:
+        print(f"Error in task: {current_period, current_window, current_threshold, current_neiron, current_dropout}, Exception: {str(e)}")
         logging.error(f"Error in task: {current_period, current_window, current_threshold, current_neiron, current_dropout}, Exception: {str(e)}")
         return None
 
@@ -264,9 +265,9 @@ def f1_score(y_true, y_pred):
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-    tf.config.threading.set_intra_op_parallelism_threads(32)
-    tf.config.threading.set_inter_op_parallelism_threads(32)
-    
+    tf.config.threading.set_intra_op_parallelism_threads(20)
+    tf.config.threading.set_inter_op_parallelism_threads(20)
+
     tf.get_logger().setLevel('ERROR')
     log_file = os.path.expanduser('~/training.log')
 
@@ -292,12 +293,12 @@ if __name__ == '__main__':
 
     all_tasks = [(p, w, t, n, d, b, e, a) for p in period for w in window_size for t in threshold for n in neiron for d
                  in dropout for b in batch_sizes for e in epochs_list for a in activations]
-    max_workers = min(4, len(all_tasks))
+    max_workers = min(10, len(all_tasks))
 
     start_time = time.perf_counter()
 
     # Использование ProcessPoolExecutor для параллельного выполнения
-    with concurrent.futures.ProcessPoolExecutor() as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Запуск процессов
         futures = [executor.submit(goLSTM, *task) for task in all_tasks]
         for future in concurrent.futures.as_completed(futures):
