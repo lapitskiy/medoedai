@@ -14,13 +14,14 @@ from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.metrics import Precision, Recall, AUC
 from itertools import product
 
+import os
 
 import tensorflow as tf
 from tensorflow.keras import backend as K
 
 import concurrent.futures
 import logging
-import os
+
 import psutil
 
 #from test import goTest
@@ -262,8 +263,12 @@ def f1_score(y_true, y_pred):
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+    tf.get_logger().setLevel('ERROR')
+    log_file = os.path.expanduser('~/training.log')
+    
     logging.basicConfig(
-        filename='training.log',  # Имя файла логирования
+        filename=log_file,  # Имя файла логирования
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
