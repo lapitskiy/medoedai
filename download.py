@@ -46,7 +46,8 @@ def download_and_extract(base_url, month, year, days, coin, period):
 # base_url = "https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/5m/" #btc
 
 
-period = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"]
+#period = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"]
+period = ["5m",]
 coin = 'TONUSDT'
 
 for time in period:
@@ -54,3 +55,4 @@ for time in period:
     #download_and_extract(base_url, "03", "2024", 31, f'{coin}', period=f'{time}')
     #download_and_extract(base_url, "04", "2024", 31, f'{coin}', period=f'{time}')
     download_and_extract(base_url, "05", "2024", 31, f'{coin}', period=f'{time}')
+

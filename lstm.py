@@ -1,4 +1,4 @@
-
+import time
 
 import numpy as np
 import pandas as pd
@@ -12,7 +12,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.metrics import Precision, Recall, AUC
-
+from itertools import product
 
 
 import tensorflow as tf
@@ -37,7 +37,8 @@ coin = 'TONUSDT'
 numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
 
 
-def goLSTM(current_period: str, current_window: int, current_threshold: float, current_neiron: int, current_dropout: float):
+def goLSTM(current_period: str, current_window: int, current_threshold: float, current_neiron: int, current_dropout: float,
+           current_batch_size: int, current_epochs: int, current_activation: str):
     try:
         df = create_dataframe(coin=coin, period=current_period, data=date_df)
         df['pct_change'] = df['close'].pct_change(periods=current_window)
@@ -54,7 +55,7 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
         df_scaled[numeric_features] = scaler.fit_transform(df_scaled[numeric_features])
 
         df_scaled = pd.DataFrame(df[numeric_features], columns=numeric_features)
-        print(df.tail(15))
+        print(df.tail(1))
 
         # Установка размера окна
         x_path, y_path = create_rolling_windows(df, df_scaled, current_threshold, current_window)
@@ -85,14 +86,16 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
         model.add(LSTM(current_neiron, return_sequences=False))
         model.add(Dropout(current_dropout))  # Добавление слоя Dropout
         model.add(Dense(25))
-        model.add(Dense(1, activation='sigmoid'))  # Используем сигмоидальную функцию активации для бинарной классификации
+        model.add(Dense(1, activation=current_activation))  # Используем сигмоидальную функцию активации для бинарной классификации
         model.compile(optimizer='adam', loss='binary_crossentropy',
                       metrics=['accuracy', Precision(), Recall(), AUC(), f1_score])  # Используем бинарную кроссэнтропию
         # Обучение модели
         class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
         class_weights_dict = dict(enumerate(class_weights))
 
-        history = model.fit(x_train, y_train, batch_size=1, epochs=1, validation_split=0.2, class_weight=class_weights_dict)  # добавление некоторого количества данных для валидации
+        early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+        history = model.fit(x_train, y_train, batch_size=current_batch_size, epochs=current_epochs, validation_data=(x_val, y_val),
+                            class_weight=class_weights_dict, callbacks=[early_stopping])
 
         # Подсчёт количества примеров каждого класса и вывод информации
         unique, counts = np.unique(y, return_counts=True)
@@ -132,33 +135,38 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
 
 
         # Оценка производительности
-        print(classification_report(y_test, y_test_pred))
+        #print(classification_report(y_test, y_test_pred))
         conf_matrx_test = confusion_matrix(y_test, y_test_pred)
         print("Confusion Matrix:\n", conf_matrx_test)
 
-        if (scores[1] * 100 >= 80 and
-                scores[2] >= 0.60 and
-                scores[3] >= 0.60 and
-                scores[4] >= 0.70 and
-                scores[-1] >= 0.60):
+        # Подготовка данных для записи в файл
+        data = {
+            "Test Accuracy": f"{scores[1] * 100:.2f}%",
+            "Test Precision": f"{scores[2]:.2f}",
+            "Test Recall": f"{scores[3]:.2f}",
+            "Test AUC": f"{scores[4]:.2f}",
+            "Test F1-Score": f"{scores[-1]:.2f}",
+            "Optimal Threshold": opt_threshold,
+            "Maximum F1-Score": opt_f1_score,
+            "batch_sizes": current_batch_size,
+            "epoch": current_epochs,
+            "activation": current_activation,
+            "Confusion Matrix": conf_matrx_test,
+            "current_period": f"{current_period}",
+            "current_window": f"{current_window}",
+            "current_threshold": f"{current_threshold}",
+            "current_neiron": f"{current_neiron}",
+            "current_dropout": f"{current_dropout}",
+            "class_distribution": class_distribution,
+        }
 
-            # Подготовка данных для записи в файл
-            data = {
-                "Test Accuracy": f"{scores[1] * 100:.2f}%",
-                "Test Precision": f"{scores[2]:.2f}",
-                "Test Recall": f"{scores[3]:.2f}",
-                "Test AUC": f"{scores[4]:.2f}",
-                "Test F1-Score": f"{scores[-1]:.2f}",
-                "Optimal Threshold": opt_threshold,
-                "Maximum F1-Score": opt_f1_score,
-                "Confusion Matrix": conf_matrx_test,
-                "current_period": f"{current_period}",
-                "current_window": f"{current_window}",
-                "current_threshold": f"{current_threshold}",
-                "current_neiron": f"{current_neiron}",
-                "current_dropout": f"{current_dropout}",
-                "class_distribution": class_distribution,
-            }
+        if (scores[1] * 100 >= 70 and
+                scores[2] >= 0.58 and
+                scores[3] >= 0.58 and
+                scores[4] >= 0.65 and
+                scores[-1] >= 0.58):
+
+
 
             directory_save = f'keras_model/lstm/{coin}/{current_period}/{current_window}/{current_threshold}/{current_neiron}/{current_dropout}/'
             if not os.path.exists(directory_save):
@@ -173,11 +181,27 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
             # Сохранение модели
             model.save(f'{directory_save}/{current_period}.h5')
 
+            #удаление файлов mmap
+            os.remove(f'{x_path}')
+            os.remove(f'{y_path}')
+
             # Вывод структуры модели
             model.summary()
-
+            return 'Good model'
         else:
-            print('Model not good')
+            if (scores[1] * 100 >= 60 and
+                    scores[2] >= 0.60 and
+                    scores[3] >= 0.60 and
+                    scores[4] >= 0.60 and
+                    scores[-1] >= 0.60):
+                directory_save = f'keras_model/lstm/NotGood/{coin}/'
+                if not os.path.exists(directory_save):
+                    os.makedirs(directory_save)
+                # Запись данных в файл
+                with open(f"{directory_save}/{generate_uuid()}.txt", "w") as file:
+                    for key, value in data.items():
+                        file.write(f"{key}={value}\n")
+            return 'Bad model'
     except Exception as e:
         logging.error(f"Error in task: {current_period, current_window, current_threshold, current_neiron, current_dropout}, Exception: {str(e)}")
         return None
@@ -195,7 +219,7 @@ def create_rolling_windows(df_not_scaled, df, current_threshold ,current_window)
     y_mmap = np.memmap(f'temp/{uuid_mmap}_y.dat', dtype=np.int8, mode='w+', shape=(num_samples,))
 
     for i in range(num_samples):
-        if i % 10000 == 0:
+        if i % 20000 == 0:
             print(f'create window {i} from {len(df)}')
         change = df_not_scaled['pct_change'].iloc[i + current_window]
 
@@ -248,16 +272,30 @@ if __name__ == '__main__':
     neiron = [50,100,150,200,250,300,350,400,450]
     dropout = [0.1, 0.2, 0.3, 0.4]
 
+    batch_sizes = [32, 64]
+    epochs_list = [50, 100]
+    activations = ['sigmoid', 'relu']
 
-    # Создание списка всех возможных комбинаций параметров
-    all_tasks = [(p, w, t, n, d) for p in period for w in window_size for t in threshold for n in neiron for d in dropout]
+    task_count = list(product(period, window_size, threshold, neiron, dropout, batch_sizes, epochs_list, activations))
+    total_iterations = len(task_count)
+
+    all_tasks = [(p, w, t, n, d, b, e, a) for p in period for w in window_size for t in threshold for n in neiron for d
+                 in dropout for b in batch_sizes for e in epochs_list for a in activations]
     max_workers = min(4, len(all_tasks))
+
+    start_time = time.perf_counter()
+
     # Использование ProcessPoolExecutor для параллельного выполнения
     with concurrent.futures.ProcessPoolExecutor() as executor:
         # Запуск процессов
         futures = [executor.submit(goLSTM, *task) for task in all_tasks]
         for future in concurrent.futures.as_completed(futures):
+            iteration_start_time = time.perf_counter()
             result = future.result()
+            iteration_end_time = time.perf_counter()
+            iteration_time = iteration_end_time - iteration_start_time
+            print(f'iteration_time {iteration_time}')
+
             if result is not None:
                 print(result)
             else:
@@ -266,4 +304,7 @@ if __name__ == '__main__':
             memory_info = psutil.virtual_memory()
             logging.info(f"Memory usage: {memory_info.percent}%")
 
-
+    end_time = time.perf_counter()
+    total_time = end_time - start_time
+    print(f"Total time taken for all iterations: {total_time:.2f} seconds")
+    logging.info(f"Total time taken for all iterations: {total_time:.2f} seconds")
