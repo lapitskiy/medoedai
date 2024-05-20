@@ -264,9 +264,12 @@ def f1_score(y_true, y_pred):
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+    tf.config.threading.set_intra_op_parallelism_threads(32)
+    tf.config.threading.set_inter_op_parallelism_threads(32)
+    
     tf.get_logger().setLevel('ERROR')
     log_file = os.path.expanduser('~/training.log')
-    
+
     logging.basicConfig(
         filename=log_file,  # Имя файла логирования
         level=logging.INFO,
