@@ -1,7 +1,14 @@
 import time
-import numpy
-import scipy
-import tensorflow as tf
-import sklearn
+print("Imported time")
 
-print("All imports successful")
+import numpy
+print("Imported numpy")
+
+import scipy
+print("Imported scipy")
+
+import tensorflow as tf
+print("Imported tensorflow")
+
+import sklearn
+print("Imported sklearn")
