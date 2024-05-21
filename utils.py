@@ -83,5 +83,5 @@ def delete_empty_folders(path):
     remove_empty_folders(path)
 
 def generate_uuid():
-    short_uuid = str(uuid.uuid4())[:8]  # Берем первые 8 символов UUID
+    short_uuid = str(uuid.uuid4())[:10]  # Берем первые 8 символов UUID
     return f"{short_uuid}"
