@@ -41,181 +41,177 @@ numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
 
 def goLSTM(current_period: str, current_window: int, current_threshold: float, current_neiron: int, current_dropout: float,
            current_batch_size: int, current_epochs: int, current_activation: str):
-    try:
-        df = create_dataframe(coin=coin, period=current_period, data=date_df)
-        df['pct_change'] = df['close'].pct_change(periods=current_window)
-        # Рассчитываем Bullish и Bearish объемы
-        df['bullish_volume'] = df.apply(lambda row: row['volume'] if row['close'] > row['open'] else 0, axis=1)
-        df['bearish_volume'] = df.apply(lambda row: row['volume'] if row['close'] < row['open'] else 0, axis=1)
 
-        # Удаление строк с NaN, образовавшихся после pct_change
-        df.dropna(subset=['pct_change'], inplace=True)
-        scaler = MinMaxScaler()
-        # Нормализация данных
-        numeric_features = numeric
-        df_scaled = df.copy()
-        df_scaled[numeric_features] = scaler.fit_transform(df_scaled[numeric_features])
+    df = create_dataframe(coin=coin, period=current_period, data=date_df)
+    df['pct_change'] = df['close'].pct_change(periods=current_window)
+    # Рассчитываем Bullish и Bearish объемы
+    df['bullish_volume'] = df.apply(lambda row: row['volume'] if row['close'] > row['open'] else 0, axis=1)
+    df['bearish_volume'] = df.apply(lambda row: row['volume'] if row['close'] < row['open'] else 0, axis=1)
 
-        df_scaled = pd.DataFrame(df[numeric_features], columns=numeric_features)
-        print(df.tail(1))
+    # Удаление строк с NaN, образовавшихся после pct_change
+    df.dropna(subset=['pct_change'], inplace=True)
+    scaler = MinMaxScaler()
+    # Нормализация данных
+    numeric_features = numeric
+    df_scaled = df.copy()
+    df_scaled[numeric_features] = scaler.fit_transform(df_scaled[numeric_features])
 
-        # Установка размера окна
-        x_path, y_path = create_rolling_windows(df, df_scaled, current_threshold, current_window)
+    df_scaled = pd.DataFrame(df[numeric_features], columns=numeric_features)
+    print(df.tail(1))
 
-        # Загрузка memmap массивов
-        num_samples = len(df_scaled) - current_window
-        feature_columns = numeric
-        num_features = len(feature_columns)
-        x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(num_samples, current_window, num_features))
-        y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(num_samples,))
+    # Установка размера окна
+    x_path, y_path = create_rolling_windows(df, df_scaled, current_threshold, current_window)
 
-        # X теперь содержит входные данные для сети, y - целевые значения
-        #print("Shape of X:", x.shape)
-        #print("Shape of y:", y.shape)
+    # Загрузка memmap массивов
+    num_samples = len(df_scaled) - current_window
+    feature_columns = numeric
+    num_features = len(feature_columns)
+    x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(num_samples, current_window, num_features))
+    y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(num_samples,))
 
-
-        # Сначала разделите данные на обучающий+валидационный и тестовый наборы
-        x_train_val, x_test, y_train_val, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
-
-        # Затем разделите обучающий+валидационный набор на обучающий и валидационный наборы
-        x_train, x_val, y_train, y_val = train_test_split(x_train_val, y_train_val, test_size=0.25,
-                                                          random_state=42)  # 0.25 x 0.8 = 0.2
-
-        # Создание модели LSTM
-        model = Sequential()
-        model.add(LSTM(current_neiron, return_sequences=True, input_shape=(x.shape[1], x.shape[2])))
-        model.add(Dropout(current_dropout))
-        model.add(LSTM(current_neiron, return_sequences=True))
-        model.add(Dropout(current_dropout))  # Добавление слоя Dropout
-        model.add(LSTM(current_neiron, return_sequences=False))
-        model.add(Dropout(current_dropout))  # Добавление слоя Dropout
-        model.add(Dense(25))
-        if current_activation.lower() == 'leakyrelu':
-            model.add(Dense(1))
-            model.add(LeakyReLU())
-        else:
-            model.add(Dense(1, activation=current_activation))  # Используем сигмоидальную функцию активации для бинарной классификации
-        optimizer = Adam(learning_rate=0.001)
-        model.compile(optimizer=optimizer, loss='binary_crossentropy',
-                      metrics=['accuracy', Precision(), Recall(), AUC(), f1_score])  # Используем бинарную кроссэнтропию
-        # Обучение модели
-        class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-        class_weights_dict = dict(enumerate(class_weights))
-
-        early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-        csv_logger = CSVLogger(f'temp/lstm_log/{generate_uuid()}_.csv', append=True)
-        history = model.fit(x_train, y_train, batch_size=current_batch_size, epochs=current_epochs, validation_data=(x_val, y_val),
-                            class_weight=class_weights_dict, callbacks=[early_stopping])
-
-        # Подсчёт количества примеров каждого класса и вывод информации
-        unique, counts = np.unique(y, return_counts=True)
-        class_distribution = dict(zip(unique, counts))
+    # X теперь содержит входные данные для сети, y - целевые значения
+    #print("Shape of X:", x.shape)
+    #print("Shape of y:", y.shape)
 
 
-        # Оценка модели
-        scores = model.evaluate(x_test, y_test, verbose=1)
+    # Сначала разделите данные на обучающий+валидационный и тестовый наборы
+    x_train_val, x_test, y_train_val, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
 
-        #
-        # подбора порога классификации
-        #
-        y_val_probs = model.predict(x_val)
-        # Вычисление Precision и Recall для различных порогов
-        precisions, recalls, thresholds = precision_recall_curve(y_val, y_val_probs)
-        # Вычисление F1-score для каждого порога
-        f1_scores = 2 * (precisions * recalls) / (
-                    precisions + recalls + 1e-10)  # добавляем маленькое число для избежания деления на ноль
-        # Найти порог, который максимизирует F1-score
-        opt_idx = np.argmax(f1_scores)
-        opt_threshold = thresholds[opt_idx]
-        opt_f1_score = f1_scores[opt_idx]
+    # Затем разделите обучающий+валидационный набор на обучающий и валидационный наборы
+    x_train, x_val, y_train, y_val = train_test_split(x_train_val, y_train_val, test_size=0.25,
+                                                      random_state=42)  # 0.25 x 0.8 = 0.2
 
-        print("Распределение классов:", class_distribution)
-        print(f"Test Accuracy: {scores[1] * 100:.2f}%")
-        print(f"Test Precision: {scores[2]:.2f}")
-        print(f"Test Recall: {scores[3]:.2f}")
-        print(f"Test AUC: {scores[4]:.2f}")
-        print(f"Test F1-Score: {scores[-1]:.2f}")
+    # Создание модели LSTM
+    model = Sequential()
+    model.add(LSTM(current_neiron, return_sequences=True, input_shape=(x.shape[1], x.shape[2])))
+    model.add(Dropout(current_dropout))
+    model.add(LSTM(current_neiron, return_sequences=True))
+    model.add(Dropout(current_dropout))  # Добавление слоя Dropout
+    model.add(LSTM(current_neiron, return_sequences=False))
+    model.add(Dropout(current_dropout))  # Добавление слоя Dropout
+    model.add(Dense(25))
+    if current_activation.lower() == 'leakyrelu':
+        model.add(Dense(1))
+        model.add(LeakyReLU())
+    else:
+        model.add(Dense(1, activation=current_activation))  # Используем сигмоидальную функцию активации для бинарной классификации
+    optimizer = Adam(learning_rate=0.001)
+    model.compile(optimizer=optimizer, loss='binary_crossentropy',
+                  metrics=['accuracy', Precision(), Recall(), AUC(), f1_score])  # Используем бинарную кроссэнтропию
+    # Обучение модели
+    class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+    class_weights_dict = dict(enumerate(class_weights))
 
-        print("Оптимальный порог:", opt_threshold)
-        print("Максимальный F1-Score:", opt_f1_score)
+    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+    #csv_logger = CSVLogger(f'temp/lstm_log/{generate_uuid()}_.csv', append=True)
+    history = model.fit(x_train, y_train, batch_size=current_batch_size, epochs=current_epochs, validation_data=(x_val, y_val),
+                        class_weight=class_weights_dict, callbacks=[early_stopping])
 
-        # Получение предсказаний на тестовом наборе
-        y_test_probs = model.predict(x_test)
-        y_test_pred = (y_test_probs >= opt_threshold).astype(int)
+    # Подсчёт количества примеров каждого класса и вывод информации
+    unique, counts = np.unique(y, return_counts=True)
+    class_distribution = dict(zip(unique, counts))
 
 
-        # Оценка производительности
-        #print(classification_report(y_test, y_test_pred))
-        conf_matrx_test = confusion_matrix(y_test, y_test_pred)
-        print("Confusion Matrix:\n", conf_matrx_test)
+    # Оценка модели
+    scores = model.evaluate(x_test, y_test, verbose=1)
 
-        # Подготовка данных для записи в файл
-        data = {
-            "Test Accuracy": f"{scores[1] * 100:.2f}%",
-            "Test Precision": f"{scores[2]:.2f}",
-            "Test Recall": f"{scores[3]:.2f}",
-            "Test AUC": f"{scores[4]:.2f}",
-            "Test F1-Score": f"{scores[-1]:.2f}",
-            "Optimal Threshold": opt_threshold,
-            "Maximum F1-Score": opt_f1_score,
-            "batch_sizes": current_batch_size,
-            "epoch": current_epochs,
-            "activation": current_activation,
-            "Confusion Matrix": conf_matrx_test,
-            "current_period": f"{current_period}",
-            "current_window": f"{current_window}",
-            "current_threshold": f"{current_threshold}",
-            "current_neiron": f"{current_neiron}",
-            "current_dropout": f"{current_dropout}",
-            "class_distribution": class_distribution,
-        }
+    #
+    # подбора порога классификации
+    #
+    y_val_probs = model.predict(x_val)
+    # Вычисление Precision и Recall для различных порогов
+    precisions, recalls, thresholds = precision_recall_curve(y_val, y_val_probs)
+    # Вычисление F1-score для каждого порога
+    f1_scores = 2 * (precisions * recalls) / (
+                precisions + recalls + 1e-10)  # добавляем маленькое число для избежания деления на ноль
+    # Найти порог, который максимизирует F1-score
+    opt_idx = np.argmax(f1_scores)
+    opt_threshold = thresholds[opt_idx]
+    opt_f1_score = f1_scores[opt_idx]
 
-        if (scores[1] * 100 >= 70 and
+    print("Распределение классов:", class_distribution)
+    print(f"Test Accuracy: {scores[1] * 100:.2f}%")
+    print(f"Test Precision: {scores[2]:.2f}")
+    print(f"Test Recall: {scores[3]:.2f}")
+    print(f"Test AUC: {scores[4]:.2f}")
+    print(f"Test F1-Score: {scores[-1]:.2f}")
+
+    print("Оптимальный порог:", opt_threshold)
+    print("Максимальный F1-Score:", opt_f1_score)
+
+    # Получение предсказаний на тестовом наборе
+    y_test_probs = model.predict(x_test)
+    y_test_pred = (y_test_probs >= opt_threshold).astype(int)
+
+
+    # Оценка производительности
+    #print(classification_report(y_test, y_test_pred))
+    conf_matrx_test = confusion_matrix(y_test, y_test_pred)
+    print("Confusion Matrix:\n", conf_matrx_test)
+
+    # Подготовка данных для записи в файл
+    data = {
+        "Test Accuracy": f"{scores[1] * 100:.2f}%",
+        "Test Precision": f"{scores[2]:.2f}",
+        "Test Recall": f"{scores[3]:.2f}",
+        "Test AUC": f"{scores[4]:.2f}",
+        "Test F1-Score": f"{scores[-1]:.2f}",
+        "Optimal Threshold": opt_threshold,
+        "Maximum F1-Score": opt_f1_score,
+        "batch_sizes": current_batch_size,
+        "epoch": current_epochs,
+        "activation": current_activation,
+        "Confusion Matrix": conf_matrx_test,
+        "current_period": f"{current_period}",
+        "current_window": f"{current_window}",
+        "current_threshold": f"{current_threshold}",
+        "current_neiron": f"{current_neiron}",
+        "current_dropout": f"{current_dropout}",
+        "class_distribution": class_distribution,
+    }
+
+    if (scores[1] * 100 >= 70 and
+            scores[2] >= 0.58 and
+            scores[3] >= 0.58 and
+            scores[4] >= 0.65 and
+            scores[-1] >= 0.58):
+
+
+
+        directory_save = f'keras_model/lstm/{coin}/{current_period}/{current_window}/{current_threshold}/{current_neiron}/{current_dropout}/'
+        if not os.path.exists(directory_save):
+            os.makedirs(directory_save)
+
+        # Запись данных в файл
+        with open(f"{directory_save}/results.txt", "w") as file:
+            for key, value in data.items():
+                file.write(f"{key}={value}\n")
+
+        joblib.dump(scaler, f'{directory_save}/{current_period}.gz')
+        # Сохранение модели
+        model.save(f'{directory_save}/{current_period}.h5')
+        #удаление файлов mmap
+        os.remove(f'{x_path}')
+        os.remove(f'{y_path}')
+        # Вывод структуры модели
+        model.summary()
+        return 'Good model'
+    else:
+        if (scores[1] * 100 >= 58 and
                 scores[2] >= 0.58 and
                 scores[3] >= 0.58 and
-                scores[4] >= 0.65 and
+                scores[4] >= 0.58 and
                 scores[-1] >= 0.58):
-
-
-
-            directory_save = f'keras_model/lstm/{coin}/{current_period}/{current_window}/{current_threshold}/{current_neiron}/{current_dropout}/'
+            directory_save = f'keras_model/lstm/NotGood/{coin}/'
             if not os.path.exists(directory_save):
                 os.makedirs(directory_save)
-
             # Запись данных в файл
-            with open(f"{directory_save}/results.txt", "w") as file:
+            with open(f"{directory_save}/{generate_uuid()}.txt", "w") as file:
                 for key, value in data.items():
                     file.write(f"{key}={value}\n")
-
-            joblib.dump(scaler, f'{directory_save}/{current_period}.gz')
-            # Сохранение модели
-            model.save(f'{directory_save}/{current_period}.h5')
-            #удаление файлов mmap
-            os.remove(f'{x_path}')
-            os.remove(f'{y_path}')
-            # Вывод структуры модели
-            model.summary()
-            return 'Good model'
-        else:
-            if (scores[1] * 100 >= 58 and
-                    scores[2] >= 0.58 and
-                    scores[3] >= 0.58 and
-                    scores[4] >= 0.58 and
-                    scores[-1] >= 0.58):
-                directory_save = f'keras_model/lstm/NotGood/{coin}/'
-                if not os.path.exists(directory_save):
-                    os.makedirs(directory_save)
-                # Запись данных в файл
-                with open(f"{directory_save}/{generate_uuid()}.txt", "w") as file:
-                    for key, value in data.items():
-                        file.write(f"{key}={value}\n")
-            os.remove(f'{x_path}')
-            os.remove(f'{y_path}')
-            return 'Bad model'
-    except Exception as e:
-        print(f"Error in task: {current_period, current_window, current_threshold, current_neiron, current_dropout}, Exception: {str(e)}")
-        logging.error(f"Error in task: {current_period, current_window, current_threshold, current_neiron, current_dropout}, Exception: {str(e)}")
-        return None
+        os.remove(f'{x_path}')
+        os.remove(f'{y_path}')
+        return 'Bad model'
 
 
 
