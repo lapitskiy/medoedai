@@ -284,36 +284,26 @@ if __name__ == '__main__':
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
-    # window_size = [10,15,20,25,30,35,40,45,50,55,60]
-    # threshold = [0.01, 0.015, 0.025, 0.02]
-    # period = ["5m",]
-    # neiron = [50,80,100,120,150,180,200]
-    # dropout = [0.2, 0.3, 0.4]
-    # batch_sizes = [16, 128]
-    # epochs_list = [20, 40]
-    # activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu'
-    #                ]
-
-    window_size = [10,]
-    threshold = [0.01,]
+    window_size = [10,15,20,25,30,35,40,45,50,55,60]
+    threshold = [0.01, 0.015, 0.025, 0.02]
     period = ["5m",]
-    neiron = [50,]
-    dropout = [0.2,]
-    batch_sizes = [16,]
-    epochs_list = [20]
-    activations = ['sigmoid',]
+    neiron = [50,80,100,120,150,180,200]
+    dropout = [0.2, 0.3, 0.4]
+    batch_sizes = [32, 64]
+    epochs_list = [1,2,3,4,5]
+    activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu']
 
     task_count = list(product(period, window_size, threshold, neiron, dropout, batch_sizes, epochs_list, activations))
     total_iterations = len(task_count)
 
     all_tasks = [(p, w, t, n, d, b, e, a) for p in period for w in window_size for t in threshold for n in neiron for d
                  in dropout for b in batch_sizes for e in epochs_list for a in activations]
-    max_workers = min(4, len(all_tasks))
+    #max_workers = min(10, len(all_tasks)) #max_workers=max_workers
 
     start_time = time.perf_counter()
 
     # Использование ProcessPoolExecutor для параллельного выполнения
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with concurrent.futures.ProcessPoolExecutor() as executor:
         # Запуск процессов
         futures = [executor.submit(goLSTM, *task) for task in all_tasks]
         for future in concurrent.futures.as_completed(futures):
