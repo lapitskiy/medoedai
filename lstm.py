@@ -211,7 +211,7 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
                     file.write(f"{key}={value}\n")
         os.remove(f'{x_path}')
         os.remove(f'{y_path}')
-        return 'Bad model'
+    return 'Bad model'
 
 
 
@@ -284,16 +284,24 @@ if __name__ == '__main__':
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
-    window_size = [10,15,20,25,30,35,40,45,50,55,60]
-    threshold = [0.01, 0.015, 0.025, 0.02]
-    period = ["5m",]
-    neiron = [50,80,100,120,150,180,200]
-    dropout = [0.2, 0.3, 0.4]
-    batch_sizes = [16, 128]
-    epochs_list = [20, 40]
-    activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu'
-                   ]
+    # window_size = [10,15,20,25,30,35,40,45,50,55,60]
+    # threshold = [0.01, 0.015, 0.025, 0.02]
+    # period = ["5m",]
+    # neiron = [50,80,100,120,150,180,200]
+    # dropout = [0.2, 0.3, 0.4]
+    # batch_sizes = [16, 128]
+    # epochs_list = [20, 40]
+    # activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu'
+    #                ]
 
+    window_size = [10,]
+    threshold = [0.01,]
+    period = ["5m",]
+    neiron = [50,]
+    dropout = [0.2,]
+    batch_sizes = [16,]
+    epochs_list = [20]
+    activations = ['sigmoid',]
 
     task_count = list(product(period, window_size, threshold, neiron, dropout, batch_sizes, epochs_list, activations))
     total_iterations = len(task_count)
