@@ -9,9 +9,10 @@ from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM
+from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM, Activation, LeakyReLU
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.metrics import Precision, Recall, AUC
+from tensorflow.keras.optimizers import Adam
 from itertools import product
 
 import os
@@ -89,7 +90,11 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
         model.add(LSTM(current_neiron, return_sequences=False))
         model.add(Dropout(current_dropout))  # Добавление слоя Dropout
         model.add(Dense(25))
-        model.add(Dense(1, activation=current_activation))  # Используем сигмоидальную функцию активации для бинарной классификации
+        if current_activation.lower() == 'leakyrelu':
+            model.add(Dense(1))
+            model.add(LeakyReLU())
+        else:
+            model.add(Dense(1, activation=current_activation))  # Используем сигмоидальную функцию активации для бинарной классификации
         optimizer = Adam(learning_rate=0.001)
         model.compile(optimizer=optimizer, loss='binary_crossentropy',
                       metrics=['accuracy', Precision(), Recall(), AUC(), f1_score])  # Используем бинарную кроссэнтропию
@@ -192,11 +197,11 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
             model.summary()
             return 'Good model'
         else:
-            if (scores[1] * 100 >= 60 and
-                    scores[2] >= 0.60 and
-                    scores[3] >= 0.60 and
-                    scores[4] >= 0.60 and
-                    scores[-1] >= 0.60):
+            if (scores[1] * 100 >= 58 and
+                    scores[2] >= 0.58 and
+                    scores[3] >= 0.58 and
+                    scores[4] >= 0.58 and
+                    scores[-1] >= 0.58):
                 directory_save = f'keras_model/lstm/NotGood/{coin}/'
                 if not os.path.exists(directory_save):
                     os.makedirs(directory_save)
@@ -288,7 +293,7 @@ if __name__ == '__main__':
     dropout = [0.2, 0.3, 0.4]
     batch_sizes = [16, 128]
     epochs_list = [20, 40]
-    activations = ['sigmoid', 'relu','tanh','LeakyReLU','ELU'
+    activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu'
                    ]
 
 
