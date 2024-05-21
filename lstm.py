@@ -300,7 +300,7 @@ if __name__ == '__main__':
 
     all_tasks = [(p, w, t, n, d, b, e, a) for p in period for w in window_size for t in threshold for n in neiron for d
                  in dropout for b in batch_sizes for e in epochs_list for a in activations]
-    max_workers = min(2, len(all_tasks))
+    max_workers = min(4, len(all_tasks))
 
     start_time = time.perf_counter()
 
