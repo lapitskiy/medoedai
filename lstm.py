@@ -84,17 +84,21 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
         model = Sequential()
         model.add(LSTM(current_neiron, return_sequences=True, input_shape=(x.shape[1], x.shape[2])))
         model.add(Dropout(current_dropout))
+        model.add(LSTM(current_neiron, return_sequences=True))
+        model.add(Dropout(current_dropout))  # Добавление слоя Dropout
         model.add(LSTM(current_neiron, return_sequences=False))
         model.add(Dropout(current_dropout))  # Добавление слоя Dropout
         model.add(Dense(25))
         model.add(Dense(1, activation=current_activation))  # Используем сигмоидальную функцию активации для бинарной классификации
-        model.compile(optimizer='adam', loss='binary_crossentropy',
+        optimizer = Adam(learning_rate=0.001)
+        model.compile(optimizer=optimizer, loss='binary_crossentropy',
                       metrics=['accuracy', Precision(), Recall(), AUC(), f1_score])  # Используем бинарную кроссэнтропию
         # Обучение модели
         class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
         class_weights_dict = dict(enumerate(class_weights))
 
         early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+        csv_logger = CSVLogger(f'temp/lstm_log/{generate_uuid()}_.csv', append=True)
         history = model.fit(x_train, y_train, batch_size=current_batch_size, epochs=current_epochs, validation_data=(x_val, y_val),
                             class_weight=class_weights_dict, callbacks=[early_stopping])
 
@@ -181,11 +185,9 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
             joblib.dump(scaler, f'{directory_save}/{current_period}.gz')
             # Сохранение модели
             model.save(f'{directory_save}/{current_period}.h5')
-
             #удаление файлов mmap
             os.remove(f'{x_path}')
             os.remove(f'{y_path}')
-
             # Вывод структуры модели
             model.summary()
             return 'Good model'
@@ -202,6 +204,8 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
                 with open(f"{directory_save}/{generate_uuid()}.txt", "w") as file:
                     for key, value in data.items():
                         file.write(f"{key}={value}\n")
+            os.remove(f'{x_path}')
+            os.remove(f'{y_path}')
             return 'Bad model'
     except Exception as e:
         print(f"Error in task: {current_period, current_window, current_threshold, current_neiron, current_dropout}, Exception: {str(e)}")
@@ -278,14 +282,14 @@ if __name__ == '__main__':
     )
 
     window_size = [10,15,20,25,30,35,40,45,50,55,60]
-    threshold = [0.005, 0.01, 0.02, 0.03, 0.04]
+    threshold = [0.01, 0.015, 0.025, 0.02]
     period = ["5m",]
-    neiron = [50,100,150,200,250,300,350,400,450]
-    dropout = [0.1, 0.2, 0.3, 0.4]
-
-    batch_sizes = [32, 64]
-    epochs_list = [50, 100]
-    activations = ['sigmoid', 'relu']
+    neiron = [50,80,100,120,150,180,200]
+    dropout = [0.2, 0.3, 0.4]
+    batch_sizes = [16, 128]
+    epochs_list = [20, 40]
+    activations = ['sigmoid', 'relu','tanh','LeakyReLU','ELU'
+                   ]
 
 
     task_count = list(product(period, window_size, threshold, neiron, dropout, batch_sizes, epochs_list, activations))
