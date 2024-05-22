@@ -1,3 +1,4 @@
+import stat
 import time
 
 import numpy as np
@@ -190,11 +191,12 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
         joblib.dump(scaler, f'{directory_save}/{current_period}.gz')
         # Сохранение модели
         model.save(f'{directory_save}/{current_period}.h5')
-        #удаление файлов mmap
-        os.remove(f'{x_path}')
-        os.remove(f'{y_path}')
         # Вывод структуры модели
         model.summary()
+        del x
+        del y
+        os.remove(f'{x_path}')
+        os.remove(f'{y_path}')
         return 'Good model'
     else:
         if (scores[1] * 100 >= 58 and
@@ -209,8 +211,19 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
             with open(f"{directory_save}/{generate_uuid()}.txt", "w") as file:
                 for key, value in data.items():
                     file.write(f"{key}={value}\n")
-        os.remove(f'{x_path}')
-        os.remove(f'{y_path}')
+    while True:
+
+        try:
+            del x
+            del y
+            os.remove(f'{x_path}')
+            os.remove(f'{y_path}')
+            print(f"Файл {x_path} удален.")
+            break
+        except PermissionError:
+            print(f"пытаюсь удалить")
+            time.sleep(1)
+
     return 'Bad model'
 
 
@@ -284,13 +297,22 @@ if __name__ == '__main__':
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
-    window_size = [10,15,20,25,30,35,40,45,50,55,60]
-    threshold = [0.01, 0.015, 0.025, 0.02]
+    # window_size = [10,15,20,25,30,35,40,45,50,55,60]
+    # threshold = [0.01, 0.015, 0.025, 0.02]
+    # period = ["5m",]
+    # neiron = [50,80,100,120,150,180,200]
+    # dropout = [0.2, 0.3, 0.4]
+    # batch_sizes = [32, 64]
+    # epochs_list = [1,2,3,4,5]
+    # activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu']
+
+    window_size = [10,]
+    threshold = [0.015,]
     period = ["5m",]
-    neiron = [50,80,100,120,150,180,200]
-    dropout = [0.2, 0.3, 0.4]
-    batch_sizes = [32, 64]
-    epochs_list = [1,2,3,4,5]
+    neiron = [50,]
+    dropout = [0.2,]
+    batch_sizes = [64,]
+    epochs_list = [1,]
     activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu']
 
     task_count = list(product(period, window_size, threshold, neiron, dropout, batch_sizes, epochs_list, activations))
@@ -298,12 +320,13 @@ if __name__ == '__main__':
 
     all_tasks = [(p, w, t, n, d, b, e, a) for p in period for w in window_size for t in threshold for n in neiron for d
                  in dropout for b in batch_sizes for e in epochs_list for a in activations]
-    #max_workers = min(10, len(all_tasks)) #max_workers=max_workers
+
+    max_workers = min(2, len(all_tasks)) #max_workers=max_workers
 
     start_time = time.perf_counter()
 
     # Использование ProcessPoolExecutor для параллельного выполнения
-    with concurrent.futures.ProcessPoolExecutor() as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Запуск процессов
         futures = [executor.submit(goLSTM, *task) for task in all_tasks]
         for future in concurrent.futures.as_completed(futures):
