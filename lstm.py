@@ -199,11 +199,11 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
         os.remove(f'{y_path}')
         return 'Good model'
     else:
-        if (scores[1] * 100 >= 58 and
-                scores[2] >= 0.58 and
-                scores[3] >= 0.58 and
-                scores[4] >= 0.58 and
-                scores[-1] >= 0.58):
+        if (scores[1] * 100 >= 60 and
+                scores[2] >= 0.60 and
+                scores[3] >= 0.60 and
+                scores[4] >= 0.60 and
+                scores[-1] >= 0.60):
             directory_save = f'keras_model/lstm/NotGood/{coin}/'
             if not os.path.exists(directory_save):
                 os.makedirs(directory_save)
@@ -288,23 +288,15 @@ if __name__ == '__main__':
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
-    # window_size = [10,15,20,25,30,35,40,45,50,55,60]
-    # threshold = [0.01, 0.015, 0.025, 0.02]
-    # period = ["5m",]
-    # neiron = [50,80,100,120,150,180,200]
-    # dropout = [0.2, 0.3, 0.4]
-    # batch_sizes = [32, 64]
-    # epochs_list = [1,2,3,4,5]
-    # activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu']
-
-    window_size = [10,]
-    threshold = [0.015,]
-    period = ["5m",]
-    neiron = [50,]
-    dropout = [0.2,]
-    batch_sizes = [64,]
-    epochs_list = [1,]
+    period = ["5m", ]
+    window_size = [5,7,14,19,24,32,48,53,59]
+    threshold = [0.005, 0.006, 0.007, 0.008, 0.009]
+    neiron = [60,90,130,160,190,210]
+    dropout = [0.15, 0.25, 0.35]
+    batch_sizes = [96, 128]
+    epochs_list = [6,7,8,9,10]
     activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu']
+
 
     task_count = list(product(period, window_size, threshold, neiron, dropout, batch_sizes, epochs_list, activations))
     total_iterations = len(task_count)
@@ -312,7 +304,7 @@ if __name__ == '__main__':
     all_tasks = [(p, w, t, n, d, b, e, a) for p in period for w in window_size for t in threshold for n in neiron for d
                  in dropout for b in batch_sizes for e in epochs_list for a in activations]
 
-    max_workers = min(2, len(all_tasks)) #max_workers=max_workers
+    max_workers = min(4, len(all_tasks)) #max_workers=max_workers
 
     start_time = time.perf_counter()
 
