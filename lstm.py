@@ -211,19 +211,10 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
             with open(f"{directory_save}/{generate_uuid()}.txt", "w") as file:
                 for key, value in data.items():
                     file.write(f"{key}={value}\n")
-    while True:
-
-        try:
-            del x
-            del y
-            os.remove(f'{x_path}')
-            os.remove(f'{y_path}')
-            print(f"Файл {x_path} удален.")
-            break
-        except PermissionError:
-            print(f"пытаюсь удалить")
-            time.sleep(1)
-
+    del x
+    del y
+    os.remove(f'{x_path}')
+    os.remove(f'{y_path}')
     return 'Bad model'
 
 
