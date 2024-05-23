@@ -28,7 +28,7 @@ import logging
 import psutil
 
 #from test import goTest
-from utils import create_dataframe, delete_folder, generate_uuid, path_exist, read_x_y_path
+from utils import create_dataframe, delete_folder, generate_uuid, path_exist, read_x_y_ns_path, clear_folder
 
 import matplotlib.pyplot as plt
 import matplotlib
@@ -45,11 +45,12 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
            current_batch_size: int, current_epochs: int, current_activation: str):
     #df = pd.read_pickle(f'temp/df/prd-{current_period}_win-{current_window}.pkl')
 
-    x_path, y_path, num_samples = read_x_y_path(f'temp/roll_win/roll_path_ct-{current_threshold}_cw-{current_window}.txt')
+    x_path, y_path, num_samples = read_x_y_ns_path(f'temp/roll_win/roll_path_ct-{current_threshold}_cw-{current_window}.txt')
+
     # Загрузка memmap массивов
     num_features = len(numeric)
-    x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(num_samples, current_window, num_features))
-    y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(num_samples,))
+    x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(int(num_samples), current_window, num_features))
+    y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples),))
 
     # X теперь содержит входные данные для сети, y - целевые значения
     #print("Shape of X:", x.shape)
@@ -65,7 +66,8 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
 
     # Создание модели LSTM
     model = Sequential()
-    model.add(LSTM(current_neiron, return_sequences=True, input_shape=(x.shape[1], x.shape[2])))
+    model.add(Input(shape=(x.shape[1], x.shape[2])))
+    model.add(LSTM(current_neiron, return_sequences=True))
     model.add(Dropout(current_dropout))
     model.add(LSTM(current_neiron, return_sequences=True))
     model.add(Dropout(current_dropout))  # Добавление слоя Dropout
@@ -176,8 +178,6 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
         model.summary()
         del x
         del y
-        os.remove(f'{x_path}')
-        os.remove(f'{y_path}')
         return 'Good model'
     else:
         if (scores[1] * 100 >= 60 and
@@ -194,8 +194,6 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
                     file.write(f"{key}={value}\n")
     del x
     del y
-    os.remove(f'{x_path}')
-    os.remove(f'{y_path}')
     return 'Bad model'
 
 
@@ -253,10 +251,10 @@ def f1_score(y_true, y_pred):
     return K.mean(f1)
 
 def process_data(df, current_window, current_threshold, numeric):
+    df.ffill(inplace=True)
     df['pct_change'] = df['close'].pct_change(periods=current_window)
-    df['bullish_volume'] = df.apply(lambda row: row['volume'] if row['close'] > row['open'] else 0, axis=1)
-    df['bearish_volume'] = df.apply(lambda row: row['volume'] if row['close'] < row['open'] else 0, axis=1)
-    df.dropna(subset=['pct_change'], inplace=True)
+    df['bullish_volume'] = df['volume'] * (df['close'] > df['open'])
+    df['bearish_volume'] = df['volume'] * (df['close'] < df['open'])
 
     scaler = MinMaxScaler()
     df_scaled = df.copy()
@@ -267,8 +265,7 @@ def process_data(df, current_window, current_threshold, numeric):
         with open(f'temp/roll_win/roll_path_ct-{current_threshold}_cw-{current_window}.txt', 'w') as f:
             f.write(x_path + '\n')
             f.write(y_path + '\n')
-            f.write(num_samples + '\n')
-
+            f.write(str(num_samples) + '\n')
     except Exception as e:
         print(f"Failed to write paths to file: {e}")
     return x_path, y_path
@@ -313,7 +310,7 @@ if __name__ == '__main__':
     activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu']
 
     # создание данных для ии, которые могут загружаться повторно
-    path_exist('temp/df/')
+    clear_folder('temp/')
     path_exist('temp/roll_win/')
     run_multiprocessing_rolling_window()
 

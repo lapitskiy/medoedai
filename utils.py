@@ -96,3 +96,11 @@ def read_x_y_ns_path(file_path):
         y_path = file.readline().strip()  # Читаем вторую строку и удаляем лишние символы
         num_samples = file.readline().strip()  # Читаем вторую строку и удаляем лишние символы
     return x_path, y_path, num_samples
+
+def clear_folder(folder_path):
+    for item in os.listdir(folder_path):
+        item_path = os.path.join(folder_path, item)
+        if os.path.isfile(item_path) or os.path.islink(item_path):
+            os.unlink(item_path)  # Удаление файла или ссылки
+        elif os.path.isdir(item_path):
+            shutil.rmtree(item_path)  # Удаление директории
