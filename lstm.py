@@ -300,13 +300,22 @@ if __name__ == '__main__':
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
+    # period = ["5m", ]
+    # window_size = [5,7,14,19,24,32,48,53,59]
+    # threshold = [0.005, 0.006, 0.007, 0.008, 0.009]
+    # neiron = [60,90,130,160,190,210]
+    # dropout = [0.15, 0.25, 0.35]
+    # batch_sizes = [96, 128]
+    # epochs_list = [6,7,8,9,10]
+    # activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu']
+
     period = ["5m", ]
-    window_size = [5,7,14,19,24,32,48,53,59]
-    threshold = [0.005, 0.006, 0.007, 0.008, 0.009]
-    neiron = [60,90,130,160,190,210]
+    window_size = [5,10,15,20,25,30,35,40,45]
+    threshold = [0.005, 0.007, 0.009, 0.012]
+    neiron = [50,100,150,200]
     dropout = [0.15, 0.25, 0.35]
-    batch_sizes = [96, 128]
-    epochs_list = [6,7,8,9,10]
+    batch_sizes = [32, 64]
+    epochs_list = [4,6,8,10,12]
     activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu']
 
     # создание данных для ии, которые могут загружаться повторно
