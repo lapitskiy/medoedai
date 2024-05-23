@@ -90,7 +90,7 @@ def path_exist(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-def read_x_y_ns_path(file_path):
+def read_temp_path(file_path):
     with open(file_path, 'r') as file:
         x_path = file.readline().strip()  # Читаем первую строку и удаляем лишние символы
         y_path = file.readline().strip()  # Читаем вторую строку и удаляем лишние символы
