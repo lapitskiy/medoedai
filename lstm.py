@@ -22,12 +22,13 @@ import tensorflow as tf
 from tensorflow.keras import backend as K
 
 import concurrent.futures
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import logging
 
 import psutil
 
 #from test import goTest
-from utils import create_dataframe, delete_folder, generate_uuid
+from utils import create_dataframe, delete_folder, generate_uuid, path_exist, read_x_y_path
 
 import matplotlib.pyplot as plt
 import matplotlib
@@ -38,35 +39,15 @@ date_df = ['2024-03','2024-04','2024-05'] # 1m
 coin = 'TONUSDT'
 #layer = '75day-2layer250-Dropout02'
 numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
-
+memmap = True
 
 def goLSTM(current_period: str, current_window: int, current_threshold: float, current_neiron: int, current_dropout: float,
            current_batch_size: int, current_epochs: int, current_activation: str):
+    #df = pd.read_pickle(f'temp/df/prd-{current_period}_win-{current_window}.pkl')
 
-    df = create_dataframe(coin=coin, period=current_period, data=date_df)
-    df['pct_change'] = df['close'].pct_change(periods=current_window)
-    # Рассчитываем Bullish и Bearish объемы
-    df['bullish_volume'] = df.apply(lambda row: row['volume'] if row['close'] > row['open'] else 0, axis=1)
-    df['bearish_volume'] = df.apply(lambda row: row['volume'] if row['close'] < row['open'] else 0, axis=1)
-
-    # Удаление строк с NaN, образовавшихся после pct_change
-    df.dropna(subset=['pct_change'], inplace=True)
-    scaler = MinMaxScaler()
-    # Нормализация данных
-    numeric_features = numeric
-    df_scaled = df.copy()
-    df_scaled[numeric_features] = scaler.fit_transform(df_scaled[numeric_features])
-
-    df_scaled = pd.DataFrame(df[numeric_features], columns=numeric_features)
-    print(df.tail(1))
-
-    # Установка размера окна
-    x_path, y_path = create_rolling_windows(df, df_scaled, current_threshold, current_window)
-
+    x_path, y_path, num_samples = read_x_y_path(f'temp/roll_win/roll_path_ct-{current_threshold}_cw-{current_window}.txt')
     # Загрузка memmap массивов
-    num_samples = len(df_scaled) - current_window
-    feature_columns = numeric
-    num_features = len(feature_columns)
+    num_features = len(numeric)
     x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(num_samples, current_window, num_features))
     y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(num_samples,))
 
@@ -271,7 +252,41 @@ def f1_score(y_true, y_pred):
     f1 = tf.where(tf.math.is_nan(f1), tf.zeros_like(f1), f1)
     return K.mean(f1)
 
+def process_data(df, current_window, current_threshold, numeric):
+    df['pct_change'] = df['close'].pct_change(periods=current_window)
+    df['bullish_volume'] = df.apply(lambda row: row['volume'] if row['close'] > row['open'] else 0, axis=1)
+    df['bearish_volume'] = df.apply(lambda row: row['volume'] if row['close'] < row['open'] else 0, axis=1)
+    df.dropna(subset=['pct_change'], inplace=True)
 
+    scaler = MinMaxScaler()
+    df_scaled = df.copy()
+    df_scaled[numeric] = scaler.fit_transform(df_scaled[numeric])
+    num_samples = len(df_scaled) - current_window
+    x_path, y_path = create_rolling_windows(df, df_scaled, current_threshold, current_window)
+    try:
+        with open(f'temp/roll_win/roll_path_ct-{current_threshold}_cw-{current_window}.txt', 'w') as f:
+            f.write(x_path + '\n')
+            f.write(y_path + '\n')
+            f.write(num_samples + '\n')
+
+    except Exception as e:
+        print(f"Failed to write paths to file: {e}")
+    return x_path, y_path
+
+def run_multiprocessing_rolling_window():
+    with ProcessPoolExecutor() as executor:
+        futures = []
+        for current_period in period:
+            df = create_dataframe(coin=coin, period=current_period, data=date_df)
+            for current_window in window_size:
+                for current_threshold in threshold:
+                    # Запускаем процесс
+                    futures.append(executor.submit(process_data, df.copy(), current_window, current_threshold, numeric))
+
+        # Обработка завершенных задач
+        for future in as_completed(futures):
+            x_path, y_path = future.result()
+            print(x_path, y_path)
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
@@ -297,7 +312,38 @@ if __name__ == '__main__':
     epochs_list = [6,7,8,9,10]
     activations = ['sigmoid', 'relu','tanh','LeakyReLU','elu']
 
+    # создание данных для ии, которые могут загружаться повторно
+    path_exist('temp/df/')
+    path_exist('temp/roll_win/')
+    run_multiprocessing_rolling_window()
 
+    '''
+    for current_period in period:
+        df = create_dataframe(coin=coin, period=current_period, data=date_df)
+        for current_window in window_size:
+            df_copy = df.copy()
+            df_copy['pct_change'] = df_copy['close'].pct_change(periods=current_window)
+            # Рассчитываем Bullish и Bearish объемы
+            df_copy['bullish_volume'] = df_copy.apply(lambda row: row['volume'] if row['close'] > row['open'] else 0, axis=1)
+            df_copy['bearish_volume'] = df_copy.apply(lambda row: row['volume'] if row['close'] < row['open'] else 0, axis=1)
+            # Удаление строк с NaN, образовавшихся после pct_change
+            df_copy.dropna(subset=['pct_change'], inplace=True)
+            #pkl_df_copy.to_pickle(f'temp/df/prd-{pkl_period}_win-{pkl_window}.pkl')
+            #print(f'pkl create prd-{pkl_period}_win-{pkl_window}.pkl')
+
+            scaler = MinMaxScaler()
+            # Нормализация данных
+            df_scaled = df_copy.copy()
+            df_scaled[numeric] = scaler.fit_transform(df_scaled[numeric])
+            #df_scaled = pd.DataFrame(pkl_df_copy[numeric], columns=numeric)
+            print(df_copy.tail(1))
+            print(df_scaled.tail(1))
+            for current_threshold in threshold:
+                x_path, y_path = create_rolling_windows(df_copy, df_scaled, current_threshold, current_window)
+                with open(f'temp/roll_win/roll_path_ct-{current_threshold}_cw-{current_window}.txt', 'w') as f:
+                    f.write(x_path + '\n')
+                    f.write(y_path + '\n')
+    '''
     task_count = list(product(period, window_size, threshold, neiron, dropout, batch_sizes, epochs_list, activations))
     total_iterations = len(task_count)
 
@@ -308,16 +354,17 @@ if __name__ == '__main__':
 
     start_time = time.perf_counter()
 
+
     # Использование ProcessPoolExecutor для параллельного выполнения
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Запуск процессов
         futures = [executor.submit(goLSTM, *task) for task in all_tasks]
-        for future in concurrent.futures.as_completed(futures):
+        for iteration, future in enumerate(concurrent.futures.as_completed(futures), start=1):
             iteration_start_time = time.perf_counter()
             result = future.result()
             iteration_end_time = time.perf_counter()
             iteration_time = iteration_end_time - iteration_start_time
-            print(f'iteration_time {iteration_time}')
+            print(f'Iteration {iteration}: iteration_time {iteration_time}')
 
             if result is not None:
                 print(result)
