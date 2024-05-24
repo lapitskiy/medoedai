@@ -47,7 +47,7 @@ def download_and_extract(base_url, month, year, days, coin, period):
 
 
 #period = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"]
-period = ["5m",]
+period = ["3m",]
 coin = 'TONUSDT'
 
 for time in period:
