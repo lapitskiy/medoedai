@@ -144,18 +144,15 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
     class_distribution = dict(zip(unique, counts))
 
     # Оценка модели
-    scores = model.evaluate(x_test, y_test, verbose=1)
-
+    test_results = model.evaluate(x_test, y_test, verbose=1)
     #
     # подбора порога классификации
     #
     y_val_probs = model.predict(x_val)
-    # Вычисление Precision и Recall для различных порогов
-    precisions, recalls, thresholds = argmax(y_val, y_val_probs)
-    # Вычисление F1-score для каждого порога
+    y_val_labels = np.argmax(y_val, axis=1)
+    precisions, recalls, thresholds = calculate_metrics(y_val_labels, y_val_probs[:, 1])
     f1_scores = 2 * (precisions * recalls) / (
                 precisions + recalls + 1e-10)  # добавляем маленькое число для избежания деления на ноль
-    # Найти порог, который максимизирует F1-score
     opt_idx = np.argmax(f1_scores)
     opt_threshold = thresholds[opt_idx]
     opt_f1_score = f1_scores[opt_idx]
@@ -167,9 +164,10 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
     # Получение предсказаний на тестовом наборе
     y_test_probs = model.predict(x_test)
     y_test_pred = (y_test_probs >= opt_threshold).astype(int)
-    # Оценка производительности
-    #print(classification_report(y_test, y_test_pred))
-    conf_matrx_test = confusion_matrix(y_test, y_test_pred)
+    y_test_labels = np.argmax(y_test, axis=1)
+    y_test_pred_labels = np.argmax(y_test_pred, axis=1)
+    print(classification_report(y_test_labels, y_test_pred_labels))
+    conf_matrx_test = confusion_matrix(y_test_labels, y_test_pred_labels)
     print("Confusion Matrix:\n", conf_matrx_test)
     del x_train, x_val, y_train, y_val, x, y
     gc.collect()
@@ -208,6 +206,17 @@ def create_rolling_windows(df_not_scaled, df, current_threshold, input_window): 
     del x_mmap, y_mmap
     return f'temp/{uuid_mmap}_x.dat', f'temp/{uuid_mmap}_y.dat', num_samples
 
+
+def calculate_metrics(y_true, y_probs):
+    """
+    Вычисление точности (precision), полноты (recall) и порогов для меток.
+
+    :param y_true: Истинные метки.
+    :param y_probs: Вероятности предсказаний.
+    :return: Точность, полнота и пороги.
+    """
+    precisions, recalls, thresholds = precision_recall_curve(y_true, y_probs, pos_label=1)
+    return precisions, recalls, thresholds
 
 def macro_f1(y_true, y_pred, num_classes=3):
     # Преобразуем предсказания и метки в one-hot формат
