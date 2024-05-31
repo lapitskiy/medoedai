@@ -11,18 +11,21 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM, Activation, LeakyReLU, Input
+import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.metrics import Precision, Recall, AUC, CategoricalAccuracy
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.metrics import Metric
 from keras.callbacks import Callback
 from itertools import product
 
+from sklearn.model_selection import GridSearchCV
+from scikeras.wrappers import KerasClassifier, KerasRegressor
+
+
 import os
 
-import tensorflow as tf
+
 from tensorflow.keras import backend as K
 
 import concurrent.futures
@@ -32,10 +35,13 @@ import logging
 import psutil
 
 #from test import goTest
-from utils import create_dataframe, delete_folder, generate_uuid, path_exist, clear_folder, read_temp_path
+from utils.path import create_dataframe, generate_uuid, path_exist, clear_folder, read_temp_path
 
 import matplotlib.pyplot as plt
 import matplotlib
+
+from utils.models_list import ModelLSTM_2Class
+
 matplotlib.use('Agg')
 
 import joblib
@@ -43,8 +49,6 @@ date_df = ['2024-03',] # 1m
 coin = 'TONUSDT'
 #layer = '75day-2layer250-Dropout02'
 numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
-memmap = True
-
 
 
 metric_thresholds = {
@@ -55,66 +59,114 @@ metric_thresholds = {
     'val_auc': 0.60
 }
 
+class ModelCheckpointWithMetricThreshold(Callback):
+    def __init__(self, thresholds, filedata, directory_save, current_threshold, current_window, model, verbose=1):
+        super(ModelCheckpointWithMetricThreshold, self).__init__()
+        self.thresholds = thresholds  # Словарь с пороговыми значениями для метрик
+        self.best_metrics = {key: 0 for key in thresholds.keys()}  # Лучшие метрики
+        self.verbose = verbose
+        self.filedata = filedata
+        self.directory_save = directory_save
+        self.current_threshold = current_threshold
+        self.current_window = current_window
+        self.mymodel = model
+
+    def on_epoch_end(self, epoch, logs=None):
+        current_metrics = {key: logs.get(key) for key in self.thresholds.keys()}
+        if all(current_metrics[key] >= self.thresholds[key] for key in self.thresholds.keys()):
+            improved = False
+            # Проверяем, улучшилась ли хотя бы одна метрика
+            for key in self.thresholds.keys():
+                if current_metrics[key] > self.best_metrics[key]:
+                    self.best_metrics[key] = current_metrics[key]
+                    improved = True
+            if improved:
+                if self.verbose > 0:
+                    print("\nMetrics at the end of epoch {}:".format(epoch + 1))
+                    print(f"Test Accuracy: {logs.get('val_accuracy') * 100:.2f}%")
+                    print(f"Test Precision: {logs.get('val_precision'):.2f}")
+                    print(f"Test Recall: {logs.get('val_recall'):.2f}")
+                    print(f"Test AUC: {logs.get('val_auc'):.2f}")
+                    print(f"Test F1-Score: {logs.get('val_f1_score'):.2f}")
+                self.filedata.update(
+                    {
+                        "Test Accuracy": f"{logs.get('val_accuracy') * 100:.2f}%",
+                        "Test Precision": f"{logs.get('val_precision'):.2f}",
+                        "Test Recall": f"{logs.get('val_recall'):.2f}",
+                        "Test AUC": f"{logs.get('val_auc'):.2f}",
+                        "Test F1-Score": f"{logs.get('val_f1_score'):.2f}"
+                    }
+                )
+                path_exist(self.directory_save)
+                with open(f"{self.directory_save}/results.txt", "w") as file:
+                    for key, value in self.filedata.items():
+                        file.write(f"{key}={value}\n")
+                source_path = f'temp/scaler/scaler_ct-{self.current_threshold}_cw-{self.current_window}.gz'
+                destination_path = f'{self.directory_save}/scaler.gz'
+                try:
+                    shutil.copy(source_path, destination_path)
+                except Exception as e:
+                    print(f'exc {e}')
+                self.mymodel.save(f'{self.directory_save}/model.keras', overwrite=True)
+                self.mymodel.summary()
+                print(f'Metrics improved. Saving model')
+
 def goLSTM(current_period: str, current_window: int, current_threshold: float, current_neiron: int, current_dropout: float,
-           current_batch_size: int, current_epochs: int):
+           current_batch_size: int, current_epochs: int, current_model: int):
     #df = pd.read_pickle(f'temp/df/prd-{current_period}_win-{current_window}.pkl')
 
     x_path, y_path, num_samples = read_temp_path(f'temp/roll_win/roll_path_ct-{current_threshold}_cw-{current_window}.txt')
-
-    # Загрузка memmap массивов
     num_features = len(numeric)
 
     #test_memory(int(num_samples), current_window, num_features)
     #check_memory()
 
     x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(int(num_samples), current_window, num_features))
-    y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples), current_window))
-    y = to_categorical(y, num_classes=3)
+    y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples),))
 
-    y_last = y[:, -1, :]
-    print(f"Shape of y_last: {y_last.shape}")
-
-    # X теперь содержит входные данные для сети, y - целевые значения
-    #print("Shape of X:", x.shape)
-    #print("Shape of y:", y.shape)
+    print("Распределение классов в исходных данных:")
+    unique, counts = np.unique(y, return_counts=True)
+    class_distribution = dict(zip(unique, counts))
+    print(class_distribution)
 
 
     # Сначала разделите данные на обучающий+валидационный и тестовый наборы
-    x_train_val, x_test, y_train_val, y_test = train_test_split(x, y_last, test_size=0.2, random_state=42)
+    x_train_val, x_test, y_train_val, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
 
     # Затем разделите обучающий+валидационный набор на обучающий и валидационный наборы
     x_train, x_val, y_train, y_val = train_test_split(x_train_val, y_train_val, test_size=0.25,
                                                       random_state=42)  # 0.25 x 0.8 = 0.2
+
+    # После разделения на train и test
+    print("Распределение классов в обучающем наборе:")
+    unique_train, counts_train = np.unique(y_train_val, return_counts=True)
+    print(dict(zip(unique_train, counts_train)))
+
     print(f"Shape of x_train: {x_train.shape}")
     print(f"Shape of y_train: {y_train.shape}")
     print(f"Shape of x_val: {x_val.shape}")
     print(f"Shape of y_val: {y_val.shape}")
 
     # Создание модели LSTM
-    model = Sequential()
-    model.add(Input(shape=(current_window, num_features)))
-    model.add(LSTM(current_neiron, return_sequences=True))
-    model.add(Dropout(current_dropout))
-    model.add(LSTM(current_neiron, return_sequences=True))
-    model.add(Dropout(current_dropout))  # Добавление слоя Dropout
-    model.add(LSTM(current_neiron, return_sequences=False))
-    model.add(Dropout(current_dropout))  # Добавление слоя Dropout
-    model.add(Dense(3, activation='softmax'))
+    print(f'cur model {current_model}')
 
-    model.compile(optimizer=Adam(learning_rate=0.001),
-                  loss='categorical_crossentropy',
+    model = ModelLSTM_2Class(model_number=current_model, current_window=current_window, num_features=num_features,
+                             current_neiron=current_neiron, current_dropout=current_dropout)
+    model.build_model()
+    model = model.model
+
+    optimizer = Adam(learning_rate=0.001)
+    model.compile(optimizer=optimizer, loss='binary_crossentropy',
                   metrics=[
-                      CategoricalAccuracy(name='accuracy'),
-                      MacroPrecision(),
-                      MacroRecall(),
-                      tf.keras.metrics.AUC(name='auc', multi_label=True),
-                      macro_f1
-                      ])
+                      tf.keras.metrics.BinaryAccuracy(name='accuracy'),
+                      tf.keras.metrics.Precision(name='precision'),
+                      tf.keras.metrics.Recall(name='recall'),
+                      tf.keras.metrics.AUC(name='auc'),
+                      f1_score])
     # Обучение модели
     # Проверка корректности y_train_labels и class_labels
-    y_train_labels = np.argmax(y_train, axis=-1).flatten()
-    class_labels = np.unique(y_train_labels)
-    class_weights = compute_class_weight('balanced', classes=class_labels, y=y_train_labels)
+    # Обучение модели
+    class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
     class_weights_dict = dict(enumerate(class_weights))
 
 
@@ -135,46 +187,121 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
                                                     current_window=current_window, model=model)
     early_stopping = EarlyStopping(monitor='val_loss', patience=10, verbose=1, restore_best_weights=True)
 
-    #csv_logger = CSVLogger(f'temp/lstm_log/{generate_uuid()}_.csv', append=True)
-    history = model.fit(x_train, y_train, batch_size=current_batch_size, epochs=current_epochs, validation_data=(x_val, y_val),
-                        class_weight=class_weights_dict, callbacks=[checkpoint, early_stopping])
+    history = model.fit(x_train, y_train, batch_size=current_batch_size, epochs=current_epochs, validation_data=(x_val, y_val), class_weight=class_weights_dict, callbacks=[checkpoint, early_stopping])
 
-    # Подсчёт количества примеров каждого класса и вывод информации
-    unique, counts = np.unique(y, return_counts=True)
-    class_distribution = dict(zip(unique, counts))
+    #grid search
+    greed_model = ModelLSTM_2Class(model_number=current_model, current_window=current_window, num_features=num_features,
+                             current_neiron=current_neiron, current_dropout=current_dropout)
+    model = KerasRegressor(build_fn=greed_model.create_greed_model(), verbose=0)
+
+    # Словарь гиперпараметров для поиска
+    param_grid = {
+        'neurons': [current_neiron,],
+        'dropout_rate': [current_dropout,],
+        'batch_size': [current_batch_size,],
+        'epochs': [current_epochs,]
+    }
+
+    # Создание объекта GridSearchCV
+    grid = GridSearchCV(estimator=model, param_grid=param_grid, n_jobs=-1, cv=3)
+    grid_result = grid.fit(x_train, y_train)
+
+    # Результаты поиска
+    print("Лучший результат: %f используя %s" % (grid_result.best_score_, grid_result.best_params_))
+    for params, mean_score, scores in grid_result.cv_results_['mean_test_score'], grid_result.cv_results_['params']:
+        print("%f (%f) с: %r" % (scores.mean(), scores.std(), params))
 
     # Оценка модели
-    test_results = model.evaluate(x_test, y_test, verbose=1)
+    scores = model.evaluate(x_test, y_test, verbose=1)
     #
     # подбора порога классификации
     #
     y_val_probs = model.predict(x_val)
-    y_val_labels = np.argmax(y_val, axis=1)
-    precisions, recalls, thresholds = calculate_metrics(y_val_labels, y_val_probs[:, 1])
+    # Вычисление Precision и Recall для различных порогов
+    precisions, recalls, thresholds = precision_recall_curve(y_val, y_val_probs)
+    # Вычисление F1-score для каждого порога
     f1_scores = 2 * (precisions * recalls) / (
-                precisions + recalls + 1e-10)  # добавляем маленькое число для избежания деления на ноль
+            precisions + recalls + 1e-10)  # добавляем маленькое число для избежания деления на ноль
+    # Найти порог, который максимизирует F1-score
     opt_idx = np.argmax(f1_scores)
     opt_threshold = thresholds[opt_idx]
     opt_f1_score = f1_scores[opt_idx]
 
     print("Распределение классов:", class_distribution)
+    print(f"Test Accuracy: {scores[1] * 100:.2f}%")
+    print(f"Test Precision: {scores[2]:.2f}")
+    print(f"Test Recall: {scores[3]:.2f}")
+    print(f"Test AUC: {scores[4]:.2f}")
+    print(f"Test F1-Score: {scores[-1]:.2f}")
+
     print("Оптимальный порог:", opt_threshold)
     print("Максимальный F1-Score:", opt_f1_score)
 
     # Получение предсказаний на тестовом наборе
     y_test_probs = model.predict(x_test)
     y_test_pred = (y_test_probs >= opt_threshold).astype(int)
-    y_test_labels = np.argmax(y_test, axis=1)
-    y_test_pred_labels = np.argmax(y_test_pred, axis=1)
-    print(classification_report(y_test_labels, y_test_pred_labels))
-    conf_matrx_test = confusion_matrix(y_test_labels, y_test_pred_labels)
+
+    # Оценка производительности
+    conf_matrx_test = confusion_matrix(y_test, y_test_pred)
     print("Confusion Matrix:\n", conf_matrx_test)
+
+    # Подготовка данных для записи в файл
+    data = {
+        "Test Accuracy": f"{scores[1] * 100:.2f}%",
+        "Test Precision": f"{scores[2]:.2f}",
+        "Test Recall": f"{scores[3]:.2f}",
+        "Test AUC": f"{scores[4]:.2f}",
+        "Test F1-Score": f"{scores[-1]:.2f}",
+        "Optimal Threshold": opt_threshold,
+        "Maximum F1-Score": opt_f1_score,
+        "batch_sizes": current_batch_size,
+        "epoch": current_epochs,
+        "Confusion Matrix": conf_matrx_test,
+        "current_period": f"{current_period}",
+        "current_window": f"{current_window}",
+        "current_threshold": f"{current_threshold}",
+        "current_neiron": f"{current_neiron}",
+        "current_dropout": f"{current_dropout}",
+        "class_distribution": class_distribution,
+    }
+
+    if (scores[1] * 100 >= 75 and
+            scores[2] >= 0.75 and
+            scores[3] >= 0.75 and
+            scores[4] >= 0.75 and
+            scores[-1] >= 0.10):
+
+        directory_save = f'keras_model/lstm/{coin}/{current_period}/{current_window}/{current_threshold}/{current_neiron}/{current_dropout}/'
+        if not os.path.exists(directory_save):
+            os.makedirs(directory_save)
+
+        # Запись данных в файл
+        with open(f"{directory_save}/results.txt", "w") as file:
+            for key, value in data.items():
+                file.write(f"{key}={value}\n")
+
+        joblib.dump(scaler, f'{directory_save}/{current_period}.gz')
+        # Сохранение модели
+        model.save(f'{directory_save}/{current_period}.h5')
+        # Вывод структуры модели
+        model.summary()
+    else:
+        if (scores[1] * 100 >= 60 and
+                scores[2] >= 0.60 and
+                scores[3] >= 0.60 and
+                scores[4] >= 0.60 and
+                scores[-1] >= 0.10):
+            directory_save = f'keras_model/lstm/NotGood/{coin}/'
+            if not os.path.exists(directory_save):
+                os.makedirs(directory_save)
+            # Запись данных в файл
+            with open(f"{directory_save}/{generate_uuid()}.txt", "w") as file:
+                for key, value in data.items():
+                    file.write(f"{key}={value}\n")
     del x_train, x_val, y_train, y_val, x, y
-    gc.collect()
-    return 'End epoch'
+    return 'End current epoch'
 
-
-def create_rolling_windows(df_not_scaled, df, current_threshold, input_window): # work BTC and TON and VOLUME
+def create_rolling_windows(df, df_scaled, current_threshold, input_window): # work BTC and TON and VOLUME
     output_window = input_window  # Предсказываем на столько же периодов вперед, сколько и входных данных
     num_samples = len(df) - input_window - output_window
     feature_columns = numeric
@@ -190,13 +317,11 @@ def create_rolling_windows(df_not_scaled, df, current_threshold, input_window): 
     for i in range(num_samples):
         if i % 20000 == 0:
             print(f'create window {i} from {len(df)}')
-        x_mmap[i] = df[feature_columns].iloc[i:(i + input_window)].values
-
-        # Здесь мы берем следующие output_window значений после окончания входного окна
+        x_mmap[i] = df_scaled[feature_columns].iloc[i:(i + input_window)].values
         future_prices = df['close'].iloc[(i + input_window):(i + input_window + output_window)]
         closing_price = df['close'].iloc[i + input_window - 1]
         changes = (future_prices - closing_price) / closing_price
-        y_mmap[i] = [1 if change >= current_threshold else 2 if change <= -current_threshold else 0 for change in changes] #0,1, 2(-1)
+        y_mmap[i] = (np.any(changes >= current_threshold)).astype(int)
 
     # Синхронизация данных с диском и закрытие файлов
     x_mmap.flush()
@@ -206,36 +331,27 @@ def create_rolling_windows(df_not_scaled, df, current_threshold, input_window): 
     del x_mmap, y_mmap
     return f'temp/{uuid_mmap}_x.dat', f'temp/{uuid_mmap}_y.dat', num_samples
 
+def f1_score(y_true, y_pred):
+    # Первое, что нам нужно сделать, это убедиться, что обе переменные имеют тип float32
+    y_true = K.cast(y_true, 'float32')
+    y_pred = K.round(y_pred)  # y_pred округляется до ближайшего целого и также приводится к float32
 
-def calculate_metrics(y_true, y_probs):
-    """
-    Вычисление точности (precision), полноты (recall) и порогов для меток.
+    # Вычисляем количество истинно положительных срабатываний
+    tp = K.sum(K.cast(y_true * y_pred, 'float32'), axis=0)
+    # Ложноположительные срабатывания
+    fp = K.sum(K.cast((1 - y_true) * y_pred, 'float32'), axis=0)
+    # Ложноотрицательные срабатывания
+    fn = K.sum(K.cast(y_true * (1 - y_pred), 'float32'), axis=0)
 
-    :param y_true: Истинные метки.
-    :param y_probs: Вероятности предсказаний.
-    :return: Точность, полнота и пороги.
-    """
-    precisions, recalls, thresholds = precision_recall_curve(y_true, y_probs, pos_label=1)
-    return precisions, recalls, thresholds
-
-def macro_f1(y_true, y_pred, num_classes=3):
-    # Преобразуем предсказания и метки в one-hot формат
-    y_pred = K.one_hot(K.argmax(y_pred, axis=-1), num_classes=num_classes)
-    y_true = K.cast(y_true, K.floatx())
-
-    # Вычисляем точность и полноту для каждого класса
-    tp = K.sum(y_true * y_pred, axis=0)
-    fp = K.sum((1 - y_true) * y_pred, axis=0)
-    fn = K.sum(y_true * (1 - y_pred), axis=0)
-
+    # Precision
     precision = tp / (tp + fp + K.epsilon())
+    # Recall
     recall = tp / (tp + fn + K.epsilon())
 
-    # Вычисляем F1-счет для каждого класса
+    # Вычисляем F1 score
     f1 = 2 * (precision * recall) / (precision + recall + K.epsilon())
+    # Обработка случая NaN в f1
     f1 = tf.where(tf.math.is_nan(f1), tf.zeros_like(f1), f1)
-
-    # Возвращаем среднее значение по всем классам
     return K.mean(f1)
 
 def process_data(df, current_window, current_threshold, numeric):
@@ -347,53 +463,6 @@ class ModelCheckpointWithMetricThreshold(Callback):
                 self.mymodel.summary()
                 print(f'Metrics improved. Saving model')
 
-class MacroPrecision(tf.keras.metrics.Metric):
-    def __init__(self, name='macro_precision', **kwargs):
-        super(MacroPrecision, self).__init__(name=name, **kwargs)
-        self.precision = self.add_weight(name='precision', initializer='zeros')
-        self.true_positives = self.add_weight(name='tp', initializer='zeros')
-        self.false_positives = self.add_weight(name='fp', initializer='zeros')
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        y_true = tf.argmax(y_true, axis=1)
-        y_pred = tf.argmax(y_pred, axis=1)
-        tp = tf.reduce_sum(tf.cast(y_true * y_pred, tf.float32))
-        fp = tf.reduce_sum(tf.cast((1 - y_true) * y_pred, tf.float32))
-        self.true_positives.assign_add(tp)
-        self.false_positives.assign_add(fp)
-        self.precision.assign(tp / (tp + fp + tf.keras.backend.epsilon()))
-
-    def result(self):
-        return self.precision
-
-    def reset_states(self):
-        self.precision.assign(0)
-        self.true_positives.assign(0)
-        self.false_positives.assign(0)
-
-class MacroRecall(tf.keras.metrics.Metric):
-    def __init__(self, name='macro_recall', **kwargs):
-        super(MacroRecall, self).__init__(name=name, **kwargs)
-        self.recall = self.add_weight(name='recall', initializer='zeros')
-        self.true_positives = self.add_weight(name='tp', initializer='zeros')
-        self.false_negatives = self.add_weight(name='fn', initializer='zeros')
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        y_true = tf.argmax(y_true, axis=1)
-        y_pred = tf.argmax(y_pred, axis=1)
-        tp = tf.reduce_sum(tf.cast(y_true * y_pred, tf.float32))
-        fn = tf.reduce_sum(tf.cast(y_true * (1 - y_pred), tf.float32))
-        self.true_positives.assign_add(tp)
-        self.false_negatives.assign_add(fn)
-        self.recall.assign(tp / (tp + fn + tf.keras.backend.epsilon()))
-
-    def result(self):
-        return self.recall
-
-    def reset_states(self):
-        self.recall.assign(0)
-        self.true_positives.assign(0)
-        self.false_negatives.assign(0)
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
@@ -410,22 +479,23 @@ if __name__ == '__main__':
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
-    # period = ["3m", ]
-    # window_size = [5,7,14,19,24,32,48,53,59]
-    # threshold = [0.005, 0.008, 0.01, 0.012, 0.015]
-    # neiron = [60,90,130,160,190,210]
-    # dropout = [0.15, 0.25, 0.35]
-    # batch_sizes = [1,6,12,24,32]
-    # epochs_list = [10,30,60,80,100]
+    period = ["1m", "3m", "5m", "15m", "30m"]
+    window_size = [5,7,14,19,24,32,48,53,60]
+    threshold = [0.005, 0.008, 0.01, 0.012, 0.015]
+    neiron = [60,90,130,160,190,210]
+    dropout = [0.15, 0.25, 0.35]
+    batch_sizes = [16,32,64,128]
+    epochs_list = [10,30,60,80,100]
 
 
-    period = ["5m",]
-    window_size = [5,]
-    threshold = [0.01,]
-    neiron = [50,]
-    dropout = [0.15,]
-    batch_sizes = [1,]
-    epochs_list = [1,]
+    # period = ["5m",]
+    # window_size = [5,]
+    # threshold = [0.01,]
+    # neiron = [200,]
+    # dropout = [0.15,]
+    # batch_sizes = [16,]
+    # epochs_list = [4,]
+    model_count = ModelLSTM_2Class.model_count
 
     # создание данных для ии, которые могут загружаться повторно
     clear_folder('temp/')
@@ -434,13 +504,13 @@ if __name__ == '__main__':
 
     run_multiprocessing_rolling_window()
 
-    task_count = list(product(period, window_size, threshold, neiron, dropout, batch_sizes, epochs_list))
-    total_iterations = len(task_count)
+    all_tasks = [(p, w, t, n, d, b, e, m) for p, w, t, n, d, b, e, m in
+                 product(period, window_size, threshold, neiron, dropout, batch_sizes, epochs_list, range(1, model_count + 1))]
 
-    all_tasks = [(p, w, t, n, d, b, e) for p in period for w in window_size for t in threshold for n in neiron for d
-                 in dropout for b in batch_sizes for e in epochs_list]
+    total_iterations = len(all_tasks)
+    print(f'Total number of iterations: {total_iterations}')
 
-    max_workers = min(2, len(all_tasks)) #max_workers=max_workers
+    max_workers = min(3, len(all_tasks)) #max_workers=max_workers
 
     start_time = time.perf_counter()
 

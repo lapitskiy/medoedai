@@ -134,10 +134,6 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
     history = model.fit(x_train, y_train, batch_size=current_batch_size, epochs=current_epochs, validation_data=(x_val, y_val),
                         class_weight=class_weights_dict, callbacks=[checkpoint, early_stopping])
 
-    # Подсчёт количества примеров каждого класса и вывод информации
-    unique, counts = np.unique(y, return_counts=True)
-    class_distribution = dict(zip(unique, counts))
-
 
     # Оценка модели
     scores = model.evaluate(x_test, y_test, verbose=1)
@@ -170,9 +166,7 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
     y_test_probs = model.predict(x_test)
     y_test_pred = (y_test_probs >= opt_threshold).astype(int)
 
-
     # Оценка производительности
-    #print(classification_report(y_test, y_test_pred))
     conf_matrx_test = confusion_matrix(y_test, y_test_pred)
     print("Confusion Matrix:\n", conf_matrx_test)
 

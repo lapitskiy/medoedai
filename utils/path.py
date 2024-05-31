@@ -1,26 +1,7 @@
-
-# комплексную функцию потерь, которая одновременно максимизировать прибыль и минимизировать риск.
-# компоненты как профит-базированных потерь, так и элементы, связанные с риском:
 import os
 import shutil
-
 import pandas as pd
-
 import uuid
-
-def combined_loss(y_true, y_pred, beta=0.5):
-    # Расчет профит-базированных потерь
-    actions = torch.sign(y_pred[1:] - y_pred[:-1])
-    price_differences = y_true[1:] - y_true[:-1]
-    profit = torch.sum(actions * price_differences)
-
-    # Расчет потерь с учетом риска (например, на основе коэффициента Шарпа)
-    returns = actions * price_differences
-    risk_adjusted_return = returns.mean() / returns.std()
-
-    # Комбинирование потерь: максимизация прибыли и максимизация риск-адаптированной доходности
-    loss = -beta * profit + (1 - beta) * (-risk_adjusted_return)  # beta контролирует баланс между прибылью и риском
-    return loss
 
 # создание датафрейм из csv
 def create_dataframe(coin, data, period):
