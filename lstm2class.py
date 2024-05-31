@@ -479,22 +479,22 @@ if __name__ == '__main__':
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
-    period = ["1m", "3m", "5m", "15m", "30m"]
-    window_size = [5,7,14,19,24,32,48,53,60]
-    threshold = [0.005, 0.008, 0.01, 0.012, 0.015]
-    neiron = [60,90,130,160,190,210]
-    dropout = [0.15, 0.25, 0.35]
-    batch_sizes = [16,32,64,128]
-    epochs_list = [10,30,60,80,100]
+    # period = ["1m", "3m", "5m", "15m", "30m"]
+    # window_size = [5,7,14,19,24,32,48,53,60]
+    # threshold = [0.005, 0.008, 0.01, 0.012, 0.015]
+    # neiron = [60,90,130,160,190,210]
+    # dropout = [0.15, 0.25, 0.35]
+    # batch_sizes = [16,32,64,128]
+    # epochs_list = [10,30,60,80,100]
 
 
-    # period = ["5m",]
-    # window_size = [5,]
-    # threshold = [0.01,]
-    # neiron = [200,]
-    # dropout = [0.15,]
-    # batch_sizes = [16,]
-    # epochs_list = [4,]
+    period = ["5m",]
+    window_size = [5,]
+    threshold = [0.01,]
+    neiron = [50,]
+    dropout = [0.15,]
+    batch_sizes = [16,]
+    epochs_list = [2,]
     model_count = ModelLSTM_2Class.model_count
 
     # создание данных для ии, которые могут загружаться повторно

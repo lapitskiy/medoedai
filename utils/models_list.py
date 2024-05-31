@@ -94,7 +94,7 @@ class ModelLSTM_2Class:
 
     def create_greed_model(self):
         model = Sequential()
-        if self.model_number == model_number:
+        if self.model_number == 1:
             model.add(Input(shape=(self.current_window, self.num_features)))
             model.add(LSTM(self.current_neiron, return_sequences=True))
             model.add(Dropout(self.current_dropout))
