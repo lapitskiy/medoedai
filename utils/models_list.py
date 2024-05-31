@@ -92,16 +92,30 @@ class ModelLSTM_2Class:
         print(f'model num: {self.model_number}')
         self.model = model
 
-    def create_greed_model(self):
-        model = Sequential()
-        if self.model_number == 1:
-            model.add(Input(shape=(self.current_window, self.num_features)))
-            model.add(LSTM(self.current_neiron, return_sequences=True))
-            model.add(Dropout(self.current_dropout))
-            model.add(LSTM(self.current_neiron, return_sequences=True))
-            model.add(Dropout(self.current_dropout))
-            model.add(LSTM(self.current_neiron))
-            model.add(Dropout(self.current_dropout))
-            model.add(Dense(1, activation='sigmoid'))
-            model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-        return model
+
+### Grid model
+def create_model(neurons=50, dropout_rate=0.1):
+    model = Sequential()
+    model.add(LSTM(neurons, return_sequences=True))
+    model.add(Dropout(dropout_rate))
+    model.add(LSTM(neurons))
+    model.add(Dense(1))
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    return model
+
+'''
+def create_greed_model(neurons=None, dropout_rate=None, model_number=None, current_window=None, num_features=None):
+    model = Sequential()
+    print(f'model_number {model_number}')
+    if model_number == 1:
+        model.add(Input(shape=(current_window, num_features)))
+        model.add(LSTM(neurons, return_sequences=True))
+        model.add(Dropout(dropout_rate))
+        model.add(LSTM(neurons, return_sequences=True))
+        model.add(Dropout(dropout_rate))
+        model.add(LSTM(neurons))
+        model.add(Dropout(dropout_rate))
+        model.add(Dense(1, activation='sigmoid'))
+        model.compile(optimizer='adam', loss='mean_squared_error', metrics=['accuracy'])
+    return model
+'''

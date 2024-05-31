@@ -18,6 +18,7 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.metrics import Metric
 from keras.callbacks import Callback
 from itertools import product
+from tensorflow.keras.layers import Dropout
 
 from sklearn.model_selection import GridSearchCV
 from scikeras.wrappers import KerasClassifier, KerasRegressor
@@ -40,7 +41,7 @@ from utils.path import create_dataframe, generate_uuid, path_exist, clear_folder
 import matplotlib.pyplot as plt
 import matplotlib
 
-from utils.models_list import ModelLSTM_2Class
+from utils.models_list import ModelLSTM_2Class, create_model
 
 matplotlib.use('Agg')
 
@@ -188,29 +189,31 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
     early_stopping = EarlyStopping(monitor='val_loss', patience=10, verbose=1, restore_best_weights=True)
 
     history = model.fit(x_train, y_train, batch_size=current_batch_size, epochs=current_epochs, validation_data=(x_val, y_val), class_weight=class_weights_dict, callbacks=[checkpoint, early_stopping])
-
     #grid search
-    greed_model = ModelLSTM_2Class(model_number=current_model, current_window=current_window, num_features=num_features,
-                             current_neiron=current_neiron, current_dropout=current_dropout)
-    model = KerasRegressor(build_fn=greed_model.create_greed_model(), verbose=0)
 
+    model_greed = KerasRegressor(build_fn=create_model, verbose=0)
     # Словарь гиперпараметров для поиска
     param_grid = {
-        'neurons': [current_neiron,],
-        'dropout_rate': [current_dropout,],
-        'batch_size': [current_batch_size,],
-        'epochs': [current_epochs,]
+        'neurons': [50, 100, 150],
+        'dropout_rate': [0.1, 0.2, 0.3],
+        'batch_size': [10, 20],  # Управляется KerasRegressor
+        'epochs': [10, 20]  # Управляется KerasRegressor
     }
 
+
     # Создание объекта GridSearchCV
-    grid = GridSearchCV(estimator=model, param_grid=param_grid, n_jobs=-1, cv=3)
+    grid = GridSearchCV(estimator=model_greed, param_grid=param_grid, n_jobs=-1, cv=3)
+
+    print(model_greed.get_params().keys())
+
     grid_result = grid.fit(x_train, y_train)
+    print('tyt4')
 
     # Результаты поиска
     print("Лучший результат: %f используя %s" % (grid_result.best_score_, grid_result.best_params_))
     for params, mean_score, scores in grid_result.cv_results_['mean_test_score'], grid_result.cv_results_['params']:
         print("%f (%f) с: %r" % (scores.mean(), scores.std(), params))
-
+    print('tyt5')
     # Оценка модели
     scores = model.evaluate(x_test, y_test, verbose=1)
     #
@@ -510,7 +513,7 @@ if __name__ == '__main__':
     total_iterations = len(all_tasks)
     print(f'Total number of iterations: {total_iterations}')
 
-    max_workers = min(3, len(all_tasks)) #max_workers=max_workers
+    max_workers = min(1, len(all_tasks)) #max_workers=max_workers
 
     start_time = time.perf_counter()
 

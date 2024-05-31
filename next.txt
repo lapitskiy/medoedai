@@ -2,3 +2,5 @@
 model.add(LSTM(current_neiron, return_sequences=True, kernel_regularizer=l2(0.01)))
 
 Применяйте кросс-валидацию для определения наилучшей комбинации параметров Dropout и регуляризации
+
+
