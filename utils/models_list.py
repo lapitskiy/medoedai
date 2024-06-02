@@ -94,14 +94,7 @@ class ModelLSTM_2Class:
 
 
 ### Grid model
-def create_model(neurons=50, dropout_rate=0.1):
-    model = Sequential()
-    model.add(LSTM(neurons, return_sequences=True))
-    model.add(Dropout(dropout_rate))
-    model.add(LSTM(neurons))
-    model.add(Dense(1))
-    model.compile(optimizer='adam', loss='mean_squared_error')
-    return model
+
 
 '''
 def create_greed_model(neurons=None, dropout_rate=None, model_number=None, current_window=None, num_features=None):
