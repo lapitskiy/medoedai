@@ -49,7 +49,7 @@ from utils.path import create_dataframe, generate_uuid, path_exist, clear_folder
 import matplotlib.pyplot as plt
 import matplotlib
 
-from utils.models_list import ModelLSTM_2Class
+from utils.models_list import ModelLSTM_2Class, create_model
 
 matplotlib.use('Agg')
 
@@ -324,14 +324,6 @@ def goKerasRegressor(windows_size, thresholds):
             print("Лучший результат: %f используя %s" % (grid_result.best_score_, grid_result.best_params_))
             for params, mean_score, scores in grid_result.cv_results_['mean_test_score'], grid_result.cv_results_['params']:
                 print("%f (%f) с: %r" % (scores.mean(), scores.std(), params))
-
-def create_model(optimizer='adam', lstm_neurons=50, current_window=5, num_features=None):
-    model = Sequential()
-    model.add(Input(shape=(current_window, num_features)))
-    model.add(LSTM(lstm_neurons))
-    model.add(Dense(1))
-    model.compile(optimizer=optimizer, loss='mse')
-    return model
 
 def create_rolling_windows(df, df_scaled, current_threshold, input_window): # work BTC and TON and VOLUME
     output_window = input_window  # Предсказываем на столько же периодов вперед, сколько и входных данных

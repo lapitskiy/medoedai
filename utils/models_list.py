@@ -95,7 +95,13 @@ class ModelLSTM_2Class:
 
 ### Grid model
 
-
+def create_model(optimizer='adam', lstm_neurons=50, current_window=5, num_features=None):
+    model = Sequential()
+    model.add(Input(shape=(current_window, num_features)))
+    model.add(LSTM(lstm_neurons))
+    model.add(Dense(1))
+    model.compile(optimizer=optimizer, loss='mse')
+    return model
 '''
 def create_greed_model(neurons=None, dropout_rate=None, model_number=None, current_window=None, num_features=None):
     model = Sequential()
