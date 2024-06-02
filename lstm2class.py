@@ -289,41 +289,43 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
     return 'End current epoch'
 
 def goKerasRegressor(windows_size, thresholds):
-    for window_size in windows_size:
-        for threshold in thresholds:
-            print(f"Testing rolling_window={window_size}")
-            x_path, y_path, num_samples = read_temp_path(f'temp/roll_win/roll_path_ct-{threshold}_cw-{window_size}.txt')
-            num_features = len(numeric)
-            x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(int(num_samples), window_size, num_features))
-            y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples),))
-            # Сначала разделите данные на обучающий+валидационный и тестовый наборы
-            x_train_val, x_test, y_train_val, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
-            # Затем разделите обучающий+валидационный набор на обучающий и валидационный наборы
-            x_train, x_val, y_train, y_val = train_test_split(x_train_val, y_train_val, test_size=0.25,
-                                                              random_state=42)  # 0.25 x 0.8 = 0.2
+    model_count = ModelLSTM_2Class.model_count
+    for model_number in range(1, model_count + 1):
+        for window_size in windows_size:
+            for threshold in thresholds:
+                print(f"Testing rolling_window={window_size}")
+                x_path, y_path, num_samples = read_temp_path(f'temp/roll_win/roll_path_ct-{threshold}_cw-{window_size}.txt')
+                num_features = len(numeric)
+                x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(int(num_samples), window_size, num_features))
+                y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples),))
+                # Сначала разделите данные на обучающий+валидационный и тестовый наборы
+                x_train_val, x_test, y_train_val, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
+                # Затем разделите обучающий+валидационный набор на обучающий и валидационный наборы
+                x_train, x_val, y_train, y_val = train_test_split(x_train_val, y_train_val, test_size=0.25,
+                                                                  random_state=42)  # 0.25 x 0.8 = 0.2
 
-            model = KerasRegressor(model=create_model, epochs=25, batch_size=1, verbose=2)
-            # Словарь гиперпараметров для поиска
-            param_grid = {
-                # 'model__optimizer': ['adam'],      # Note the prefix "model__"
-                'model__lstm_neurons': [10, 25, 50, 100],  # Note the prefix "model__"
-                'model__current_window': [window_size,],  # Note the prefix "model__"
-                'model__num_features': [num_features,],  # Note the prefix "model__"
-                'batch_size': [1],
-                'epochs': [2]
-            }
-            print(model.get_params().keys())
-            grid = GridSearchCV(estimator=model, param_grid=param_grid, scoring='neg_mean_squared_error', cv=3,
-                                verbose=2, n_jobs=-1,)
-            grid_result = grid.fit(x_train, y_train)
+                model = KerasRegressor(model=create_model, epochs=25, batch_size=1, verbose=0)
+                # Словарь гиперпараметров для поиска
+                param_grid = {
+                    'model__model_number': [model_number, ],  # Note the prefix "model__"
+                    'model__current_window': [window_size, ],  # Note the prefix "model__"
+                    'model__num_features': [num_features, ],  # Note the prefix "model__"
+                    'model__current_dropout': [0.1, ],  # Note the prefix "model__"
+                    'model__current_neiron': [50, ],  # Note the prefix "model__"
+                    'batch_size': [32, ],
+                    'epochs': [2, ]
+                }
+                print(model.get_params().keys())
+                grid = GridSearchCV(estimator=model, param_grid=param_grid, scoring='neg_mean_squared_error', cv=3,
+                                    verbose=0, n_jobs=-1)
+                grid_result = grid.fit(x_train, y_train)
 
-            # Display the best hyperparameters
-            print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
-
-            # Результаты поиска
-            print("Лучший результат: %f используя %s" % (grid_result.best_score_, grid_result.best_params_))
-            for params, mean_score, scores in grid_result.cv_results_['mean_test_score'], grid_result.cv_results_['params']:
-                print("%f (%f) с: %r" % (scores.mean(), scores.std(), params))
+                # Результаты поиска
+                print("Лучший результат: %f используя %s" % (grid_result.best_score_, grid_result.best_params_))
+                for params, mean_score, scores in zip(grid_result.cv_results_['params'],
+                                                      grid_result.cv_results_['mean_test_score'],
+                                                      grid_result.cv_results_.get('std_test_score', [])):
+                    print(f"Параметры: {params}, Средний балл: {mean_score}, Оценки: {scores}")
 
 def create_rolling_windows(df, df_scaled, current_threshold, input_window): # work BTC and TON and VOLUME
     output_window = input_window  # Предсказываем на столько же периодов вперед, сколько и входных данных
@@ -505,10 +507,9 @@ if __name__ == '__main__':
     path_exist('temp/scaler/')
 
     run_multiprocessing_rolling_window()
-
     #goKerasRegress
     goKerasRegressor(windows_size=window_size, thresholds=threshold)
-
+    exit()
     # goLSTM
     all_tasks = [(p, w, t, n, d, b, e, m) for p, w, t, n, d, b, e, m in
                  product(period, window_size, threshold, neiron, dropout, batch_sizes, epochs_list, range(1, model_count + 1))]
