@@ -310,11 +310,11 @@ def goKerasRegressor(windows_size, thresholds):
                 'model__current_window': [window_size,],  # Note the prefix "model__"
                 'model__num_features': [num_features,],  # Note the prefix "model__"
                 'batch_size': [1],
-                'epochs': [10]
+                'epochs': [2]
             }
             print(model.get_params().keys())
             grid = GridSearchCV(estimator=model, param_grid=param_grid, scoring='neg_mean_squared_error', cv=3,
-                                verbose=2)
+                                verbose=2, n_jobs=-1,)
             grid_result = grid.fit(x_train, y_train)
 
             # Display the best hyperparameters
