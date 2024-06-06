@@ -310,22 +310,39 @@ def goKerasRegressor(windows_size, thresholds):
                     'model__model_number': [model_number, ],  # Note the prefix "model__"
                     'model__current_window': [window_size, ],  # Note the prefix "model__"
                     'model__num_features': [num_features, ],  # Note the prefix "model__"
-                    'model__current_dropout': [0.1, ],  # Note the prefix "model__"
-                    'model__current_neiron': [50, ],  # Note the prefix "model__"
-                    'batch_size': [32, ],
-                    'epochs': [2, ]
+                    'model__current_dropout': [0.1, 0.2],  # Note the prefix "model__"
+                    'model__current_neiron': [50, 100, 150, 200],  # Note the prefix "model__"
+                    'batch_size': [32, 64, 96, 128],
+                    'epochs': [10, 30, 60, 80, 100]
                 }
                 print(model.get_params().keys())
                 grid = GridSearchCV(estimator=model, param_grid=param_grid, scoring='neg_mean_squared_error', cv=3,
-                                    verbose=0, n_jobs=-1)
+                                    verbose=2, n_jobs=4)
                 grid_result = grid.fit(x_train, y_train)
 
                 # Результаты поиска
                 print("Лучший результат: %f используя %s" % (grid_result.best_score_, grid_result.best_params_))
-                for params, mean_score, scores in zip(grid_result.cv_results_['params'],
-                                                      grid_result.cv_results_['mean_test_score'],
-                                                      grid_result.cv_results_.get('std_test_score', [])):
-                    print(f"Параметры: {params}, Средний балл: {mean_score}, Оценки: {scores}")
+                file_name = f'keras_model/best_params_ns{num_samples}_{coin}.csv'
+                best_score = grid_result.best_score_
+                best_params = grid_result.best_params_
+                results_df = pd.DataFrame([best_params])
+                results_df['threshold'] = threshold
+                results_df['num_samples'] = num_samples
+                results_df['best_score'] = best_score
+                try:
+                    # Проверяем, существует ли файл
+                    with open(file_name, 'r') as f:
+                        existing_df = pd.read_csv(file_name)
+                        # Проверяем, есть ли столбец 'threshold' в существующем файле
+                        if 'threshold' not in existing_df.columns or 'num_samples' not in existing_df.columns or:
+                            # Если нет, добавляем столбец с заголовком
+                            results_df.to_csv(file_name, mode='a', header=True, index=False)
+                        else:
+                            # Если есть, добавляем данные без заголовка
+                            results_df.to_csv(file_name, mode='a', header=False, index=False)
+                except FileNotFoundError:
+                    # Если файл не существует, создаем его и записываем данные с заголовком
+                    results_df.to_csv(file_name, mode='w', header=True, index=False)
 
 def create_rolling_windows(df, df_scaled, current_threshold, input_window): # work BTC and TON and VOLUME
     output_window = input_window  # Предсказываем на столько же периодов вперед, сколько и входных данных
@@ -493,8 +510,8 @@ if __name__ == '__main__':
 
 
     period = ["5m",]
-    window_size = [5,]
-    threshold = [0.01,]
+    window_size = [3, 5, 7, 9, 11, 13, 15]
+    threshold = [0.005, 0.007, 0.01]
     neiron = [50,]
     dropout = [0.15,]
     batch_sizes = [16,]
