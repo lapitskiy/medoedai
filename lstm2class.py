@@ -76,73 +76,79 @@ metric_thresholds = {
     'val_f1_score': 0.10,
     'val_auc': 0.60
 }
-def goKerasRegressor(windows_size, thresholds):
+def goKerasRegressor(windows_size, thresholds, periods):
     model_count = ModelLSTM_2Class.model_count
     start_index_model = 1
     start_index_win = 0
     start_index_thr = 0
+    start_index_per = 0
     if file_exist(checkpoint_file):
-            model_number, window_size, threshold = read_temp_path(f'{checkpoint_file}')
-            start_index_model = int(model_number)
-            start_index_win = windows_size.index(int(window_size))
-            start_index_thr = thresholds.index(float(threshold))
+            list_ = read_temp_path(f'{checkpoint_file}', 4) #model_number, window_size, threshold, period
+            start_index_model = int(list_[0])
+            start_index_win = windows_size.index(int(list_[1]))
+            start_index_thr = thresholds.index(float(list_[2]))
+            start_index_per = periods.index(float(list_[3]))
     for model_number in range(start_index_model, model_count + 1):
-        for window_size in windows_size[start_index_win:]:
-            for threshold in thresholds[start_index_thr:]:
-                x_path, y_path, num_samples = read_temp_path(f'temp/roll_win/roll_path_ct{threshold}_cw{window_size}_cp{current_period}.txt')
-                num_features = len(numeric)
-                x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(int(num_samples), window_size, num_features))
-                y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples),))
-                # Сначала разделите данные на обучающий+валидационный и тестовый наборы
-                x_train_val, x_test, y_train_val, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
-                # Затем разделите обучающий+валидационный набор на обучающий и валидационный наборы
-                x_train, x_val, y_train, y_val = train_test_split(x_train_val, y_train_val, test_size=0.25,
-                                                                  random_state=42)  # 0.25 x 0.8 = 0.2
+        for period in periods[start_index_per:]:
+            for window_size in windows_size[start_index_win:]:
+                for threshold in thresholds[start_index_thr:]:
+                    list_ = read_temp_path(f'temp/roll_win/roll_path_ct{threshold}_cw{window_size}_cp{period}.txt', 3)
+                    x_path = list_[0]
+                    y_path = list_[1]
+                    num_samples = list_[2]
+                    num_features = len(numeric)
+                    x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(int(num_samples), window_size, num_features))
+                    y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples),))
+                    # Сначала разделите данные на обучающий+валидационный и тестовый наборы
+                    x_train_val, x_test, y_train_val, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
+                    # Затем разделите обучающий+валидационный набор на обучающий и валидационный наборы
+                    x_train, x_val, y_train, y_val = train_test_split(x_train_val, y_train_val, test_size=0.25,
+                                                                      random_state=42)  # 0.25 x 0.8 = 0.2
 
-                model = KerasRegressor(model=create_model, epochs=25, batch_size=1, verbose=0)
-                # Словарь гиперпараметров для поиска
-                param_grid = {
-                    'model__model_number': [model_number, ],  # Note the prefix "model__"
-                    'model__current_window': [window_size, ],  # Note the prefix "model__"
-                    'model__num_features': [num_features, ],  # Note the prefix "model__"
-                    'model__current_dropout': [0.1, 0.2],  # Note the prefix "model__"
-                    'model__current_neiron': [50, 100, 150, 200],  # Note the prefix "model__"
-                    'batch_size': [32, 64, 96, 128],
-                    'epochs': [10, 30, 60, 80, 100]
-                }
-
-
-                grid = GridSearchCV(estimator=model, param_grid=param_grid, scoring='neg_mean_squared_error', cv=3,
-                                        verbose=2, n_jobs=2)
-
-                grid.fit(x_train, y_train)
+                    model = KerasRegressor(model=create_model, epochs=25, batch_size=1, verbose=0)
+                    # Словарь гиперпараметров для поиска
+                    param_grid = {
+                        'model__model_number': [model_number, ],  # Note the prefix "model__"
+                        'model__current_window': [window_size, ],  # Note the prefix "model__"
+                        'model__num_features': [num_features, ],  # Note the prefix "model__"
+                        'model__current_dropout': [0.1, 0.2],  # Note the prefix "model__"
+                        'model__current_neiron': [50, 100, 150, 200],  # Note the prefix "model__"
+                        'batch_size': [32, 64, 96, 128],
+                        'epochs': [10, 30, 60, 80, 100]
+                    }
 
 
-                save_grid_checkpoint(model_number, window_size, threshold, checkpoint_file)
-                print(f"Progress saved to {checkpoint_file}")
-                # Результаты поиска
-                print("Лучший результат: %f используя %s" % (grid.best_score_, grid.best_params_))
-                file_name = f'keras_model/best_params_{coin}.csv'
-                best_score = grid.best_score_
-                best_params = grid.best_params_
-                results_df = pd.DataFrame([best_params])
-                results_df['threshold'] = threshold
-                results_df['num_samples'] = num_samples
-                results_df['best_score'] = best_score
-                try:
-                    # Проверяем, существует ли файл
-                    with open(file_name, 'r') as f:
-                        existing_df = pd.read_csv(file_name)
-                        # Проверяем, есть ли столбец 'threshold' в существующем файле
-                        if 'threshold' not in existing_df.columns or 'num_samples' not in existing_df.columns:
-                            # Если нет, добавляем столбец с заголовком
-                            results_df.to_csv(file_name, mode='a', header=True, index=False)
-                        else:
-                            # Если есть, добавляем данные без заголовка
-                            results_df.to_csv(file_name, mode='a', header=False, index=False)
-                except FileNotFoundError:
-                    # Если файл не существует, создаем его и записываем данные с заголовком
-                    results_df.to_csv(file_name, mode='w', header=True, index=False)
+                    grid = GridSearchCV(estimator=model, param_grid=param_grid, scoring='neg_mean_squared_error', cv=3,
+                                            verbose=2, n_jobs=2)
+
+                    grid.fit(x_train, y_train)
+
+
+                    save_grid_checkpoint(model_number, window_size, threshold, checkpoint_file)
+                    print(f"Progress saved to {checkpoint_file}")
+                    # Результаты поиска
+                    print("Лучший результат: %f используя %s" % (grid.best_score_, grid.best_params_))
+                    file_name = f'keras_model/best_params_{coin}.csv'
+                    best_score = grid.best_score_
+                    best_params = grid.best_params_
+                    results_df = pd.DataFrame([best_params])
+                    results_df['threshold'] = threshold
+                    results_df['num_samples'] = num_samples
+                    results_df['best_score'] = best_score
+                    try:
+                        # Проверяем, существует ли файл
+                        with open(file_name, 'r') as f:
+                            existing_df = pd.read_csv(file_name)
+                            # Проверяем, есть ли столбец 'threshold' в существующем файле
+                            if 'threshold' not in existing_df.columns or 'num_samples' not in existing_df.columns:
+                                # Если нет, добавляем столбец с заголовком
+                                results_df.to_csv(file_name, mode='a', header=True, index=False)
+                            else:
+                                # Если есть, добавляем данные без заголовка
+                                results_df.to_csv(file_name, mode='a', header=False, index=False)
+                    except FileNotFoundError:
+                        # Если файл не существует, создаем его и записываем данные с заголовком
+                        results_df.to_csv(file_name, mode='w', header=True, index=False)
     # Если завершено успешно, удаляем файл чекпойнта
     if os.path.exists(checkpoint_file):
         os.remove(checkpoint_file)
@@ -203,7 +209,8 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
            current_batch_size: int, current_epochs: int, current_model: int):
     #df = pd.read_pickle(f'temp/df/prd-{current_period}_win-{current_window}.pkl')
 
-    x_path, y_path, num_samples = read_temp_path(f'temp/roll_win/roll_path_ct-{current_threshold}_cw-{current_window}.txt')
+    list_ = read_temp_path(f'temp/roll_win/roll_path_ct-{current_threshold}_cw-{current_window}.txt')
+    #x_path, y_path, num_samples
     num_features = len(numeric)
 
     #test_memory(int(num_samples), current_window, num_features)
@@ -533,8 +540,10 @@ if __name__ == '__main__':
 
 
     period = ["5m",]
-    window_size = [3, 5, 7, 9, 11, 13, 15]
-    threshold = [0.005, 0.007, 0.01]
+    window_size = [3,]
+    threshold = [0.005, ]
+    #window_size = [3, 5, 7, 9, 11, 13, 15]
+    #threshold = [0.005, 0.007, 0.01]
     neiron = [50,]
     dropout = [0.15,]
     batch_sizes = [16,]
@@ -554,7 +563,7 @@ if __name__ == '__main__':
 
     run_multiprocessing_rolling_window()
     #goKerasRegress
-    goKerasRegressor(windows_size=window_size, thresholds=threshold)
+    goKerasRegressor(windows_size=window_size, thresholds=threshold, periods=period)
     exit()
     # goLSTM
     all_tasks = [(p, w, t, n, d, b, e, m) for p, w, t, n, d, b, e, m in
