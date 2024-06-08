@@ -1,8 +1,13 @@
+import warnings
+
+import dill
+
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning, message=".*tf\.reset_default_graph is deprecated.*")
 import shutil
 import stat
 import time
 import gc
-
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
@@ -10,16 +15,12 @@ from sklearn.metrics import precision_recall_curve
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
-
 import tensorflow as tf
-
 from tensorflow.keras.models import Sequential
-
 import scikeras
 from scikeras.wrappers import KerasRegressor
 from sklearn.model_selection import GridSearchCV
 from sklearn.model_selection import train_test_split
-
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.metrics import Precision, Recall, AUC, CategoricalAccuracy
 from tensorflow.keras.optimizers import Adam
@@ -29,36 +30,44 @@ from itertools import product
 from tensorflow.keras.layers import LSTM, Dense, Dropout, LeakyReLU, Input, Bidirectional, BatchNormalization, \
     Conv1D, Attention, GRU, InputLayer, MultiHeadAttention
 
-import warnings
 import os
-
-warnings.filterwarnings('ignore', category=FutureWarning)
-
-
 from tensorflow.keras import backend as K
-
 import concurrent.futures
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import logging
-
 import psutil
-
-#from test import goTest
-from utils.path import create_dataframe, generate_uuid, path_exist, clear_folder, read_temp_path
-
+from utils.path import create_dataframe, generate_uuid, path_exist, clear_folder, read_temp_path, save_grid_checkpoint, \
+    file_exist
 import matplotlib.pyplot as plt
 import matplotlib
-
 from utils.models_list import ModelLSTM_2Class, create_model
+import joblib
 
 matplotlib.use('Agg')
+# Проверка доступности GPU
 
-import joblib
-date_df = ['2024-03',] # 1m
+# Динамическое выделение памяти на GPU
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+     try:
+         print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
+         print("CUDA version: ", tf.sysconfig.get_build_info()["cuda_version"])
+         print("cuDNN version: ", tf.sysconfig.get_build_info()["cudnn_version"])
+         tf.config.threading.set_inter_op_parallelism_threads(1)
+         tf.config.threading.set_intra_op_parallelism_threads(1)
+         for gpu in gpus:
+             tf.config.experimental.set_memory_growth(gpu, True)
+     except RuntimeError as e:
+         print(e)
+
+#gc.collect()
+#tf.keras.backend.clear_session()
+#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+date_df = ['2024-03','2024-04','2024-05'] # 1m
 coin = 'TONUSDT'
 #layer = '75day-2layer250-Dropout02'
 numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
-
+checkpoint_file = 'temp/checkpoint/grid_search_checkpoint.txt'
 
 metric_thresholds = {
     'val_accuracy': 0.60,
@@ -67,6 +76,76 @@ metric_thresholds = {
     'val_f1_score': 0.10,
     'val_auc': 0.60
 }
+def goKerasRegressor(windows_size, thresholds):
+    model_count = ModelLSTM_2Class.model_count
+    start_index_model = 1
+    start_index_win = 0
+    start_index_thr = 0
+    if file_exist(checkpoint_file):
+            model_number, window_size, threshold = read_temp_path(f'{checkpoint_file}')
+            start_index_model = int(model_number)
+            start_index_win = windows_size.index(int(window_size))
+            start_index_thr = thresholds.index(float(threshold))
+    for model_number in range(start_index_model, model_count + 1):
+        for window_size in windows_size[start_index_win:]:
+            for threshold in thresholds[start_index_thr:]:
+                x_path, y_path, num_samples = read_temp_path(f'temp/roll_win/roll_path_ct{threshold}_cw{window_size}_cp{current_period}.txt')
+                num_features = len(numeric)
+                x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(int(num_samples), window_size, num_features))
+                y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples),))
+                # Сначала разделите данные на обучающий+валидационный и тестовый наборы
+                x_train_val, x_test, y_train_val, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
+                # Затем разделите обучающий+валидационный набор на обучающий и валидационный наборы
+                x_train, x_val, y_train, y_val = train_test_split(x_train_val, y_train_val, test_size=0.25,
+                                                                  random_state=42)  # 0.25 x 0.8 = 0.2
+
+                model = KerasRegressor(model=create_model, epochs=25, batch_size=1, verbose=0)
+                # Словарь гиперпараметров для поиска
+                param_grid = {
+                    'model__model_number': [model_number, ],  # Note the prefix "model__"
+                    'model__current_window': [window_size, ],  # Note the prefix "model__"
+                    'model__num_features': [num_features, ],  # Note the prefix "model__"
+                    'model__current_dropout': [0.1, 0.2],  # Note the prefix "model__"
+                    'model__current_neiron': [50, 100, 150, 200],  # Note the prefix "model__"
+                    'batch_size': [32, 64, 96, 128],
+                    'epochs': [10, 30, 60, 80, 100]
+                }
+
+
+                grid = GridSearchCV(estimator=model, param_grid=param_grid, scoring='neg_mean_squared_error', cv=3,
+                                        verbose=2, n_jobs=2)
+
+                grid.fit(x_train, y_train)
+
+
+                save_grid_checkpoint(model_number, window_size, threshold, checkpoint_file)
+                print(f"Progress saved to {checkpoint_file}")
+                # Результаты поиска
+                print("Лучший результат: %f используя %s" % (grid.best_score_, grid.best_params_))
+                file_name = f'keras_model/best_params_{coin}.csv'
+                best_score = grid.best_score_
+                best_params = grid.best_params_
+                results_df = pd.DataFrame([best_params])
+                results_df['threshold'] = threshold
+                results_df['num_samples'] = num_samples
+                results_df['best_score'] = best_score
+                try:
+                    # Проверяем, существует ли файл
+                    with open(file_name, 'r') as f:
+                        existing_df = pd.read_csv(file_name)
+                        # Проверяем, есть ли столбец 'threshold' в существующем файле
+                        if 'threshold' not in existing_df.columns or 'num_samples' not in existing_df.columns:
+                            # Если нет, добавляем столбец с заголовком
+                            results_df.to_csv(file_name, mode='a', header=True, index=False)
+                        else:
+                            # Если есть, добавляем данные без заголовка
+                            results_df.to_csv(file_name, mode='a', header=False, index=False)
+                except FileNotFoundError:
+                    # Если файл не существует, создаем его и записываем данные с заголовком
+                    results_df.to_csv(file_name, mode='w', header=True, index=False)
+    # Если завершено успешно, удаляем файл чекпойнта
+    if os.path.exists(checkpoint_file):
+        os.remove(checkpoint_file)
 
 class ModelCheckpointWithMetricThreshold(Callback):
     def __init__(self, thresholds, filedata, directory_save, current_threshold, current_window, model, verbose=1):
@@ -288,62 +367,6 @@ def goLSTM(current_period: str, current_window: int, current_threshold: float, c
     del x_train, x_val, y_train, y_val, x, y
     return 'End current epoch'
 
-def goKerasRegressor(windows_size, thresholds):
-    model_count = ModelLSTM_2Class.model_count
-    for model_number in range(1, model_count + 1):
-        for window_size in windows_size:
-            for threshold in thresholds:
-                print(f"Testing rolling_window={window_size}")
-                x_path, y_path, num_samples = read_temp_path(f'temp/roll_win/roll_path_ct-{threshold}_cw-{window_size}.txt')
-                num_features = len(numeric)
-                x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(int(num_samples), window_size, num_features))
-                y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples),))
-                # Сначала разделите данные на обучающий+валидационный и тестовый наборы
-                x_train_val, x_test, y_train_val, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
-                # Затем разделите обучающий+валидационный набор на обучающий и валидационный наборы
-                x_train, x_val, y_train, y_val = train_test_split(x_train_val, y_train_val, test_size=0.25,
-                                                                  random_state=42)  # 0.25 x 0.8 = 0.2
-
-                model = KerasRegressor(model=create_model, epochs=25, batch_size=1, verbose=0)
-                # Словарь гиперпараметров для поиска
-                param_grid = {
-                    'model__model_number': [model_number, ],  # Note the prefix "model__"
-                    'model__current_window': [window_size, ],  # Note the prefix "model__"
-                    'model__num_features': [num_features, ],  # Note the prefix "model__"
-                    'model__current_dropout': [0.1, 0.2],  # Note the prefix "model__"
-                    'model__current_neiron': [50, 100, 150, 200],  # Note the prefix "model__"
-                    'batch_size': [32, 64, 96, 128],
-                    'epochs': [10, 30, 60, 80, 100]
-                }
-                print(model.get_params().keys())
-                grid = GridSearchCV(estimator=model, param_grid=param_grid, scoring='neg_mean_squared_error', cv=3,
-                                    verbose=2, n_jobs=4)
-                grid_result = grid.fit(x_train, y_train)
-
-                # Результаты поиска
-                print("Лучший результат: %f используя %s" % (grid_result.best_score_, grid_result.best_params_))
-                file_name = f'keras_model/best_params_ns{num_samples}_{coin}.csv'
-                best_score = grid_result.best_score_
-                best_params = grid_result.best_params_
-                results_df = pd.DataFrame([best_params])
-                results_df['threshold'] = threshold
-                results_df['num_samples'] = num_samples
-                results_df['best_score'] = best_score
-                try:
-                    # Проверяем, существует ли файл
-                    with open(file_name, 'r') as f:
-                        existing_df = pd.read_csv(file_name)
-                        # Проверяем, есть ли столбец 'threshold' в существующем файле
-                        if 'threshold' not in existing_df.columns or 'num_samples' not in existing_df.columns or:
-                            # Если нет, добавляем столбец с заголовком
-                            results_df.to_csv(file_name, mode='a', header=True, index=False)
-                        else:
-                            # Если есть, добавляем данные без заголовка
-                            results_df.to_csv(file_name, mode='a', header=False, index=False)
-                except FileNotFoundError:
-                    # Если файл не существует, создаем его и записываем данные с заголовком
-                    results_df.to_csv(file_name, mode='w', header=True, index=False)
-
 def create_rolling_windows(df, df_scaled, current_threshold, input_window): # work BTC and TON and VOLUME
     output_window = input_window  # Предсказываем на столько же периодов вперед, сколько и входных данных
     num_samples = len(df) - input_window - output_window
@@ -354,8 +377,8 @@ def create_rolling_windows(df, df_scaled, current_threshold, input_window): # wo
     uuid_mmap = generate_uuid()
     if not os.path.exists('temp'):
         os.makedirs('temp')
-    x_mmap = np.memmap(f'temp/{uuid_mmap}_x.dat', dtype=np.float32, mode='w+', shape=(num_samples, input_window, num_features))
-    y_mmap = np.memmap(f'temp/{uuid_mmap}_y.dat', dtype=np.int8, mode='w+', shape=(num_samples, output_window))
+    x_mmap = np.memmap(f'temp/mmap/{uuid_mmap}_x.dat', dtype=np.float32, mode='w+', shape=(num_samples, input_window, num_features))
+    y_mmap = np.memmap(f'temp/mmap/{uuid_mmap}_y.dat', dtype=np.int8, mode='w+', shape=(num_samples, output_window))
 
     for i in range(num_samples):
         if i % 20000 == 0:
@@ -372,7 +395,7 @@ def create_rolling_windows(df, df_scaled, current_threshold, input_window): # wo
     x_mmap._mmap.close()
     y_mmap._mmap.close()
     del x_mmap, y_mmap
-    return f'temp/{uuid_mmap}_x.dat', f'temp/{uuid_mmap}_y.dat', num_samples
+    return f'temp/mmap/{uuid_mmap}_x.dat', f'temp/mmap/{uuid_mmap}_y.dat', num_samples
 
 def f1_score(y_true, y_pred):
     # Первое, что нам нужно сделать, это убедиться, что обе переменные имеют тип float32
@@ -397,7 +420,7 @@ def f1_score(y_true, y_pred):
     f1 = tf.where(tf.math.is_nan(f1), tf.zeros_like(f1), f1)
     return K.mean(f1)
 
-def process_data(df, current_window, current_threshold, numeric):
+def process_data(df, current_window, current_threshold, current_period, numeric):
     df.ffill(inplace=True)
     df['pct_change'] = df['close'].pct_change(periods=current_window)
     df['bullish_volume'] = df['volume'] * (df['close'] > df['open'])
@@ -406,10 +429,10 @@ def process_data(df, current_window, current_threshold, numeric):
     scaler = MinMaxScaler()
     df_scaled = df.copy()
     df_scaled[numeric] = scaler.fit_transform(df_scaled[numeric])
-    joblib.dump(scaler, f'temp/scaler/scaler_ct-{current_threshold}_cw-{current_window}.gz')
+    joblib.dump(scaler, f'temp/scaler/scaler_ct{current_threshold}_cw{current_window}_cp{current_period}.gz')
     x_path, y_path, num_samples = create_rolling_windows(df, df_scaled, current_threshold, current_window)
     try:
-        with open(f'temp/roll_win/roll_path_ct-{current_threshold}_cw-{current_window}.txt', 'w') as f:
+        with open(f'temp/roll_win/roll_path_ct{current_threshold}_cw{current_window}_cp{current_period}.txt', 'w') as f:
             f.write(x_path + '\n')
             f.write(y_path + '\n')
             f.write(str(num_samples) + '\n')
@@ -425,7 +448,7 @@ def run_multiprocessing_rolling_window():
             for current_window in window_size:
                 for current_threshold in threshold:
                     # Запускаем процесс
-                    futures.append(executor.submit(process_data, df.copy(), current_window, current_threshold, numeric))
+                    futures.append(executor.submit(process_data, df.copy(), current_window, current_threshold, current_period, numeric))
 
         # Обработка завершенных задач
         for future in as_completed(futures):
@@ -519,9 +542,15 @@ if __name__ == '__main__':
     model_count = ModelLSTM_2Class.model_count
 
     # создание данных для ии, которые могут загружаться повторно
-    clear_folder('temp/')
+    path_exist('temp/')
+    path_exist('temp/checkpoint/')
     path_exist('temp/roll_win/')
     path_exist('temp/scaler/')
+    path_exist('temp/mmap/')
+    clear_folder('temp/roll_win/')
+    clear_folder('temp/scaler/')
+    clear_folder('temp/mmap/')
+
 
     run_multiprocessing_rolling_window()
     #goKerasRegress

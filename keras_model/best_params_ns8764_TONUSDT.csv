@@ -1,4 +1,0 @@
-batch_size,epochs,model__current_dropout,model__current_neiron,model__current_window,model__model_number,model__num_features,best_score
-32,100,0.1,150,7,1,6,-0.22049467265605927
-64,100,0.2,150,7,1,6,-0.16895909110705057
-32,100,0.2,100,7,1,6,-0.08764780064423879
