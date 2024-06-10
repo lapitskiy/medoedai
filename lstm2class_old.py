@@ -221,23 +221,16 @@ class ModelCheckpointWithMetricThreshold(Callback):
                 self.mymodel.summary()
                 print(f'Metrics improved. Saving model')
 
-def goLSTM(task):
-    task_dict = dict(task)
-    batch_size =
-    epoch =
-    current_dropout
-    current_neiron
-    current_window
-    model_number
-    num_features
-    threshold
-    num_samples
-    period
+def goLSTM(current_period: str, current_window: int, current_threshold: float, current_neiron: int, current_dropout: float,
+           current_batch_size: int, current_epochs: int, current_model: int):
+    #df = pd.read_pickle(f'temp/df/prd-{current_period}_win-{current_window}.pkl')
 
-    list_ = read_temp_path(f'temp/roll_win/roll_path_ct-{task_dict['threshold']}_cw-{current_window}_cp{period}.txt')
+    list_ = read_temp_path(f'temp/roll_win/roll_path_ct-{current_threshold}_cw-{current_window}.txt')
     #x_path, y_path, num_samples
     num_features = len(numeric)
 
+    #test_memory(int(num_samples), current_window, num_features)
+    #check_memory()
 
     x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(int(num_samples), current_window, num_features))
     y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples),))
@@ -578,6 +571,7 @@ if __name__ == '__main__':
         goKerasRegressor(windows_size=window_size, thresholds=threshold, periods=period, dropouts=dropout)
     else:
         # goLSTM
+        all_tasks = []
         for filename in os.listdir(f'keras_model/best_params/'):
             if filename.endswith('.csv'):
                 # Составление полного пути к файлу
@@ -586,15 +580,14 @@ if __name__ == '__main__':
                 # Здесь можно выполнить операции с файлом
                 data = pd.read_csv(f'{filepath}')
                 for i in range(len(data)):
-                    date_df_check = data.at[i, 'date_df']
-                    if date_df_check != date_df:
-                        print(f'Ошибка входных данных по дням свечей \ndate_df {date_df}\n date ib csv {date_df_check}')
-                        exit()
                     row_slice = data.iloc[i]
-
                     # Сборка задачи с именами переменных и их значениями
                     task = tuple((column_name, value) for column_name, value in row_slice.items())
                     all_tasks.append(task)
+
+
+        all_tasks = [(p, w, t, n, d, b, e, m) for p, w, t, n, d, b, e, m in
+                     product(period, window_size, threshold, neiron, dropout, batch_sizes, epochs_list, range(1, model_count + 1))]
 
         total_iterations = len(all_tasks)
         print(f'Total number of iterations: {total_iterations}')
@@ -607,7 +600,7 @@ if __name__ == '__main__':
         # Использование ProcessPoolExecutor для параллельного выполнения
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
             # Запуск процессов
-            futures = [executor.submit(goLSTM, task) for task in all_tasks]
+            futures = [executor.submit(goLSTM, *task) for task in all_tasks]
             for iteration, future in enumerate(concurrent.futures.as_completed(futures), start=1):
                 iteration_start_time = time.perf_counter()
                 result = future.result()

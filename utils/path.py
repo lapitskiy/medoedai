@@ -5,14 +5,14 @@ import uuid
 import dill
 
 # создание датафрейм из csv
-def save_grid_checkpoint(model_number, window_size, threshold, period, file_path):
+def save_grid_checkpoint(model_number, window_size, threshold, period, dropout, file_path):
     try:
-        print(f'{model_number}-{window_size}-{threshold}')
         with open(f'{file_path}', 'w') as f:
             f.write(str(model_number) + '\n')
             f.write(str(window_size) + '\n')
             f.write(str(threshold) + '\n')
             f.write(str(period) + '\n')
+            f.write(str(dropout) + '\n')
     except Exception as e:
         print(f"Failed to write save_grid_checkpoint paths to file: {e}")
 
@@ -94,7 +94,7 @@ def read_temp_path(file_path, count):
     # model_number, window_size, threshold
     list_ = []
     with open(file_path, 'r') as file:
-        for x in range(1,count):
+        for x in range(1,count+1):
             list_.append(file.readline().strip())
     return list_
 
