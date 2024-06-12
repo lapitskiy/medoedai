@@ -145,7 +145,8 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts):
                         results_df['threshold'] = threshold
                         results_df['num_samples'] = num_samples
                         results_df['period'] = period
-                        results_df['date_df'] = date_df
+                        date_str = ','.join(date_df)
+                        results_df['date_df'] = date_str
                         results_df['coin'] = coin
                         results_df['best_score'] = best_score
                         try:
@@ -222,19 +223,19 @@ class ModelCheckpointWithMetricThreshold(Callback):
                 print(f'Metrics improved. Saving model')
 
 def goLSTM(task):
-    task_dict = dict(task)
-    batch_size =
-    epoch =
-    current_dropout
-    current_neiron
-    current_window
-    model_number
-    num_features
-    threshold
-    num_samples
-    period
+    # task_dict = dict(task)
+    # batch_size =
+    # epoch =
+    # current_dropout
+    # current_neiron
+    # current_window
+    # model_number
+    # num_features
+    # threshold
+    # num_samples
+    # period
 
-    list_ = read_temp_path(f'temp/roll_win/roll_path_ct-{task_dict['threshold']}_cw-{current_window}_cp{period}.txt')
+    list_ = read_temp_path(f'temp/roll_win/roll_path_ct-_cw-{current_window}_cp{period}.txt')
     #x_path, y_path, num_samples
     num_features = len(numeric)
 
@@ -586,7 +587,8 @@ if __name__ == '__main__':
                 # Здесь можно выполнить операции с файлом
                 data = pd.read_csv(f'{filepath}')
                 for i in range(len(data)):
-                    date_df_check = data.at[i, 'date_df']
+                    df['date_df'].apply(lambda x: x.split(','))
+                    date_df_check = data.at[i, 'date_df'].split(',')
                     if date_df_check != date_df:
                         print(f'Ошибка входных данных по дням свечей \ndate_df {date_df}\n date ib csv {date_df_check}')
                         exit()
