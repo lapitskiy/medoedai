@@ -1,29 +1,31 @@
 import warnings
-import os
-import dill
-
 warnings.filterwarnings('ignore', category=FutureWarning)
-warnings.filterwarnings('ignore', category=DeprecationWarning, message=".*tf\.reset_default_graph is deprecated.*")
+import os
 import shutil
 import stat
 import time
 import gc
 import pandas as pd
 import numpy as np
+
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import precision_recall_curve
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 import tensorflow as tf
+tf.get_logger().setLevel('ERROR')
+# Установка уровня журналирования среды выполнения TensorFlow
+
 
 #os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
-os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
+        os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+        print("Доступные GPU: ", gpus)
         # Пример: ограничение использования GPU памяти до 5GB на GPU
-        memory_limit = 5120  # Укажите здесь значение в мегабайтах
+        memory_limit = 16290  # Укажите здесь значение в мегабайтах
         tf.config.experimental.set_virtual_device_configuration(
             gpus[0],
             [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=memory_limit)]
@@ -58,7 +60,6 @@ import matplotlib.pyplot as plt
 import matplotlib
 from utils.models_list import ModelLSTM_2Class, create_model
 import joblib
-
 matplotlib.use('Agg')
 # Проверка доступности GPU
 
@@ -66,6 +67,7 @@ matplotlib.use('Agg')
 gc.collect()
 tf.keras.backend.clear_session()
 #os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+CPU_COUNT = 6
 date_df = ['2024-03','2024-04','2024-05'] # 1m
 coin = 'TONUSDT'
 #layer = '75day-2layer250-Dropout02'
@@ -133,7 +135,7 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
 
 
                             grid = GridSearchCV(estimator=model, param_grid=param_grid, scoring='neg_mean_squared_error', cv=3,
-                                                    verbose=2, n_jobs=8)
+                                                    verbose=2, n_jobs=CPU_COUNT)
 
                             grid.fit(x_train, y_train)
                             tf.keras.backend.clear_session()
@@ -545,8 +547,8 @@ class ModelCheckpointWithMetricThreshold(Callback):
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-    tf.config.threading.set_intra_op_parallelism_threads(10)
-    tf.config.threading.set_inter_op_parallelism_threads(10)
+    tf.config.threading.set_intra_op_parallelism_threads(CPU_COUNT)
+    tf.config.threading.set_inter_op_parallelism_threads(CPU_COUNT)
 
     tf.get_logger().setLevel('ERROR')
     log_file = os.path.expanduser('~/training.log')
