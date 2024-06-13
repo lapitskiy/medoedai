@@ -2,7 +2,6 @@ import os
 import shutil
 import pandas as pd
 import uuid
-import dill
 
 # создание датафрейм из csv
 def save_grid_checkpoint(model_number, window_size, threshold, period, dropout, neiron, file_path):

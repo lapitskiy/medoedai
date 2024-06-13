@@ -43,7 +43,7 @@ from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.metrics import Precision, Recall, AUC, CategoricalAccuracy
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.metrics import Metric
-from keras.callbacks import Callback
+from tensorflow.keras.callbacks import Callback
 from itertools import product
 from tensorflow.keras.layers import LSTM, Dense, Dropout, LeakyReLU, Input, Bidirectional, BatchNormalization, \
     Conv1D, Attention, GRU, InputLayer, MultiHeadAttention
