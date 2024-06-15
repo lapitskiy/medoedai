@@ -158,6 +158,7 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                             date_str = ','.join(date_df)
                             results_df['date_df'] = date_str
                             results_df['coin'] = coin
+                            results_df['time'] = f'time {iteration_time} - cpu {CPU_COUNT}'
                             results_df['best_score'] = best_score
                             try:
                                 # Проверяем, существует ли файл
@@ -166,7 +167,7 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                                     # Проверяем, есть ли столбец 'threshold' в существующем файле
                                     if 'threshold' not in existing_df.columns or 'num_samples' not in existing_df.columns \
                                             or 'period' not in existing_df.columns or 'date_df' not in existing_df.columns \
-                                            or 'coin' not in existing_df.columns:
+                                            or 'coin' not in existing_df.columns or 'time' not in existing_df.columns:
                                         # Если нет, добавляем столбец с заголовком
                                         results_df.to_csv(file_name, mode='a', header=True, index=False)
                                     else:
