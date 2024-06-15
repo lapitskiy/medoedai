@@ -69,7 +69,7 @@ matplotlib.use('Agg')
 gc.collect()
 tf.keras.backend.clear_session()
 #os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-CPU_COUNT = 7
+CPU_COUNT = 1
 date_df = ['2024-03','2024-04','2024-05'] # 1m
 coin = 'TONUSDT'
 #layer = '75day-2layer250-Dropout02'
@@ -158,7 +158,7 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                             date_str = ','.join(date_df)
                             results_df['date_df'] = date_str
                             results_df['coin'] = coin
-                            results_df['time'] = f'time {iteration_time} - cpu {CPU_COUNT}'
+                            results_df['time'] = f'time {iteration_time:.2f} - cpu {CPU_COUNT}'
                             results_df['best_score'] = best_score
                             try:
                                 # Проверяем, существует ли файл
