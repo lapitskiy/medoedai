@@ -45,7 +45,7 @@ class ModelLSTM_2Class:
             model.add(LSTM(self.current_neiron, activation='tanh', recurrent_activation='sigmoid', return_sequences=True))
             model.add(Dropout(self.current_dropout))
             model.add(LSTM(self.current_neiron))
-            model.add(LeakyReLU(negative_slope=0.01))
+            model.add(LeakyReLU(alpha=0.01))
             model.add(Dense(1, activation='sigmoid'))
         if self.model_number == 5:
             model.add(Bidirectional(LSTM(self.current_neiron, return_sequences=True)))
@@ -127,10 +127,10 @@ def create_model(current_dropout=None, current_neiron=None, current_window=None,
         model.add(LSTM(current_neiron, activation='tanh', recurrent_activation='sigmoid', return_sequences=True))
         model.add(Dropout(current_dropout))
         model.add(LSTM(current_neiron))
-        model.add(LeakyReLU(negative_slope=0.01))
+        model.add(LeakyReLU(alpha=0.01))
         model.add(Dense(1, activation='sigmoid'))
     if model_number == 5:
-        model.add(InputLayer(shape=(current_window, num_features)))  # Добавьте входной слой
+        model.add(InputLayer(input_shape=(current_window, num_features)))  # Добавьте входной слой
         model.add(Bidirectional(LSTM(current_neiron, return_sequences=True)))
         model.add(Dropout(current_dropout))
         model.add(Bidirectional(LSTM(current_neiron)))

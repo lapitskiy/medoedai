@@ -14,22 +14,23 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 import tensorflow as tf
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 tf.get_logger().setLevel('ERROR')
 # Установка уровня журналирования среды выполнения TensorFlow
 
 
 #os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+tf.config.experimental.list_physical_devices('GPU')
 gpus = tf.config.list_physical_devices('GPU')
+
 if gpus:
     try:
-        os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
         print("Доступные GPU: ", gpus)
         # Пример: ограничение использования GPU памяти до 5GB на GPU
-        memory_limit = 16290  # Укажите здесь значение в мегабайтах
-        tf.config.experimental.set_virtual_device_configuration(
-            gpus[0],
-            [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=memory_limit)]
-        )
+        memory_limit = 5012  # Укажите здесь значение в мегабайтах
+        virtual_devices = [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=memory_limit) for _ in gpus]
+        for gpu in gpus:
+            tf.config.experimental.set_virtual_device_configuration(gpu, virtual_devices)
     except RuntimeError as e:
         print("Произошла ошибка:", e)
 #export TF_FORCE_GPU_ALLOW_GROWTH='true'
@@ -50,6 +51,7 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout, LeakyReLU, Input, Bidi
 
 
 from tensorflow.keras import backend as K
+K.clear_session()
 import concurrent.futures
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import logging
@@ -67,7 +69,7 @@ matplotlib.use('Agg')
 gc.collect()
 tf.keras.backend.clear_session()
 #os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-CPU_COUNT = 6
+CPU_COUNT = 7
 date_df = ['2024-03','2024-04','2024-05'] # 1m
 coin = 'TONUSDT'
 #layer = '75day-2layer250-Dropout02'
@@ -84,7 +86,7 @@ metric_thresholds = {
 }
 def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
     model_count = ModelLSTM_2Class.model_count
-    start_index_model = 1
+    start_index_model = 5
     start_index_win = 0
     start_index_thr = 0
     start_index_per = 0
@@ -108,6 +110,7 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                             save_grid_checkpoint(model_number=model_number, window_size=window_size, threshold=threshold,
                                                  period=period, dropout=dropout, neiron=neiron, file_path=checkpoint_file)
                             print(f"Progress saved to {checkpoint_file}")
+                            iteration_start_time = time.perf_counter()
                             list_ = read_temp_path(f'temp/roll_win/roll_path_ct{threshold}_cw{window_size}_cp{period}.txt', 3)
                             x_path = list_[0]
                             y_path = list_[1]
@@ -140,7 +143,9 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                             grid.fit(x_train, y_train)
                             tf.keras.backend.clear_session()
 
-
+                            iteration_end_time = time.perf_counter()
+                            iteration_time = iteration_end_time - iteration_start_time
+                            print(f'Iteration_time {iteration_time}; CPU use {CPU_COUNT}')
                             # Результаты поиска
                             print("Лучший результат: %f используя %s" % (grid.best_score_, grid.best_params_))
                             file_name = f'temp/best_params/best_params_{coin}.csv'
