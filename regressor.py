@@ -1,4 +1,9 @@
 import os
+CPU_COUNT = 3
+tfGPU = False
+if not tfGPU:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import warnings
 from utils.rolling import run_multiprocessing_rolling_window
 warnings.filterwarnings('ignore', category=FutureWarning)
@@ -13,11 +18,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 
-CPU_COUNT = 3
-tfGPU = False
-if not tfGPU:
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
 
 import tensorflow as tf
 
@@ -36,8 +37,10 @@ if tfGPU:
         except RuntimeError as e:
             print("Произошла ошибка:", e)
 else:
-    config = tf.compat.v1.ConfigProto(device_count={'GPU': 0})
-    session = tf.compat.v1.Session(config=config)
+    tf.config.set_visible_devices([], 'GPU')
+    visible_devices = tf.config.get_visible_devices()
+    for device in visible_devices:
+        assert device.device_type != 'GPU'
 
 from tensorflow.keras.models import Sequential
 import scikeras
@@ -63,7 +66,7 @@ from utils.models_list import ModelLSTM_2Class, create_model
 import joblib
 matplotlib.use('Agg')
 
-date_df = ['2024-03','2024-04','2024-05']
+date_df = ['2024-03',]
 coin = 'TONUSDT'
 numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
 checkpoint_file = 'temp/checkpoint/grid_search_checkpoint.txt'
