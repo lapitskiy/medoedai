@@ -13,14 +13,17 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 
+CPU_COUNT = 3
 tfGPU = False
 if not tfGPU:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
 import tensorflow as tf
 
 tf.get_logger().setLevel('ERROR')
 if tfGPU:
+
     os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
     os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
     tf.config.experimental.list_physical_devices('GPU')
@@ -60,8 +63,6 @@ from utils.models_list import ModelLSTM_2Class, create_model
 import joblib
 matplotlib.use('Agg')
 
-
-CPU_COUNT = 3
 date_df = ['2024-03','2024-04','2024-05']
 coin = 'TONUSDT'
 numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
