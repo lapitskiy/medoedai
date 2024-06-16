@@ -137,7 +137,7 @@ def create_model(current_dropout=None, current_neiron=None, current_window=None,
         model.add(Dropout(current_dropout))
         model.add(Dense(1, activation='sigmoid'))
     if model_number == 6:
-        model.add(InputLayer(shape=(current_window, num_features)))  # Добавьте входной слой
+        model.add(InputLayer(input_shape=(current_window, num_features)))  # Добавьте входной слой
         model.add(LSTM(current_neiron, return_sequences=True))
         model.add(BatchNormalization())
         model.add(Dropout(current_dropout))

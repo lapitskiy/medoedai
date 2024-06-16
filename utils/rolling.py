@@ -2,6 +2,10 @@ from utils.path import create_dataframe
 import concurrent.futures
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from sklearn.preprocessing import MinMaxScaler
+import numpy as np
+import joblib
+from utils.path import generate_uuid
+import os
 
 def run_multiprocessing_rolling_window(coin, period, date_df, window_size, threshold, numeric):
     with ProcessPoolExecutor() as executor:
@@ -26,7 +30,7 @@ def process_data(df, current_window, current_threshold, current_period, numeric)
     df_scaled = df.copy()
     df_scaled[numeric] = scaler.fit_transform(df_scaled[numeric])
     joblib.dump(scaler, f'temp/scaler/scaler_ct{current_threshold}_cw{current_window}_cp{current_period}.gz')
-    x_path, y_path, num_samples = create_rolling_windows(df, df_scaled, current_threshold, current_window)
+    x_path, y_path, num_samples = create_rolling_windows(df, df_scaled, current_threshold, current_window, numeric)
     try:
         with open(f'temp/roll_win/roll_path_ct{current_threshold}_cw{current_window}_cp{current_period}.txt', 'w') as f:
             f.write(x_path + '\n')
@@ -36,7 +40,7 @@ def process_data(df, current_window, current_threshold, current_period, numeric)
         print(f"Failed to write paths to file: {e}")
     return x_path, y_path
 
-def create_rolling_windows(df, df_scaled, current_threshold, input_window): # work BTC and TON and VOLUME
+def create_rolling_windows(df, df_scaled, current_threshold, input_window, numeric): # work BTC and TON and VOLUME
     output_window = input_window  # Предсказываем на столько же периодов вперед, сколько и входных данных
     num_samples = len(df) - input_window - output_window
     feature_columns = numeric

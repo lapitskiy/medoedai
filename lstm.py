@@ -1,42 +1,38 @@
-import warnings
-
-from utils.rolling import run_multiprocessing_rolling_window
-
-warnings.filterwarnings('ignore', category=FutureWarning)
 import os
+import warnings
+from utils.rolling import run_multiprocessing_rolling_window
+warnings.filterwarnings('ignore', category=FutureWarning)
 import shutil
 import stat
 import time
 import gc
 import pandas as pd
 import numpy as np
-
-
 from sklearn.metrics import precision_recall_curve
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
+
+tfGPU = False
+if not tfGPU:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import tensorflow as tf
-os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
 tf.get_logger().setLevel('ERROR')
-# Установка уровня журналирования среды выполнения TensorFlow
+if tfGPU:
+    os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+    os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+    tf.config.experimental.list_physical_devices('GPU')
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            print("Доступные GPU: ", gpus)
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError as e:
+            print("Произошла ошибка:", e)
 
-
-#os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
-tf.config.experimental.list_physical_devices('GPU')
-gpus = tf.config.list_physical_devices('GPU')
-
-if gpus:
-    try:
-        print("Доступные GPU: ", gpus)
-        # Пример: ограничение использования GPU памяти до 5GB на GPU
-        memory_limit = 5012  # Укажите здесь значение в мегабайтах
-        virtual_devices = [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=memory_limit) for _ in gpus]
-        for gpu in gpus:
-            tf.config.experimental.set_virtual_device_configuration(gpu, virtual_devices)
-    except RuntimeError as e:
-        print("Произошла ошибка:", e)
-#export TF_FORCE_GPU_ALLOW_GROWTH='true'
 
 from tensorflow.keras.models import Sequential
 import scikeras
@@ -51,11 +47,7 @@ from tensorflow.keras.callbacks import Callback
 from itertools import product
 from tensorflow.keras.layers import LSTM, Dense, Dropout, LeakyReLU, Input, Bidirectional, BatchNormalization, \
     Conv1D, Attention, GRU, InputLayer, MultiHeadAttention
-
-
 from tensorflow.keras import backend as K
-K.clear_session()
-
 import logging
 import psutil
 from utils.path import generate_uuid, path_exist, clear_folder, read_temp_path, save_grid_checkpoint, \
@@ -65,16 +57,10 @@ import matplotlib
 from utils.models_list import ModelLSTM_2Class, create_model
 import joblib
 matplotlib.use('Agg')
-# Проверка доступности GPU
 
-# Динамическое выделение памяти на GPU
-gc.collect()
-tf.keras.backend.clear_session()
-#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 CPU_COUNT = 3
 date_df = ['2024-03','2024-04','2024-05'] # 1m
 coin = 'TONUSDT'
-#layer = '75day-2layer250-Dropout02'
 numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
 checkpoint_file = 'temp/checkpoint/grid_search_checkpoint.txt'
 goLSTM = True

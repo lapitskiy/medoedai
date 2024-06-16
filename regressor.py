@@ -1,9 +1,7 @@
-import warnings
-
-from utils.rolling import run_multiprocessing_rolling_window
-
-warnings.filterwarnings('ignore', category=FutureWarning)
 import os
+import warnings
+from utils.rolling import run_multiprocessing_rolling_window
+warnings.filterwarnings('ignore', category=FutureWarning)
 import shutil
 import stat
 import time
@@ -14,22 +12,30 @@ from sklearn.metrics import precision_recall_curve
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
+
+tfGPU = False
+if not tfGPU:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import tensorflow as tf
-os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
 tf.get_logger().setLevel('ERROR')
-#os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
-tf.config.experimental.list_physical_devices('GPU')
-gpus = tf.config.list_physical_devices('GPU')
-if gpus:
-    try:
-        print("Доступные GPU: ", gpus)
-        # Пример: ограничение использования GPU памяти до 5GB на GPU
-        memory_limit = 5012  # Укажите здесь значение в мегабайтах
-        virtual_devices = [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=memory_limit) for _ in gpus]
-        for gpu in gpus:
-            tf.config.experimental.set_virtual_device_configuration(gpu, virtual_devices)
-    except RuntimeError as e:
-        print("Произошла ошибка:", e)
+if tfGPU:
+    os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+    os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+    tf.config.experimental.list_physical_devices('GPU')
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            print("Доступные GPU: ", gpus)
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError as e:
+            print("Произошла ошибка:", e)
+else:
+    config = tf.compat.v1.ConfigProto(device_count={'GPU': 0})
+    session = tf.compat.v1.Session(config=config)
+
 from tensorflow.keras.models import Sequential
 import scikeras
 from scikeras.wrappers import KerasRegressor
@@ -44,7 +50,6 @@ from itertools import product
 from tensorflow.keras.layers import LSTM, Dense, Dropout, LeakyReLU, Input, Bidirectional, BatchNormalization, \
     Conv1D, Attention, GRU, InputLayer, MultiHeadAttention
 from tensorflow.keras import backend as K
-K.clear_session()
 import logging
 import psutil
 from utils.path import generate_uuid, path_exist, clear_folder, read_temp_path, save_grid_checkpoint, \
@@ -54,12 +59,8 @@ import matplotlib
 from utils.models_list import ModelLSTM_2Class, create_model
 import joblib
 matplotlib.use('Agg')
-gc.collect()
-tf.keras.backend.clear_session()
 
 
-
-#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 CPU_COUNT = 3
 date_df = ['2024-03','2024-04','2024-05']
 coin = 'TONUSDT'
@@ -97,6 +98,9 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                 for threshold in thresholds[start_index_thr:]:
                     for dropout in dropouts[start_index_drop:]:
                         for neiron in neirons[start_index_neiron:]:
+                            tf.keras.backend.clear_session()
+                            gc.collect()
+                            K.clear_session()
                             save_grid_checkpoint(model_number=model_number, window_size=window_size, threshold=threshold,
                                                  period=period, dropout=dropout, neiron=neiron, file_path=checkpoint_file)
                             print(f"Progress saved to {checkpoint_file}")
