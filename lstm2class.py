@@ -69,7 +69,7 @@ matplotlib.use('Agg')
 gc.collect()
 tf.keras.backend.clear_session()
 #os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-CPU_COUNT = 1
+CPU_COUNT = 3
 date_df = ['2024-03','2024-04','2024-05'] # 1m
 coin = 'TONUSDT'
 #layer = '75day-2layer250-Dropout02'
@@ -163,7 +163,7 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                             try:
                                 # Проверяем, существует ли файл
                                 with open(file_name, 'r') as f:
-                                    existing_df = pd.read_csv(file_name)
+                                    existing_df = pd.read_csv(file_name, delimiter=';')
                                     # Проверяем, есть ли столбец 'threshold' в существующем файле
                                     if 'threshold' not in existing_df.columns or 'num_samples' not in existing_df.columns \
                                             or 'period' not in existing_df.columns or 'date_df' not in existing_df.columns \
