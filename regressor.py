@@ -1,6 +1,6 @@
 import os
 CPU_COUNT = 3
-tfGPU = False
+tfGPU = True
 if not tfGPU:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
@@ -19,28 +19,37 @@ from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 
 
-
+tfGPU = False
 import tensorflow as tf
-
 tf.get_logger().setLevel('ERROR')
 if tfGPU:
-
-    os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
-    os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
-    tf.config.experimental.list_physical_devices('GPU')
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
+        # Restrict TensorFlow to only use the first GPU
         try:
             print("Доступные GPU: ", gpus)
             for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
+                tf.config.set_visible_devices(gpu, 'GPU')
+                logical_gpus = tf.config.list_logical_devices('GPU')
+                print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
         except RuntimeError as e:
-            print("Произошла ошибка:", e)
+            # Visible devices must be set before GPUs have been initialized
+            print(e)
 else:
     tf.config.set_visible_devices([], 'GPU')
-    visible_devices = tf.config.get_visible_devices()
-    for device in visible_devices:
-        assert device.device_type != 'GPU'
+
+    #os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+    #os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+    # tf.config.experimental.list_physical_devices('GPU')
+    # gpus = tf.config.list_physical_devices('GPU')
+    # if gpus:
+    #     try:
+    #         print("Доступные GPU: ", gpus)
+    #         for gpu in gpus:
+    #             tf.config.experimental.set_memory_growth(gpu, True)
+    #     except RuntimeError as e:
+    #         print("Произошла ошибка:", e)
+
 
 from tensorflow.keras.models import Sequential
 import scikeras
@@ -66,7 +75,7 @@ from utils.models_list import ModelLSTM_2Class, create_model
 import joblib
 matplotlib.use('Agg')
 
-date_df = ['2024-03',]
+date_df = ['2024-03','2024-04','2024-05',]
 coin = 'TONUSDT'
 numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
 checkpoint_file = 'temp/checkpoint/grid_search_checkpoint.txt'
@@ -81,7 +90,7 @@ metric_thresholds = {
 }
 def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
     model_count = ModelLSTM_2Class.model_count
-    start_index_model = 5
+    start_index_model = 6
     start_index_win = 0
     start_index_thr = 0
     start_index_per = 0

@@ -98,7 +98,6 @@ class ModelLSTM_2Class:
 
 def create_model(current_dropout=None, current_neiron=None, current_window=None, num_features=None, model_number=None):
     model = Sequential()
-    print(f'model_number {model_number}')
     if model_number == 1:
         model.add(Input(shape=(current_window, num_features)))
         model.add(LSTM(current_neiron, return_sequences=True))
