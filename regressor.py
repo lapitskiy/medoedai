@@ -1,5 +1,5 @@
 import os
-CPU_COUNT = 3
+CPU_COUNT = 4
 tfGPU = True
 if not tfGPU:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
