@@ -1,11 +1,14 @@
+from utils.env import config
+from utils.rolling import run_multiprocessing_rolling_window
+from utils.path import generate_uuid, path_exist, clear_folder, read_temp_path, save_grid_checkpoint, \
+    file_exist
+from utils.models_list import ModelLSTM_2Class, create_model
+
 import os
-CPU_COUNT = 4
-tfGPU = True
-if not tfGPU:
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+#if not tfGPU:
+#    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import warnings
-from utils.rolling import run_multiprocessing_rolling_window
 warnings.filterwarnings('ignore', category=FutureWarning)
 import shutil
 import stat
@@ -65,37 +68,21 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout, LeakyReLU, Input, Bidi
 from tensorflow.keras import backend as K
 import logging
 import psutil
-from utils.path import generate_uuid, path_exist, clear_folder, read_temp_path, save_grid_checkpoint, \
-    file_exist
 import matplotlib.pyplot as plt
 import matplotlib
-from utils.models_list import ModelLSTM_2Class, create_model
 import joblib
 matplotlib.use('Agg')
 
-date_df = ['2024-03','2024-04','2024-05',]
-coin = 'TONUSDT'
-numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
-checkpoint_file = 'temp/checkpoint/grid_search_checkpoint.txt'
-goKeras = True
-
-metric_thresholds = {
-    'val_accuracy': 0.60,
-    'val_precision': 0.60,
-    'val_recall': 0.60,
-    'val_f1_score': 0.10,
-    'val_auc': 0.60
-}
 def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
-    model_count = ModelLSTM_2Class.model_count
+    model_count = config.model_count
     start_index_model = 6
     start_index_win = 0
     start_index_thr = 0
     start_index_per = 0
     start_index_drop = 0
     start_index_neiron = 0
-    if file_exist(checkpoint_file):
-            list_ = read_temp_path(f'{checkpoint_file}', 6)
+    if file_exist(config.checkpoint_file):
+            list_ = read_temp_path(f'{config.checkpoint_file}', 6)
             # model_number, window_size, threshold, period, dropout, neiron
             start_index_model = int(list_[0])
             start_index_win = windows_size.index(int(list_[1]))
@@ -120,7 +107,7 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                             x_path = list_[0]
                             y_path = list_[1]
                             num_samples = list_[2]
-                            num_features = len(numeric)
+                            num_features = len(config.numeric)
                             x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(int(num_samples), window_size, num_features))
                             y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples),))
                             # Сначала разделите данные на обучающий+валидационный и тестовый наборы
@@ -143,17 +130,17 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
 
 
                             grid = GridSearchCV(estimator=model, param_grid=param_grid, scoring='neg_mean_squared_error', cv=3,
-                                                    verbose=2, n_jobs=CPU_COUNT)
+                                                    verbose=2, n_jobs=config.CPU_COUNT)
 
                             grid.fit(x_train, y_train)
                             tf.keras.backend.clear_session()
 
                             iteration_end_time = time.perf_counter()
                             iteration_time = iteration_end_time - iteration_start_time
-                            print(f'Iteration_time {iteration_time}; CPU use {CPU_COUNT}')
+                            print(f'Iteration_time {iteration_time}s; CPU use {config.CPU_COUNT}')
                             # Результаты поиска
                             print("Лучший результат: %f используя %s" % (grid.best_score_, grid.best_params_))
-                            file_name = f'temp/best_params/best_params_{coin}.csv'
+                            file_name = f'temp/best_params/best_params_{config.coin}.csv'
                             best_score = grid.best_score_
                             best_params = grid.best_params_
                             results_df = pd.DataFrame([best_params])
@@ -162,7 +149,7 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                             results_df['period'] = period
                             date_str = ','.join(date_df)
                             results_df['date_df'] = date_str
-                            results_df['coin'] = coin
+                            results_df['coin'] = config.coin
                             results_df['time'] = f'time {iteration_time:.2f} - cpu {CPU_COUNT}'
                             results_df['best_score'] = best_score
                             try:
@@ -183,14 +170,14 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                                 results_df.to_csv(file_name, mode='w', header=True, index=False)
     # Если завершено успешно, удаляем файл чекпойнта
     shutil.move(file_name, f'keras_model/best_params/{generate_uuid()}.csv')
-    if os.path.exists(checkpoint_file):
-        os.remove(checkpoint_file)
+    if os.path.exists(config.checkpoint_file):
+        os.remove(config.checkpoint_file)
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-    tf.config.threading.set_intra_op_parallelism_threads(CPU_COUNT)
-    tf.config.threading.set_inter_op_parallelism_threads(CPU_COUNT)
+    tf.config.threading.set_intra_op_parallelism_threads(config.CPU_COUNT)
+    tf.config.threading.set_inter_op_parallelism_threads(config.CPU_COUNT)
 
     tf.get_logger().setLevel('ERROR')
     log_file = os.path.expanduser('~/training.log')
@@ -200,13 +187,6 @@ if __name__ == '__main__':
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
-
-    period = ["5m",]
-    window_size = [3, 5, 8, 13, 21, 34]
-    threshold = [0.005, 0.007, 0.01, 0.02]
-    neiron = [50, 100, 150, 200]
-    dropout = [0.10, 0.15, 0.20, 0.25, 0.30]
-    model_count = ModelLSTM_2Class.model_count
 
     # создание данных для ии, которые могут загружаться повторно
     path_exist('temp/')
@@ -221,10 +201,10 @@ if __name__ == '__main__':
     clear_folder('temp/mmap/')
 
 
-    run_multiprocessing_rolling_window(coin=coin, period=period, date_df=date_df, window_size=window_size,
-                                       threshold=threshold, numeric=numeric)
+    run_multiprocessing_rolling_window(coin=config.coin, period=config.period, date_df=config.date_df, window_size=config.window_size,
+                                       threshold=config.threshold, numeric=config.numeric)
     #goKerasRegress
     if goKeras:
-        goKerasRegressor(windows_size=window_size, thresholds=threshold, periods=period, dropouts=dropout, neirons=neiron)
+        goKerasRegressor(windows_size=config.window_size, thresholds=config.threshold, periods=config.period, dropouts=config.dropout, neirons=config.neiron)
     else:
         print(f'goKeras False')

@@ -4,6 +4,7 @@ class Settings():
     CPU_COUNT = 4
     tfGPU = True
     goLSTM = True
+    goKeras = True
     date_df = ['2024-03', '2024-04', '2024-05', ]
     coin = 'TONUSDT'
     numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
