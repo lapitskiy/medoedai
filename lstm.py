@@ -1,6 +1,11 @@
+from utils.env import config
+from utils.rolling import run_multiprocessing_rolling_window
+from utils.path import generate_uuid, path_exist, clear_folder, read_temp_path, save_grid_checkpoint, \
+    file_exist
+from utils.models_list import create_model
+
 import os
 import warnings
-from utils.rolling import run_multiprocessing_rolling_window
 warnings.filterwarnings('ignore', category=FutureWarning)
 import shutil
 import stat
@@ -13,25 +18,35 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 
-tfGPU = False
-if not tfGPU:
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
 import tensorflow as tf
-
 tf.get_logger().setLevel('ERROR')
-if tfGPU:
-    os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
-    os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
-    tf.config.experimental.list_physical_devices('GPU')
+if config.tfGPU:
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
+        # Restrict TensorFlow to only use the first GPU
         try:
             print("Доступные GPU: ", gpus)
             for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
+                tf.config.set_visible_devices(gpu, 'GPU')
+                logical_gpus = tf.config.list_logical_devices('GPU')
+                print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
         except RuntimeError as e:
-            print("Произошла ошибка:", e)
+            # Visible devices must be set before GPUs have been initialized
+            print(e)
+else:
+    tf.config.set_visible_devices([], 'GPU')
+
+    #os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+    #os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+    # tf.config.experimental.list_physical_devices('GPU')
+    # gpus = tf.config.list_physical_devices('GPU')
+    # if gpus:
+    #     try:
+    #         print("Доступные GPU: ", gpus)
+    #         for gpu in gpus:
+    #             tf.config.experimental.set_memory_growth(gpu, True)
+    #     except RuntimeError as e:
+    #         print("Произошла ошибка:", e)
 
 
 from tensorflow.keras.models import Sequential
@@ -50,28 +65,12 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout, LeakyReLU, Input, Bidi
 from tensorflow.keras import backend as K
 import logging
 import psutil
-from utils.path import generate_uuid, path_exist, clear_folder, read_temp_path, save_grid_checkpoint, \
-    file_exist
 import matplotlib.pyplot as plt
 import matplotlib
-from utils.models_list import ModelLSTM_2Class, create_model
+
 import joblib
 matplotlib.use('Agg')
 
-CPU_COUNT = 3
-date_df = ['2024-03','2024-04','2024-05'] # 1m
-coin = 'TONUSDT'
-numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
-checkpoint_file = 'temp/checkpoint/grid_search_checkpoint.txt'
-goLSTM = True
-
-metric_thresholds = {
-    'val_accuracy': 0.60,
-    'val_precision': 0.60,
-    'val_recall': 0.60,
-    'val_f1_score': 0.10,
-    'val_auc': 0.60
-}
 class ModelCheckpointWithMetricThreshold(Callback):
     def __init__(self, thresholds, filedata, directory_save, current_threshold, current_window, model, verbose=1):
         super(ModelCheckpointWithMetricThreshold, self).__init__()
@@ -378,7 +377,6 @@ if __name__ == '__main__':
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
-    period = ["5m",]
     window_size = [3, 5, 8, 13, 21, 34]
     threshold = [0.005, 0.007, 0.01, 0.02]
     neiron = [50, 100, 150, 200]
@@ -396,10 +394,10 @@ if __name__ == '__main__':
     clear_folder('temp/scaler/')
     clear_folder('temp/mmap/')
 
-    run_multiprocessing_rolling_window(coin=coin, period=period, date_df=date_df, window_size=window_size,
-                                       threshold=threshold, numeric=numeric)
+    run_multiprocessing_rolling_window(coin=config.coin, period=config.period, date_df=config.date_df, window_size=config.window_size,
+                                       threshold=config.threshold, numeric=config.numeric)
     #goLSTM
-    if goLSTM:
+    if config.goLSTM:
         all_task = []
         for filename in os.listdir(f'keras_model/best_params/'):
             if filename.endswith('.csv'):
