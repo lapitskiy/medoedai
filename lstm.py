@@ -377,12 +377,6 @@ if __name__ == '__main__':
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
-    window_size = [3, 5, 8, 13, 21, 34]
-    threshold = [0.005, 0.007, 0.01, 0.02]
-    neiron = [50, 100, 150, 200]
-    dropout = [0.10, 0.15, 0.20, 0.25, 0.30]
-    model_count = ModelLSTM_2Class.model_count
-
     # создание данных для ии, которые могут загружаться повторно
     path_exist('temp/')
     path_exist('temp/checkpoint/')
