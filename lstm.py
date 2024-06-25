@@ -71,58 +71,6 @@ import matplotlib
 import joblib
 matplotlib.use('Agg')
 
-class ModelCheckpointWithMetricThreshold(Callback):
-    def __init__(self, thresholds, filedata, directory_save, current_threshold, current_window, model, verbose=1):
-        super(ModelCheckpointWithMetricThreshold, self).__init__()
-        self.thresholds = thresholds  # Словарь с пороговыми значениями для метрик
-        self.best_metrics = {key: 0 for key in thresholds.keys()}  # Лучшие метрики
-        self.verbose = verbose
-        self.filedata = filedata
-        self.directory_save = directory_save
-        self.current_threshold = current_threshold
-        self.current_window = current_window
-        self.mymodel = model
-
-    def on_epoch_end(self, epoch, logs=None):
-        current_metrics = {key: logs.get(key) for key in self.thresholds.keys()}
-        if all(current_metrics[key] >= self.thresholds[key] for key in self.thresholds.keys()):
-            improved = False
-            # Проверяем, улучшилась ли хотя бы одна метрика
-            for key in self.thresholds.keys():
-                if current_metrics[key] > self.best_metrics[key]:
-                    self.best_metrics[key] = current_metrics[key]
-                    improved = True
-            if improved:
-                if self.verbose > 0:
-                    print("\nMetrics at the end of epoch {}:".format(epoch + 1))
-                    print(f"Test Accuracy: {logs.get('val_accuracy') * 100:.2f}%")
-                    print(f"Test Precision: {logs.get('val_precision'):.2f}")
-                    print(f"Test Recall: {logs.get('val_recall'):.2f}")
-                    print(f"Test AUC: {logs.get('val_auc'):.2f}")
-                    print(f"Test F1-Score: {logs.get('val_f1_score'):.2f}")
-                self.filedata.update(
-                    {
-                        "Test Accuracy": f"{logs.get('val_accuracy') * 100:.2f}%",
-                        "Test Precision": f"{logs.get('val_precision'):.2f}",
-                        "Test Recall": f"{logs.get('val_recall'):.2f}",
-                        "Test AUC": f"{logs.get('val_auc'):.2f}",
-                        "Test F1-Score": f"{logs.get('val_f1_score'):.2f}"
-                    }
-                )
-                path_exist(self.directory_save)
-                with open(f"{self.directory_save}/results.txt", "w") as file:
-                    for key, value in self.filedata.items():
-                        file.write(f"{key}={value}\n")
-                source_path = f'temp/scaler/scaler_ct-{self.current_threshold}_cw-{self.current_window}.gz'
-                destination_path = f'{self.directory_save}/scaler.gz'
-                try:
-                    shutil.copy(source_path, destination_path)
-                except Exception as e:
-                    print(f'exc {e}')
-                self.mymodel.save(f'{self.directory_save}/model.keras', overwrite=True)
-                self.mymodel.summary()
-                print(f'Metrics improved. Saving model')
-
 def goLSTM(task):
     list_ = read_temp_path(f'temp/roll_win/roll_path_ct-_cw-{current_window}_cp{period}.txt')
     #x_path, y_path, num_samples
@@ -401,12 +349,12 @@ if __name__ == '__main__':
                 # Здесь можно выполнить операции с файлом
                 data = pd.read_csv(f'{filepath}')
                 for i in range(len(data)):
-                    date_df_check = data.at[i, 'date_df'].split(',')
+                    date_df_check = data.at[i, 'date_df'].split(';')
                     if date_df_check != date_df:
                         print(f'Ошибка входных данных по дням свечей \ndate_df {date_df}\n date ib csv {date_df_check}')
                         exit()
                     row_slice = data.iloc[i]
-
+                    print(f'row slice {row_slice}')
                     # Сборка задачи с именами переменных и их значениями
                     task = tuple((column_name, value) for column_name, value in row_slice.items())
                     all_tasks.append(task)
@@ -414,10 +362,9 @@ if __name__ == '__main__':
         total_iterations = len(all_tasks)
         print(f'Total number of iterations: {total_iterations}')
 
-        max_workers = min(1, len(all_tasks)) #max_workers=max_workers
+        max_workers = min(config.CPU_COUNT, len(all_tasks)) #max_workers=max_workers
 
         start_time = time.perf_counter()
-
 
         # Использование ProcessPoolExecutor для параллельного выполнения
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
