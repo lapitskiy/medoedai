@@ -1,9 +1,6 @@
 import os
-CPU_COUNT = 4
+CPU_COUNT = 3
 tfGPU = True
-if not tfGPU:
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
 import warnings
 from utils.rolling import run_multiprocessing_rolling_window
 warnings.filterwarnings('ignore', category=FutureWarning)
@@ -18,16 +15,16 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 
-
-tfGPU = False
 import tensorflow as tf
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+tf.config.threading.set_intra_op_parallelism_threads(CPU_COUNT)
+tf.config.threading.set_inter_op_parallelism_threads(CPU_COUNT)
 tf.get_logger().setLevel('ERROR')
 if tfGPU:
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
         # Restrict TensorFlow to only use the first GPU
         try:
-            print("Доступные GPU: ", gpus)
             for gpu in gpus:
                 tf.config.set_visible_devices(gpu, 'GPU')
                 logical_gpus = tf.config.list_logical_devices('GPU')
@@ -176,13 +173,13 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                                             or 'period' not in existing_df.columns or 'date_df' not in existing_df.columns \
                                             or 'coin' not in existing_df.columns or 'time' not in existing_df.columns:
                                         # Если нет, добавляем столбец с заголовком
-                                        results_df.to_csv(file_name, mode='a', header=True, index=False)
+                                        results_df.to_csv(file_name, mode='a', header=True, index=False, sep=';')
                                     else:
                                         # Если есть, добавляем данные без заголовка
-                                        results_df.to_csv(file_name, mode='a', header=False, index=False)
+                                        results_df.to_csv(file_name, mode='a', header=False, index=False, sep=';')
                             except FileNotFoundError:
                                 # Если файл не существует, создаем его и записываем данные с заголовком
-                                results_df.to_csv(file_name, mode='w', header=True, index=False)
+                                results_df.to_csv(file_name, mode='w', header=True, index=False, sep=';')
     # Если завершено успешно, удаляем файл чекпойнта
     shutil.move(file_name, f'keras_model/best_params/{generate_uuid()}.csv')
     if os.path.exists(checkpoint_file):
@@ -190,10 +187,6 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-    tf.config.threading.set_intra_op_parallelism_threads(CPU_COUNT)
-    tf.config.threading.set_inter_op_parallelism_threads(CPU_COUNT)
-
     tf.get_logger().setLevel('ERROR')
     log_file = os.path.expanduser('~/training.log')
 
