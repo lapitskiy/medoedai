@@ -72,10 +72,11 @@ import joblib
 matplotlib.use('Agg')
 
 def goLSTM(task):
-    list_ = read_temp_path(f'temp/roll_win/roll_path_ct-_cw-{current_window}_cp{period}.txt')
-    #x_path, y_path, num_samples
-    num_features = len(numeric)
-
+    list_ = read_temp_path(f'temp/roll_win/roll_path_ct{threshold}_cw{window_size}_cp{period}.txt', 3)
+    x_path = list_[0]
+    y_path = list_[1]
+    num_samples = list_[2]
+    num_features = len(config.numeric)
 
     x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(int(num_samples), current_window, num_features))
     y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples),))
@@ -85,15 +86,14 @@ def goLSTM(task):
     class_distribution = dict(zip(unique, counts))
     print(class_distribution)
 
-
     # Сначала разделите данные на обучающий+валидационный и тестовый наборы
-    x_train_val, x_test, y_train_val, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
+    x_train_val, x_test, y_train_val, y_test = train_test_split(x, y, test_size=0.2,
+                                                                random_state=42)
 
     # Затем разделите обучающий+валидационный набор на обучающий и валидационный наборы
     x_train, x_val, y_train, y_val = train_test_split(x_train_val, y_train_val, test_size=0.25,
                                                       random_state=42)  # 0.25 x 0.8 = 0.2
-
-    # После разделения на train и test
+     # После разделения на train и test
     print("Распределение классов в обучающем наборе:")
     unique_train, counts_train = np.unique(y_train_val, return_counts=True)
     print(dict(zip(unique_train, counts_train)))
@@ -106,11 +106,8 @@ def goLSTM(task):
     # Создание модели LSTM
     print(f'cur model {current_model}')
 
-    model = ModelLSTM_2Class(model_number=current_model, current_window=current_window, num_features=num_features,
-                             current_neiron=current_neiron, current_dropout=current_dropout)
-    model.build_model()
-    model = model.model
-
+    model = create_model(current_dropout=current_dropout, current_neiron=current_neiron, current_window=current_window,
+                         num_features=num_features, model_number=current_model, type='lstm')
     optimizer = Adam(learning_rate=0.001)
     model.compile(optimizer=optimizer, loss='binary_crossentropy',
                   metrics=[
@@ -125,7 +122,6 @@ def goLSTM(task):
     class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
     class_weights_dict = dict(enumerate(class_weights))
 
-
     data = {
         "batch_sizes": current_batch_size,
         "epoch": current_epochs,
@@ -136,11 +132,10 @@ def goLSTM(task):
         "current_dropout": f"{current_dropout}",
     }
 
-    directory_save = f'keras_model/lstm/{coin}/{current_period}/{current_window}/{current_threshold}/{current_neiron}/{current_dropout}/' \
-                     f'{current_epochs}/{current_batch_size}/'
+    config.uuid = generate_uuid()
+    config.directory_save = f'keras_model/lstm/{coin}/{current_period}/'
 
-    checkpoint = ModelCheckpointWithMetricThreshold(thresholds=metric_thresholds, filedata=data, directory_save=directory_save, current_threshold=current_threshold,
-                                                    current_window=current_window, model=model)
+    checkpoint = ModelCheckpointWithMetricThreshold(filedata=data, model=model)
     early_stopping = EarlyStopping(monitor='val_loss', patience=10, verbose=1, restore_best_weights=True)
 
     history = model.fit(x_train, y_train, batch_size=current_batch_size, epochs=current_epochs, validation_data=(x_val, y_val), class_weight=class_weights_dict, callbacks=[checkpoint, early_stopping])
@@ -180,7 +175,9 @@ def goLSTM(task):
     print("Confusion Matrix:\n", conf_matrx_test)
 
     # Подготовка данных для записи в файл
-    data = {
+    data2 = {
+        "uuid": config.uuid,
+        "coin": config.coin,
         "Test Accuracy": f"{scores[1] * 100:.2f}%",
         "Test Precision": f"{scores[2]:.2f}",
         "Test Recall": f"{scores[3]:.2f}",
@@ -197,41 +194,48 @@ def goLSTM(task):
         "current_neiron": f"{current_neiron}",
         "current_dropout": f"{current_dropout}",
         "class_distribution": class_distribution,
+        "date_df": ','.join(date_df)
     }
 
-    if (scores[1] * 100 >= 75 and
-            scores[2] >= 0.75 and
-            scores[3] >= 0.75 and
-            scores[4] >= 0.75 and
+    data.update(data2)
+    if (scores[1] * 100 >= 65 and
+            scores[2] >= 0.65 and
+            scores[3] >= 0.65 and
+            scores[4] >= 0.65 and
             scores[-1] >= 0.10):
 
-        directory_save = f'keras_model/lstm/{coin}/{current_period}/{current_window}/{current_threshold}/{current_neiron}/{current_dropout}/'
-        if not os.path.exists(directory_save):
-            os.makedirs(directory_save)
-
+        result_filename = f'keras_model/lstm/{config.coin}/result.csv'
+        path_exist(f'keras_model/lstm/{config.coin}/')
+        path_exist(config.directory_save)
+        path_exist(config.directory_save+config.uuid)
         # Запись данных в файл
-        with open(f"{directory_save}/results.txt", "w") as file:
-            for key, value in data.items():
-                file.write(f"{key}={value}\n")
+        results_df = pd.DataFrame([data])
 
-        joblib.dump(scaler, f'{directory_save}/{current_period}.gz')
+        try:
+            # Проверяем, существует ли файл
+            with open(result_filename, 'r') as f:
+                existing_df = pd.read_csv(result_filename, delimiter=';')
+                # Проверяем, есть ли столбец 'threshold' в существующем файле
+                if 'threshold' not in existing_df.columns or 'period' not in existing_df.columns \
+                        or 'date_df' not in existing_df.columns or 'coin' not in existing_df.columns:
+                    # Если нет, добавляем столбец с заголовком
+                    results_df.to_csv(result_filename, mode='a', header=True, index=False, sep=';')
+                else:
+                    # Если есть, добавляем данные без заголовка
+                    results_df.to_csv(file_name, mode='a', header=False, index=False, sep=';')
+        except FileNotFoundError:
+            # Если файл не существует, создаем его и записываем данные с заголовком
+            results_df.to_csv(file_name, mode='w', header=True, index=False, sep=';')
+
+        directory_save = f'keras_model/lstm/{coin}/{current_period}/'
+        directory_uuid = directory_save + data['uuid']
+        result_filename = f'keras_model/lstm/result.csv'
+
+        joblib.dump(scaler, f"{directory_uuid}/{config.uuid}.gz")
         # Сохранение модели
-        model.save(f'{directory_save}/{current_period}.h5')
+        model.save(f"{directory_uuid}/{config.uuid}.h5")
         # Вывод структуры модели
         model.summary()
-    else:
-        if (scores[1] * 100 >= 60 and
-                scores[2] >= 0.60 and
-                scores[3] >= 0.60 and
-                scores[4] >= 0.60 and
-                scores[-1] >= 0.10):
-            directory_save = f'keras_model/lstm/NotGood/{coin}/'
-            if not os.path.exists(directory_save):
-                os.makedirs(directory_save)
-            # Запись данных в файл
-            with open(f"{directory_save}/{generate_uuid()}.txt", "w") as file:
-                for key, value in data.items():
-                    file.write(f"{key}={value}\n")
     del x_train, x_val, y_train, y_val, x, y
     return 'End current epoch'
 
@@ -259,15 +263,15 @@ def f1_score(y_true, y_pred):
     return K.mean(f1)
 
 class ModelCheckpointWithMetricThreshold(Callback):
-    def __init__(self, thresholds, filedata, directory_save, current_threshold, current_window, model, verbose=1):
+    def __init__(self, filedata, model, verbose=1):
         super(ModelCheckpointWithMetricThreshold, self).__init__()
-        self.thresholds = thresholds  # Словарь с пороговыми значениями для метрик
+        self.thresholds = config.metric_thresholds  # Словарь с пороговыми значениями для метрик
         self.best_metrics = {key: 0 for key in thresholds.keys()}  # Лучшие метрики
         self.verbose = verbose
         self.filedata = filedata
-        self.directory_save = directory_save
-        self.current_threshold = current_threshold
-        self.current_window = current_window
+        self.directory_save = config.directory_save
+        self.current_threshold = filedata['current_threshold']
+        self.current_window = filedata['current_window']
         self.mymodel = model
 
     def on_epoch_end(self, epoch, logs=None):
@@ -297,7 +301,7 @@ class ModelCheckpointWithMetricThreshold(Callback):
                     }
                 )
                 path_exist(self.directory_save)
-                with open(f"{self.directory_save}/results.txt", "w") as file:
+                with open(f"{config.directory_save + config.uuid}/callback.txt", "w") as file:
                     for key, value in self.filedata.items():
                         file.write(f"{key}={value}\n")
                 source_path = f'temp/scaler/scaler_ct-{self.current_threshold}_cw-{self.current_window}.gz'
