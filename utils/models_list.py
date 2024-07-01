@@ -96,7 +96,7 @@ class ModelLSTM_2Class:
 
 ### Grid model
 
-def create_model(current_dropout=None, current_neiron=None, current_window=None, num_features=None, model_number=None):
+def create_model(current_dropout=None, current_neiron=None, current_window=None, num_features=None, model_number=None, type=None):
     model = Sequential()
     if model_number == 1:
         model.add(Input(shape=(current_window, num_features)))
@@ -179,6 +179,8 @@ def create_model(current_dropout=None, current_neiron=None, current_window=None,
     # model.add(LSTM(lstm_neurons))
     # model.add(Dense(1))
     # model.compile(optimizer=optimizer, loss='mse')
+    if type == 'lstm':
+        return model
     optimizer = Adam(learning_rate=0.001)
     model.compile(optimizer=optimizer, loss='binary_crossentropy')
     return model
