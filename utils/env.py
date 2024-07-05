@@ -1,7 +1,7 @@
 from utils.models_list import ModelLSTM_2Class
 
 class Settings():
-    CPU_COUNT = 4
+    CPU_COUNT = 2
     tfGPU = True
     goLSTM = True
     goKeras = True

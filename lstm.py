@@ -317,8 +317,8 @@ class ModelCheckpointWithMetricThreshold(Callback):
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-    tf.config.threading.set_intra_op_parallelism_threads(CPU_COUNT)
-    tf.config.threading.set_inter_op_parallelism_threads(CPU_COUNT)
+    tf.config.threading.set_intra_op_parallelism_threads(config.CPU_COUNT)
+    tf.config.threading.set_inter_op_parallelism_threads(config.CPU_COUNT)
 
     tf.get_logger().setLevel('ERROR')
     log_file = os.path.expanduser('~/training.log')
@@ -352,16 +352,27 @@ if __name__ == '__main__':
                 uuid_name, extension = os.path.splitext(filename)
                 # Здесь можно выполнить операции с файлом
                 data = pd.read_csv(f'{filepath}')
+                required_fields = data.columns.tolist()
                 for i in range(len(data)):
                     date_df_check = data.at[i, 'date_df'].split(';')
                     if date_df_check != date_df:
                         print(f'Ошибка входных данных по дням свечей \ndate_df {date_df}\n date ib csv {date_df_check}')
                         exit()
-                    row_slice = data.iloc[i]
-                    print(f'row slice {row_slice}')
-                    # Сборка задачи с именами переменных и их значениями
-                    task = tuple((column_name, value) for column_name, value in row_slice.items())
-                    all_tasks.append(task)
+                    # Проверка наличия всех необходимых полей
+                    if all(field in data.columns for field in required_fields):
+                        row_slice = data.iloc[i]
+
+                        # Проверка наличия значений для всех необходимых полей в строке
+                        if all(pd.notna(row_slice[field]) for field in required_fields):
+                            print(f'row slice {row_slice}')
+
+                            # Сборка задачи с именами переменных и их значениями
+                            task = tuple((column_name, value) for column_name, value in row_slice.items())
+                            all_tasks.append(task)
+                        else:
+                            print(f'Skipping row {i} in file {filename} due to missing values in required fields.')
+                    else:
+                        print(f'File {filename} does not contain all required fields. Skipping.')
 
         total_iterations = len(all_tasks)
         print(f'Total number of iterations: {total_iterations}')

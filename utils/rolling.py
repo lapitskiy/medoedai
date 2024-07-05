@@ -8,7 +8,7 @@ from utils.path import generate_uuid
 import os
 
 def run_multiprocessing_rolling_window(coin, period, date_df, window_size, threshold, numeric):
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(max_workers=2) as executor:
         futures = []
         for current_period in period:
             df = create_dataframe(coin=coin, period=current_period, data=date_df)

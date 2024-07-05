@@ -23,7 +23,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 
 import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
-if tfGPU:
+if config.tfGPU:
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
         # Restrict TensorFlow to only use the first GPU
@@ -75,7 +75,7 @@ matplotlib.use('Agg')
 
 def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
     model_count = config.model_count
-    start_index_model = 6
+    start_index_model = 1
     start_index_win = 0
     start_index_thr = 0
     start_index_per = 0
@@ -100,8 +100,8 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                             gc.collect()
                             K.clear_session()
                             save_grid_checkpoint(model_number=model_number, window_size=window_size, threshold=threshold,
-                                                 period=period, dropout=dropout, neiron=neiron, file_path=checkpoint_file)
-                            print(f"Progress saved to {checkpoint_file}")
+                                                 period=period, dropout=dropout, neiron=neiron, file_path=config.checkpoint_file)
+                            print(f"Progress saved to {config.checkpoint_file}")
                             iteration_start_time = time.perf_counter()
                             list_ = read_temp_path(f'temp/roll_win/roll_path_ct{threshold}_cw{window_size}_cp{period}.txt', 3)
                             x_path = list_[0]
@@ -147,10 +147,10 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                             results_df['threshold'] = threshold
                             results_df['num_samples'] = num_samples
                             results_df['period'] = period
-                            date_str = ','.join(date_df)
+                            date_str = ','.join(config.date_df)
                             results_df['date_df'] = date_str
                             results_df['coin'] = config.coin
-                            results_df['time'] = f'time {iteration_time:.2f} - cpu {CPU_COUNT}'
+                            results_df['time'] = f'time {iteration_time:.2f} - cpu {config.CPU_COUNT}'
                             results_df['best_score'] = best_score
                             try:
                                 # Проверяем, существует ли файл
@@ -204,7 +204,7 @@ if __name__ == '__main__':
     run_multiprocessing_rolling_window(coin=config.coin, period=config.period, date_df=config.date_df, window_size=config.window_size,
                                        threshold=config.threshold, numeric=config.numeric)
     #goKerasRegress
-    if goKeras:
+    if config.goKeras:
         goKerasRegressor(windows_size=config.window_size, thresholds=config.threshold, periods=config.period, dropouts=config.dropout, neirons=config.neiron)
     else:
         print(f'goKeras False')
