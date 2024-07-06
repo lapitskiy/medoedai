@@ -1,6 +1,6 @@
 from utils.models_list import ModelLSTM_2Class
 
-class Settings():
+class SettingsRgr():
     CPU_COUNT = 2
     tfGPU = True
     goLSTM = True
@@ -28,4 +28,19 @@ class Settings():
     def __init__(self):
         pass
 
-config = Settings()
+class SettingsDqn():
+    CPU_COUNT = 4
+    goDQN = True
+    ENV_NAME = "CryptoTradingEnv-v0"
+
+    GAMMA = 0.95
+    LEARNING_RATE = 0.001
+    MEMORY_SIZE = 1000000
+    BATCH_SIZE = 20
+    EXPLORATION_MAX = 1.0
+    EXPLORATION_MIN = 0.01
+    EXPLORATION_DECAY = 0.995
+
+config = SettingsRgr()
+lstmcfg = SettingsRgr()
+dqncfg = SettingsDqn()

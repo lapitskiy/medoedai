@@ -1,3 +1,5 @@
+from utils.env import dqncfg
+
 from tensorflow.keras.models import load_model
 
 import numpy as np
@@ -7,17 +9,9 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout
 from tensorflow.keras.optimizers import Adam
 from collections import deque
-import gym  # Предполагаем, что у вас есть среда gym для торговли криптовалютой
-
-# Параметры среды и обучения
-ENV_NAME = "CryptoTradingEnv"  # Название среды, подразумевается, что вы создали или нашли подходящую
-GAMMA = 0.95
-LEARNING_RATE = 0.001
-MEMORY_SIZE = 1000000
-BATCH_SIZE = 20
-EXPLORATION_MAX = 1.0
-EXPLORATION_MIN = 0.01
-EXPLORATION_DECAY = 0.995
+import gym
+from gym import spaces
+from gym.utils import seeding
 
 
 class DQNSolver:
@@ -62,10 +56,11 @@ class DQNSolver:
 
 
 if __name__ == "__main__":
-    env = gym.make(ENV_NAME)
+
+    env = CryptoTradingEnv(df)
     observation_space = env.observation_space.shape[0]
     action_space = env.action_space.n
-    load_previous_model = True  # Установите True, чтобы загрузить существующую модель
+    load_previous_model = False  # Установите True, чтобы загрузить существующую модель
     dqn_solver = DQNSolver(observation_space, action_space, load=load_previous_model)
 
     episodes = 1000
