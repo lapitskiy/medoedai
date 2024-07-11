@@ -195,6 +195,7 @@ if __name__ == '__main__':
 
     # создание данных для ии, которые могут загружаться повторно
     path_exist('temp/')
+    path_exist(f'temp/{config.ii_path}/')
     path_exist('temp/checkpoint/')
     path_exist('temp/best_params/')
     path_exist('temp/roll_win/')
