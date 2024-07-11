@@ -1,4 +1,4 @@
-from utils.env import config
+from utils.env import lstmcfg
 from utils.rolling import run_multiprocessing_rolling_window
 from utils.path import generate_uuid, path_exist, clear_folder, read_temp_path, save_grid_checkpoint, \
     file_exist
@@ -20,7 +20,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 
 import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
-if config.tfGPU:
+if lstmcfg.tfGPU:
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
         # Restrict TensorFlow to only use the first GPU
@@ -317,8 +317,8 @@ class ModelCheckpointWithMetricThreshold(Callback):
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-    tf.config.threading.set_intra_op_parallelism_threads(config.CPU_COUNT)
-    tf.config.threading.set_inter_op_parallelism_threads(config.CPU_COUNT)
+    tf.config.threading.set_intra_op_parallelism_threads(lstmcfg.CPU_COUNT)
+    tf.config.threading.set_inter_op_parallelism_threads(lstmcfg.CPU_COUNT)
 
     tf.get_logger().setLevel('ERROR')
     log_file = os.path.expanduser('~/training.log')
@@ -331,21 +331,22 @@ if __name__ == '__main__':
 
     # создание данных для ии, которые могут загружаться повторно
     path_exist('temp/')
-    path_exist('temp/checkpoint/')
-    path_exist('temp/best_params/')
-    path_exist('temp/roll_win/')
-    path_exist('temp/scaler/')
-    path_exist('temp/mmap/')
-    clear_folder('temp/roll_win/')
-    clear_folder('temp/scaler/')
-    clear_folder('temp/mmap/')
+    path_exist('temp/lstm/checkpoint/')
+    path_exist('temp/lstm/best_params/')
+    path_exist('temp/lstm/roll_win/')
+    path_exist('temp/lstm/scaler/')
+    path_exist('temp/lstm/mmap/')
+    clear_folder('temp/lstm/roll_win/')
+    clear_folder('temp/lstm/scaler/')
+    clear_folder('temp/lstm/mmap/')
 
-    run_multiprocessing_rolling_window(coin=config.coin, period=config.period, date_df=config.date_df, window_size=config.window_size,
-                                       threshold=config.threshold, numeric=config.numeric)
+    run_multiprocessing_rolling_window(coin=lstmcfg.coin, period=lstmcfg.period, date_df=lstmcfg.date_df, window_size=lstmcfg.window_size,
+                                       threshold=lstmcfg.threshold, numeric=lstmcfg.numeric, ii_path=lstmcfg.ii_path)
     #goLSTM
-    if config.goLSTM:
+    if lstmcfg.goLSTM:
         all_task = []
-        for filename in os.listdir(f'keras_model/best_params/'):
+        directory_path = f'keras_model/{lstmcfg.ii_path}/best_params/'
+        for filename in os.listdir(f'{directory_path}'):
             if filename.endswith('.csv'):
                 # Составление полного пути к файлу
                 filepath = os.path.join(directory_path, filename)
@@ -354,9 +355,9 @@ if __name__ == '__main__':
                 data = pd.read_csv(f'{filepath}')
                 required_fields = data.columns.tolist()
                 for i in range(len(data)):
-                    date_df_check = data.at[i, 'date_df'].split(';')
-                    if date_df_check != date_df:
-                        print(f'Ошибка входных данных по дням свечей \ndate_df {date_df}\n date ib csv {date_df_check}')
+                    date_df_check = data.at[i, 'date_df'].split(',')
+                    if date_df_check != lstmcfg.date_df:
+                        print(f'Ошибка входных данных по дням свечей \ndate_df {lstmcfg.date_df}\n date ib csv {date_df_check}')
                         exit()
                     # Проверка наличия всех необходимых полей
                     if all(field in data.columns for field in required_fields):
@@ -377,7 +378,7 @@ if __name__ == '__main__':
         total_iterations = len(all_tasks)
         print(f'Total number of iterations: {total_iterations}')
 
-        max_workers = min(config.CPU_COUNT, len(all_tasks)) #max_workers=max_workers
+        max_workers = min(lstmcfg.CPU_COUNT, len(all_tasks)) #max_workers=max_workers
 
         start_time = time.perf_counter()
 

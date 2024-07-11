@@ -75,7 +75,7 @@ matplotlib.use('Agg')
 
 def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
     model_count = config.model_count
-    start_index_model = 1
+    start_index_model = 2
     start_index_win = 0
     start_index_thr = 0
     start_index_per = 0
@@ -103,7 +103,7 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                                                  period=period, dropout=dropout, neiron=neiron, file_path=config.checkpoint_file)
                             print(f"Progress saved to {config.checkpoint_file}")
                             iteration_start_time = time.perf_counter()
-                            list_ = read_temp_path(f'temp/roll_win/roll_path_ct{threshold}_cw{window_size}_cp{period}.txt', 3)
+                            list_ = read_temp_path(f'temp/{config.ii_path}/roll_win/roll_path_ct{threshold}_cw{window_size}_cp{period}.txt', 3)
                             x_path = list_[0]
                             y_path = list_[1]
                             num_samples = list_[2]
@@ -152,24 +152,31 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                             results_df['coin'] = config.coin
                             results_df['time'] = f'time {iteration_time:.2f} - cpu {config.CPU_COUNT}'
                             results_df['best_score'] = best_score
+
                             try:
-                                # Проверяем, существует ли файл
                                 with open(file_name, 'r') as f:
-                                    existing_df = pd.read_csv(file_name, delimiter=';')
-                                    # Проверяем, есть ли столбец 'threshold' в существующем файле
-                                    if 'threshold' not in existing_df.columns or 'num_samples' not in existing_df.columns \
-                                            or 'period' not in existing_df.columns or 'date_df' not in existing_df.columns \
-                                            or 'coin' not in existing_df.columns or 'time' not in existing_df.columns:
-                                        # Если нет, добавляем столбец с заголовком
-                                        results_df.to_csv(file_name, mode='a', header=True, index=False)
-                                    else:
-                                        # Если есть, добавляем данные без заголовка
-                                        results_df.to_csv(file_name, mode='a', header=False, index=False)
+                                    first_line = f.readline()
+                                    headers = first_line.strip().split(';')  # Адаптируйте разделитель к вашему файлу
+
+                                required_columns = {'threshold', 'num_samples', 'period', 'date_df', 'coin', 'time',
+                                                    'batch_size', 'epochs', 'model__current_dropout',
+                                                    'model__current_neiron', 'model__current_window',
+                                                    'model__model_number', 'model__num_features', 'best_score'}
+                                existing_columns = set(headers)
+
+                                # Проверяем, содержит ли первая строка все необходимые заголовки
+                                if required_columns.issubset(existing_columns):
+                                    # Если заголовки на месте, добавляем данные без заголовков
+                                    results_df.to_csv(file_name, mode='a', header=False, index=False, sep=';')
+                                else:
+                                    # Если заголовков не хватает, пересоздаем файл с правильными заголовками
+                                    results_df.to_csv(file_name, mode='w', header=True, index=False, sep=';')
                             except FileNotFoundError:
                                 # Если файл не существует, создаем его и записываем данные с заголовком
-                                results_df.to_csv(file_name, mode='w', header=True, index=False)
+                                results_df.to_csv(file_name, mode='w', header=True, index=False, sep=';')
+
     # Если завершено успешно, удаляем файл чекпойнта
-    shutil.move(file_name, f'keras_model/best_params/{generate_uuid()}.csv')
+    shutil.move(file_name, f'keras_model/lstm/best_params/{generate_uuid()}.csv')
     if os.path.exists(config.checkpoint_file):
         os.remove(config.checkpoint_file)
 
@@ -195,14 +202,14 @@ if __name__ == '__main__':
     path_exist('temp/roll_win/')
     path_exist('temp/scaler/')
     path_exist('temp/mmap/')
-    path_exist('keras_model/best_params/')
+    path_exist('keras_model/lstm/best_params/')
     clear_folder('temp/roll_win/')
     clear_folder('temp/scaler/')
     clear_folder('temp/mmap/')
 
 
     run_multiprocessing_rolling_window(coin=config.coin, period=config.period, date_df=config.date_df, window_size=config.window_size,
-                                       threshold=config.threshold, numeric=config.numeric)
+                                       threshold=config.threshold, numeric=config.numeric, ii_path=config.ii_path)
     #goKerasRegress
     if config.goKeras:
         goKerasRegressor(windows_size=config.window_size, thresholds=config.threshold, periods=config.period, dropouts=config.dropout, neirons=config.neiron)
