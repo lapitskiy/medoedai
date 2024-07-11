@@ -22,6 +22,9 @@ from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 
 import tensorflow as tf
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+tf.config.threading.set_intra_op_parallelism_threads(config.CPU_COUNT)
+tf.config.threading.set_inter_op_parallelism_threads(config.CPU_COUNT)
 tf.get_logger().setLevel('ERROR')
 if config.tfGPU:
     gpus = tf.config.list_physical_devices('GPU')
@@ -182,11 +185,6 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-    tf.config.threading.set_intra_op_parallelism_threads(config.CPU_COUNT)
-    tf.config.threading.set_inter_op_parallelism_threads(config.CPU_COUNT)
-
-    tf.get_logger().setLevel('ERROR')
     log_file = os.path.expanduser('~/training.log')
 
     logging.basicConfig(
