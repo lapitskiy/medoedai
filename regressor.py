@@ -29,15 +29,14 @@ tf.get_logger().setLevel('ERROR')
 if config.tfGPU:
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
-        # Restrict TensorFlow to only use the first GPU
         try:
-            print("Доступные GPU: ", gpus)
             for gpu in gpus:
-                tf.config.set_visible_devices(gpu, 'GPU')
-                logical_gpus = tf.config.list_logical_devices('GPU')
-                print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
+                tf.config.experimental.set_memory_growth(gpu, True)
+            # Опционально можно установить лимит памяти
+            tf.config.experimental.set_virtual_device_configuration(
+                gpus[0],
+                [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=10240)])  # Укажите нужный лимит в МБ
         except RuntimeError as e:
-            # Visible devices must be set before GPUs have been initialized
             print(e)
 else:
     tf.config.set_visible_devices([], 'GPU')
