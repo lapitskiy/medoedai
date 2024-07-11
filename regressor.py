@@ -208,7 +208,7 @@ if __name__ == '__main__':
 
 
     run_multiprocessing_rolling_window(coin=config.coin, period=config.period, date_df=config.date_df, window_size=config.window_size,
-                                       threshold=config.threshold, numeric=config.numeric, ii_path=config.ii_path)
+                                       threshold=config.threshold, numeric=config.numeric, config=config)
     #goKerasRegress
     if config.goKeras:
         goKerasRegressor(windows_size=config.window_size, thresholds=config.threshold, periods=config.period, dropouts=config.dropout, neirons=config.neiron)
