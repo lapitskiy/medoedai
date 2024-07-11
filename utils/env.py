@@ -9,7 +9,7 @@ class SettingsRgr():
     date_df = ['2024-03', '2024-04', '2024-05', ]
     coin = 'TONUSDT'
     numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
-    checkpoint_file = 'temp/checkpoint/grid_search_checkpoint.txt'
+    checkpoint_file = f'temp/{ii_path}/checkpoint/grid_search_checkpoint.txt'
     directory_save = None
     metric_thresholds = {
         'val_accuracy': 0.60,
@@ -50,7 +50,7 @@ class SettingsLstm():
     date_df = ['2024-03', '2024-04', '2024-05', ]
     coin = 'TONUSDT'
     numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
-    checkpoint_file = 'temp/checkpoint/grid_search_checkpoint.txt'
+    checkpoint_file = f'temp/{ii_path}/checkpoint/grid_search_checkpoint.txt'
     directory_save = None
     metric_thresholds = {
         'val_accuracy': 0.60,
