@@ -17,7 +17,7 @@ from sklearn.metrics import precision_recall_curve
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
-
+import concurrent.futures
 import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
 if lstmcfg.tfGPU:
@@ -72,11 +72,30 @@ import joblib
 matplotlib.use('Agg')
 
 def goLSTM(task):
-    list_ = read_temp_path(f'temp/roll_win/roll_path_ct{threshold}_cw{window_size}_cp{period}.txt', 3)
+    task_dict = dict(task)
+    # Извлечение нужных значений
+    current_threshold = task_dict.get('threshold')
+    current_window = task_dict.get('model__current_window')
+    current_period = task_dict.get('period')
+    current_batch_size = task_dict.get('batch_size')
+    current_epochs = task_dict.get('epochs')
+    current_dropout = task_dict.get('model__current_dropout')
+    current_neiron = task_dict.get('model__current_neiron')
+    num_features = task_dict.get('model__num_features')
+    model_number = task_dict.get('model__model_number')
+    num_samples = task_dict.get('num_samples')
+    coin = task_dict.get('coin')
+    date_df = task_dict.get('date_df').split(',')
+    best_score = task_dict.get('best_score')
+
+    list_ = read_temp_path(f'temp/lstm/roll_win/roll_path_ct{current_threshold}_cw{current_window}_cp{current_period}.txt', 4)
     x_path = list_[0]
     y_path = list_[1]
     num_samples = list_[2]
-    num_features = len(config.numeric)
+    hash_value = list_[3]
+    if num_features != len(lstmcfg.numeric):
+        print(f'num_features не соотвествует config.numeric')
+        exit()
 
     x = np.memmap(f'{x_path}', dtype=np.float32, mode='r', shape=(int(num_samples), current_window, num_features))
     y = np.memmap(f'{y_path}', dtype=np.int8, mode='r', shape=(int(num_samples),))
@@ -104,10 +123,10 @@ def goLSTM(task):
     print(f"Shape of y_val: {y_val.shape}")
 
     # Создание модели LSTM
-    print(f'cur model {current_model}')
+    print(f'model_number {model_number}')
 
     model = create_model(current_dropout=current_dropout, current_neiron=current_neiron, current_window=current_window,
-                         num_features=num_features, model_number=current_model, type='lstm')
+                         num_features=num_features, model_number=model_number, type='lstm')
     optimizer = Adam(learning_rate=0.001)
     model.compile(optimizer=optimizer, loss='binary_crossentropy',
                   metrics=[
@@ -132,8 +151,8 @@ def goLSTM(task):
         "current_dropout": f"{current_dropout}",
     }
 
-    config.uuid = generate_uuid()
-    config.directory_save = f'keras_model/lstm/{coin}/{current_period}/'
+    #lstmcfg.uuid = generate_uuid()
+    #lstmcfg.directory_save = f'model/lstm/{coin}/{current_period}/'
 
     checkpoint = ModelCheckpointWithMetricThreshold(filedata=data, model=model)
     early_stopping = EarlyStopping(monitor='val_loss', patience=10, verbose=1, restore_best_weights=True)
@@ -157,12 +176,6 @@ def goLSTM(task):
     opt_f1_score = f1_scores[opt_idx]
 
     print("Распределение классов:", class_distribution)
-    print(f"Test Accuracy: {scores[1] * 100:.2f}%")
-    print(f"Test Precision: {scores[2]:.2f}")
-    print(f"Test Recall: {scores[3]:.2f}")
-    print(f"Test AUC: {scores[4]:.2f}")
-    print(f"Test F1-Score: {scores[-1]:.2f}")
-
     print("Оптимальный порог:", opt_threshold)
     print("Максимальный F1-Score:", opt_f1_score)
 
@@ -176,8 +189,8 @@ def goLSTM(task):
 
     # Подготовка данных для записи в файл
     data2 = {
-        "uuid": config.uuid,
-        "coin": config.coin,
+        "hash": hash_value,
+        "coin": lstmcfg.coin,
         "Test Accuracy": f"{scores[1] * 100:.2f}%",
         "Test Precision": f"{scores[2]:.2f}",
         "Test Recall": f"{scores[3]:.2f}",
@@ -198,42 +211,48 @@ def goLSTM(task):
     }
 
     data.update(data2)
-    if (scores[1] * 100 >= 65 and
-            scores[2] >= 0.65 and
-            scores[3] >= 0.65 and
-            scores[4] >= 0.65 and
-            scores[-1] >= 0.10):
+    print(f"Test Accuracy: {scores[1] * 100:.2f}%")
+    print(f"Test Precision: {scores[2]:.2f}")
+    print(f"Test Recall: {scores[3]:.2f}")
+    print(f"Test AUC: {scores[4]:.2f}")
+    print(f"Test F1-Score: {scores[-1]:.2f}")
+    print('ЗАПИСЬ ФАЙЛА?')
+    if (scores[1] * 100 >= 60 and
+            scores[2] >= 0.10 and
+            scores[3] >= 0.40 and
+            scores[4] >= 0.60 and
+            scores[-1] >= 0.04):
 
-        result_filename = f'keras_model/lstm/{config.coin}/result.csv'
-        path_exist(f'keras_model/lstm/{config.coin}/')
-        path_exist(config.directory_save)
-        path_exist(config.directory_save+config.uuid)
+        result_filename = f'{lstmcfg.directory_save}/metric/{lstmcfg.coin}/result.csv'
+        directory_save = f'{lstmcfg.directory_save}work_model/{coin}/{current_period}/'
+        path_exist(f'{lstmcfg.directory_save}/metric/{lstmcfg.coin}/')
+        path_exist(lstmcfg.directory_save)
+        path_exist(directory_save)
         # Запись данных в файл
         results_df = pd.DataFrame([data])
-
+        print('ЗАПИСЬ ФАЙЛА')
         try:
             # Проверяем, существует ли файл
             with open(result_filename, 'r') as f:
                 existing_df = pd.read_csv(result_filename, delimiter=';')
                 # Проверяем, есть ли столбец 'threshold' в существующем файле
-                if 'threshold' not in existing_df.columns or 'period' not in existing_df.columns \
-                        or 'date_df' not in existing_df.columns or 'coin' not in existing_df.columns:
+                if 'batch_sizes' not in existing_df.columns or 'epoch' not in existing_df.columns \
+                        or 'hash' not in existing_df.columns or 'coin' not in existing_df.columns:
                     # Если нет, добавляем столбец с заголовком
                     results_df.to_csv(result_filename, mode='a', header=True, index=False, sep=';')
                 else:
                     # Если есть, добавляем данные без заголовка
-                    results_df.to_csv(file_name, mode='a', header=False, index=False, sep=';')
+                    results_df.to_csv(result_filename, mode='a', header=False, index=False, sep=';')
         except FileNotFoundError:
             # Если файл не существует, создаем его и записываем данные с заголовком
-            results_df.to_csv(file_name, mode='w', header=True, index=False, sep=';')
+            results_df.to_csv(result_filename, mode='w', header=True, index=False, sep=';')
 
-        directory_save = f'keras_model/lstm/{coin}/{current_period}/'
-        directory_uuid = directory_save + data['uuid']
-        result_filename = f'keras_model/lstm/result.csv'
-
-        joblib.dump(scaler, f"{directory_uuid}/{config.uuid}.gz")
+        source_path = f'temp/{lstmcfg.ii_path}/scaler/scaler_ct{current_threshold}_cw{current_window}_cp{current_period}.gz'
+        target_path = f'{directory_save}{hash_value}.gz'
+        shutil.copy2(source_path, target_path)
+        #joblib.dump(scaler, f"{directory_save}{hash_value}.gz")
         # Сохранение модели
-        model.save(f"{directory_uuid}/{config.uuid}.h5")
+        model.save(f"{directory_save}{hash_value}.h5")
         # Вывод структуры модели
         model.summary()
     del x_train, x_val, y_train, y_val, x, y
@@ -265,11 +284,11 @@ def f1_score(y_true, y_pred):
 class ModelCheckpointWithMetricThreshold(Callback):
     def __init__(self, filedata, model, verbose=1):
         super(ModelCheckpointWithMetricThreshold, self).__init__()
-        self.thresholds = config.metric_thresholds  # Словарь с пороговыми значениями для метрик
-        self.best_metrics = {key: 0 for key in thresholds.keys()}  # Лучшие метрики
+        self.thresholds = lstmcfg.metric_thresholds  # Словарь с пороговыми значениями для метрик
+        self.best_metrics = {key: 0 for key in self.thresholds.keys()}  # Лучшие метрики
         self.verbose = verbose
         self.filedata = filedata
-        self.directory_save = config.directory_save
+        self.directory_save = lstmcfg.directory_save + 'metric/'
         self.current_threshold = filedata['current_threshold']
         self.current_window = filedata['current_window']
         self.mymodel = model
@@ -338,54 +357,61 @@ if __name__ == '__main__':
     path_exist('temp/lstm/mmap/')
     clear_folder('temp/lstm/roll_win/')
     clear_folder('temp/lstm/scaler/')
-    clear_folder('temp/lstm/mmap/')
+    #clear_folder('temp/lstm/mmap/')
 
-    run_multiprocessing_rolling_window(coin=lstmcfg.coin, period=lstmcfg.period, date_df=lstmcfg.date_df, window_size=lstmcfg.window_size,
-                                       threshold=lstmcfg.threshold, numeric=lstmcfg.numeric, ii_path=lstmcfg.ii_path)
+    run_multiprocessing_rolling_window(config=lstmcfg)
     #goLSTM
     if lstmcfg.goLSTM:
         all_task = []
-        directory_path = f'keras_model/{lstmcfg.ii_path}/best_params/'
+        directory_path = f'model/{lstmcfg.ii_path}/best_params/'
         for filename in os.listdir(f'{directory_path}'):
             if filename.endswith('.csv'):
                 # Составление полного пути к файлу
                 filepath = os.path.join(directory_path, filename)
                 uuid_name, extension = os.path.splitext(filename)
                 # Здесь можно выполнить операции с файлом
-                data = pd.read_csv(f'{filepath}')
-                required_fields = data.columns.tolist()
-                for i in range(len(data)):
-                    date_df_check = data.at[i, 'date_df'].split(',')
-                    if date_df_check != lstmcfg.date_df:
-                        print(f'Ошибка входных данных по дням свечей \ndate_df {lstmcfg.date_df}\n date ib csv {date_df_check}')
-                        exit()
-                    # Проверка наличия всех необходимых полей
-                    if all(field in data.columns for field in required_fields):
-                        row_slice = data.iloc[i]
+                data = pd.read_csv(f'{filepath}', delimiter=';')
+                data_fields = data.columns.tolist()
 
-                        # Проверка наличия значений для всех необходимых полей в строке
-                        if all(pd.notna(row_slice[field]) for field in required_fields):
-                            print(f'row slice {row_slice}')
+                # Проверка наличия всех необходимых полей в DataFrame
+                missing_fields = [field for field in lstmcfg.required_params if field not in data.columns]
+                if missing_fields:
+                    print(f"Error: Missing fields {', '.join(missing_fields)} in the file {filename}.")
+                    exit()
 
-                            # Сборка задачи с именами переменных и их значениями
-                            task = tuple((column_name, value) for column_name, value in row_slice.items())
-                            all_tasks.append(task)
-                        else:
-                            print(f'Skipping row {i} in file {filename} due to missing values in required fields.')
+                for index, row in data.iterrows():
+                    if all(row[field] for field in lstmcfg.required_params):
+                        #print(f'head {data.head()}')
+                        #print(f'tail {data.tail()}')
+                        #
+                        date_df_check = row['date_df'].split(',')
+                        #print(f'Row {index} dates:', date_df_check)
+                        #print(f' date_df_check {date_df_check} != lstmcfg.date_df {lstmcfg.date_df}')
+                        if date_df_check != lstmcfg.date_df:
+                            print(
+                                f'Ошибка входных данных по дням свечей \ndate_df {lstmcfg.date_df}\n date ib csv {date_df_check}')
+                            exit()
                     else:
-                        print(f'File {filename} does not contain all required fields. Skipping.')
+                        print(f"Error: Missing data in required fields at row {index}.")
+                        exit()
+                    # Сборка задачи с именами переменных и их значениями
+                    task = tuple((column_name, value) for column_name, value in row.items())
+                    all_task.append(task)
+                else:
+                    print(f'Skipping row {index} in file {filename} due to missing values in required fields.')
 
-        total_iterations = len(all_tasks)
+
+        total_iterations = len(all_task)
         print(f'Total number of iterations: {total_iterations}')
 
-        max_workers = min(lstmcfg.CPU_COUNT, len(all_tasks)) #max_workers=max_workers
+        max_workers = min(lstmcfg.CPU_COUNT, len(all_task)) #max_workers=max_workers
 
         start_time = time.perf_counter()
 
         # Использование ProcessPoolExecutor для параллельного выполнения
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
             # Запуск процессов
-            futures = [executor.submit(goLSTM, task) for task in all_tasks]
+            futures = [executor.submit(goLSTM, task) for task in all_task]
             for iteration, future in enumerate(concurrent.futures.as_completed(futures), start=1):
                 iteration_start_time = time.perf_counter()
                 result = future.result()

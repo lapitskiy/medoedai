@@ -1,7 +1,7 @@
 from utils.models_list import ModelLSTM_2Class
 
 class SettingsRgr():
-    CPU_COUNT = 4
+    CPU_COUNT = 2
     tfGPU = True
     goLSTM = True
     goKeras = True
@@ -50,8 +50,23 @@ class SettingsLstm():
     date_df = ['2024-03', '2024-04', '2024-05', ]
     coin = 'TONUSDT'
     numeric = ['open', 'high', 'low', 'close', 'bullish_volume', 'bearish_volume']
+    required_params = [
+        "batch_size",
+        "epochs",
+        "model__current_dropout",
+        "model__current_neiron",
+        "model__current_window",
+        "model__model_number",
+        "model__num_features",
+        "threshold",
+        "num_samples",
+        "period",
+        "date_df",
+        "coin",
+        "time",
+        "best_score"]
     checkpoint_file = f'temp/{ii_path}/checkpoint/grid_search_checkpoint.txt'
-    directory_save = None
+    directory_save = f'model/{ii_path}/'
     metric_thresholds = {
         'val_accuracy': 0.60,
         'val_precision': 0.60,

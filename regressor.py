@@ -39,6 +39,7 @@ if config.tfGPU:
         except RuntimeError as e:
             print("Произошла ошибка:", e)
 else:
+
     tf.config.set_visible_devices([], 'GPU')
 
     #os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
@@ -147,6 +148,9 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                             best_params = grid.best_params_
                             results_df = pd.DataFrame([best_params])
                             results_df['threshold'] = threshold
+
+
+
                             results_df['num_samples'] = num_samples
                             results_df['period'] = period
                             date_str = ','.join(config.date_df)
@@ -179,7 +183,7 @@ def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
                                 results_df.to_csv(file_name, mode='w', header=True, index=False, sep=';')
 
     # Если завершено успешно, удаляем файл чекпойнта
-    shutil.move(file_name, f'keras_model/lstm/best_params/{generate_uuid()}.csv')
+    shutil.move(file_name, f'model/lstm/best_params/{generate_uuid()}.csv')
     if os.path.exists(config.checkpoint_file):
         os.remove(config.checkpoint_file)
 
@@ -201,7 +205,7 @@ if __name__ == '__main__':
     path_exist(f'temp/{config.ii_path}/roll_win/')
     path_exist(f'temp/{config.ii_path}/scaler/')
     path_exist(f'temp/{config.ii_path}/mmap/')
-    path_exist(f'keras_model/lstm/best_params/')
+    path_exist(f'model/lstm/best_params/')
     clear_folder(f'temp/{config.ii_path}/roll_win/')
     clear_folder(f'temp/{config.ii_path}/scaler/')
     clear_folder(f'temp/{config.ii_path}/mmap/')

@@ -2,6 +2,7 @@ import os
 import shutil
 import pandas as pd
 import uuid
+import psutil
 
 # создание датафрейм из csv
 def save_grid_checkpoint(model_number, window_size, threshold, period, dropout, neiron, file_path):
@@ -102,6 +103,46 @@ def clear_folder(folder_path):
     for item in os.listdir(folder_path):
         item_path = os.path.join(folder_path, item)
         if os.path.isfile(item_path) or os.path.islink(item_path):
-            os.unlink(item_path)  # Удаление файла или ссылки
+            try:
+                os.unlink(item_path)  # Удаление файла или ссылки
+            except PermissionError:
+                print(f"Файл или ссылка {item_path} занят(а) другим процессом. Попытка завершить процесс...")
+                kill_process_using_file(item_path)
+                try:
+                    os.unlink(item_path)  # Повторная попытка удаления файла после завершения процесса
+                    print(f"Файл или ссылка {item_path} успешно удалён(а) после завершения процесса.")
+                except Exception as e:
+                    print(f"Не удалось удалить файл или ссылку {item_path} после завершения процесса: {e}")
+
         elif os.path.isdir(item_path):
             shutil.rmtree(item_path)  # Удаление директории
+
+
+def is_hashfile_in_folder(folder_path, hash_value):
+    # Проходим по всем файлам в папке
+    for file_name in os.listdir(folder_path):
+        # Проверяем, содержится ли хеш в имени файла
+        if hash_value in file_name:
+            return True  # Если найден, возвращаем True
+    return False  # Если хеш не найден ни в одном файле
+
+def kill_process_using_file(file_path):
+    try:
+        # Получаем список всех запущенных процессов
+        for proc in psutil.process_iter(['pid', 'name', 'open_files']):
+            try:
+                # Проверяем, какие файлы открыты этим процессом
+                open_files = proc.info.get('open_files')
+                if open_files:
+                    for f in open_files:
+                        if f.path == file_path:
+                            # Завершаем процесс, который использует файл
+                            print(f"Процесс {proc.info['name']} (PID: {proc.info['pid']}) использует файл {file_path}.")
+                            proc.terminate()  # Отправляем сигнал на завершение процесса
+                            proc.wait()  # Ожидаем завершения процесса
+                            print(f"Процесс {proc.info['name']} (PID: {proc.info['pid']}) был завершен.")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                # Игнорируем ошибки, если процесс уже завершён или доступ к нему ограничен
+                pass
+    except Exception as e:
+        print(f"Ошибка при попытке завершить процесс, использующий файл {file_path}: {e}")
