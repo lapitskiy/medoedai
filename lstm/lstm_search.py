@@ -198,14 +198,14 @@ if __name__ == '__main__':
     )
 
     # создание данных для ии, которые могут загружаться повторно
-    path_exist('temp/')
+    path_exist('../temp/')
     path_exist(f'temp/{config.ii_path}/')
     path_exist(f'temp/{config.ii_path}/checkpoint/')
     path_exist(f'temp/{config.ii_path}/best_params/')
     path_exist(f'temp/{config.ii_path}/roll_win/')
     path_exist(f'temp/{config.ii_path}/scaler/')
     path_exist(f'temp/{config.ii_path}/mmap/')
-    path_exist(f'model/lstm/best_params/')
+    path_exist(f'../model/lstm/best_params/')
     clear_folder(f'temp/{config.ii_path}/roll_win/')
     clear_folder(f'temp/{config.ii_path}/scaler/')
     clear_folder(f'temp/{config.ii_path}/mmap/')

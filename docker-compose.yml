@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  trainer:
+    image: tensorflow/tensorflow:2.15.0-gpu
+    container_name: trainer
+    depends_on:
+      - parameter-search
+    volumes:
+      - ./models:/models
+      - ./workspace:/workspace
+    working_dir: /workspace
+    command: ["sleep", "infinity"]  # Запускаем контейнер, но обучение НЕ стартует сразу
+
+  serving:
+    image: tensorflow/serving:latest-gpu
+    container_name: serving
+    restart: always
+    ports:
+      - "8501:8501"
+    environment:
+      - MODEL_NAME=medoedai_model
+      - MODEL_BASE_PATH=/models
+    volumes:
+      - ./models:/models
+
+  app:
+    build: ./app
+    container_name: app
+    depends_on:
+      - serving
+    ports:
+      - "5000:5000"
+    environment:
+      - TF_SERVING_URL=http://serving:8501/v1/models/medoedai_model
+    volumes:
+      - ./app:/app
+    working_dir: /app
+    command: ["python", "lstm_api.py"]
