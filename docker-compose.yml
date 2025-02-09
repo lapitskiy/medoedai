@@ -1,39 +1,142 @@
-version: "3.8"
-
 services:
-  trainer:
-    image: tensorflow/tensorflow:2.15.0-gpu
-    container_name: trainer
-    depends_on:
-      - parameter-search
-    volumes:
-      - ./models:/models
-      - ./workspace:/workspace
-    working_dir: /workspace
-    command: ["sleep", "infinity"]  # Запускаем контейнер, но обучение НЕ стартует сразу
-
-  serving:
-    image: tensorflow/serving:latest-gpu
-    container_name: serving
+  postgres:
+    image: postgres:14
+    container_name: postgres
     restart: always
-    ports:
-      - "8501:8501"
     environment:
-      - MODEL_NAME=medoedai_model
-      - MODEL_BASE_PATH=/models
+      POSTGRES_DB: medoed_db
+      POSTGRES_USER: medoed_user
+      POSTGRES_PASSWORD: medoed
     volumes:
-      - ./models:/models
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
 
-  app:
-    build: ./app
-    container_name: app
+  # ✅ MinIO для хранения моделей и артефактов
+  minio:
+    image: minio/minio
+    container_name: minio
+    restart: always
+    environment:
+      MINIO_ROOT_USER: root
+      MINIO_ROOT_PASSWORD: root
+    volumes:
+      - minio_data:/data
+    command: ["server", "/data"]
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  # ✅ MLflow для управления моделями
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: mlflow
+    restart: always
+    depends_on:
+      - postgres
+      - minio
+    environment:
+      - MLFLOW_TRACKING_URI=postgresql://mlflow_user:mlflow_password@postgres:5432/medoed_db
+      - ARTIFACT_ROOT=s3://mlflow-bucket
+      - AWS_ACCESS_KEY_ID=root
+      - AWS_SECRET_ACCESS_KEY=root
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+    volumes:
+      - ./mlflow/artifacts:/mlflow/artifacts
+    ports:
+      - "5001:5000"
+    command: >
+      mlflow server --backend-store-uri postgresql://medoed_user:medoed@postgres:5432/mlflow_db
+      --default-artifact-root s3://mlflow-bucket
+      --host 0.0.0.0
+
+  # ✅ Redis для Celery (очередь задач)
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    restart: always
+
+  # ✅ Flask-приложение для управления AI
+  medoedai:
+    build: .
+    container_name:   medoedai
     depends_on:
       - serving
+      - redis
     ports:
       - "5000:5000"
     environment:
       - TF_SERVING_URL=http://serving:8501/v1/models/medoedai_model
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./:/app
+    working_dir: /app
+    command: ["python", "main.py"]
+
+  # ✅ Celery-воркер для выполнения фоновых задач
+  celery-worker:
+    build: .
+    container_name: celery-worker
+    depends_on:
+      - medoedai
+      - redis
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
     volumes:
       - ./app:/app
     working_dir: /app
-    command: ["python", "lstm_api.py"]
+    command: ["celery", "-A", "celery_tasks", "worker", "--loglevel=info"]
+
+  # ✅ Контейнер для тренировки моделей
+  trainer:
+    image: pytorch/pytorch:latest
+    container_name: trainer
+    depends_on:
+      - parameter-search
+      - celery-worker
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - ./models:/models
+      - ./workspace:/workspace
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+
+  # ✅ Контейнер для поиска гиперпараметров
+  parameter-search:
+    build:
+      context: ./search  # Контекст сборки
+      dockerfile: Dockerfile  # Имя Dockerfile внутри контекста
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+  # ✅ TorchServe — PyTorch-аналог TensorFlow Serving
+  serving:
+    image: pytorch/torchserve:latest
+    container_name: serving
+    restart: always
+    ports:
+      - "8080:8080"  # REST API
+      - "8081:8081"  # Информация о модели
+    environment:
+      - MODEL_STORE=/models
+      - TS_MODEL_NAME=medoedai_model
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ./models:/models
+    command: ["torchserve", "--start", "--model-store", "/models", "--models", "medoedai_model.mar"]
+
+volumes:
+  pgdata:
+  minio_data:
