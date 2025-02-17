@@ -12,7 +12,6 @@ services:
     ports:
       - "5432:5432"
 
-  # ✅ MinIO для хранения моделей и артефактов
   minio:
     image: minio/minio
     container_name: minio
@@ -27,7 +26,6 @@ services:
       - "9000:9000"
       - "9001:9001"
 
-  # ✅ MLflow для управления моделями
   mlflow:
     image: ghcr.io/mlflow/mlflow:latest
     container_name: mlflow
@@ -44,28 +42,25 @@ services:
     volumes:
       - ./mlflow/artifacts:/mlflow/artifacts
     ports:
-      - "5001:5000"
+      - "5051:5050"
     command: >
       mlflow server --backend-store-uri postgresql://medoed_user:medoed@postgres:5432/mlflow_db
       --default-artifact-root s3://mlflow-bucket
       --host 0.0.0.0
-
-  # ✅ Redis для Celery (очередь задач)
 
   redis:
     image: redis:latest
     container_name: redis
     restart: always
 
-  # ✅ Flask-приложение для управления AI
   medoedai:
     build: .
-    container_name:   medoedai
+    container_name: medoedai
     depends_on:
       - serving
       - redis
     ports:
-      - "5000:5000"
+      - "5050:5050"
     environment:
       - TF_SERVING_URL=http://serving:8501/v1/models/medoedai_model
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -75,7 +70,6 @@ services:
     working_dir: /app
     command: ["python", "main.py"]
 
-  # ✅ Celery-воркер для выполнения фоновых задач
   celery-worker:
     build: .
     container_name: celery-worker
@@ -90,52 +84,48 @@ services:
     working_dir: /app
     command: ["celery", "-A", "celery_tasks", "worker", "--loglevel=info"]
 
-  # ✅ Контейнер для тренировки моделей
   trainer:
     image: pytorch/pytorch:latest
     container_name: trainer
     depends_on:
-      - parameter-search
       - celery-worker
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - ./models:/models
       - ./workspace:/workspace
     working_dir: /workspace
     command: ["sleep", "infinity"]
-
-  # ✅ Контейнер для поиска гиперпараметров
-  parameter-search:
-    build:
-      context: ./search  # Контекст сборки
-      dockerfile: Dockerfile  # Имя Dockerfile внутри контекста
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
+              count: ${GPU_COUNT:-0}  # Указываем 0, если нет GPU
               capabilities: [gpu]
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-  # ✅ TorchServe — PyTorch-аналог TensorFlow Serving
   serving:
     image: pytorch/torchserve:latest
     container_name: serving
     restart: always
     ports:
-      - "8080:8080"  # REST API
-      - "8081:8081"  # Информация о модели
+      - "8080:8080"
+      - "8081:8081"
     environment:
       - MODEL_STORE=/models
       - TS_MODEL_NAME=medoedai_model
-      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}
     volumes:
       - ./models:/models
     command: ["torchserve", "--start", "--model-store", "/models", "--models", "medoedai_model.mar"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-0}
+              capabilities: [gpu]
 
 volumes:
   pgdata:

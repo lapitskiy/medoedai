@@ -21,6 +21,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 
+'''
 import tensorflow as tf
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 tf.config.threading.set_intra_op_parallelism_threads(config.CPU_COUNT)
@@ -56,10 +57,12 @@ else:
 
 
 from tensorflow.keras.models import Sequential
+
 import scikeras
 from scikeras.wrappers import KerasRegressor
 from sklearn.model_selection import GridSearchCV
 from sklearn.model_selection import train_test_split
+
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.metrics import Precision, Recall, AUC, CategoricalAccuracy
 from tensorflow.keras.optimizers import Adam
@@ -69,12 +72,17 @@ from itertools import product
 from tensorflow.keras.layers import LSTM, Dense, Dropout, LeakyReLU, Input, Bidirectional, BatchNormalization, \
     Conv1D, Attention, GRU, InputLayer, MultiHeadAttention
 from tensorflow.keras import backend as K
+'''
+
 import logging
 import psutil
 import matplotlib.pyplot as plt
 import matplotlib
 import joblib
 matplotlib.use('Agg')
+
+def search(query):
+    return f"Поиск выполнен для: {query}"
 
 def goKerasRegressor(windows_size, thresholds, periods, dropouts, neirons):
     model_count = config.model_count

@@ -3,7 +3,7 @@ FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-devel as builder
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --user -r requirements.txt
+RUN pip install --no-cache-dir --user -r requirements.txt
 COPY . .
 
 # Stage 2: Runtime image
@@ -13,7 +13,7 @@ FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-runtime
 ENV NVIDIA_DRIVER_CAPABILITIES compute,utility
 ENV NVIDIA_REQUIRE_CUDA "cuda>=11.8"
 
-# Copy installed packages
+# Copy installed packages and app code
 COPY --from=builder /root/.local /root/.local
 COPY --from=builder /app /app
 
@@ -23,7 +23,10 @@ ENV LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH
 
 WORKDIR /app
 
-# Verify CUDA compatibility
-RUN python -c "import torch; print(f'PyTorch version: {torch.__version__}'); \
+# Проверка CUDA (опционально, можно оставить в CMD)
+RUN python -c "import torch; \
+    print(f'PyTorch version: {torch.__version__}'); \
     print(f'CUDA available: {torch.cuda.is_available()}'); \
-    print(f'CUDA device: {torch.cuda.get_device_name(0)}')"
+    print(f'CUDA device: {torch.cuda.get_device_name(0)}') if torch.cuda.is_available() else print('⚠️ No GPU detected')"
+
+CMD ["python", "server.py"]
