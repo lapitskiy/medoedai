@@ -1,84 +1,239 @@
-from utils.env import dqncfg
+# Импорты PyTorch
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
 
-from tensorflow.keras.models import load_model
+# Ваши импорты
+from model.dqn_model.gym.crypto_trading_env import CryptoTradingEnv
+from utils.env import dqncfg # Предполагаем, что dqncfg содержит ваши константы
 
 import numpy as np
 import random
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout
-from tensorflow.keras.optimizers import Adam
+import os # Для проверки существования файла модели
 from collections import deque
 import gym
 from gym import spaces
 from gym.utils import seeding
 
+# --- Константы из dqncfg (предполагаем, что они определены там) ---
+# Если dqncfg - это модуль или объект, убедитесь, что эти переменные доступны.
+# Например, если они в dqncfg.py:
+EXPLORATION_MAX = dqncfg.EXPLORATION_MAX
+EXPLORATION_MIN = dqncfg.EXPLORATION_MIN
+EXPLORATION_DECAY = dqncfg.EXPLORATION_DECAY
+MEMORY_SIZE = dqncfg.MEMORY_SIZE
+BATCH_SIZE = dqncfg.BATCH_SIZE
+LEARNING_RATE = dqncfg.LEARNING_RATE
+GAMMA = dqncfg.GAMMA
+# --- Конец констант ---
 
+# Определение устройства (GPU или CPU)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Используемое устройство для PyTorch: {DEVICE}")
+
+# --- Модель Q-сети на PyTorch ---
+class DQNN(nn.Module):
+    def __init__(self, observation_space, action_space):
+        super(DQNN, self).__init__()
+        self.fc1 = nn.Linear(observation_space, 24)
+        self.fc2 = nn.Linear(24, 24)
+        self.fc3 = nn.Linear(24, action_space)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        return self.fc3(x)
+
+# --- DQNSolver адаптированный под PyTorch ---
 class DQNSolver:
-    def __init__(self, observation_space, action_space, load=False, model_path="dqn_model.h5"):
+    def __init__(self, observation_space, action_space, load=False, model_path="dqn_model.pth"):
         self.exploration_rate = EXPLORATION_MAX
         self.action_space = action_space
         self.memory = deque(maxlen=MEMORY_SIZE)
 
-        if load:
-            self.model = load_model(model_path)
+        # Инициализация модели PyTorch
+        self.model = DQNN(observation_space, action_space).to(DEVICE)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=LEARNING_RATE)
+        self.criterion = nn.MSELoss() # Для вычисления Q-значений
+
+        if load and os.path.exists(model_path):
+            self.model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+            self.model.eval() # Переключаем модель в режим оценки
             print("Модель загружена из", model_path)
         else:
-            self.model = Sequential()
-            self.model.add(Dense(24, input_shape=(observation_space,), activation="relu"))
-            self.model.add(Dense(24, activation="relu"))
-            self.model.add(Dense(action_space, activation="linear"))
-            self.model.compile(loss="mse", optimizer=Adam(lr=LEARNING_RATE))
             print("Создана новая модель")
+        
+        # Target Network (часто используется в DQN для стабильности)
+        # Это копия основной модели, параметры которой обновляются реже
+        self.target_model = DQNN(observation_space, action_space).to(DEVICE)
+        self.update_target_model() # Инициализируем целевую сеть
+        self.target_model.eval() # Целевая сеть всегда в режиме оценки
+
+
+    def update_target_model(self):
+        """Копирует веса из основной модели в целевую модель."""
+        self.target_model.load_state_dict(self.model.state_dict())
 
     def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
+        # Преобразуем numpy массивы в тензоры PyTorch
+        state_t = torch.tensor(state, dtype=torch.float32)
+        action_t = torch.tensor(action, dtype=torch.long) # Действие - это индекс
+        reward_t = torch.tensor(reward, dtype=torch.float32)
+        next_state_t = torch.tensor(next_state, dtype=torch.float32)
+        done_t = torch.tensor(done, dtype=torch.bool)
+        
+        self.memory.append((state_t, action_t, reward_t, next_state_t, done_t))
 
     def act(self, state):
         if np.random.rand() < self.exploration_rate:
             return random.randrange(self.action_space)
-        q_values = self.model.predict(state)
-        return np.argmax(q_values[0])
+        
+        # Преобразование состояния в тензор и отправка на устройство
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+        
+        # Отключаем вычисление градиентов для предсказания
+        with torch.no_grad():
+            q_values = self.model(state_tensor)
+        
+        # Получаем действие с максимальным Q-значением
+        return torch.argmax(q_values[0]).item()
 
     def experience_replay(self):
         if len(self.memory) < BATCH_SIZE:
             return
+
         batch = random.sample(self.memory, BATCH_SIZE)
-        for state, action, reward, state_next, terminal in batch:
-            q_update = reward
-            if not terminal:
-                q_update = (reward + GAMMA * np.amax(self.model.predict(state_next)[0]))
-            q_values = self.model.predict(state)
-            q_values[0][action] = q_update
-            self.model.fit(state, q_values, verbose=0)
+
+        # Разделяем батч на отдельные тензоры
+        states, actions, rewards, next_states, dones = zip(*batch)
+
+        states = torch.stack(states).to(DEVICE)
+        actions = torch.stack(actions).to(DEVICE)
+        rewards = torch.stack(rewards).to(DEVICE)
+        next_states = torch.stack(next_states).to(DEVICE)
+        dones = torch.stack(dones).to(DEVICE)
+
+        # Вычисление текущих Q-значений (для выбранных действий)
+        # model(states) возвращает Q-значения для всех действий
+        # .gather(1, actions.unsqueeze(1)) выбирает Q-значение для фактического действия
+        current_q_values = self.model(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+
+        # Вычисление целевых Q-значений (используем target_model для стабильности)
+        # detached() останавливает градиенты от распространения обратно в target_model
+        with torch.no_grad():
+            next_q_values = self.target_model(next_states).max(1)[0] # max(1)[0] берет максимальное Q-значение
+            
+        # Q-update: Q*(s,a) = r + gamma * max_a' Q(s',a')
+        # Если эпизод завершен (done), следующее состояние не имеет значения, поэтому Q_update = reward
+        target_q_values = rewards + (GAMMA * next_q_values * (~dones))
+
+        # Вычисление функции потерь
+        loss = self.criterion(current_q_values, target_q_values)
+
+        # Обнуление градиентов, обратное распространение, обновление весов
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
         self.exploration_rate *= EXPLORATION_DECAY
         self.exploration_rate = max(EXPLORATION_MIN, self.exploration_rate)
 
 
-if __name__ == "__main__":
+def train_model(dfs: dict, load_previous: bool = False, episodes: int = 100, model_path: str = "dqn_model.pth"):
+    """
+    Обучает модель DQN для торговли криптовалютой.
 
-    env = CryptoTradingEnv(df)
-    observation_space = env.observation_space.shape[0]
+    Args:
+        dfs (dict): Словарь с Pandas DataFrames для разных таймфреймов (df_5min, df_15min, df_1h).
+        load_previous (bool): Загружать ли ранее сохраненную модель.
+        episodes (int): Количество эпизодов для обучения.
+        model_path (str): Путь для сохранения/загрузки модели.
+    Returns:
+        str: Сообщение о завершении обучения.
+    """
+    
+    # Теперь CryptoTradingEnv принимает словарь с DataFrame'ами
+    env = CryptoTradingEnv(dfs=dfs) 
+    
+    observation_space_dim = env.observation_space.shape[0]
     action_space = env.action_space.n
-    load_previous_model = False  # Установите True, чтобы загрузить существующую модель
-    dqn_solver = DQNSolver(observation_space, action_space, load=load_previous_model)
+    
+    dqn_solver = DQNSolver(observation_space_dim, action_space, load=load_previous, model_path=model_path)
 
-    episodes = 1000
+    target_update_frequency = 10 # Обновлять целевую сеть каждые N эпизодов
+
     for episode in range(episodes):
-        state = env.reset()
-        state = np.reshape(state, [1, observation_space])
+        # Переводим модель в режим обучения
+        dqn_solver.model.train() 
+        state = env.reset() # env.reset() теперь возвращает начальное состояние
+        # state уже в правильной форме (NumPy массив), не нужно reshape здесь
+
         while True:
             action = dqn_solver.act(state)
             state_next, reward, terminal, info = env.step(action)
-            state_next = np.reshape(state_next, [1, observation_space])
+            
             dqn_solver.remember(state, action, reward, state_next, terminal)
             state = state_next
-            if terminal:
-                print("Эпизод", episode, "завершен")
-                break
-            dqn_solver.experience_replay()
+            
+            dqn_solver.experience_replay() # Вызываем replay на каждом шаге или с определенной частотой
 
-        # Сохраняем модель после каждых 10 эпизодов
-        if episode % 10 == 0:
-            dqn_solver.model.save("dqn_model.h5")
-            print("Модель сохранена после эпизода", episode)
+            if terminal:
+                print(f"Эпизод {episode+1}/{episodes} завершен. Общая прибыль: {info.get('total_profit', 0):.2f}, "
+                      f"Текущий баланс: {info.get('current_balance', env.initial_balance):.2f}, "
+                      f"BTC в наличии: {info.get('crypto_held', 0):.4f}")
+                break
+        
+        # Обновление целевой сети
+        if (episode + 1) % target_update_frequency == 0:
+            dqn_solver.update_target_model()
+            print(f"Целевая сеть обновлена после эпизода {episode+1}")
+
+        # Сохранение модели (частота сохранения)
+        if (episode + 1) % 10 == 0: 
+            torch.save(dqn_solver.model.state_dict(), model_path)
+            print(f"Модель сохранена после эпизода {episode+1}")
+
+    # Сохранение финальной модели
+    torch.save(dqn_solver.model.state_dict(), model_path)
+    print("Финальная модель сохранена.")
+    return "Обучение завершено"
+
+
+def trade_once(state: np.ndarray, observation_space_dim: int, model_path: str = "dqn_model.pth"): 
+    """
+    Принимает торговое решение на основе текущего состояния.
+
+    Args:
+        state (np.ndarray): Текущий вектор состояния.
+        observation_space_dim (int): Размерность пространства наблюдений (длина вектора состояния).
+        model_path (str): Путь к файлу сохраненной модели.
+    Returns:
+        str: Рекомендованное торговое действие ("BUY", "SELL", "HOLD").
+    """
+    
+    if not os.path.exists(model_path):
+        return "Модель не найдена, сначала обучите её!"
+
+    # Мы знаем, что action_space_dim = 3 (HOLD, BUY, SELL) из вашего Gym окружения.
+    # Или можно получить это из окружения, если оно было зарегистрировано:
+    # action_space_dim = gym.make(dqncfg.ENV_NAME).action_space.n 
+    action_space_dim = 3 # Поскольку действия фиксированы, можно захардкодить или передать из dqncfg
+
+    model = DQNN(observation_space_dim, action_space_dim).to(DEVICE)
+    model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+    model.eval() # Переводим модель в режим оценки для предсказания
+
+    # Преобразование состояния в тензор и отправка на устройство
+    state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+
+    with torch.no_grad(): # Отключаем вычисление градиентов для инференса
+        q_values = model(state_tensor)
+    
+    action = torch.argmax(q_values[0]).item() # Получаем индекс действия
+
+    actions_map = {0: "HOLD", 1: "BUY", 2: "SELL"} 
+    executed_action = actions_map[action]
+
+    print(f"Торговое действие: {executed_action} с Q-values {q_values.cpu().numpy()}")
+    return executed_action

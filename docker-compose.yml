@@ -7,6 +7,7 @@ services:
       POSTGRES_DB: medoed_db
       POSTGRES_USER: medoed_user
       POSTGRES_PASSWORD: medoed
+      POSTGRES_MULTIPLE_DATABASES: medoed_db,mlflow_db
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
@@ -18,35 +19,13 @@ services:
     restart: always
     environment:
       MINIO_ROOT_USER: root
-      MINIO_ROOT_PASSWORD: root
+      MINIO_ROOT_PASSWORD: billkill
     volumes:
       - minio_data:/data
     command: ["server", "/data"]
     ports:
       - "9000:9000"
       - "9001:9001"
-
-  mlflow:
-    image: ghcr.io/mlflow/mlflow:latest
-    container_name: mlflow
-    restart: always
-    depends_on:
-      - postgres
-      - minio
-    environment:
-      - MLFLOW_TRACKING_URI=postgresql://mlflow_user:mlflow_password@postgres:5432/medoed_db
-      - ARTIFACT_ROOT=s3://mlflow-bucket
-      - AWS_ACCESS_KEY_ID=root
-      - AWS_SECRET_ACCESS_KEY=root
-      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
-    volumes:
-      - ./mlflow/artifacts:/mlflow/artifacts
-    ports:
-      - "5051:5050"
-    command: >
-      mlflow server --backend-store-uri postgresql://medoed_user:medoed@postgres:5432/mlflow_db
-      --default-artifact-root s3://mlflow-bucket
-      --host 0.0.0.0
 
   redis:
     image: redis:latest
@@ -62,7 +41,7 @@ services:
     ports:
       - "5050:5050"
     environment:
-      - TF_SERVING_URL=http://serving:8501/v1/models/medoedai_model
+      - TORCHSERVE_URL=http://serving:8080/predictions/medoedai_model
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
     volumes:
@@ -80,9 +59,9 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
     volumes:
-      - ./app:/app
+      - ./:/app
     working_dir: /app
-    command: ["celery", "-A", "celery_tasks", "worker", "--loglevel=info"]
+    command: ["celery", "-A", "tasks.celery_tasks", "worker", "--loglevel=info"]
 
   trainer:
     image: pytorch/pytorch:latest

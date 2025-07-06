@@ -3,11 +3,12 @@ from flask import Flask, request, jsonify, render_template
 from flask import redirect, url_for
 
 import redis
+
+from tasks.celery_tasks import celery
 from celery.result import AsyncResult
 
 import os
-
-from celery.celery_tasks import search_lstm_task
+from tasks.celery_tasks import search_lstm_task, train_dqn, trade_step
 
 app = Flask(__name__, template_folder="templates")
 
@@ -27,6 +28,7 @@ def log_request_info():
 def index():
     """Возвращает список всех задач Celery и их состояние"""
     task_ids = redis_client.keys("celery-task-meta-*")  # Ищем все задачи
+    print(f"task_ids {print(task_ids)}")
     tasks = []
 
     for task_id in task_ids:
@@ -86,6 +88,16 @@ def start_parameter_search():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/train_dqn', methods=['POST'])
+def train():
+    task = train_dqn.apply_async()
+    return jsonify({'task_id': task.id, 'status': 'training dqn started'})
+
+@app.route('/trade_dqn', methods=['POST'])
+def trade():
+    task = trade_step.apply_async()
+    return jsonify({'task_id': task.id, 'status': 'trade dqn step started'})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))  # Получаем порт из переменной окружения

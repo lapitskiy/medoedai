@@ -40,7 +40,9 @@ class SettingsDqn():
     BATCH_SIZE = 20
     EXPLORATION_MAX = 1.0
     EXPLORATION_MIN = 0.01
-    EXPLORATION_DECAY = 0.995
+    EXPLORATION_DECAY = 0.9995
+
+dqncfg = SettingsDqn()
 
 class SettingsLstm():
     CPU_COUNT = 1
@@ -87,4 +89,4 @@ class SettingsLstm():
 
 config = SettingsRgr()
 lstmcfg = SettingsLstm()
-dqncfg = SettingsDqn()
+
