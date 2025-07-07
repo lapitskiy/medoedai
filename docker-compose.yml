@@ -63,27 +63,6 @@ services:
     working_dir: /app
     command: ["celery", "-A", "tasks.celery_tasks", "worker", "--loglevel=info"]
 
-  trainer:
-    image: pytorch/pytorch:latest
-    container_name: trainer
-    depends_on:
-      - celery-worker
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    volumes:
-      - ./models:/models
-      - ./workspace:/workspace
-    working_dir: /workspace
-    command: ["sleep", "infinity"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: ${GPU_COUNT:-0}  # Указываем 0, если нет GPU
-              capabilities: [gpu]
-
   serving:
     image: pytorch/torchserve:latest
     container_name: serving
@@ -105,6 +84,31 @@ services:
             - driver: nvidia
               count: ${GPU_COUNT:-0}
               capabilities: [gpu]
+
+  pytorch-gpu:
+    image: pytorch/pytorch:latest
+    container_name: pytorch-gpu
+    depends_on:
+      - celery-worker    
+    restart: unless-stopped
+    ports:
+      - "8080:8080"  # если нужно API
+      - "8081:8081"  # управление TorchServe
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - ./workspace:/workspace
+      - ./models:/models
+    working_dir: /workspace
+    command: ["sleep", "infinity"]  # Работает в фоне, ты заходишь и запускаешь, что хочешь
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-1}
+              capabilities: [gpu]     
 
 volumes:
   pgdata:

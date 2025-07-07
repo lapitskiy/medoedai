@@ -57,12 +57,14 @@ class DQNSolver:
         self.optimizer = optim.Adam(self.model.parameters(), lr=LEARNING_RATE)
         self.criterion = nn.MSELoss() # Для вычисления Q-значений
 
-        if load and os.path.exists(model_path):
-            self.model.load_state_dict(torch.load(model_path, map_location=DEVICE))
-            self.model.eval() # Переключаем модель в режим оценки
-            print("Модель загружена из", model_path)
-        else:
-            print("Создана новая модель")
+        
+        if load:
+            if os.path.exists(model_path):
+                self.model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+                self.model.eval()
+                print("Модель загружена из", model_path)
+            else:
+                print("Файл модели не найден. Создана новая модель")
         
         # Target Network (часто используется в DQN для стабильности)
         # Это копия основной модели, параметры которой обновляются реже
@@ -140,7 +142,7 @@ class DQNSolver:
         self.exploration_rate = max(EXPLORATION_MIN, self.exploration_rate)
 
 
-def train_model(dfs: dict, load_previous: bool = False, episodes: int = 100, model_path: str = "dqn_model.pth"):
+def train_model(dfs: dict, load_previous: bool = False, episodes: int = 300, model_path: str = "dqn_model.pth"):
     """
     Обучает модель DQN для торговли криптовалютой.
 

@@ -58,3 +58,4 @@ redis
 gym
 pandas-ta
 torch
+sqlalchemy
