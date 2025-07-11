@@ -1,6 +1,8 @@
 from celery import Celery
 import time
 
+import pandas as pd
+
 from dqn import train_model
 from model.dqn_model.gym.crypto_trading_env import CryptoTradingEnv
 import json
@@ -31,13 +33,42 @@ def train_dqn(self):
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
            
     df = {}
-    df['df_5min'] = db_get_or_fetch_ohlcv('BTC/USDT', '5m', 10000)
-    df['df_15min'] = db_get_or_fetch_ohlcv('BTC/USDT', '15m', 10000)
-    df['df_1h'] = db_get_or_fetch_ohlcv('BTC/USDT', '1h', 10000)
+    
+    df['df_5min'] = db_get_or_fetch_ohlcv(symbol_name='BTCUSDT', timeframe='5m', limit_candles=100000)
+
+    df_5min = df['df_5min']
+    
+    if df_5min is not None and not df_5min.empty:
+        print(f"Загружено свечей: {len(df_5min)}")
+    else:
+        print("Данные не загружены или пусты")
+
+    df_5min['datetime'] = pd.to_datetime(df_5min['timestamp'], unit='ms')
+
+    df_5min.set_index('datetime', inplace=True)
+
+    df_15min = df_5min.resample('15T').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum',
+    }).dropna().reset_index()
+
+    df_1h = df_5min.resample('1H').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum',
+    }).dropna().reset_index()
+
+    df['df_15min'] = df_15min
+    df['df_1h'] = df_1h
 
     # Выводим первые значения каждого df в формате JSON
     for key, value in df.items():
-        records = value[:1].copy()
+        records = value[:2].copy()
         if 'timestamp' in records.columns:
             records['timestamp'] = records['timestamp'].astype(str)
         else:
@@ -45,7 +76,7 @@ def train_dqn(self):
                 if records[col].dtype.name == 'datetime64[ns]':
                     records[col] = records[col].astype(str)
         print(f"{key}: {json.dumps(records.to_dict(orient='records'), ensure_ascii=False, indent=2)}")
-    result = train_model(dfs=df)
+    result = train_model(dfs=df, load_previous=True)
 
     return {"message": result}
 

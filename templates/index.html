@@ -23,14 +23,29 @@
 <body>
     <h1>Welcome to Search App</h1>
 
-    <form action="/task-start-search" method="post">
-        <input type="hidden" name="query" value="test_query">
-        <button type="submit">Запустить RandomSearch</button>
-    </form>
+
     <form action="/train_dqn" method="post">
         <input type="hidden" name="query" value="test_query">
         <button type="submit">Запустить DQN обучение<</button>
+    </form><br>
+    <form action="/clean_data" method="post">
+        <input type="hidden" name="query" value="test_query">
+        <button type="submit">Запустить очистку postgers от пиков<</button>
     </form>    
+    <br>
+    <form action="/clean_db" method="post">
+        <input type="hidden" name="query" value="test_query">
+        <button type="submit">Запустить очистку postgers отcсвечей<</button>
+    </form>      
+    <br>
+    <form action="/parser" method="post">
+        <input type="hidden" name="query" value="test_query">
+        <button type="submit">Скачать свечи<</button>
+    </form>   <br>   
+        <form action="/task-start-search" method="post">
+        <input type="hidden" name="query" value="test_query">
+        <button type="submit">Запустить RandomSearch</button>
+    </form>
 
     <h2>Статус задач</h2>
     <table>

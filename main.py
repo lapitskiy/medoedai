@@ -9,6 +9,8 @@ from celery.result import AsyncResult
 
 import os
 from tasks.celery_tasks import search_lstm_task, train_dqn, trade_step
+from utils.db_utils import clean_ohlcv_data, delete_ohlcv_for_symbol_timeframe, load_latest_candles_from_csv_to_db
+from utils.parser import parser_download_and_combine_with_library
 
 app = Flask(__name__, template_folder="templates")
 
@@ -16,6 +18,8 @@ app = Flask(__name__, template_folder="templates")
 redis_client = redis.Redis(host="redis", port=6379, db=0)
 
 import logging
+from flask import Response
+import json
 
 logging.basicConfig(level=logging.INFO)
 
@@ -99,6 +103,88 @@ def trade():
     task = trade_step.apply_async()
     return jsonify({'task_id': task.id, 'status': 'trade dqn step started'})
 
+# Новый маршрут для запуска очистки данных
+@app.route('/clean_data', methods=['POST'])
+def clean_data():
+    timeframes_to_clean = ['5m', '15m', '1h']
+    symbol_name ='BTC/USDT'
+    
+    max_close_change_percent = 15.0
+    max_hl_range_percent = 20.0
+    volume_multiplier = 10.0
+
+    results = []
+    for tf in timeframes_to_clean:
+        try:
+            # Вызываем функцию очистки напрямую (она больше не Celery-задача)
+            result = clean_ohlcv_data(tf, symbol_name,
+                                      max_close_change_percent,
+                                      max_hl_range_percent,
+                                      volume_multiplier)
+            results.append(result)
+        except Exception as e:
+            results.append({"status": "error", "message": f"Ошибка при очистке {tf} для {symbol_name}: {str(e)}"})
+
+    return jsonify({'status': 'Очистка данных завершена для всех указанных таймфреймов.', 'results': results})
+
+
+# Новый маршрут для запуска очистки данных
+@app.route('/clean_db', methods=['POST'])
+def clean_db():
+    timeframes_to_clean = '5m'
+    symbol_name ='BTC/USDT'            
+
+    results = []
+    try:
+        # Вызываем функцию очистки напрямую (она больше не Celery-задача)
+        delete_ohlcv_for_symbol_timeframe('BTC/USDT', timeframes_to_clean)
+        delete_ohlcv_for_symbol_timeframe('BTCUSDT', timeframes_to_clean)
+    except Exception as e:
+        results.append({"status": "error", "message": f"Ошибка при очистке для {symbol_name}: {str(e)}"})
+
+
+    return jsonify({'status': 'Очистка базы от всех свечей завершена указанных таймфреймов.', 'results': results})
+
+# Новый маршрут для запуска очистки данных
+@app.route('/parser', methods=['POST'])
+def parser():
+    results = []
+    symbol = 'BTCUSDT'
+    interval = '5m'
+    desired_candles = 100000
+    csv_file_path = None
+
+    try:
+        # 1. Вызываем внешнюю функцию, которая создает CSV с 100 000 свечами
+        csv_file_path = parser_download_and_combine_with_library(
+            symbol='BTCUSDT',
+            interval=interval,
+            months_to_fetch=12, # Это параметр для parser_download_and_combine_with_library
+            desired_candles=desired_candles
+        )
+        results.append({"status": "success", "message": f"CSV файл создан: {csv_file_path}"})
+
+        # 2. Загружаем эти 100 000 свечей из CSV в базу данных
+        # Эта функция теперь отвечает за перезапись/обновление данных в БД
+        loaded_count = load_latest_candles_from_csv_to_db(
+            file_path=csv_file_path,
+            symbol_name=symbol,
+            timeframe=interval
+        )
+        if loaded_count > 0:
+            results.append({"status": "success", "message": f"Загружено {loaded_count} свечей из CSV в БД."})
+        else:
+            results.append({"status": "warning", "message": "Не удалось загрузить свечи из CSV в БД."})
+
+    except Exception as e:
+        results.append({"status": "error", "message": f"Ошибка в процессе парсинга: {str(e)}"})
+
+    response = {'status': 'Парсинг завершен', 'results': results}
+    return Response(json.dumps(response, ensure_ascii=False), mimetype='application/json')
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))  # Получаем порт из переменной окружения
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=True)    
+
+

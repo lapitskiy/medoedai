@@ -34,13 +34,13 @@ class SettingsDqn():
     goDQN = True
     ENV_NAME = "CryptoTradingEnv-v0"
 
-    GAMMA = 0.95
-    LEARNING_RATE = 0.001
+    GAMMA = 0.99
+    LEARNING_RATE = 0.0005
     MEMORY_SIZE = 1000000
-    BATCH_SIZE = 20
+    BATCH_SIZE = 64
     EXPLORATION_MAX = 1.0
     EXPLORATION_MIN = 0.01
-    EXPLORATION_DECAY = 0.9995
+    EXPLORATION_DECAY = 0.995
 
 dqncfg = SettingsDqn()
 

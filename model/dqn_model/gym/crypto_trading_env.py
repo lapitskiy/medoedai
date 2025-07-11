@@ -72,7 +72,6 @@ class CryptoTradingEnv(gym.Env):
         self.balance = None
         self.crypto_held = None
         self.last_buy_price = None
-        self.history = None
 
         # Рассчитываем статистики нормализации
         self._calculate_normalization_stats() 
@@ -329,17 +328,22 @@ class CryptoTradingEnv(gym.Env):
         # Проверяем конец эпизода по длине
         # Важно: текущий шаг должен быть строго меньше total_steps, иначе iloc может выдать ошибку
         # Также проверяем, что у нас есть данные для следующих таймфреймов
-        done = self.current_step >= self.start_step + self.episode_length or \
-               self.current_step >= self.total_steps or \
-               (self.current_step // 3) >= len(self.df_15min) or \
-               (self.current_step // 12) >= len(self.df_1h)
+        done = (
+            self.current_step >= self.start_step + self.episode_length or
+            self.current_step >= self.total_steps or
+            (self.current_step // 3) + 1 > len(self.df_15min) or  # +1, т.к. end_15min_idx_for_window = last_completed_15min_candle_idx + 1
+            (self.current_step // 12) + 1 > len(self.df_1h) or
+            self.current_step >= len(self.df_5min)
+        )
 
         reward = 0.0
         info = {}
         
         # Получаем текущую цену закрытия (для предыдущей свечи, так как решение принимается после ее закрытия)
         # current_step - 1, потому что current_step - это следующий шаг, а данные - по предыдущему
-        current_price_idx = max(0, self.current_step - 1)
+        
+        current_price_idx = min(self.start_step + self.episode_length - 1, max(0, self.current_step - 1))
+        
         if current_price_idx >= len(self.df_5min):
             # Если мы вышли за пределы данных, то цена недействительна.
             # Это должно быть обработано 'done' условием выше.
@@ -357,46 +361,99 @@ class CryptoTradingEnv(gym.Env):
                     fee = amount_to_buy * current_price * self.trade_fee_percent
                     self.crypto_held += amount_to_buy * (1 - self.trade_fee_percent) 
                     self.balance = 0 
-                    self.last_buy_price = current_price # Запоминаем цену покупки
-                    self.history.append({'step': self.current_step, 'action': 'BUY', 'price': current_price, 'amount': amount_to_buy})
+                    self.last_buy_price = current_price # Запоминаем цену покупки                    
+                    #reward -= fee * 10 # Штраф за комиссию, если она существенна
                 else:
-                    self.history.append({'step': self.current_step, 'action': 'INVALID_BUY_ATTEMPT'})
+                    reward -= 5 # Это очень важно, чтобы агент учился избегать таких действий
+            
                                             
-            elif action == 2:  # SELL                                     
+            elif action == 2:  # SELL
                 if self.crypto_held > 0:
-                    amount_to_sell = self.crypto_held                                                             
-                    fee = amount_to_sell * current_price * self.trade_fee_percent                                        
+                    amount_to_sell = self.crypto_held
+                    fee = amount_to_sell * current_price * self.trade_fee_percent
                     
+                    # Обновляем баланс и количество крипты
                     self.balance += amount_to_sell * current_price * (1 - self.trade_fee_percent) 
                     self.crypto_held = 0 
 
-                    if self.last_buy_price is not None:        
-                        profit_on_trade = (current_price - self.last_buy_price) * amount_to_sell  # ← добавлено
-                        net_profit = profit_on_trade - fee  # ← добавлено                                                                   
-                        if net_profit < 0:  # ← изменено: проверяем прибыль с учётом комиссии
-                            reward += net_profit / self.initial_balance * 10  # ← изменено: штрафуем по чистому убытку
-                            reward -= 100  # ← оставил дополнительный штраф, можно регулировать
+                    # Вычисляем чистую прибыль/убыток, если была предыдущая покупка
+                    if self.last_buy_price is not None:
+                        # Общая стоимость проданной крипты, если бы не было комиссии
+                        gross_sale_value = amount_to_sell * current_price
+                        # Изначальная стоимость покупки
+                        cost_of_purchase = amount_to_sell * self.last_buy_price # Предполагаем, что amount_to_buy был равен amount_to_sell
+                        
+                        # Чистая прибыль или убыток (стоимость продажи - стоимость покупки - комиссия)
+                        net_profit_loss = gross_sale_value - cost_of_purchase - fee
+
+                        if self.last_buy_price < current_price * 0.1:
+                            print(f"⚠️ Возможно старая цена покупки: last_buy_price={self.last_buy_price:.2f}, current_price={current_price:.2f}")
+
+
+                        # Нормализуем прибыль/убыток относительно начального баланса
+                        normalized_net_profit_loss = net_profit_loss / self.initial_balance
+
+                        # Определяем вознаграждение:
+                        # - Положительное за прибыль, отрицательное за убыток.
+                        # - Коэффициент масштабирования, чтобы вознаграждение было значимым, но не подавляющим.
+                        # - Возможно, больший штраф за убытки, чем награда за прибыль, чтобы стимулировать осторожность,
+                        #   но не такой огромный разрыв, как 1000 vs 10000.
+                        reward_transaction = 0
+                        if net_profit_loss > 0:
+                            # Награда за прибыль: пусть 1% прибыли от начального баланса дает 10 ед. награды
+                            # Если 1000$ -> 10$ прибыли = 0.01 -> 0.01 * 1000 = 10
+                            reward_transaction += normalized_net_profit_loss * 2000 
+                            result = "PROFIT"
                         else:
-                            reward += net_profit / self.initial_balance * 100  # ← изменено: награда без штрафа за комиссию
+                            # Штраф за убыток: пусть 1% убытка от начального баланса дает -10 ед. награды
+                            # Если 1000$ -> -10$ убытка = -0.01 -> -0.01 * 1000 = -10
+                            # Если хотите сильнее штрафовать за убыток, можете увеличить множитель
+                            reward_transaction += normalized_net_profit_loss * 3000 # Можно сделать *1500 или *2000 для большего штрафа
+                            result = "LOSS"
+                        
+                                                # --- ВСТАВЬТЕ ЭТОТ КОД ЗДЕСЬ ---
+                        max_reward_per_trade = 50.0  # Максимальная награда за одну сделку
+                        min_reward_per_trade = -50.0 # Максимальный штраф за одну сделку (может быть и -100.0, если хотите сильнее штрафовать за большие потери)
+
+                        reward_transaction = max(min_reward_per_trade, min(max_reward_per_trade, reward_transaction))
+                        # -------------------------------
+                        
+                        reward += reward_transaction # Добавляем обрезанную награду к общей награде за шаг
 
 
-                    self.last_buy_price = None
-                    self.history.append({
-                        'step': self.current_step,
-                        'action': 'SELL',
-                        'price': current_price,
-                        'amount': amount_to_sell
-                    })
+                        print(f"[{self.current_step}] SELL {result}: {net_profit_loss:.2f}, price: {current_price:.2f}, reward: {reward:.2f}")
+                        info['net_profit'] = net_profit_loss
+                    else:
+                        # Если продаем без предшествующей покупки (такого не должно быть при crypto_held > 0, но на всякий случай)
+                        reward -= 20 # Штраф за некорректное состояние
+                        print(f"[{self.current_step}] SELL (INVALID): reward: {reward:.2f}")
 
+
+                    self.last_buy_price = None 
                 else:
-                    reward -= 10  # Штраф за невалидную продажу
+                    reward -= 5 # Штраф за невалидную продажу (нет крипты для продажи)
 
             # Награда за удержание (или штраф за бездействие)
             # Если не было покупки/продажи (action == 0), или если действие было невалидным
             # Можно добавить небольшую награду/штраф за "HOLD"
             if action == 0:
-                #reward += 0.01 # Очень маленькая награда за "HOLD"
-                reward -= 0.0001
+                # Этот блок вознаграждает (или штрафует) агента за "HOLD" при открытой позиции
+                if self.crypto_held > 0 and self.last_buy_price is not None:
+                    unrealized_pnl_percent = (current_price - self.last_buy_price) / self.last_buy_price
+                    
+                    # Если позиция прибыльна
+                    if unrealized_pnl_percent > 0: # Если есть хоть какая-то нереализованная прибыль
+                        # Чем выше нереализованная прибыль, тем больше награда за удержание
+                        reward += unrealized_pnl_percent * 50 # Умеренный множитель, чтобы стимулировать удержание прибыльных позиций
+                    # Если позиция убыточна
+                    else: # unrealized_pnl_percent <= 0 (включая ноль)
+                        # Чем больше нереализованный убыток, тем больше штраф за удержание
+                        # Этот штраф должен быть достаточно чувствительным, чтобы побудить агента закрыть убыточную позицию
+                        reward += unrealized_pnl_percent * 100 # Множитель для штрафа, пусть будет в 2 раза сильнее, чем награда за прибыль
+                elif action == 0: # Если action == HOLD и нет открытой позиции (просто бездействие)
+                    # Очень маленький, едва заметный штраф за полное бездействие (когда нет открытых сделок)
+                    # Это побудит агента искать точки входа, а не просто сидеть на балансе.
+                    reward -= 0.005 # Очень маленький штраф
 
             # Награда за нереализованную прибыль/убыток (можно использовать, но осторожно)
             # Это может сделать функцию награды слишком "шумной", но может помочь агенту видеть текущий PnL
@@ -404,15 +461,7 @@ class CryptoTradingEnv(gym.Env):
             #     unrealized_profit_loss = (current_price - self.last_buy_price) * self.crypto_held
             #     reward += unrealized_profit_loss / self.initial_balance * 0.1 # Масштабируем и даем небольшой вес
 
-            if self.crypto_held > 0 and self.last_buy_price is not None:
-                # Награда за нереализованную прибыль (unrealized PnL)
-                current_value_held = self.crypto_held * current_price
-                # PnL относительно начального баланса
-                unrealized_profit_loss_relative = (current_value_held - (self.crypto_held * self.last_buy_price)) / self.initial_balance
-
-                # Добавьте это к reward. Масштабируйте так, чтобы оно было значимым, но не доминировало
-                # над наградой за закрытую сделку
-                reward += unrealized_profit_loss_relative * 1.0 # Например, множитель 1.0 или 2.0
+            self.cumulative_reward += reward
 
             next_state = self._get_state()
 
@@ -438,41 +487,34 @@ class CryptoTradingEnv(gym.Env):
             # В данном случае, _get_state() уже обрабатывает граничные условия.
             next_state = self._get_state()
             
+            self.cumulative_reward += reward
+            
+            info['cumulative_reward'] = self.cumulative_reward
+            
             info['total_profit'] = profit_loss 
             info['current_balance'] = final_value
             info['crypto_held'] = self.crypto_held 
             info['current_price'] = current_price
             info['reward'] = reward
 
+        
         return next_state, reward, done, info
 
     def reset(self) -> np.ndarray:
-        # Управление стартовым шагом для последовательного прохода по данным
-        # Мы хотим убедиться, что стартовый шаг позволяет извлечь полный lookback_window
-        # и что есть достаточно данных для всего episode_length.
-        
-        # Если self.current_train_start_idx уже не позволяет завершить эпизод
-        # (т.е. текущий индекс + длина эпизода превышает общее количество шагов)
-        # или если мы приближаемся к концу df_5min
-        if self.current_train_start_idx + self.episode_length >= self.total_steps:
-            # Сброс к минимально возможному начальному индексу,
-            # который позволяет получить полный lookback_window.
-            self.current_train_start_idx = self.min_valid_start_step 
-        
-        self.start_step = self.current_train_start_idx
+        # Случайно выбираем стартовый шаг так, чтобы хватило данных для lookback_window и episode_length
+        max_start = self.total_steps - self.episode_length
+        min_start = self.min_valid_start_step
+        if max_start <= min_start:
+            self.start_step = min_start
+        else:
+            self.start_step = random.randint(min_start, max_start)
         self.current_step = self.start_step
-
-        # Обновляем self.current_train_start_idx для следующего эпизода
-        self.current_train_start_idx += self.episode_length
-        # Если после увеличения мы вышли за пределы, сбросим на начало для следующего цикла
-        if self.current_train_start_idx >= self.total_steps:
-             self.current_train_start_idx = self.min_valid_start_step
 
         # Сброс состояния торгового агента
         self.balance = self.initial_balance
         self.crypto_held = 0
         self.last_buy_price = None
-        self.history = []
+        self.cumulative_reward = 0.0
 
         return self._get_state()
 
@@ -483,13 +525,7 @@ class CryptoTradingEnv(gym.Env):
             current_price = self.df_5min.iloc[-1]['close'] # Берем последнюю известную цену
         else:
             current_price = self.df_5min.iloc[current_price_idx]['close']
-
-        if len(self.history) == 0:
-            print(f"Шаг: {self.current_step}, Баланс: {self.balance:.2f} USDT, Крипты: {self.crypto_held:.6f}, Цена: {current_price:.2f}, Действия пока нет")
-        else:
-            last_action = self.history[-1]
-            print(f"Шаг: {self.current_step}, Баланс: {self.balance:.2f} USDT, Крипты: {self.crypto_held:.6f}, Цена: {current_price:.2f}, Последнее действие: {last_action['action']} по цене {last_action['price']:.2f} на количестве {last_action['amount']:.6f}")
-
+            
     def close(self):
         pass
     
