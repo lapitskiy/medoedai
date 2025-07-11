@@ -137,7 +137,7 @@ class DQNSolver:
         # Сохраняем модель
         torch.save(self.model.state_dict(), self.model_path)
         # Сохраняем replay buffer во временный файл
-        tmp_path = self.buffer_path + ".tmp"
+        tmp_path = f"./temp/{self.buffer_path}.tmp"
         with open(tmp_path, "wb") as f:
             pickle.dump(self.memory, f)
         # Перемещаем временный файл на место основного
