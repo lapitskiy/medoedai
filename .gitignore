@@ -1,3 +1,13 @@
+.vscode/
 .idea/
 temp/
 training.log
+wandb/**
+!wandb/
+alembic/**
+!alembic/
+alembic.ini
+replay_buffer.pkl
+dqn_model.pth
+temp/**
+!temp/

@@ -11,10 +11,27 @@ from utils.env import dqncfg # Предполагаем, что dqncfg соде�
 import numpy as np
 import random
 import os # Для проверки существования файла модели
+import pickle
 from collections import deque
 import gym
 from gym import spaces
 from gym.utils import seeding
+
+import wandb
+
+wandb.init(
+    project="medoedai-medoedai",
+    name="medoedai-medoedai",
+    config={
+        "learning_rate": dqncfg.LEARNING_RATE,
+        "batch_size": dqncfg.BATCH_SIZE,
+        "exploration_max": dqncfg.EXPLORATION_MAX,
+        "exploration_min": dqncfg.EXPLORATION_MIN,
+        "exploration_decay": dqncfg.EXPLORATION_DECAY,
+        "memory_size": dqncfg.MEMORY_SIZE,
+        "gamma": dqncfg.GAMMA
+    }
+)
 
 # --- Константы из dqncfg (предполагаем, что они определены там) ---
 # Если dqncfg - это модуль или объект, убедитесь, что эти переменные доступны.
@@ -47,7 +64,7 @@ class DQNN(nn.Module):
 
 # --- DQNSolver адаптированный под PyTorch ---
 class DQNSolver:
-    def __init__(self, observation_space, action_space, load=False, model_path="dqn_model.pth"):
+    def __init__(self, observation_space, action_space, load=False, model_path="dqn_model.pth", buffer_path="replay_buffer.pkl"):
         self.exploration_rate = EXPLORATION_MAX
         self.action_space = action_space
         self.memory = deque(maxlen=MEMORY_SIZE)
@@ -57,14 +74,29 @@ class DQNSolver:
         self.optimizer = optim.Adam(self.model.parameters(), lr=LEARNING_RATE)
         self.criterion = nn.MSELoss() # Для вычисления Q-значений
 
-        
         if load:
+        # Загрузка модели
             if os.path.exists(model_path):
                 self.model.load_state_dict(torch.load(model_path, map_location=DEVICE))
                 self.model.eval()
-                print("Модель загружена из", model_path)
+                print("✅ Модель загружена из", model_path)
             else:
-                print("Файл модели не найден. Создана новая модель")
+                print("⚠️ Файл модели не найден. Создана новая модель.")
+
+            # Загрузка replay buffer
+            if os.path.exists(buffer_path):
+                try:
+                    print("Загрузка буфера...")
+                    with open(buffer_path, "rb") as f:
+                        self.memory = pickle.load(f)
+                    print(f"✅ Replay buffer загружен из {buffer_path}, {len(self.memory)} записей.")
+                except Exception as e:
+                    print("⚠️ Ошибка при загрузке replay buffer:", e)
+            else:
+                print("⚠️ Файл replay buffer не найден. Память не восстановлена.")
+
+        self.model_path = model_path
+        self.buffer_path = buffer_path
         
         # Target Network (часто используется в DQN для стабильности)
         # Это копия основной модели, параметры которой обновляются реже
@@ -100,6 +132,16 @@ class DQNSolver:
         
         # Получаем действие с максимальным Q-значением
         return torch.argmax(q_values[0]).item()
+          
+    def save(self):
+        # Сохраняем модель
+        torch.save(self.model.state_dict(), self.model_path)
+        # Сохраняем replay buffer во временный файл
+        tmp_path = self.buffer_path + ".tmp"
+        with open(tmp_path, "wb") as f:
+            pickle.dump(self.memory, f)
+        # Перемещаем временный файл на место основного
+        os.replace(tmp_path, self.buffer_path)       
 
     def experience_replay(self):
         if len(self.memory) < BATCH_SIZE:
@@ -138,11 +180,7 @@ class DQNSolver:
         loss.backward()
         self.optimizer.step()
 
-        self.exploration_rate *= EXPLORATION_DECAY
-        self.exploration_rate = max(EXPLORATION_MIN, self.exploration_rate)
-
-
-def train_model(dfs: dict, load_previous: bool = False, episodes: int = 300, model_path: str = "dqn_model.pth"):
+def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000, model_path: str = "dqn_model.pth"):
     """
     Обучает модель DQN для торговли криптовалютой.
 
@@ -155,6 +193,8 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 300, mod
         str: Сообщение о завершении обучения.
     """
     
+    previous_cumulative_reward = -float('inf')
+    
     # Теперь CryptoTradingEnv принимает словарь с DataFrame'ами
     env = CryptoTradingEnv(dfs=dfs) 
     
@@ -165,10 +205,15 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 300, mod
 
     target_update_frequency = 10 # Обновлять целевую сеть каждые N эпизодов
 
+    global_step = 0
+    successful_episodes = 0
+
     for episode in range(episodes):
         # Переводим модель в режим обучения
         dqn_solver.model.train() 
         state = env.reset() # env.reset() теперь возвращает начальное состояние
+        step_in_episode = 0
+        
         # state уже в правильной форме (NumPy массив), не нужно reshape здесь
 
         while True:
@@ -179,25 +224,72 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 300, mod
             state = state_next
             
             dqn_solver.experience_replay() # Вызываем replay на каждом шаге или с определенной частотой
+            
+            global_step += 1                        
+            
+            wandb.log({
+                            "step": global_step,
+                            "episode": episode + 1,
+                            #"action": action,
+                            "reward": reward,
+                            #"crypto_held": info.get('crypto_held', 0),
+                            "cumulative_reward": env.cumulative_reward,
+                            "net_profit": info.get('net_profit', None),        # Добавлено
+                        })
 
-            if terminal:
-                print(f"Эпизод {episode+1}/{episodes} завершен. Общая прибыль: {info.get('total_profit', 0):.2f}, "
-                      f"Текущий баланс: {info.get('current_balance', env.initial_balance):.2f}, "
-                      f"BTC в наличии: {info.get('crypto_held', 0):.4f}")
+                    
+            current_cumulative_reward = env.cumulative_reward
+            if terminal:      
+                                
+                if info.get("total_profit", 0) > 0:
+                    dqn_solver.exploration_rate = max(
+                        EXPLORATION_MIN,
+                        dqn_solver.exploration_rate * EXPLORATION_DECAY
+                    )       
+                    successful_episodes += 1
+                elif previous_cumulative_reward is not None and \
+                    current_cumulative_reward < previous_cumulative_reward and \
+                    abs(current_cumulative_reward - previous_cumulative_reward) > abs(previous_cumulative_reward) * 0.2:
+                    dqn_solver.exploration_rate = max(
+                        EXPLORATION_MIN,
+                        dqn_solver.exploration_rate * EXPLORATION_DECAY
+                    )     
+                    successful_episodes += 1
+                
+                previous_cumulative_reward = current_cumulative_reward 
+                                                                         
+                print(f"Эпизод {episode+1}/{episodes} завершен. "
+                    f"Общая прибыль: {info.get('total_profit', 0):.2f}, "
+                    f"Баланс: {info.get('current_balance', env.initial_balance):.2f}, "
+                    f"BTC: {info.get('crypto_held', 0):.4f}, "
+                    f"Cumulative reward: {env.cumulative_reward:.2f}, "
+                    f"Epsilon: {dqn_solver.exploration_rate:.4f}, "
+                    f"Successful_episodes: {successful_episodes:.2f}")
+
+                # Логирование в wandb
+                wandb.log({
+                    "step": global_step,
+                    "episode": episode + 1,
+                    "total_profit": info.get('total_profit', 0),
+                    "final_balance": info.get('current_balance', env.initial_balance),
+                    "final_crypto_held": info.get('crypto_held', 0),
+                    "final_cumulative_reward": env.cumulative_reward,
+                    "epsilon": dqn_solver.exploration_rate
+                })
                 break
-        
+            
         # Обновление целевой сети
         if (episode + 1) % target_update_frequency == 0:
             dqn_solver.update_target_model()
             print(f"Целевая сеть обновлена после эпизода {episode+1}")
 
         # Сохранение модели (частота сохранения)
-        if (episode + 1) % 10 == 0: 
-            torch.save(dqn_solver.model.state_dict(), model_path)
-            print(f"Модель сохранена после эпизода {episode+1}")
+        if (episode + 1) % 100 == 0: 
+            dqn_solver.save()
+            print(f"Модель и replay buffer сохранены после эпизода {episode+1}")
 
     # Сохранение финальной модели
-    torch.save(dqn_solver.model.state_dict(), model_path)
+    dqn_solver.save()
     print("Финальная модель сохранена.")
     return "Обучение завершено"
 
