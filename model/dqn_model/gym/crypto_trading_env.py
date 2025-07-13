@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import random
+import math
 from sklearn.preprocessing import StandardScaler # Добавлено для нормализации
 
 class CryptoTradingEnv(gym.Env):
@@ -154,6 +155,7 @@ class CryptoTradingEnv(gym.Env):
 
         # Заполняем NaN нулями и возвращаем как numpy array float32
         indicators = df[features].fillna(0).values.astype(np.float32)
+        self.df_5min = df
         return indicators
     
     def _calculate_normalization_stats(self):
@@ -357,11 +359,18 @@ class CryptoTradingEnv(gym.Env):
         if not done:
             if action == 1: # BUY
                 if self.balance > 0 and self.crypto_held == 0: # Покупаем, только если нет крипты
+                    
+                    if self.df_5min['EMA_100_cross_up_200'].iloc[self.current_step] == 1.0:  # BUY
+                        reward += 10  # стимулируем вход в потенциальный тренд
+                    
+                    self.last_buy_step = self.current_step
+                    
                     amount_to_buy = self.balance / current_price 
                     fee = amount_to_buy * current_price * self.trade_fee_percent
                     self.crypto_held += amount_to_buy * (1 - self.trade_fee_percent) 
                     self.balance = 0 
                     self.last_buy_price = current_price # Запоминаем цену покупки                    
+                    self._log_ema_signals(self.current_step, label="BUY")
                     #reward -= fee * 10 # Штраф за комиссию, если она существенна
                 else:
                     reward -= 5 # Это очень важно, чтобы агент учился избегать таких действий
@@ -385,50 +394,38 @@ class CryptoTradingEnv(gym.Env):
                         
                         # Чистая прибыль или убыток (стоимость продажи - стоимость покупки - комиссия)
                         net_profit_loss = gross_sale_value - cost_of_purchase - fee
+                        
+                        # Относительный процент прибыли/убытка
+                        relative_profit = (current_price - self.last_buy_price) / self.last_buy_price
+
 
                         if self.last_buy_price < current_price * 0.1:
                             print(f"⚠️ Возможно старая цена покупки: last_buy_price={self.last_buy_price:.2f}, current_price={current_price:.2f}")
-
-
-                        # Нормализуем прибыль/убыток относительно начального баланса
-                        normalized_net_profit_loss = net_profit_loss / self.initial_balance
-
-                        # Определяем вознаграждение:
-                        # - Положительное за прибыль, отрицательное за убыток.
-                        # - Коэффициент масштабирования, чтобы вознаграждение было значимым, но не подавляющим.
-                        # - Возможно, больший штраф за убытки, чем награда за прибыль, чтобы стимулировать осторожность,
-                        #   но не такой огромный разрыв, как 1000 vs 10000.
-                        reward_transaction = 0
-                        if net_profit_loss > 0:
-                            # Награда за прибыль: пусть 1% прибыли от начального баланса дает 10 ед. награды
-                            # Если 1000$ -> 10$ прибыли = 0.01 -> 0.01 * 1000 = 10
-                            reward_transaction += normalized_net_profit_loss * 2000 
-                            result = "PROFIT"
-                        else:
-                            # Штраф за убыток: пусть 1% убытка от начального баланса дает -10 ед. награды
-                            # Если 1000$ -> -10$ убытка = -0.01 -> -0.01 * 1000 = -10
-                            # Если хотите сильнее штрафовать за убыток, можете увеличить множитель
-                            reward_transaction += normalized_net_profit_loss * 3000 # Можно сделать *1500 или *2000 для большего штрафа
-                            result = "LOSS"
                         
-                                                # --- ВСТАВЬТЕ ЭТОТ КОД ЗДЕСЬ ---
-                        max_reward_per_trade = 50.0  # Максимальная награда за одну сделку
-                        min_reward_per_trade = -50.0 # Максимальный штраф за одну сделку (может быть и -100.0, если хотите сильнее штрафовать за большие потери)
-
-                        reward_transaction = max(min_reward_per_trade, min(max_reward_per_trade, reward_transaction))
-                        # -------------------------------
+                         # --- tanh награда ---
+                        scale_factor = 10
+                        reward_transaction = math.tanh(relative_profit * scale_factor) * 20
+                        reward += reward_transaction
+                        result = "PROFIT" if reward_transaction > 0 else "LOSS"
                         
-                        reward += reward_transaction # Добавляем обрезанную награду к общей награде за шаг
-
-
-                        print(f"[{self.current_step}] SELL {result}: {net_profit_loss:.2f}, price: {current_price:.2f}, reward: {reward:.2f}")
+                        holding_period = self.current_step - self.last_buy_step if self.last_buy_step is not None else 0
+                        holding_minutes = holding_period * 5
+                        print(f"[{self.current_step}] SELL {result}: {net_profit_loss:.2f}, price: {current_price:.2f}, reward: {reward:.2f}, held {holding_minutes} min")
+                        
+                        
+                    
+                        # награда за продажу по тренду вниз
+                        if self.df_5min['EMA_100_cross_down_200'].iloc[self.current_step] == 1.0:  # SELL на пересечении вниз
+                            reward += 2  # стимулируем выход из падающего тренда
+                                                
+                        self._log_ema_signals(self.current_step, label="SELL")
                         info['net_profit'] = net_profit_loss
+                        
+
+
                     else:
-                        # Если продаем без предшествующей покупки (такого не должно быть при crypto_held > 0, но на всякий случай)
-                        reward -= 20 # Штраф за некорректное состояние
+                        reward -= 20  # Продаем без покупки
                         print(f"[{self.current_step}] SELL (INVALID): reward: {reward:.2f}")
-
-
                     self.last_buy_price = None 
                 else:
                     reward -= 5 # Штраф за невалидную продажу (нет крипты для продажи)
@@ -527,6 +524,15 @@ class CryptoTradingEnv(gym.Env):
             current_price = self.df_5min.iloc[current_price_idx]['close']
             
     def close(self):
+        
+    def _log_ema_signals(self, step, label="INFO"):
+        required_cols = ['EMA_100', 'EMA_200', 'EMA_100_cross_up_200', 'EMA_100_cross_down_200']
+        if all(col in self.df_5min.columns for col in required_cols):
+            row = self.df_5min[required_cols].iloc[step]
+            if not (row['EMA_100_cross_up_200'] == 0.0 and row['EMA_100_cross_down_200'] == 0.0):
+                print(f"[{step}] {label} EMA signal: {row}")
+        else:
+            print(f"[{step}] ❌ EMA columns not found for {label}")        
         pass
     
     @staticmethod

@@ -74,29 +74,12 @@ class DQNSolver:
         self.optimizer = optim.Adam(self.model.parameters(), lr=LEARNING_RATE)
         self.criterion = nn.MSELoss() # Для вычисления Q-значений
 
-        if load:
-        # Загрузка модели
-            if os.path.exists(model_path):
-                self.model.load_state_dict(torch.load(model_path, map_location=DEVICE))
-                self.model.eval()
-                print("✅ Модель загружена из", model_path)
-            else:
-                print("⚠️ Файл модели не найден. Создана новая модель.")
-
-            # Загрузка replay buffer
-            if os.path.exists(buffer_path):
-                try:
-                    print("Загрузка буфера...")
-                    with open(buffer_path, "rb") as f:
-                        self.memory = pickle.load(f)
-                    print(f"✅ Replay buffer загружен из {buffer_path}, {len(self.memory)} записей.")
-                except Exception as e:
-                    print("⚠️ Ошибка при загрузке replay buffer:", e)
-            else:
-                print("⚠️ Файл replay buffer не найден. Память не восстановлена.")
-
         self.model_path = model_path
         self.buffer_path = buffer_path
+        
+        if load:
+            self.load_model()
+            self.load_state()
         
         # Target Network (часто используется в DQN для стабильности)
         # Это копия основной модели, параметры которой обновляются реже
@@ -138,10 +121,16 @@ class DQNSolver:
         torch.save(self.model.state_dict(), self.model_path)
         # Сохраняем replay buffer во временный файл
         tmp_path = f"./temp/{self.buffer_path}.tmp"
+              
+        agent_data = {
+            "memory": self.memory,
+            "exploration_rate": self.exploration_rate
+        }
+        
         with open(tmp_path, "wb") as f:
-            pickle.dump(self.memory, f)
-        # Перемещаем временный файл на место основного
-        os.replace(tmp_path, self.buffer_path)       
+            pickle.dump(agent_data, f)
+
+        os.replace(tmp_path, self.buffer_path)
 
     def experience_replay(self):
         if len(self.memory) < BATCH_SIZE:
@@ -179,6 +168,37 @@ class DQNSolver:
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+        
+
+    def load_model(self):
+        if os.path.exists(self.model_path):
+            self.model.load_state_dict(torch.load(self.model_path, map_location=DEVICE))
+            self.model.eval()
+            print("✅ Модель загружена из", self.model_path)
+        else:
+            print("⚠️ Файл модели не найден. Создана новая модель.")
+
+    def load_state(self):
+        if os.path.exists(self.buffer_path):
+            try:
+                print("Загрузка replay buffer и exploration_rate...")
+                with open(self.buffer_path, "rb") as f:
+                    agent_data = pickle.load(f)
+
+                if isinstance(agent_data, dict):
+                    self.memory = agent_data.get("memory", deque(maxlen=MEMORY_SIZE))
+                    self.exploration_rate = agent_data.get("exploration_rate", EXPLORATION_MAX)
+                else:
+                    self.memory = agent_data
+                    self.exploration_rate = EXPLORATION_MAX
+
+                print(f"✅ Replay buffer загружен из {self.buffer_path}, {len(self.memory)} записей.")
+                print(f"Текущий exploration_rate: {self.exploration_rate}")
+            except Exception as e:
+                print("⚠️ Ошибка при загрузке replay buffer:", e)
+        else:
+            print(f"⚠️ Файл replay buffer не найден по пути {self.buffer_path}. Память не восстановлена.")
+        
 
 def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000, model_path: str = "dqn_model.pth"):
     """
@@ -247,9 +267,8 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000, m
                         dqn_solver.exploration_rate * EXPLORATION_DECAY
                     )       
                     successful_episodes += 1
-                elif previous_cumulative_reward is not None and \
-                    current_cumulative_reward < previous_cumulative_reward and \
-                    abs(current_cumulative_reward - previous_cumulative_reward) > abs(previous_cumulative_reward) * 0.2:
+                elif current_cumulative_reward > previous_cumulative_reward and \
+                abs(current_cumulative_reward - previous_cumulative_reward) >= abs(previous_cumulative_reward) * 0.2:
                     dqn_solver.exploration_rate = max(
                         EXPLORATION_MIN,
                         dqn_solver.exploration_rate * EXPLORATION_DECAY
