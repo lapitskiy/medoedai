@@ -12,10 +12,13 @@ import numpy as np
 import random
 import os # Для проверки существования файла модели
 import pickle
-from collections import deque
+from pickle import HIGHEST_PROTOCOL
+
 import gym
 from gym import spaces
 from gym.utils import seeding
+
+from collections import deque
 
 import wandb
 
@@ -67,7 +70,7 @@ class DQNSolver:
     def __init__(self, observation_space, action_space, load=False, model_path="dqn_model.pth", buffer_path="replay_buffer.pkl"):
         self.exploration_rate = EXPLORATION_MAX
         self.action_space = action_space
-        self.memory = deque(maxlen=MEMORY_SIZE)
+        self.memory = deque(maxlen=MEMORY_SIZE)        
 
         # Инициализация модели PyTorch
         self.model = DQNN(observation_space, action_space).to(DEVICE)
@@ -119,16 +122,22 @@ class DQNSolver:
     def save(self):
         # Сохраняем модель
         torch.save(self.model.state_dict(), self.model_path)
-        # Сохраняем replay buffer во временный файл
+
+        # Сохраняем старый буфер в .bak
+        if os.path.exists(self.buffer_path):
+            os.rename(self.buffer_path, self.buffer_path + ".bak")
+
+        # Убедимся, что temp-папка есть
         tmp_path = f"./temp/{self.buffer_path}.tmp"
-              
+        os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
+
         agent_data = {
             "memory": self.memory,
             "exploration_rate": self.exploration_rate
         }
-        
+
         with open(tmp_path, "wb") as f:
-            pickle.dump(agent_data, f)
+            pickle.dump(agent_data, f, protocol=HIGHEST_PROTOCOL)
 
         os.replace(tmp_path, self.buffer_path)
 
@@ -192,15 +201,27 @@ class DQNSolver:
                     self.memory = agent_data
                     self.exploration_rate = EXPLORATION_MAX
 
-                print(f"✅ Replay buffer загружен из {self.buffer_path}, {len(self.memory)} записей.")
+                print(f"✅⚠️⚠️ Replay buffer загружен из {self.buffer_path}, {len(self.memory)} записей.")
+                print(f"Текущий exploration_rate: {self.exploration_rate}")
+            except (EOFError, pickle.UnpicklingError):
+                with open(self.buffer_path + ".bak", "rb") as f:
+                    agent_data = pickle.load(f)       
+                    if isinstance(agent_data, dict):
+                        self.memory = agent_data.get("memory", deque(maxlen=MEMORY_SIZE))
+                        self.exploration_rate = agent_data.get("exploration_rate", EXPLORATION_MAX)
+                    else:
+                        self.memory = agent_data
+                        self.exploration_rate = EXPLORATION_MAX
+                print(f"✅ Replay buffer загружен из BAK {self.buffer_path}.bak, {len(self.memory)} записей.")
                 print(f"Текущий exploration_rate: {self.exploration_rate}")
             except Exception as e:
                 print("⚠️ Ошибка при загрузке replay buffer:", e)
         else:
             print(f"⚠️ Файл replay buffer не найден по пути {self.buffer_path}. Память не восстановлена.")
+                 
         
 
-def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000, model_path: str = "dqn_model.pth"):
+def train_model(dfs: dict, load_previous: bool = False, episodes: int = 2000, model_path: str = "dqn_model.pth"):
     """
     Обучает модель DQN для торговли криптовалютой.
 

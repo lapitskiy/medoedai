@@ -7,6 +7,9 @@ import random
 import math
 from sklearn.preprocessing import StandardScaler # Добавлено для нормализации
 
+
+TARGET_PROFIT_PCT = 0.01  # 1%
+
 class CryptoTradingEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
@@ -355,6 +358,13 @@ class CryptoTradingEnv(gym.Env):
             current_price = self.df_5min.iloc[current_price_idx]['close']
 
 
+        if self.last_buy_step is not None:
+            holding_period = self.current_step - self.last_buy_step  # в шагах
+            holding_minutes = holding_period * 5  # если шаг — 5 минут
+        else:
+            holding_period = 0
+            holding_minutes = 0
+
         # Логика действий и вознаграждения
         if not done:
             if action == 1: # BUY
@@ -362,6 +372,14 @@ class CryptoTradingEnv(gym.Env):
                     
                     if self.df_5min['EMA_100_cross_up_200'].iloc[self.current_step] == 1.0:  # BUY
                         reward += 10  # стимулируем вход в потенциальный тренд
+                        
+                    if self.df_5min['RSI_14'].iloc[self.current_step] > 80:
+                        reward -= 3  # штраф за вход в перегретый рынок
+                        
+                    if self.df_5min['RSI_14'].iloc[self.current_step] < 30:
+                        reward += 3             
+                        
+                    reward += self.combined_signal_reward(action=1, step=self.current_step)                                   
                     
                     self.last_buy_step = self.current_step
                     
@@ -369,8 +387,14 @@ class CryptoTradingEnv(gym.Env):
                     fee = amount_to_buy * current_price * self.trade_fee_percent
                     self.crypto_held += amount_to_buy * (1 - self.trade_fee_percent) 
                     self.balance = 0 
-                    self.last_buy_price = current_price # Запоминаем цену покупки                    
-                    self._log_ema_signals(self.current_step, label="BUY")
+                    self.last_buy_price = current_price # Запоминаем цену покупки     
+                                   
+                    rsi_msg = self._log_rsi_signal(self.current_step, label="BUY")  # пусть возвращает строку, а не печатает
+                    ema_msg = self._log_ema_signals(self.current_step, label="BUY")  # тоже возвращает строку
+
+                    print(f"[{self.current_step}] 🔼  BUY: price: {current_price:.2f}, reward: {reward:.2f}, {rsi_msg}, {ema_msg}")                                                                   
+
+                    
                     #reward -= fee * 10 # Штраф за комиссию, если она существенна
                 else:
                     reward -= 5 # Это очень важно, чтобы агент учился избегать таких действий
@@ -406,22 +430,39 @@ class CryptoTradingEnv(gym.Env):
                         scale_factor = 10
                         reward_transaction = math.tanh(relative_profit * scale_factor) * 20
                         reward += reward_transaction
-                        result = "PROFIT" if reward_transaction > 0 else "LOSS"
+                        result = "✅ PROFIT" if reward_transaction > 0 else "LOSS"                                            
                         
-                        holding_period = self.current_step - self.last_buy_step if self.last_buy_step is not None else 0
-                        holding_minutes = holding_period * 5
-                        print(f"[{self.current_step}] SELL {result}: {net_profit_loss:.2f}, price: {current_price:.2f}, reward: {reward:.2f}, held {holding_minutes} min")
-                        
-                        
+                        ema_msg = self._log_ema_signals(self.current_step, label="SELL")
+                        rsi_msg = self._log_rsi_signal(self.current_step, label="SELL")                                            
                     
                         # награда за продажу по тренду вниз
                         if self.df_5min['EMA_100_cross_down_200'].iloc[self.current_step] == 1.0:  # SELL на пересечении вниз
-                            reward += 2  # стимулируем выход из падающего тренда
-                                                
-                        self._log_ema_signals(self.current_step, label="SELL")
-                        info['net_profit'] = net_profit_loss
-                        
+                            reward += 5  # стимулируем выход из падающего тренда
+                            
+                        rsi_14 = self.df_5min['RSI_14'].iloc[self.current_step]
+                        if rsi_14 > 70:
+                            reward += 3 
 
+                        if rsi_14 > 90:
+                            reward += 5                        
+                            
+                        if rsi_14 < 40 and net_profit_loss < 0:
+                            reward += 1  # поощри немного, что он не усугубил убыток    
+
+                        profit_pct = (current_price - self.last_buy_step) / entry_price
+
+                        # Продаёт при RSI < 20
+                        if rsi < 20:
+                            if profit_pct < TARGET_PROFIT_PCT:
+                                reward -= 3  # продал слишком рано, даже не заработал 1%
+                            else:
+                                reward += 1  # молодец, взял своё
+                            
+                        reward += self.combined_signal_reward(action=2, step=self.current_step)                                                                                                                                                
+                        
+                        info['net_profit'] = net_profit_loss                                                                    
+                        print(f"[{self.current_step}] 🔒  SELL {result}: {net_profit_loss:.2f}, price: {current_price:.2f}, reward: {reward:.2f}, held {holding_minutes} min,  {rsi_msg}, {ema_msg}")                                                
+                    
 
                     else:
                         reward -= 20  # Продаем без покупки
@@ -435,6 +476,10 @@ class CryptoTradingEnv(gym.Env):
             # Можно добавить небольшую награду/штраф за "HOLD"
             if action == 0:
                 # Этот блок вознаграждает (или штрафует) агента за "HOLD" при открытой позиции
+                
+                if holding_minutes > 180 and net_profit_loss < 0:
+                    reward -= 3  # он держит минусовую сделку слишком долго
+                
                 if self.crypto_held > 0 and self.last_buy_price is not None:
                     unrealized_pnl_percent = (current_price - self.last_buy_price) / self.last_buy_price
                     
@@ -524,17 +569,91 @@ class CryptoTradingEnv(gym.Env):
             current_price = self.df_5min.iloc[current_price_idx]['close']
             
     def close(self):
+        pass
         
     def _log_ema_signals(self, step, label="INFO"):
         required_cols = ['EMA_100', 'EMA_200', 'EMA_100_cross_up_200', 'EMA_100_cross_down_200']
         if all(col in self.df_5min.columns for col in required_cols):
             row = self.df_5min[required_cols].iloc[step]
             if not (row['EMA_100_cross_up_200'] == 0.0 and row['EMA_100_cross_down_200'] == 0.0):
-                print(f"[{step}] {label} EMA signal: {row}")
+                return f"EMA ✅ cross"
         else:
-            print(f"[{step}] ❌ EMA columns not found for {label}")        
-        pass
-    
+            return f"EMA ❌ not found"          
+            
+    def _log_rsi_signal(self, step: int, label: str = ""):
+        rsi_col = 'RSI_14'  # или другой, если ты используешь другую длину
+        if rsi_col in self.df_5min.columns:
+            value = self.df_5min[rsi_col].iloc[step]
+            return f"{rsi_col} = {value:.2f}"
+        else:
+            return f"{rsi_col} = not found"  
+            
+    def combined_signal_reward(self, action: int, step: int) -> float:
+        """
+        Вычисляет дополнительную награду (reward) на основе комбинации технических индикаторов
+        для конкретного действия (покупка или продажа) на заданном шаге (свечи).
+
+        Логика:
+        - Для покупки (action == 1):
+        - EMA_100 пересекает EMA_200 снизу вверх (bullish crossover) — сигнал потенциального начала восходящего тренда.
+        - RSI ниже 30 — рынок считается перепроданным, возможен разворот вверх.
+        - Объем торгов выше среднего за последние 20 свечей — подтверждение активности рынка.
+        Если все три условия выполняются, агент получает дополнительную награду +5, чтобы стимулировать вход именно в такие благоприятные моменты.
+
+        - Для продажи (action == 2):
+        - EMA_100 пересекает EMA_200 сверху вниз (bearish crossover) — сигнал потенциального начала нисходящего тренда.
+        - RSI выше 80 — рынок считается перекупленным, возможен разворот вниз.
+        - Объем торгов выше среднего за последние 20 свечей — подтверждение активности рынка.
+        Если все три условия выполняются, агент получает дополнительную награду +5, чтобы стимулировать выход именно в такие моменты.
+
+        Параметры:
+        - action (int): номер действия — 1 для покупки, 2 для продажи.
+        - step (int): текущий индекс (номер свечи) в датафрейме self.df_5min.
+
+        Возвращаемое значение:
+        - float: дополнительная награда (0.0, если условия не выполнены, или положительное число).
+
+        Использование:
+        В основном коде награды добавляется так:
+            reward += self.combined_signal_reward(action, self.current_step)
+
+        Это помогает агенту лучше ориентироваться в важных сигналах технического анализа, 
+        улучшая качество принимаемых торговых решений.
+        """
+        required_cols = [
+            'EMA_100_cross_up_200', 'EMA_100_cross_down_200', 
+            'RSI_14', 'volume'
+        ]
+
+        if not all(col in self.df_5min.columns for col in required_cols):
+            print(f"❌ Отсутствуют необходимые колонки для combined_signal_reward")
+            return 0.0
+
+        row = self.df_5min[required_cols].iloc[step]
+        mean_volume = self.df_5min['volume'].rolling(window=20).mean().iloc[step]
+
+        reward = 0.0
+
+        if action == 1:  # BUY
+            buy_signal = (
+                (row['EMA_100_cross_up_200'] == 1.0) and
+                (row['RSI_14'] < 30) and
+                (row['volume'] > mean_volume)
+            )
+            if buy_signal:
+                reward = 5.0
+
+        elif action == 2:  # SELL
+            sell_signal = (
+                (row['EMA_100_cross_down_200'] == 1.0) and
+                (row['RSI_14'] > 80) and
+                (row['volume'] > mean_volume)
+            )
+            if sell_signal:
+                reward = 5.0
+
+        return reward                        
+        
     @staticmethod
     def calculate_price_ranges(df_5min, df_15min, df_1h):
         """
