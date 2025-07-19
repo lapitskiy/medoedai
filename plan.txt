@@ -1,0 +1,19 @@
+
+Vanilla DQN  ➜  reward‑rescale (±10)  ➜  P&L≈0
+       ⬇
+Double DQN   (устраняем переоценку)
+       ⬇
+GPU
+       ⬇
+Prioritized Replay (ускоряем обучение)
+       ⬇       
+Dueling‑DQN  (V‑A‑голова + лучшее отбор состояний)
+    
+       ⬇
+Dueling‑DQN + SAC(size)           ← дешёвый mix‑контроль позы
+       ⬇
+Transformer‑encoder (видит длинный контекст)
+       ⬇
+Risk‑layer (макс‑холд, стоп‑лосс, daily DD)
+       ⬇
+Discrete SAC (если захочешь заменить триггер‑DQN)

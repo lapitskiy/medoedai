@@ -1,10 +1,9 @@
+from agents.vdqn.v_train_model import train_model
 from celery import Celery
 import time
 
 import pandas as pd
 
-from dqn import train_model
-from model.dqn_model.gym.crypto_trading_env import CryptoTradingEnv
 import json
 
 from utils.db_utils import db_get_or_fetch_ohlcv  # Импортируем функцию загрузки данных

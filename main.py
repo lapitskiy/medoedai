@@ -96,12 +96,12 @@ def start_parameter_search():
 @app.route('/train_dqn', methods=['POST'])
 def train():
     task = train_dqn.apply_async()
-    return jsonify({'task_id': task.id, 'status': 'training dqn started'})
+    return redirect(url_for("index"))
 
 @app.route('/trade_dqn', methods=['POST'])
 def trade():
     task = trade_step.apply_async()
-    return jsonify({'task_id': task.id, 'status': 'trade dqn step started'})
+    return redirect(url_for("index"))
 
 # Новый маршрут для запуска очистки данных
 @app.route('/clean_data', methods=['POST'])
