@@ -594,7 +594,7 @@ class CryptoTradingEnv(gym.Env):
             info['volatility'] = volatility            
             info['volatility_threshold'] = volatility_threshold
             info['crypto_held'] = self.crypto_held
-            info['penalty'] = self.penalty 
+            info['penalty'] = penalty 
             info['current_balance'] = self.balance
             info['crypto_held'] = self.crypto_held
             info['current_price'] = current_price
