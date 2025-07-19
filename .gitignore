@@ -9,6 +9,7 @@ alembic/**
 !alembic/
 alembic.ini
 replay_buffer.pkl
+replay_buffer.pkl.bak
 dqn_model.pth
 temp/**
 !temp/
