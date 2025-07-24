@@ -1,4 +1,4 @@
-from envs.dqn_model.gym.gutils import calc_relative_vol, update_roi_stats, update_vol_stats
+from envs.dqn_model.gym.gutils import calc_relative_vol, commission_penalty, update_roi_stats, update_vol_stats
 import gym
 from gym import spaces
 import numpy as np
@@ -313,8 +313,9 @@ class CryptoTradingEnv(gym.Env):
 
         volatility = calc_relative_vol(self.df_5min, self.current_step, lookback=30)            
         median_vol, iqr_vol = update_vol_stats(volatility, self.vol_buf)
-        k = np.interp(self.epsilon, [1.0, 0.1], [0.1, 0.5])
-        volatility_threshold = median_vol + k * iqr_vol          
+        
+        k = 0.1 + 0.4 * self.epsilon          # линейная интерполяция
+        volatility_threshold = median_vol + k * iqr_vol                         
     
                  
 
@@ -327,10 +328,33 @@ class CryptoTradingEnv(gym.Env):
                     
                     score  = 0.0                    
 
+                    rsi_14 = self.df_5min['RSI_14'].iloc[self.current_step] 
                     ema_target = self.df_5min['EMA_100'].iloc[self.current_step]
                     expected_roi = max(0, ema_target - current_price) / current_price 
                     
                     self.buy_attempts += 1
+                    
+                     ## ---  плавный score для опредления позиции входа -----------------------------------------------------------     
+                    # --- 1.  непрерывные факторы ---
+                    delta_ema = (ema_target - current_price) / current_price          # ≈ ожидаемый ROI
+                    norm_rsi  = (50 - rsi_14) / 50.0                                  # -1…1
+
+                    # --- 2.  взвешивание ---
+                    score = (
+                        1.5 * delta_ema           +      # тренд / потенциал
+                        0.8 * norm_rsi            +      # перепроданность
+                        0.5 * (volatility / 0.01)        # чуть поощряем «живой» рынок
+                    )
+
+                    # --- 3.  squash в [0,1] ---
+                    fraction = 0.1 + 0.4 * torch.sigmoid(torch.tensor(score)).item()   # 10‑50 % баланса                                                
+                    # ------------------------------------------------------------------------                 
+                        
+                    
+                    amount_to_buy = fraction * self.balance / current_price
+                    cost = amount_to_buy * current_price                    
+                    fee = cost * self.trade_fee_percent   
+                    
                     if self.epsilon < 0.10:                        
                         if volatility < volatility_threshold:
                             self.buy_rejected_vol += 1
@@ -347,9 +371,8 @@ class CryptoTradingEnv(gym.Env):
                         min_roi = 0.5 * q75_roi 
                         
                         if expected_roi < min_roi:
-                            penalty = np.clip(-0.02 * (min_roi - expected_roi) / min_roi, -0.05, 0)
-                            reward += penalty                            
-                            #self.buy_rejected_roi += 1
+                            reward += commission_penalty(fee, self.cfg.initial_balance)                      
+                            self.buy_rejected_roi += 1
                             #if not self.low_roi_warned:                            
                             #    self._log(f"[{self.current_step}] 🚫 - LOW ROI {expected_roi:.3%} < {min_roi:.3%}")
                             #    self.low_roi_warned = True
@@ -364,7 +387,7 @@ class CryptoTradingEnv(gym.Env):
                     if self.df_5min['EMA_100_cross_up_200'].iloc[self.current_step] == 1.0:  # BUY
                         reward += 0.1  # стимулируем вход в потенциальный тренд
                     
-                    rsi_14 = self.df_5min['RSI_14'].iloc[self.current_step]    
+                       
                     if rsi_14 > 80:
                         reward -= 0.03  # штраф за вход в перегретый рынок
                         
@@ -374,29 +397,9 @@ class CryptoTradingEnv(gym.Env):
                     if expected_roi > 0.01:
                         reward += 0.03
                          
-                    ## ---  плавный score для опредления позиции входа -----------------------------------------------------------     
-                    # --- 1.  непрерывные факторы ---
-                    delta_ema = (ema_target - current_price) / current_price          # ≈ ожидаемый ROI
-                    norm_rsi  = (50 - rsi_14) / 50.0                                  # -1…1
-
-                    # --- 2.  взвешивание ---
-                    score = (
-                        1.5 * delta_ema           +      # тренд / потенциал
-                        0.8 * norm_rsi            +      # перепроданность
-                        0.5 * (volatility / 0.01)        # чуть поощряем «живой» рынок
-                    )
-
-                    # --- 3.  squash в [0,1] ---
-                    fraction = 0.1 + 0.4 * torch.sigmoid(torch.tensor(score)).item()   # 10‑50 % баланса                                                
-                    # ------------------------------------------------------------------------                 
-                        
                     reward += self.combined_signal_reward(action=1, step=self.current_step)                                   
                     
-                    self.last_buy_step = self.current_step
-                    
-                    amount_to_buy = fraction * self.balance / current_price
-                    cost = amount_to_buy * current_price                    
-                    fee = cost * self.trade_fee_percent   
+                    self.last_buy_step = self.current_step                    
                     
                     if cost + fee > self.balance:
                         amount_to_buy = self.balance / (1 + self.trade_fee_percent) / current_price
@@ -412,6 +415,7 @@ class CryptoTradingEnv(gym.Env):
 
                     self._log(f"[{self.current_step}] 🔼  BUY: amount: {cost + fee:.2f}, price: {current_price:.2f}, reward: {reward:.2f}, {rsi_msg}, {ema_msg}")                                                                   
 
+                    reward -= fee / self.cfg.initial_balance * k
                     
                     #reward -= fee * 10 # Штраф за комиссию, если она существенна
                 else:
@@ -437,7 +441,8 @@ class CryptoTradingEnv(gym.Env):
                         
                         # --- reward ----------------------------------------------------
                         reward += np.tanh(pnl * 25) * 2             # за результат сделки
-                        reward -= fee / self.cfg.initial_balance * 2_000   # штраф за комиссию
+                        penalty = commission_penalty(fee, self.cfg.initial_balance)
+                        reward += penalty             
                         # ---------------------------------------------------------------
                         
                         result = "✅ - PROFIT" if pnl > 0 else "LOSS"
@@ -634,7 +639,7 @@ class CryptoTradingEnv(gym.Env):
 
 
         info['raw_reward'] = reward                
-        abs_cap       = 2.0             # «эффективный» диапазон; подберите по статистике
+        abs_cap       = 3.0             # «эффективный» диапазон; подберите по статистике
         reward = np.tanh(reward / abs_cap)
         info['reward'] = reward
         # ----------------------------------------------------------------------

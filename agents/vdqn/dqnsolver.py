@@ -36,7 +36,7 @@ class DQNSolver:
             hidden_sizes=self.cfg.hidden_sizes   # берём из dataclass‑конфига
             ).to(self.cfg.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.cfg.lr)
-        self.criterion = nn.MSELoss() # Для вычисления Q-значений
+        self.criterion = nn.SmoothL1Loss() # Для вычисления Q-значений
         
         if load:
             self.load_model()
@@ -127,10 +127,17 @@ class DQNSolver:
         # ---- Q(s,a) ----
         q_all      = self.model(states)                 # (B, n_actions)
         current_q  = q_all.gather(1, actions.unsqueeze(1)).squeeze(1)
-
-        # ---- r + γ·max Q' ----
+        
+        
+        # ---- r + γ·Q̄(s', argmax_a Q(s',a ▸ online)) ----
         with torch.no_grad():
-            next_q  = self.target_model(next_states).max(1)[0]
+            # 1. a*  = argmax_a Q_online(s',a)
+            next_actions = self.model(next_states).argmax(dim=1, keepdim=True)
+                # 2. Q̄(s',a*)  – оценка через target‑сеть
+            next_q = self.target_model(next_states) \
+                            .gather(1, next_actions) \
+                            .squeeze(1)
+
         target_q = rewards + self.cfg.gamma * next_q * (~dones)
 
         # ---- loss ----
@@ -139,6 +146,7 @@ class DQNSolver:
         # ---- back‑prop ----
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
         self.optimizer.step()
 
         # ---- доп.‑метрики ----

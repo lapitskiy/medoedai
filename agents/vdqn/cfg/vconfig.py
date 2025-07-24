@@ -18,7 +18,9 @@ class vDqnConfig:
     lr: float              = 1e-3
     gamma: float           = 0.99
     soft_tau: float        = 1e-2    # τ для soft‑update target‑net
+    soft_update_every = 4
     hidden_sizes: tuple    = (128, 64)  # MLP‑слои
+    target_update_freq = 5_000
 
     # === логирование / сервисное ===
     grad_clip: float | None = None
@@ -38,3 +40,7 @@ class vDqnConfig:
     
     # Определение устройства (GPU или CPU)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
+    
+    
+    
+    

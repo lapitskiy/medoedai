@@ -67,6 +67,17 @@ def calc_relative_vol(df_5min: pd.DataFrame, idx: int, lookback: int = 12) -> fl
                                abs(recent['low']  - prev_close)))
     return float(tr.mean() / recent['close'].iloc[-1])
 
+def commission_penalty(fee: float,
+                       init_balance: float,
+                       kappa: float = 2_000.0) -> float:
+    """
+    Штраф за комиссию.
+    fee          – абсолютная комиссия за сделку
+    init_balance – стартовый баланс эпизода (масштаб)
+    kappa        – коэффициент веса (1 000‑3 000 по опыту)
+    Возвращает отрицательное значение (penalty).
+    """
+    return - fee / init_balance * kappa
 
 def setup_wandb(cfg, project: str = "medoedai‑medoedai"):
     """

@@ -1,3 +1,5 @@
+version: "3.8"
+
 services:
   postgres:
     image: postgres:14
@@ -30,10 +32,18 @@ services:
       - TORCHSERVE_URL=http://serving:8080/predictions/medoedai_model
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - NVIDIA_VISIBLE_DEVICES=all
     volumes:
       - ./:/app
     working_dir: /app
     command: ["python", "main.py"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   celery-worker:
     build: .
@@ -44,10 +54,18 @@ services:
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - NVIDIA_VISIBLE_DEVICES=all
     volumes:
       - ./:/app
     working_dir: /app
     command: ["celery", "-A", "tasks.celery_tasks", "worker", "--loglevel=info"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   serving:
     image: pytorch/torchserve:latest
@@ -59,7 +77,7 @@ services:
     environment:
       - MODEL_STORE=/models
       - TS_MODEL_NAME=medoedai_model
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}
+      - NVIDIA_VISIBLE_DEVICES=all
     volumes:
       - ./models:/models
     command: ["torchserve", "--start", "--model-store", "/models", "--models", "medoedai_model.mar"]
@@ -68,7 +86,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: ${GPU_COUNT:-0}
+              count: 1
               capabilities: [gpu]
 
   pytorch-gpu:
@@ -78,23 +96,22 @@ services:
       - celery-worker    
     restart: unless-stopped
     ports:
-      - "8080:8080"  # если нужно API
-      - "8081:8081"  # управление TorchServe
+      - "8090:8090"
     environment:
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}
+      - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - ./workspace:/workspace
       - ./models:/models
     working_dir: /workspace
-    command: ["sleep", "infinity"]  # Работает в фоне, ты заходишь и запускаешь, что хочешь
+    command: ["sleep", "infinity"]
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: ${GPU_COUNT:-1}
-              capabilities: [gpu]     
+              count: 1
+              capabilities: [gpu]
 
 volumes:
   pgdata:

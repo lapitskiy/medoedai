@@ -34,7 +34,7 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
         dqn_solver = DQNSolver(observation_space_dim, action_space, load=load_previous)
 
         global_step = 0
-        successful_episodes = 0
+        successful_episodes = 0        
 
         for episode in range(episodes):
             # Переводим модель в режим обучения
@@ -42,7 +42,6 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
             state = env.reset() # env.reset() теперь возвращает начальное состояние    
 
             grad_steps   = 0
-            update_every = 4  
 
             while True:
                 env.epsilon = dqn_solver.epsilon
@@ -52,34 +51,43 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
                 dqn_solver.remember(state, action, reward, state_next, terminal)
                 state = state_next                        
                 
-                did_step, td_loss, abs_q, q_gap = dqn_solver.experience_replay()   
+                did_step, td_loss, abs_q, q_gap = dqn_solver.experience_replay()     
                 
-                        
+                wandb.log({
+                    "step":          global_step,
+                    "episode":       episode + 1,
+                    "reward":        reward,
+                    "cumulative_reward": env.cumulative_reward,
+                    "buy_attempts":  info.get('buy_attempts'),
+                    "total_profit":  info.get('total_profit'),
+                    "roi_block":     info.get('roi_block'),
+                    "penalty":       info.get('penalty'),
+                    "vol_block":     info.get('vol_block'),
+                    "volatility":            info.get('volatility'),
+                    "volatility_threshold":  info.get('volatility_threshold'),
+                })
+
+                # --------------- лог каждые 100 grad‑шагов (только если был grad) ---
+                if did_step and (global_step % 100 == 0):
+                    wandb.log({
+                        "step":     global_step,
+                        "episode":  episode + 1,
+                        "td_loss":  td_loss,
+                        "abs_Q":    abs_q,
+                        "q_gap":    q_gap,
+                    })
+                                      
 
                 if did_step:
                     
                     dqn_solver.epsilon = max(dqn_solver.cfg.eps_final, dqn_solver.epsilon * dqn_solver._eps_decay_rate)
                     
                     grad_steps += 1
-                    if grad_steps % update_every == 0:
-                        dqn_solver.soft_update(tau=cfg.soft_tau)            
-                                                                    
-                    wandb.log({
-                                "step": global_step,
-                                "episode": episode + 1,
-                                "reward": reward,
-                                #"td_loss": td_loss,
-                                #"abs_Q": abs_q, 
-                                #"q_gap": q_gap,
-                                "cumulative_reward": env.cumulative_reward,                                
-                                "buy_attempts": info.get('buy_attempts'),
-                                "total_profit": info.get('total_profit'),
-                                "roi_block": info.get('roi_block'),
-                                "penalty": info.get('penalty'),                                
-                                "vol_block": info.get('vol_block'),
-                                "volatility": info.get('volatility'),
-                                "volatility_threshold": info.get('volatility_threshold'),
-                                })
+                    if grad_steps % cfg.soft_update_every  == 0:
+                        dqn_solver.soft_update(tau=cfg.soft_tau)      
+                        
+                    if global_step % cfg.target_update_freq == 0:     # hard‑update
+                        dqn_solver.update_target_model()                                                                                                  
 
                 global_step += 1        
 
@@ -108,7 +116,7 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
                         wandb.log({
                             "hold_time_hist": wandb.Histogram(durations),
                             "episode": episode + 1
-                        })    
+                        })                            
                         
                     all_trades.extend(env.trades)                     
                             

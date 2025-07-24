@@ -3,6 +3,8 @@ Vanilla DQN  ➜  reward‑rescale (±10)  ➜  P&L≈0
        ⬇
 Double DQN   (устраняем переоценку)
        ⬇
+
+       
 GPU
        ⬇
 Prioritized Replay (ускоряем обучение)
