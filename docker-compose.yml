@@ -24,7 +24,6 @@ services:
     build: .
     container_name: medoedai
     depends_on:
-      - serving
       - redis
     ports:
       - "5050:5050"
