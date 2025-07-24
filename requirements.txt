@@ -59,4 +59,4 @@ gym
 pandas-ta
 sqlalchemy
 wandb
-psycopg2
+psycopg2-binary
