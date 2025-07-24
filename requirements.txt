@@ -60,3 +60,4 @@ pandas-ta
 sqlalchemy
 wandb
 psycopg2-binary
+binance_historical_data
