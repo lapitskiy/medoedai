@@ -66,29 +66,7 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-
-  serving:
-    image: pytorch/torchserve:latest
-    container_name: serving
-    restart: always
-    ports:
-      - "8080:8080"
-      - "8081:8081"
-    environment:
-      - MODEL_STORE=/models
-      - TS_MODEL_NAME=medoedai_model
-      - NVIDIA_VISIBLE_DEVICES=all
-    volumes:
-      - ./models:/models
-    command: ["torchserve", "--start", "--model-store", "/models", "--models", "medoedai_model.mar"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
+              
   pytorch-gpu:
     image: pytorch/pytorch:latest
     container_name: pytorch-gpu
