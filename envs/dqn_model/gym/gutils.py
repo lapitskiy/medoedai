@@ -98,6 +98,11 @@ def setup_wandb(cfg, project: str = "medoedai‑medoedai"):
         функция была вызвана во «внешнем» процессе Flask‑reloader
         (или уже была выполнена ранее).
     """
+    
+    wandb_api_key = os.getenv("WANDB_API_KEY")
+    if wandb_api_key:
+        wandb.login(key=wandb_api_key)
+    
     # 1) Если уже инициализировали — просто вернём текущий run
     if wandb.run is not None:
         return wandb.run

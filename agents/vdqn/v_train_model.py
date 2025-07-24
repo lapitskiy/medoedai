@@ -21,6 +21,8 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
 
     all_trades = []
 
+    wandb_run = None
+
     try:
         
         # Теперь CryptoTradingEnv принимает словарь с DataFrame'ами
