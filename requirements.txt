@@ -58,3 +58,5 @@ redis
 gym
 pandas-ta
 sqlalchemy
+wandb
+nvgpu
