@@ -76,7 +76,6 @@ def train_dqn(self):
                     records[col] = records[col].astype(str)
         print(f"{key}: {json.dumps(records.to_dict(orient='records'), ensure_ascii=False, indent=2)}")
     result = train_model(dfs=df, load_previous=True)
-
     return {"message": result}
 
 @celery.task(bind=True)
