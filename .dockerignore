@@ -1,3 +1,6 @@
 # .dockerignore
-
-wandb
+__pycache__/
+**/__pycache__/
+*.py[cod]
+wandb/
+temp/
