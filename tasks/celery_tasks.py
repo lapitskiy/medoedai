@@ -1,4 +1,3 @@
-from agents.vdqn.v_train_model import train_model
 from celery import Celery
 import time
 
@@ -75,8 +74,20 @@ def train_dqn(self):
                 if records[col].dtype.name == 'datetime64[ns]':
                     records[col] = records[col].astype(str)
         print(f"{key}: {json.dumps(records.to_dict(orient='records'), ensure_ascii=False, indent=2)}")
-    result = train_model(dfs=df, load_previous=True)
+        
+    
+    def run_training():
+        import torch.multiprocessing as mp
+        mp.set_start_method("spawn", force=True)
 
+        from agents.vdqn.v_train_model import train_model  # импортировать ТОЛЬКО внутри процесса
+        result = train_model(dfs=df, load_previous=True)
+        print(f"[DQN subprocess] Обучение завершено: {result}")
+
+    p = mp.Process(target=run_training)
+    p.start()
+    p.join()
+        
     return {"message": result}
 
 @celery.task(bind=True)
