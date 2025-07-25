@@ -57,12 +57,14 @@ services:
       - http_proxy=socks5h://host.docker.internal:1080
       - HTTPS_PROXY=socks5h://host.docker.internal:1080
       - https_proxy=socks5h://host.docker.internal:1080      
+      - NO_PROXY=localhost,127.0.0.1,redis,postgres,medoedai,serving,*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16      
     env_file:
       - .env
     volumes:
       - ./:/app
     working_dir: /app
-    command: ["celery", "-A", "tasks.celery_tasks", "worker", "--loglevel=info"]
+    command: ["celery", "-A", "tasks.celery_tasks", "worker",
+              "-Q", "train", "-P", "solo", "-c", "1", "--loglevel=info"]
     deploy:
       resources:
         reservations:
