@@ -1,6 +1,5 @@
 .vscode/
 .idea/
-__pycache__/
 temp/
 training.log
 wandb/**
@@ -13,4 +12,7 @@ replay_buffer.pkl.bak
 dqn_model.pth
 temp/**
 !temp/
+__pycache__/
 **/__pycache__/
+*.py[cod]
+*$py.class
