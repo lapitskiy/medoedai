@@ -48,12 +48,15 @@ services:
     depends_on:
       - medoedai
       - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - NVIDIA_VISIBLE_DEVICES=all      
-      - http_proxy=socks5h://172.18.0.1:1080
-      - https_proxy=socks5h://172.18.0.1:1080
+      - HTTP_PROXY=socks5h://host.docker.internal:1080
+      - http_proxy=socks5h://host.docker.internal:1080
+      - HTTPS_PROXY=socks5h://host.docker.internal:1080
+      - https_proxy=socks5h://host.docker.internal:1080      
     env_file:
       - .env
     volumes:

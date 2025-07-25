@@ -122,6 +122,11 @@ def setup_wandb(cfg, project: str = "medoedai‑medoedai"):
     suffix = random.choice(suffixes)
     run_name = f"{cfg.run_name}-{suffix}-{random.randint(1, 10)}"
 
+    proxies = {
+            "http":  os.getenv("HTTP_PROXY"),
+            "https": os.getenv("HTTPS_PROXY"),
+        }
+
     # 4) Инициализируем W&B
     run = wandb.init(
         project=project,
@@ -135,6 +140,10 @@ def setup_wandb(cfg, project: str = "medoedai‑medoedai"):
             "memory_size":        cfg.memory_size,
             "gamma":              cfg.gamma,
         },
+        settings=wandb.Settings(
+            init_timeout=180,          # > 90 с, чтобы не упасть
+            proxies=proxies            # <<< главное!
+        )
     )
 
     return run
