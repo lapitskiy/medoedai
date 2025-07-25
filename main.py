@@ -96,7 +96,6 @@ def start_parameter_search():
 @app.route('/train_dqn', methods=['POST'])
 def train():
     task = train_dqn.apply_async(queue="train")
-    current_app.logger.info(f"submitted task {task.id} to 'train'")
     return redirect(url_for("index"))
 
 @app.route('/trade_dqn', methods=['POST'])
