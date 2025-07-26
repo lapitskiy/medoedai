@@ -53,6 +53,7 @@ services:
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - ALL_PROXY=socks5h://host.docker.internal:1080
       - HTTP_PROXY=socks5h://host.docker.internal:1080
       - http_proxy=socks5h://host.docker.internal:1080
       - HTTPS_PROXY=socks5h://host.docker.internal:1080
