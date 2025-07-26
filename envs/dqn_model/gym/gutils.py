@@ -1,7 +1,9 @@
+import logging
 import numpy as np
 from collections import deque
 import os
 import random
+from utils.f_logs import get_train_logger
 import wandb
 import pandas as pd
 
@@ -139,5 +141,15 @@ def setup_wandb(cfg, project: str = "medoedai‑medoedai"):
             init_timeout=180,          # > 90 с, чтобы не упасть
         )
     )
+    
+        # Лог‑файл с уникальным именем на основе run.id (лучше, чем только name)
+    log_path = f"./logs/dqn-train-{run.id}.log"
+    base_logger = get_train_logger(log_path, fmt_extra="[run:%(run)s id:%(run_id)s] ")
+
+    # Оборачиваем в LoggerAdapter, чтобы добавлять контекст
+    logger = logging.LoggerAdapter(base_logger, {"run": run.name, "run_id": run.id})
+
+    logger.info("W&B run started | url=%s | project=%s | entity=%s",
+                run.url, run.project, run.entity)
 
     return run

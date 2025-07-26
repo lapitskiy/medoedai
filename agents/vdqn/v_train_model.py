@@ -1,4 +1,3 @@
-import os
 import torch
 from agents.vdqn.dqnsolver import DQNSolver
 from envs.dqn_model.gym.crypto_trading_env import CryptoTradingEnv
@@ -21,6 +20,18 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
         str: Сообщение о завершении обучения.
     """
 
+    import time
+
+    last = time.perf_counter()
+    
+    def tick(label: str):
+        nonlocal last, global_step
+        now = time.perf_counter()
+        # печатаем редко, чтобы не заспамить логи
+        if global_step % 200 == 0:
+            logger.info(f"[T] {label}: {(now - last)*1e3:.1f} ms")   
+        last = now
+
     all_trades = []
 
     wandb_run = None
@@ -32,8 +43,7 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
             torch.cuda.set_device(0)
             torch.backends.cudnn.benchmark = True  # <--- ответ на твой п.4 (включать здесь)
             
-        print(f"[DQN] torch={torch.__version__} cuda={torch.version.cuda} device={device} "
-            f"VISIBLE={os.getenv('CUDA_VISIBLE_DEVICES')}")        
+        cfg.device = device 
         
         # Теперь CryptoTradingEnv принимает словарь с DataFrame'ами
         env = CryptoTradingEnv(dfs=dfs) 
@@ -44,6 +54,10 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
         wandb_run = setup_wandb(cfg) 
 
         dqn_solver = DQNSolver(observation_space_dim, action_space, load=load_previous)
+        
+        
+        logger.info("Training started: torch=%s cuda=%s device=%s",
+            torch.__version__, torch.version.cuda, device)
 
         global_step = 0
         successful_episodes = 0        
@@ -55,15 +69,34 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
 
             grad_steps   = 0
 
-            while True:
+            while True:                
+                
                 env.epsilon = dqn_solver.epsilon
+                                  
                 action = dqn_solver.act(state)
                 state_next, reward, terminal, info = env.step(action)
+                tick("env.step")
                 
                 dqn_solver.remember(state, action, reward, state_next, terminal)
-                state = state_next                        
+                state = state_next       
                 
-                did_step, td_loss, abs_q, q_gap = dqn_solver.experience_replay()     
+                # сколько градиентных шагов на один env.step
+                train_repeats = getattr(dqn_solver.cfg, "train_repeats", 2)   # начни с 2, потом 4
+                need_metrics = (global_step % 100 == 0)  # метрики считаем не на каждом шаге
+
+                did_step = False
+                td_loss = abs_q = q_gap = None
+
+                for i in range(train_repeats):
+                    _did, _loss, _absq, _qgap = dqn_solver.experience_replay(
+                        need_metrics = need_metrics and (i == train_repeats - 1)  # метрики один раз
+                    )
+                    if _did:
+                        did_step = True
+                        td_loss, abs_q, q_gap = _loss, _absq, _qgap                                 
+                   
+                tick(f"replay x{train_repeats}")   
+                
                 if global_step % 50 == 0:                    
                     wandb.log({
                         "step":          global_step,
@@ -77,17 +110,19 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
                         "vol_block":     info.get('vol_block'),
                         "volatility":            info.get('volatility'),
                         "volatility_threshold":  info.get('volatility_threshold'),
-                    })
-
+                    })                    
+                    tick("wandb.log 50")
+                
                 # --------------- лог каждые 100 grad‑шагов (только если был grad) ---
                 if did_step and (global_step % 100 == 0):
                     wandb.log({
                         "step":     global_step,
                         "episode":  episode + 1,
-                        "td_loss":  td_loss,
-                        "abs_Q":    abs_q,
-                        "q_gap":    q_gap,
+                        "td_loss":  float(td_loss),   # или td_loss.item()
+                        "abs_Q":    float(abs_q),     # или abs_q.item()
+                        "q_gap":    float(q_gap),     # или q_gap.item()
                     })
+                    tick("wandb.log 100")
                                       
 
                 if did_step:
@@ -100,6 +135,9 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
                         
                     if global_step % cfg.target_update_freq == 0:     # hard‑update
                         dqn_solver.update_target_model()                                                                                                  
+
+                if global_step % 200 == 0:   
+                    logger.info("[DBG] step=%d | replay_mem=%d | did_step=%s", global_step, len(dqn_solver.memory), did_step)                                                
 
                 global_step += 1        
 
