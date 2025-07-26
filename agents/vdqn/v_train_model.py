@@ -1,4 +1,3 @@
-from venv import logger
 import torch
 from agents.vdqn.dqnsolver import DQNSolver
 from envs.dqn_model.gym.crypto_trading_env import CryptoTradingEnv
@@ -21,17 +20,7 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
         str: Сообщение о завершении обучения.
     """
 
-    import time
-
-    last = time.perf_counter()
-    
-    def tick(label: str):
-        nonlocal last, global_step
-        now = time.perf_counter()
-        # печатаем редко, чтобы не заспамить логи
-        if global_step % 200 == 0:
-            logger.info(f"[T] {label}: {(now - last)*1e3:.1f} ms")   
-        last = now
+    import time    
 
     all_trades = []
 
@@ -52,11 +41,19 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
         observation_space_dim = env.observation_space.shape[0]
         action_space = env.action_space.n
 
-        wandb_run = setup_wandb(cfg) 
+        wandb_run, logger = setup_wandb(cfg)
+        
+        last = time.perf_counter()    
+        def tick(label: str):
+            nonlocal last, global_step
+            now = time.perf_counter()
+            # печатаем редко, чтобы не заспамить логи
+            if global_step % 200 == 0:
+                logger.info(f"[T] {label}: {(now - last)*1e3:.1f} ms")   
+            last = now
 
         dqn_solver = DQNSolver(observation_space_dim, action_space, load=load_previous)
-        
-        
+                
         logger.info("Training started: torch=%s cuda=%s device=%s",
             torch.__version__, torch.version.cuda, device)
 

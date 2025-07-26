@@ -152,4 +152,4 @@ def setup_wandb(cfg, project: str = "medoedai‑medoedai"):
     logger.info("W&B run started | url=%s | project=%s | entity=%s",
                 run.url, run.project, run.entity)
 
-    return run
+    return run, logger
