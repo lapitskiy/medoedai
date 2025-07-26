@@ -91,7 +91,7 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
                 for i in range(train_repeats):
                     _did, _loss, _absq, _qgap = dqn_solver.experience_replay(
                         need_metrics = need_metrics and (i == train_repeats - 1)  # метрики один раз
-                    )
+                    )  
                     if _did:
                         did_step = True
                         td_loss, abs_q, q_gap = _loss, _absq, _qgap                                 

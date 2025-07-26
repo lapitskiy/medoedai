@@ -106,7 +106,7 @@ class DQNSolver:
 
         os.replace(tmp_path, self.cfg.buffer_path)
     
-    def experience_replay(self):
+    def experience_replay(self, need_metrics: bool = False):
         """
         ↩︎ did_step: bool
         td_loss : torch.Tensor|None (detached)
@@ -147,11 +147,11 @@ class DQNSolver:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
         self.optimizer.step()
 
-        # ---- метрики (DETACH, без .item() здесь) ----
-        with torch.no_grad():
-            abs_q = q_all.abs().mean().detach()
-            # НЕ пересчитываем self.model(states) второй раз:
-            q_gap = (q_all - self.target_model(states)).abs().mean().detach()
+        abs_q = q_gap = None
+        if need_metrics:
+            with torch.no_grad():
+                abs_q = q_all.abs().mean().detach()
+                q_gap = (q_all - self.target_model(states)).abs().mean().detach()
 
         return True, loss.detach(), abs_q, q_gap
 
