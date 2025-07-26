@@ -1,3 +1,4 @@
+from venv import logger
 import torch
 from agents.vdqn.dqnsolver import DQNSolver
 from envs.dqn_model.gym.crypto_trading_env import CryptoTradingEnv
