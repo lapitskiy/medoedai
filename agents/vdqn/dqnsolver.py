@@ -105,65 +105,55 @@ class DQNSolver:
             pickle.dump(agent_data, f, protocol=HIGHEST_PROTOCOL)
 
         os.replace(tmp_path, self.cfg.buffer_path)
-
+    
     def experience_replay(self):
-        
         """
-        ↩︎  did_step: bool          — был ли сделан grad шаг
-            td_loss : float | None — Huber/MSE loss
-            abs_q   : float | None — ⟨|Q(s,a)|⟩ по батчу
-            q_gap   : float | None — ⟨|Q_online   Q_target|⟩
+        ↩︎ did_step: bool
+        td_loss : torch.Tensor|None (detached)
+        abs_q   : torch.Tensor|None (detached)
+        q_gap   : torch.Tensor|None (detached)
         """
-        
         if len(self.memory) < self.cfg.batch_size:
-            return False, None, None, None      # ← ничего не делали
-
+            return False, None, None, None
 
         batch = random.sample(self.memory, self.cfg.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
 
-        states      = torch.stack(states).to(self.cfg.device)
-        actions     = torch.stack(actions).to(self.cfg.device)
-        rewards     = torch.stack(rewards).to(self.cfg.device)
-        next_states = torch.stack(next_states).to(self.cfg.device)
-        dones       = torch.stack(dones).to(self.cfg.device)
+        device = self.cfg.device
+
+        # ВАЖНО: явные типы
+        states      = torch.stack(states,      dim=0).to(device=device, dtype=torch.float32, non_blocking=True)
+        actions     = torch.stack(actions,     dim=0).to(device=device, dtype=torch.long,     non_blocking=True)  # индексы для gather
+        rewards     = torch.stack(rewards,     dim=0).to(device=device, dtype=torch.float32,  non_blocking=True)
+        next_states = torch.stack(next_states, dim=0).to(device=device, dtype=torch.float32,  non_blocking=True)
+        dones       = torch.stack(dones,       dim=0).to(device=device, dtype=torch.bool,     non_blocking=True)
 
         # ---- Q(s,a) ----
-        q_all      = self.model(states)                 # (B, n_actions)
-        current_q  = q_all.gather(1, actions.unsqueeze(1)).squeeze(1)
-        
-        
-        # ---- r + γ·Q̄(s', argmax_a Q(s',a ▸ online)) ----
-        with torch.no_grad():
-            # 1. a*  = argmax_a Q_online(s',a)
-            next_actions = self.model(next_states).argmax(dim=1, keepdim=True)
-                # 2. Q̄(s',a*)  – оценка через target‑сеть
-            next_q = self.target_model(next_states) \
-                            .gather(1, next_actions) \
-                            .squeeze(1)
+        q_all     = self.model(states)                     # (B, A)
+        current_q = q_all.gather(1, actions.unsqueeze(1)).squeeze(1)
 
-        target_q = rewards + self.cfg.gamma * next_q * (~dones)
+        # ---- r + γ·Q̄(s', argmax_a Q_online(s',a)) ---- (Double DQN)
+        with torch.no_grad():
+            next_actions = self.model(next_states).argmax(dim=1, keepdim=True)
+            next_q       = self.target_model(next_states).gather(1, next_actions).squeeze(1)
+            target_q     = rewards + self.cfg.gamma * next_q * (~dones).float()
 
         # ---- loss ----
         loss = self.criterion(current_q, target_q)
 
         # ---- back‑prop ----
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
         self.optimizer.step()
 
-        # ---- доп.‑метрики ----
-        abs_q  = q_all.abs().mean().item()                             # ⟨|Q|⟩
+        # ---- метрики (DETACH, без .item() здесь) ----
         with torch.no_grad():
-            q_gap = (self.model(states) - self.target_model(states)).abs().mean().item()
+            abs_q = q_all.abs().mean().detach()
+            # НЕ пересчитываем self.model(states) второй раз:
+            q_gap = (q_all - self.target_model(states)).abs().mean().detach()
 
-        # сохраняем, чтобы при желании обратиться снаружи
-        self.abs_q_mean = abs_q
-        self.q_gap      = q_gap
-
-        return True, loss.item(), abs_q, q_gap
-          
+        return True, loss.detach(), abs_q, q_gap
 
     def load_model(self):
         if os.path.exists(self.cfg.model_path):

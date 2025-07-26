@@ -64,20 +64,20 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
                 state = state_next                        
                 
                 did_step, td_loss, abs_q, q_gap = dqn_solver.experience_replay()     
-                
-                wandb.log({
-                    "step":          global_step,
-                    "episode":       episode + 1,
-                    "reward":        reward,
-                    "cumulative_reward": env.cumulative_reward,
-                    "buy_attempts":  info.get('buy_attempts'),
-                    "total_profit":  info.get('total_profit'),
-                    "roi_block":     info.get('roi_block'),
-                    "penalty":       info.get('penalty'),
-                    "vol_block":     info.get('vol_block'),
-                    "volatility":            info.get('volatility'),
-                    "volatility_threshold":  info.get('volatility_threshold'),
-                })
+                if global_step % 50 == 0:                    
+                    wandb.log({
+                        "step":          global_step,
+                        "episode":       episode + 1,
+                        "reward":        reward,
+                        "cumulative_reward": env.cumulative_reward,
+                        "buy_attempts":  info.get('buy_attempts'),
+                        "total_profit":  info.get('total_profit'),
+                        "roi_block":     info.get('roi_block'),
+                        "penalty":       info.get('penalty'),
+                        "vol_block":     info.get('vol_block'),
+                        "volatility":            info.get('volatility'),
+                        "volatility_threshold":  info.get('volatility_threshold'),
+                    })
 
                 # --------------- лог каждые 100 grad‑шагов (только если был grad) ---
                 if did_step and (global_step % 100 == 0):

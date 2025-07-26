@@ -11,7 +11,7 @@ class vDqnConfig:
 
     # === replay‑buffer ===
     memory_size: int       = 200_000
-    batch_size: int        = 64
+    batch_size: int        = 256
     prioritized: bool      = False   # включишь позже, когда дойдёшь до PER
 
     # === сеть / обучение ===
