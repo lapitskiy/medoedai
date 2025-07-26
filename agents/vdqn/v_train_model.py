@@ -1,3 +1,5 @@
+import os
+import torch
 from agents.vdqn.dqnsolver import DQNSolver
 from envs.dqn_model.gym.crypto_trading_env import CryptoTradingEnv
 import wandb
@@ -24,6 +26,14 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
     wandb_run = None
 
     try:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')            
+        
+        if device.type == 'cuda':
+            torch.cuda.set_device(0)
+            torch.backends.cudnn.benchmark = True  # <--- ответ на твой п.4 (включать здесь)
+            
+        print(f"[DQN] torch={torch.__version__} cuda={torch.version.cuda} device={device} "
+            f"VISIBLE={os.getenv('CUDA_VISIBLE_DEVICES')}")        
         
         # Теперь CryptoTradingEnv принимает словарь с DataFrame'ами
         env = CryptoTradingEnv(dfs=dfs) 

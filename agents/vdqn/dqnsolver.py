@@ -35,12 +35,6 @@ class DQNSolver:
             act_dim=action_space,
             hidden_sizes=self.cfg.hidden_sizes   # берём из dataclass‑конфига
             ).to(self.cfg.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=self.cfg.lr)
-        self.criterion = nn.SmoothL1Loss() # Для вычисления Q-значений
-        
-        if load:
-            self.load_model()
-            self.load_state()
         
         # Target Network (часто используется в DQN для стабильности)
         # Это копия основной модели, параметры которой обновляются реже
@@ -49,6 +43,16 @@ class DQNSolver:
             act_dim=action_space,
             hidden_sizes=self.cfg.hidden_sizes
             ).to(self.cfg.device)
+        
+        print("[DQN] model device:", next(self.model.parameters()).device)  # <-- self.model        
+        
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.cfg.lr)
+        self.criterion = nn.SmoothL1Loss() # Для вычисления Q-значений
+        
+        if load:
+            self.load_model()
+            self.load_state()
+                
         self.update_target_model() # Инициализируем целевую сеть
         self.target_model.eval() # Целевая сеть всегда в режиме оценки
 
