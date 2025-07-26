@@ -42,23 +42,35 @@ services:
               count: 1
               capabilities: [gpu]
 
+  xray:
+    image: teddysun/xray:latest
+    container_name: xray
+    restart: unless-stopped
+    volumes:
+      - ./xray/config.json:/etc/xray/config.json:ro
+    command: ["xray","-c","/etc/xray/config.json"]
+    # порт наружу НЕ обязателен (контейнеры общаются внутри сети)
+    # ports:
+    #   - "1080:1080"
+
   celery-worker:
     build: .
     container_name: celery-worker
     depends_on:
       - medoedai
       - redis
+      - xray   
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - ALL_PROXY=socks5h://host.docker.internal:1080
-      - HTTP_PROXY=socks5h://host.docker.internal:1080
-      - http_proxy=socks5h://host.docker.internal:1080
-      - HTTPS_PROXY=socks5h://host.docker.internal:1080
-      - https_proxy=socks5h://host.docker.internal:1080      
-      - NO_PROXY=localhost,127.0.0.1,redis,postgres,medoedai,serving,*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16      
+      - HTTP_PROXY=socks5h://xray:1080
+      - HTTPS_PROXY=socks5h://xray:1080
+      - ALL_PROXY=socks5h://xray:1080
+      - NO_PROXY=localhost,127.0.0.1,redis,postgres,medoedai,serving,*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - WANDB_HTTP_TIMEOUT=60
+      - PYTHONDONTWRITEBYTECODE=1       
     env_file:
       - .env
     volumes:

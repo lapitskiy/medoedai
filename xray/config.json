@@ -1,0 +1,60 @@
+{
+  "log": { "loglevel": "warning" },
+
+  /*  inbound  – SOCKS‑прокси, который будут использовать программы  */
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 1080,
+      "protocol": "socks",
+      "tag": "socks-in",
+      "settings": { "udp": true }
+    }
+  ],
+
+  /*  outbound – подключение к вашему серверу Reality  */
+  "outbounds": [
+    {
+      "tag": "reality-out",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "45.66.228.8",
+            "port": 443,
+            "users": [
+              {
+                "id": "8c5e212e-600b-4667-8aad-c0d75d79b56a",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "www.cloudflare.com",
+          "publicKey": "wWQTQuzw_46wajPk4cDHFd4qPlov6khMQiInQIN-HDE",
+          "shortId": "c9200ef4b5f91e60"
+        }
+      }
+    },
+    { "tag": "direct",   "protocol": "freedom" },
+    { "tag": "blocked",  "protocol": "blackhole" }
+  ],
+
+  /*  отправляем всё через Reality‑прокси  */
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["socks-in"],
+        "outboundTag": "reality-out"
+      }
+    ]
+  }
+}
