@@ -41,6 +41,12 @@ class GymConfig:
     
     window288 = 288          # 24 часа при 5‑мин свечке
     step_minutes = 5
+    
+    #
+    comission_kappa = 2_000.0
+    
+    #
+    vol_regime_alpha: float = 0.7
 
  
      

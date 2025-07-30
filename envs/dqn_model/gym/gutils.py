@@ -1,4 +1,5 @@
 import logging
+from envs.dqn_model.gym.gconfig import GymConfig
 import numpy as np
 from collections import deque
 import os
@@ -6,6 +7,9 @@ import random
 from utils.f_logs import get_train_logger
 import wandb
 import pandas as pd
+import torch
+
+cfg = GymConfig()
 
 def update_vol_stats(vol_now: float, buf: deque, bootstrap_med=0.0015, bootstrap_iqr=0.0008):
     """
@@ -70,8 +74,8 @@ def calc_relative_vol(df_5min: pd.DataFrame, idx: int, lookback: int = 12) -> fl
     return float(tr.mean() / recent['close'].iloc[-1])
 
 def commission_penalty(fee: float,
-                       init_balance: float,
-                       kappa: float = 2_000.0) -> float:
+                       init_balance: float) -> float:
+    kappa = cfg.comission_kappa
     """
     Штраф за комиссию.
     fee          – абсолютная комиссия за сделку
@@ -80,6 +84,17 @@ def commission_penalty(fee: float,
     Возвращает отрицательное значение (penalty).
     """
     return - fee / init_balance * kappa
+
+def check_nan(tag: str, *tensors: torch.Tensor) -> bool:
+    """
+    Если в каком‑либо тензоре NaN/Inf – пишет предупреждение и
+    возвращает False.
+    """
+    for t in tensors:
+        if not torch.isfinite(t).all():
+            print(f"[NaN‑guard] {tag}: detected NaN/Inf")
+            return False
+    return True
 
 def setup_wandb(cfg, project: str = "medoedai‑medoedai"):
     """
@@ -143,7 +158,7 @@ def setup_wandb(cfg, project: str = "medoedai‑medoedai"):
     )
     
         # Лог‑файл с уникальным именем на основе run.id (лучше, чем только name)
-    log_path = f"./logs/dqn-train-{run.id}.log"
+    log_path = f"./logs/{run.name}-{run.id}.log"
     base_logger = get_train_logger(log_path, fmt_extra="[run:%(run)s id:%(run_id)s] ")
 
     # Оборачиваем в LoggerAdapter, чтобы добавлять контекст

@@ -16,7 +16,7 @@ class vDqnConfig:
 
     # === сеть / обучение ===
     lr: float              = 1e-3
-    gamma: float           = 0.99
+    gamma: float           = 0.995
     soft_tau: float        = 1e-2    # τ для soft‑update target‑net
     soft_update_every = 4
     hidden_sizes: tuple    = (128, 64)  # MLP‑слои

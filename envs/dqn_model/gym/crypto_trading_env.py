@@ -314,6 +314,9 @@ class CryptoTradingEnv(gym.Env):
         volatility = calc_relative_vol(self.df_5min, self.current_step, lookback=30)            
         median_vol, iqr_vol = update_vol_stats(volatility, self.vol_buf)
         
+        alpha = self.cfg.vol_regime_alpha     # 0.7, например
+        thr   = median_vol + alpha * iqr_vol  # порог «дремоты»
+
         k = 0.1 + 0.4 * self.epsilon          # линейная интерполяция
         volatility_threshold = median_vol + k * iqr_vol                         
     
@@ -345,6 +348,12 @@ class CryptoTradingEnv(gym.Env):
                         0.8 * norm_rsi            +      # перепроданность
                         0.5 * (volatility / 0.01)        # чуть поощряем «живой» рынок
                     )
+
+                    # --- volatility regime ---
+                    if volatility < thr:          # «затишье»
+                        fraction *= 0.3           # режем лот
+                        reward   -= 0.02          # лёгкий штраф
+                    # -------------------------
 
                     # --- 3.  squash в [0,1] ---
                     fraction = 0.1 + 0.4 * torch.sigmoid(torch.tensor(score)).item()   # 10‑50 % баланса                                                
@@ -443,6 +452,12 @@ class CryptoTradingEnv(gym.Env):
                         reward += np.tanh(pnl * 25) * 2             # за результат сделки
                         penalty = commission_penalty(fee, self.cfg.initial_balance)
                         reward += penalty             
+                        # ---------------------------------------------------------------
+                        
+                        # --- reward drawdown ----------------------------------------------------
+                        drawdown    = max(0.0, self.last_buy_price - current_price) / self.last_buy_price
+                        risk_reward = pnl - alpha * drawdown - beta * fee          # alpha≈1‑3, beta≈1‑2
+                        reward     += risk_reward
                         # ---------------------------------------------------------------
                         
                         result = "✅ - PROFIT" if pnl > 0 else "LOSS"

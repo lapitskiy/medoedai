@@ -1,5 +1,5 @@
 from agents.vdqn.dqnn import DQNN
-from envs.dqn_model.gym.gutils import setup_wandb
+from envs.dqn_model.gym.gutils import check_nan, setup_wandb
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -22,6 +22,9 @@ print(f"Используемое устройство для PyTorch: {cfg.devic
 # --- DQNSolver адаптированный под PyTorch ---
 class DQNSolver:
     def __init__(self, observation_space, action_space, load=False):
+        self.n_step   = getattr(self.cfg, "n_step", 3)   # 3‑5 шагов
+        self.n_queue  = deque(maxlen=self.n_step)
+        
         self.cfg          = cfg
         self.epsilon      = cfg.eps_start
         self.action_space = action_space
@@ -49,6 +52,9 @@ class DQNSolver:
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.cfg.lr)
         self.criterion = nn.SmoothL1Loss() # Для вычисления Q-значений
         
+        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(
+                             self.optimizer, gamma=0.999)
+        
         if load:
             self.load_model()
             self.load_state()
@@ -69,7 +75,34 @@ class DQNSolver:
         done_t = torch.tensor(done, dtype=torch.bool)
         
         self.memory.append((state_t, action_t, reward_t, next_state_t, done_t))
+           
+    def store_transition(self, s, a, r, s_next, done):
+        # кладём текущий переход в очередь
+        self.n_queue.append((s, a, r, s_next, done))
 
+        # когда очередь заполнилась (или эпизод оборвался) —
+        # считаем суммарную награду R_n и γ^n
+        if len(self.n_queue) == self.n_step or done:
+            R_n, gamma_pow = 0.0, 1.0
+            for (_, _, r_i, _, _) in self.n_queue:
+                R_n      += gamma_pow * r_i
+                gamma_pow *= self.cfg.gamma     # γ, γ² …
+
+            s0, a0, _, s_n, d_n = self.n_queue[0]
+
+            # кладём в replay‑буфер + γⁿ (нужен для таргета)
+            self.memory.append((
+                torch.tensor(s0, dtype=torch.float32),
+                torch.tensor(a0, dtype=torch.long),
+                torch.tensor(R_n, dtype=torch.float32),
+                torch.tensor(s_n, dtype=torch.float32),
+                torch.tensor(d_n, dtype=torch.bool),
+                gamma_pow                       # γⁿ
+            ))
+
+            if done:          # очистить в конце эпизода
+                self.n_queue.clear()
+                
     def act(self, state):
         if np.random.rand() < self.epsilon:
             return np.random.choice([0,1,2], p=[0.5,0.25,0.25])
@@ -117,7 +150,7 @@ class DQNSolver:
             return False, None, None, None
 
         batch = random.sample(self.memory, self.cfg.batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
+        states, actions, rewards, next_states, dones, gammas = zip(*batch)
 
         device = self.cfg.device
 
@@ -127,6 +160,7 @@ class DQNSolver:
         rewards     = torch.stack(rewards,     dim=0).to(device=device, dtype=torch.float32,  non_blocking=True)
         next_states = torch.stack(next_states, dim=0).to(device=device, dtype=torch.float32,  non_blocking=True)
         dones       = torch.stack(dones,       dim=0).to(device=device, dtype=torch.bool,     non_blocking=True)
+        gammas   = torch.tensor(gammas, device=device, dtype=torch.float32) 
 
         # ---- Q(s,a) ----
         q_all     = self.model(states)                     # (B, A)
@@ -136,7 +170,7 @@ class DQNSolver:
         with torch.no_grad():
             next_actions = self.model(next_states).argmax(dim=1, keepdim=True)
             next_q       = self.target_model(next_states).gather(1, next_actions).squeeze(1)
-            target_q     = rewards + self.cfg.gamma * next_q * (~dones).float()
+            target_q  =    rewards + gammas * next_q * (~dones).float()   # !!! γⁿ здесь
 
         # ---- loss ----
         loss = self.criterion(current_q, target_q)
@@ -144,8 +178,18 @@ class DQNSolver:
         # ---- back‑prop ----
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
-        self.optimizer.step()
+        if not check_nan("grad", *(p.grad for p in self.model.parameters() if p.grad is not None)):
+            self.optimizer.zero_grad()
+            return False, torch.tensor(float('nan')), None, None
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10)
+        self.optimizer.step()     
+        
+        for layer in self.model.modules():
+            if isinstance(layer, nn.Linear):
+                torch.nan_to_num_(layer.weight, nan=0.0, posinf=1e3, neginf=-1e3)   
+                
+        self.scheduler.step()
+        
 
         abs_q = q_gap = None
         if need_metrics:

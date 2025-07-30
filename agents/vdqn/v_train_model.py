@@ -64,10 +64,10 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
             # Переводим модель в режим обучения
             dqn_solver.model.train() 
             state = env.reset() # env.reset() теперь возвращает начальное состояние    
-
             grad_steps   = 0
-
-            while True:                
+            while True:                                
+                if episode < 2000:                # пока не доросли до 2000‑го
+                    dqn_solver.epsilon = max(0.20, dqn_solver.epsilon)
                 
                 env.epsilon = dqn_solver.epsilon
                                   
@@ -75,7 +75,8 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
                 state_next, reward, terminal, info = env.step(action)
                 tick("env.step")
                 
-                dqn_solver.remember(state, action, reward, state_next, terminal)
+                dqn_solver.store_transition(state, action, reward, state_next, terminal)
+                
                 state = state_next       
                 
                 # сколько градиентных шагов на один env.step
