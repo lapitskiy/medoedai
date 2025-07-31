@@ -1,0 +1,4 @@
+2025-07-31 00:43:35 INFO [dqn.train] [run:vanilla-dqn-alpha-4 id:tqln21ho] W&B run started | url=https://wandb.ai/medoedai-medoedai/medoedai%E2%80%91medoedai/runs/tqln21ho | project=medoedai‑medoedai | entity=medoedai-medoedai
+2025-07-31 00:43:45 INFO [dqn.train] [run:vanilla-dqn-stalin-1 id:eksregi0] W&B run started | url=https://wandb.ai/medoedai-medoedai/medoedai%E2%80%91medoedai/runs/eksregi0 | project=medoedai‑medoedai | entity=medoedai-medoedai
+2025-07-31 00:43:56 INFO [dqn.train] [run:vanilla-dqn-bravo-1 id:crdybnqa] W&B run started | url=https://wandb.ai/medoedai-medoedai/medoedai%E2%80%91medoedai/runs/crdybnqa | project=medoedai‑medoedai | entity=medoedai-medoedai
+2025-07-31 00:45:15 INFO [dqn.train] [run:vanilla-dqn-vpnblock-5 id:3l3s18fg] W&B run started | url=https://wandb.ai/medoedai-medoedai/medoedai%E2%80%91medoedai/runs/3l3s18fg | project=medoedai‑medoedai | entity=medoedai-medoedai

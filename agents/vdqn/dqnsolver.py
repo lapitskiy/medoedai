@@ -22,10 +22,9 @@ print(f"Используемое устройство для PyTorch: {cfg.devic
 # --- DQNSolver адаптированный под PyTorch ---
 class DQNSolver:
     def __init__(self, observation_space, action_space, load=False):
+        self.cfg      = cfg or vDqnConfig()
         self.n_step   = getattr(self.cfg, "n_step", 3)   # 3‑5 шагов
-        self.n_queue  = deque(maxlen=self.n_step)
-        
-        self.cfg          = cfg
+        self.n_queue  = deque(maxlen=self.n_step)                
         self.epsilon      = cfg.eps_start
         self.action_space = action_space
         self.memory = deque(maxlen=self.cfg.memory_size)       
@@ -66,42 +65,36 @@ class DQNSolver:
         """Копирует веса из основной модели в целевую модель."""
         self.target_model.load_state_dict(self.model.state_dict())
 
-    def remember(self, state, action, reward, next_state, done):
-        # Преобразуем numpy массивы в тензоры PyTorch
-        state_t = torch.tensor(state, dtype=torch.float32)
-        action_t = torch.tensor(action, dtype=torch.long) # Действие - это индекс
-        reward_t = torch.tensor(reward, dtype=torch.float32)
-        next_state_t = torch.tensor(next_state, dtype=torch.float32)
-        done_t = torch.tensor(done, dtype=torch.bool)
-        
-        self.memory.append((state_t, action_t, reward_t, next_state_t, done_t))
+    def remember(self, state, action, reward, next_state, done, gamma_n=1.0):
+        self.memory.append((
+            torch.tensor(state,      dtype=torch.float32),  # s₀
+            torch.tensor(action,     dtype=torch.long),     # a₀
+            torch.tensor(reward,     dtype=torch.float32),  # Rₙ
+            torch.tensor(next_state, dtype=torch.float32),  # sₙ
+            torch.tensor(done,       dtype=torch.bool),     # doneₙ
+            torch.tensor(gamma_n,    dtype=torch.float32)   # γⁿ
+        ))
            
+                
     def store_transition(self, s, a, r, s_next, done):
-        # кладём текущий переход в очередь
+        # 1. кладём переход в очередь
         self.n_queue.append((s, a, r, s_next, done))
 
-        # когда очередь заполнилась (или эпизод оборвался) —
-        # считаем суммарную награду R_n и γ^n
+        # 2. если набралось n шагов ИЛИ эпизод завершён
         if len(self.n_queue) == self.n_step or done:
             R_n, gamma_pow = 0.0, 1.0
             for (_, _, r_i, _, _) in self.n_queue:
                 R_n      += gamma_pow * r_i
-                gamma_pow *= self.cfg.gamma     # γ, γ² …
+                gamma_pow *= self.cfg.gamma    # γ, γ², γ³ …
 
             s0, a0, _, s_n, d_n = self.n_queue[0]
 
-            # кладём в replay‑буфер + γⁿ (нужен для таргета)
-            self.memory.append((
-                torch.tensor(s0, dtype=torch.float32),
-                torch.tensor(a0, dtype=torch.long),
-                torch.tensor(R_n, dtype=torch.float32),
-                torch.tensor(s_n, dtype=torch.float32),
-                torch.tensor(d_n, dtype=torch.bool),
-                gamma_pow                       # γⁿ
-            ))
+            # 3. сохраняем «укрупнённый» переход в буфер
+            self.remember(s0, a0, R_n, s_n, d_n, gamma_pow)
 
-            if done:          # очистить в конце эпизода
-                self.n_queue.clear()
+            # 4. если эпизод закончился — очистить очередь
+            if done:
+                self.n_queue.clear()                
                 
     def act(self, state):
         if np.random.rand() < self.epsilon:

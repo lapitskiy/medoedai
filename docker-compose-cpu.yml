@@ -21,7 +21,7 @@ services:
   medoedai:
     build:
       context: .
-      dockerfile: Dockerfile.cpu
+      dockerfile: Dockerfile
     container_name: medoedai
     depends_on:
       - redis
@@ -39,18 +39,6 @@ services:
       resources:
         reservations:
           devices: []
-
-  xray:
-    image: teddysun/xray:latest
-    container_name: xray
-    profiles: ["proxy"]
-    restart: unless-stopped
-    volumes:
-      - ./xray/config.json:/etc/xray/config.json:ro
-    command: ["xray","-c","/etc/xray/config.json"]
-    # порт наружу НЕ обязателен (контейнеры общаются внутри сети)
-    # ports:
-    #   - "1080:1080"
 
   celery-worker:
     build: .
@@ -79,32 +67,7 @@ services:
     deploy:
           resources:
             reservations:
-              devices: [] 
-              
-  pytorch-gpu:
-    image: pytorch/pytorch:latest
-    container_name: pytorch-gpu
-    profiles: ["gpu"]
-    depends_on:
-      - celery-worker    
-    restart: unless-stopped
-    ports:
-      - "8090:8090"
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    volumes:
-      - ./workspace:/workspace
-      - ./models:/models
-    working_dir: /workspace
-    command: ["sleep", "infinity"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+              devices: []           
 
 volumes:
   pgdata:
