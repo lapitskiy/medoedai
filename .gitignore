@@ -14,5 +14,7 @@ temp/**
 !temp/
 __pycache__/
 **/__pycache__/
+logs/
+logs/**
 *.py[cod]
 *$py.class
