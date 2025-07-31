@@ -349,15 +349,15 @@ class CryptoTradingEnv(gym.Env):
                         0.5 * (volatility / 0.01)        # чуть поощряем «живой» рынок
                     )
 
-                    # --- volatility regime ---
+                    # --- 3.  squash в [0,1] ---
+                    fraction = 0.1 + 0.4 * torch.sigmoid(torch.tensor(score)).item()   # 10‑50 % баланса                                                
+                    # ------------------------------------------------------------------------                 
+                    
+                                        # --- volatility regime ---
                     if volatility < thr:          # «затишье»
                         fraction *= 0.3           # режем лот
                         reward   -= 0.02          # лёгкий штраф
                     # -------------------------
-
-                    # --- 3.  squash в [0,1] ---
-                    fraction = 0.1 + 0.4 * torch.sigmoid(torch.tensor(score)).item()   # 10‑50 % баланса                                                
-                    # ------------------------------------------------------------------------                 
                         
                     
                     amount_to_buy = fraction * self.balance / current_price
