@@ -177,9 +177,10 @@ class DQNSolver:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10)
         self.optimizer.step()     
         
-        for layer in self.model.modules():
-            if isinstance(layer, nn.Linear):
-                torch.nan_to_num_(layer.weight, nan=0.0, posinf=1e3, neginf=-1e3)   
+        with torch.no_grad(): 
+            for layer in self.model.modules():
+                if isinstance(layer, nn.Linear):
+                    torch.nan_to_num_(layer.weight, nan=0.0, posinf=1e3, neginf=-1e3)
                 
         self.scheduler.step()
         

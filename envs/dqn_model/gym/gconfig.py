@@ -47,6 +47,6 @@ class GymConfig:
     
     #
     vol_regime_alpha: float = 0.7
-
+    vol_regime_beta: float = 1.0
  
      

@@ -313,8 +313,9 @@ class CryptoTradingEnv(gym.Env):
 
         volatility = calc_relative_vol(self.df_5min, self.current_step, lookback=30)            
         median_vol, iqr_vol = update_vol_stats(volatility, self.vol_buf)
-        
-        alpha = self.cfg.vol_regime_alpha     # 0.7, например
+                
+        alpha = self.cfg.vol_regime_alpha
+        beta  = self.cfg.vol_regime_beta
         thr   = median_vol + alpha * iqr_vol  # порог «дремоты»
 
         k = 0.1 + 0.4 * self.epsilon          # линейная интерполяция
