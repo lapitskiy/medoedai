@@ -171,9 +171,10 @@ class DQNSolver:
         # ---- back‑prop ----
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        if not check_nan("grad", *(p.grad for p in self.model.parameters() if p.grad is not None)):
+        if not check_nan("grad", *(p.grad for p in self.model.parameters()
+                                if p.grad is not None)):
             self.optimizer.zero_grad()
-            return False, torch.tensor(float('nan')), None, None
+            return False, None, None, None   # ← вернём None, а не tensor(NaN)        
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10)
         self.optimizer.step()     
         

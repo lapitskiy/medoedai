@@ -8,6 +8,7 @@ from utils.f_logs import get_train_logger
 import wandb
 import pandas as pd
 import torch
+import socket
 
 cfg = GymConfig()
 
@@ -137,7 +138,9 @@ def setup_wandb(cfg, project: str = "medoedai‑medoedai"):
         "vodka", "balalaika", "medved", "sssr",
     ]
     suffix = random.choice(suffixes)
-    run_name = f"{cfg.run_name}-{suffix}-{random.randint(1, 10)}"
+    hostname = socket.gethostname() 
+
+    run_name = f"{suffix}-{random.randint(1, 10)}-({cfg.run_name}-{hostname})"
 
     # 4) Инициализируем W&B
     run = wandb.init(

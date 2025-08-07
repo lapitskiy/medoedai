@@ -65,10 +65,7 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
             dqn_solver.model.train() 
             state = env.reset() # env.reset() теперь возвращает начальное состояние    
             grad_steps   = 0
-            while True:                                
-                if episode < 2000:                # пока не доросли до 2000‑го
-                    dqn_solver.epsilon = max(0.20, dqn_solver.epsilon)
-                
+            while True:                                                
                 env.epsilon = dqn_solver.epsilon
                                   
                 action = dqn_solver.act(state)
@@ -114,19 +111,26 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 10000):
                 
                 # --------------- лог каждые 100 grad‑шагов (только если был grad) ---
                 if did_step and (global_step % 100 == 0):
-                    wandb.log({
-                        "step":     global_step,
-                        "episode":  episode + 1,
-                        "td_loss":  float(td_loss),   # или td_loss.item()
-                        "abs_Q":    float(abs_q),     # или abs_q.item()
-                        "q_gap":    float(q_gap),     # или q_gap.item()
-                    })
+
+                    metrics = {
+                        "step":    global_step,
+                        "episode": episode + 1,
+                    }
+
+                    for k, v in [("td_loss", td_loss), ("abs_Q", abs_q), ("q_gap", q_gap)]:
+                        if v is not None and torch.isfinite(torch.as_tensor(v)):
+                            metrics[k] = v.item() if torch.is_tensor(v) else float(v)
+
+                    wandb.log(metrics)        # ← один вызов
                     tick("wandb.log 100")
                                       
 
                 if did_step:
                     
                     dqn_solver.epsilon = max(dqn_solver.cfg.eps_final, dqn_solver.epsilon * dqn_solver._eps_decay_rate)
+                    
+                    if episode < 2000 and dqn_solver.epsilon < 0.20:
+                        dqn_solver.epsilon = 0.20             
                     
                     grad_steps += 1
                     if grad_steps % cfg.soft_update_every  == 0:

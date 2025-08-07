@@ -25,7 +25,7 @@ class vDqnConfig:
     # === логирование / сервисное ===
     grad_clip: float | None = None
     device: str             = "cuda"      # или "cpu"
-    run_name: str           = "vanilla-dqn"
+    run_name: str           = "du-dqn"
 
     # можно заранее готовить «место» под будущие фичи
     sac_size_agent: bool    = False
