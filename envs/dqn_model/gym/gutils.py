@@ -1,14 +1,22 @@
 import logging
+import sys
 from envs.dqn_model.gym.gconfig import GymConfig
-import numpy as np
+ 
 from collections import deque
 import os
+import numpy as np
 import random
 from utils.f_logs import get_train_logger
 import wandb
 import pandas as pd
 import torch
 import socket
+import csv
+
+from collections import defaultdict
+
+_NAN_COUNTS = defaultdict(int)   # по тегам
+_NAN_TOTAL  = 0                  # всего событий
 
 cfg = GymConfig()
 
@@ -86,16 +94,38 @@ def commission_penalty(fee: float,
     """
     return - fee / init_balance * kappa
 
-def check_nan(tag: str, *tensors: torch.Tensor) -> bool:
+def check_nan(tag: str, *tensors: torch.Tensor, report_every: int | None = None) -> bool:
     """
-    Если в каком‑либо тензоре NaN/Inf – пишет предупреждение и
-    возвращает False.
+    Возвращает True если всё ок. Если NaN/Inf обнаружен:
+    - увеличивает счётчики
+    - ничего не печатает (кроме редкого отчёта, если задан report_every)
     """
+    global _NAN_TOTAL
+    ok = True
     for t in tensors:
         if not torch.isfinite(t).all():
-            print(f"[NaN‑guard] {tag}: detected NaN/Inf")
-            return False
-    return True
+            ok = False
+            _NAN_COUNTS[tag] += 1
+            _NAN_TOTAL += 1
+            break
+
+    # редкий, «rate-limited» отчёт
+    if (not ok) and report_every and (_NAN_TOTAL % report_every == 0):
+        print(f"[NaN-guard] total={_NAN_TOTAL} | {tag}={_NAN_COUNTS[tag]}")
+    return ok
+
+def get_nan_stats(reset: bool = False) -> dict:
+    """Вернёт агрегированную статистику по NaN/Inf. reset=True — обнулит счётчики."""
+    stats = {"total": _NAN_TOTAL} | dict(_NAN_COUNTS)
+    if reset:
+        _NAN_COUNTS.clear()
+        globals()["_NAN_TOTAL"] = 0
+    return stats
+
+
+class _DummyWB:
+    def log(self, *a, **k): pass
+    def finish(self): pass
 
 def setup_wandb(cfg, project: str = "medoedai‑medoedai"):
     """
@@ -170,4 +200,24 @@ def setup_wandb(cfg, project: str = "medoedai‑medoedai"):
     logger.info("W&B run started | url=%s | project=%s | entity=%s",
                 run.url, run.project, run.entity)
 
-    return run, logger
+    return _DummyWB(), logger
+
+def log_csv(path, metrics: dict):
+    if not metrics: return
+    is_new = not os.path.exists(path)
+    with open(path, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=sorted(metrics.keys()))
+        if is_new: w.writeheader()
+        w.writerow(metrics)
+        
+def setup_logger(name="rl", level=logging.INFO):
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.propagate = False
+    for h in list(logger.handlers):
+        logger.removeHandler(h)
+    h = logging.StreamHandler(sys.stdout)
+    h.setLevel(level)
+    h.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+    logger.addHandler(h)
+    return logger        

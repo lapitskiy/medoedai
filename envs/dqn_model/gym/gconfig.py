@@ -46,7 +46,12 @@ class GymConfig:
     comission_kappa = 2_000.0
     
     #
-    vol_regime_alpha: float = 0.7
     vol_regime_beta: float = 1.0
+    vol_regime_alpha: float      = 0.5   # порог: median + alpha * IQR
+    
+    low_vol_fraction: float      = 0.4   # во сколько раз режем позицию при low-vol
+    vol_gate_min_eps: float      = 0.10  # включать режим, когда ε <= этого значения
+    low_vol_hold_penalty: float  = 0.01  # лёгкий штраф к reward при low-vol входе
+
  
      

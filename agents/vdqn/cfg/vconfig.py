@@ -41,6 +41,11 @@ class vDqnConfig:
     # Определение устройства (GPU или CPU)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
     
+    use_wandb: bool = False
+    csv_metrics_path: str = "./metrics.csv"
+        
+    tick_every: int = 2000      # раз в N шагов (пер-лейбл)
+    tick_slow_ms: float = 20.0  # логировать, если дольше этого
     
     
     

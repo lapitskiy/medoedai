@@ -16,6 +16,8 @@ class CryptoTradingEnv(gym.Env):
         super(CryptoTradingEnv, self).__init__() 
         self.cfg = cfg or GymConfig()
         
+        self.vol_scaled = 0
+        
         self.epsilon = 1.0
         
         # PRINT LOG DOCKER
@@ -351,45 +353,29 @@ class CryptoTradingEnv(gym.Env):
                     )
 
                     # --- 3.  squash в [0,1] ---
-                    fraction = 0.1 + 0.4 * torch.sigmoid(torch.tensor(score)).item()   # 10‑50 % баланса                                                
+                    fraction = 0.1 + 0.4 * torch.sigmoid(torch.tensor(score)).item()   # 10‑50 % баланса            
+
+                    
+                    alpha   = getattr(self.cfg, "vol_regime_alpha", 0.5)
+                    min_eps = getattr(self.cfg, "vol_gate_min_eps", 0.10)
+                    scale   = getattr(self.cfg, "low_vol_fraction", 0.4)
+                    pen     = getattr(self.cfg, "low_vol_hold_penalty", 0.01)
+
+                    thr = median_vol + alpha * iqr_vol
+                    if (self.epsilon <= min_eps) and (volatility < thr):
+                        fraction *= scale            # просто уменьшаем размер входа
+                        reward   -= pen              # лёгкий штраф за «плоский» рынок
+                        self.vol_scaled += 1         # метрика (опционально)
+                        # можно залогировать:
+                        # self._log(f"[{self.current_step}] ℹ️ LOW VOL regime: fraction x{scale:.2f}")
+                                                        
                     # ------------------------------------------------------------------------                 
-                    
-                                        # --- volatility regime ---
-                    if volatility < thr:          # «затишье»
-                        fraction *= 0.3           # режем лот
-                        reward   -= 0.02          # лёгкий штраф
-                    # -------------------------
-                        
-                    
+                    fraction = float(np.clip(fraction, 0.05, 0.60))
+                                            
                     amount_to_buy = fraction * self.balance / current_price
                     cost = amount_to_buy * current_price                    
                     fee = cost * self.trade_fee_percent   
-                    
-                    if self.epsilon < 0.10:                        
-                        if volatility < volatility_threshold:
-                            self.buy_rejected_vol += 1
-                            if not self.low_volatility_warned:                                                                                    
-                                self._log(f"[{self.current_step}] 🚫 - LOW VOLATILITY — no BUY")
-                                self.low_volatility_warned = True
-                            return self._get_state(), reward, False, info
-                        else:
-                            self.low_volatility_warned = False
-                        
-                        # --- ROI gate -----------------------------------------------------------
-                        #min_roi = 0.002 + 0.8 * volatility                                       
-                        q75_roi = update_roi_stats(expected_roi, self.roi_buf)
-                        min_roi = 0.5 * q75_roi 
-                        
-                        if expected_roi < min_roi:
-                            reward += commission_penalty(fee, self.cfg.initial_balance)                      
-                            self.buy_rejected_roi += 1
-                            #if not self.low_roi_warned:                            
-                            #    self._log(f"[{self.current_step}] 🚫 - LOW ROI {expected_roi:.3%} < {min_roi:.3%}")
-                            #    self.low_roi_warned = True
-                            #return self._get_state(), reward, False, info
-                        #else:
-                        #    self.low_roi_warned = False
-                        
+                                            
                         
                     # ------------------------------------------------------------------------
                     
@@ -611,7 +597,7 @@ class CryptoTradingEnv(gym.Env):
             next_state = self._get_state()
 
             info['roi_block'] = self.buy_rejected_roi / max(1, self.buy_attempts)                       
-            info['vol_block'] = self.buy_rejected_vol / max(1, self.buy_attempts)
+            info['vol_block'] = self.vol_scaled / max(1, self.buy_attempts)  # теперь это доля «урезанных», а не «заблокированных»
             info['volatility'] = volatility            
             info['volatility_threshold'] = volatility_threshold
             info['crypto_held'] = self.crypto_held
@@ -673,7 +659,6 @@ class CryptoTradingEnv(gym.Env):
 
         # Сброс состояния торгового агента
         self.balance = self.cfg.initial_balance
-        self.crypto_held = 0
         self.last_buy_price = None
         self.cumulative_reward = 0.0
         self.trades = []        
@@ -683,9 +668,8 @@ class CryptoTradingEnv(gym.Env):
         self._episode_idx += 1
         self._can_log = (self._episode_idx % self._log_interval == 0)
         # ----------------------------------
-        
-        
-        self.buy_attempts = self.buy_rejected_vol = self.buy_rejected_roi = 0
+                
+        self.buy_attempts = self.buy_rejected_vol = self.buy_rejected_roi = self.vol_scaled = self.crypto_held = 0
         
         self.low_volatility_warned = False
         self.low_roi_warned        = False
