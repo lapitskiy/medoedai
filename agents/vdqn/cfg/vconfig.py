@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Dict, Any
 import torch
+from datetime import datetime
    
 @dataclass
 class vDqnConfig:  
@@ -42,7 +43,7 @@ class vDqnConfig:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
     
     use_wandb: bool = False
-    csv_metrics_path: str = "./metrics.csv"
+    csv_metrics_path: str = f"./{datetime.now().strftime('%H-%M')}metrics.csv"
         
     tick_every: int = 2000      # раз в N шагов (пер-лейбл)
     tick_slow_ms: float = 20.0  # логировать, если дольше этого

@@ -18,4 +18,4 @@ logs/
 logs/**
 *.py[cod]
 *$py.class
-metrics.csv
+*metrics.csv

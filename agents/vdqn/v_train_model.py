@@ -203,10 +203,12 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 1000):
 
         stats_all = dqn_solver.print_trade_stats(all_trades)
         log_csv(cfg.csv_metrics_path, {"scope":"cumulative", "episode": episodes, **stats_all})
+        
         if cfg.use_wandb:
             wandb.log({**stats_all, "scope": "cumulative", "episode": episodes})
         
         dqn_solver.save()
+        print(stats_all)
         print("Финальная модель сохранена.")
         return "Обучение завершено"    
     finally:
