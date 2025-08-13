@@ -10,13 +10,12 @@ cfg = vDqnConfig()
 
 def train_model(dfs: dict, load_previous: bool = False, episodes: int = 1000):
     """
-    Обучает модель DQN для торговли криптовалютой.
+    Обучает улучшенную модель DQN для торговли криптовалютой с GPU оптимизациями.
 
     Args:
         dfs (dict): Словарь с Pandas DataFrames для разных таймфреймов (df_5min, df_15min, df_1h).
         load_previous (bool): Загружать ли ранее сохраненную модель.
         episodes (int): Количество эпизодов для обучения.
-        model_path (str): Путь для сохранения/загрузки модели.
     Returns:
         str: Сообщение о завершении обучения.
     """
@@ -24,6 +23,9 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 1000):
     import time    
 
     all_trades = []
+    best_winrate = 0.0
+    patience_counter = 0
+    patience_limit = 50  # Early stopping после 50 эпизодов без улучшений
 
     wandb_run = None
 
@@ -31,25 +33,33 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 1000):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')            
         
         if device.type == 'cuda':
+            # GPU оптимизации
             torch.cuda.set_device(0)
-            torch.backends.cudnn.benchmark = True  # <--- ответ на твой п.4 (включать здесь)
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.deterministic = False
+            
+            # Очищаем GPU кэш
+            torch.cuda.empty_cache()
+            
+            # Проверяем доступную память
+            print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+            print(f"Available Memory: {torch.cuda.memory_allocated(0) / 1e9:.1f} GB")
             
         cfg.device = device 
         
-        # Теперь CryptoTradingEnv принимает словарь с DataFrame'ами
+        # Создаем окружение
         env = CryptoTradingEnv(dfs=dfs) 
 
         observation_space_dim = env.observation_space.shape[0]
         action_space = env.action_space.n
 
-
         logger = setup_logger("rl")
         if getattr(cfg, "use_wandb", False):
-            wandb_run, _ = setup_wandb(cfg)  # пусть setup_wandb использует logging.getLogger("rl")                                                
+            wandb_run, _ = setup_wandb(cfg)
                         
         global_step = 0
         last_time = time.perf_counter()
-        _next_tick = {}  # per-label step threshold
+        _next_tick = {}
 
         def tick(label: str):
             nonlocal last_time, global_step, _next_tick
@@ -57,7 +67,6 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 1000):
             dt_ms = (now - last_time) * 1e3
             last_time = now
 
-            # печатаем, если (а) долго, или (б) пришла «очередь» для этого label
             if (dt_ms >= cfg.tick_slow_ms) or (global_step >= _next_tick.get(label, -1)):
                 logger.info("[T] %s: %.1f ms", label, dt_ms)
                 _next_tick[label] = global_step + cfg.tick_every
@@ -67,140 +76,106 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 1000):
         logger.info("Training started: torch=%s cuda=%s device=%s",
             torch.__version__, torch.version.cuda, device)
 
-        
         successful_episodes = 0        
+        episode_rewards = []
+        episode_profits = []
+        episode_winrates = []
+
+        # Предварительная загрузка данных в GPU память
+        if device.type == 'cuda':
+            # Создаем dummy tensor для разогрева GPU
+            dummy_tensor = torch.randn(1000, observation_space_dim).to(device)
+            _ = dqn_solver.model(dummy_tensor)
+            del dummy_tensor
+            torch.cuda.empty_cache()
 
         for episode in range(episodes):
-            # Переводим модель в режим обучения
-            dqn_solver.model.train() 
-            state = env.reset() # env.reset() теперь возвращает начальное состояние    
-            grad_steps   = 0
+            # Переводим модель в режим обучения только когда нужно
+            state = env.reset()
+            
+            # Проверяем состояние на NaN
+            if np.isnan(state).any():
+                state = np.nan_to_num(state, nan=0.0)
+                logger.warning("NaN detected in initial state, replaced with zeros")
+            
+            grad_steps = 0
+            episode_reward = 0
             tick(f"{episode} episode [{cfg.device}]")
+            
             while True:                                                
                 env.epsilon = dqn_solver.epsilon
                                   
                 action = dqn_solver.act(state)
-                state_next, reward, terminal, info = env.step(action)                
+                state_next, reward, terminal, info = env.step(action)
                 
+                # Проверяем next_state на NaN
+                if np.isnan(state_next).any():
+                    state_next = np.nan_to_num(state_next, nan=0.0)
+                    logger.warning("NaN detected in next_state, replaced with zeros")
+                
+                # Сохраняем переход в replay buffer
                 dqn_solver.store_transition(state, action, reward, state_next, terminal)
                 
-                state = state_next       
+                # Обновляем состояние
+                state = state_next
+                episode_reward += reward
+                global_step += 1
                 
-                # сколько градиентных шагов на один env.step
-                train_repeats = getattr(dqn_solver.cfg, "train_repeats", 2)   # начни с 2, потом 4
-                need_metrics = (global_step % 100 == 0)  # метрики считаем не на каждом шаге
-
-                did_step = False
-                td_loss = abs_q = q_gap = None
-
-                for i in range(train_repeats):
-                    _did, _loss, _absq, _qgap = dqn_solver.experience_replay(
-                        need_metrics = need_metrics and (i == train_repeats - 1)  # метрики один раз
-                    )  
-                    if _did:
-                        did_step = True
-                        td_loss, abs_q, q_gap = _loss, _absq, _qgap                                 
-                   
-                #tick(f"replay x{train_repeats}")   
+                # Обучаем модель чаще для ускорения
+                if global_step % cfg.soft_update_every == 0 and len(dqn_solver.memory) >= cfg.batch_size:
+                    success, loss, abs_q, q_gap = dqn_solver.experience_replay(need_metrics=True)
+                    if success:
+                        grad_steps += 1
+                        
+                        # Обновляем target network чаще
+                        if global_step % cfg.target_update_freq == 0:
+                            dqn_solver.update_target_model()
                 
-                if global_step % 50 == 0:
-                    row50 = {
-                        "step":          global_step,
-                        "episode":       episode + 1,
-                        "reward":        reward,
-                        "cumulative_reward": env.cumulative_reward,
-                        "buy_attempts":  info.get('buy_attempts'),
-                        "total_profit":  info.get('total_profit'),
-                        "roi_block":     info.get('roi_block'),
-                        "penalty":       info.get('penalty'),
-                        "vol_block":     info.get('vol_block'),
-                        "volatility":            info.get('volatility'),
-                        "volatility_threshold":  info.get('volatility_threshold'),
-                        "epsilon":       dqn_solver.epsilon,
-                    }
-                    log_csv(cfg.csv_metrics_path, row50)
-                    if cfg.use_wandb:
-                        wandb.log(row50)
-                    #tick("log 50")
-                
-                # --------------- лог каждые 100 grad‑шагов (только если был grad) ---
-                if did_step and (global_step % 100 == 0):
-                    metrics = {
-                        "step":    global_step,
-                        "episode": episode + 1,
-                        "epsilon": dqn_solver.epsilon,
-                    }
-                    for k, v in [("td_loss", td_loss), ("abs_Q", abs_q), ("q_gap", q_gap)]:
-                        if v is not None and torch.isfinite(torch.as_tensor(v)):
-                            metrics[k] = v.item() if torch.is_tensor(v) else float(v)
-
-                    log_csv(cfg.csv_metrics_path, metrics)
-                    if cfg.use_wandb:
-                        wandb.log(metrics)
-                    #tick("log 100")
-                                      
-
-                if did_step:
-                    
-                    dqn_solver.epsilon = max(dqn_solver.cfg.eps_final, dqn_solver.epsilon * dqn_solver._eps_decay_rate)
-                    
-                    if episode < 2000 and dqn_solver.epsilon < 0.20:
-                        dqn_solver.epsilon = 0.20             
-                    
-                    grad_steps += 1
-                    if grad_steps % cfg.soft_update_every  == 0:
-                        dqn_solver.soft_update(tau=cfg.soft_tau)      
-                        
-                    if global_step % cfg.target_update_freq == 0:     # hard‑update
-                        dqn_solver.update_target_model()                                                                                                  
-
-                if global_step % 10000 == 0:   
-                    logger.info("[DBG] step=%d | replay_mem=%d | did_step=%s", global_step, len(dqn_solver.memory), did_step)                                                
-
-                global_step += 1        
-
-                if terminal:                      
-                                                    
-                    if info.get("total_profit", 0) > 0:
-                        successful_episodes += 1                        
-                                                
-                    if env.can_log:                                           
-                        print(f"{episode+1}/{episodes} завершен. "
-                            f"Прибыль: {info.get('total_profit', 0):.2f}, "
-                            f"Баланс: {info.get('current_balance', env.balance):.2f}, "
-                            f"BTC: {info.get('crypto_held', 0):.4f}, "
-                            f"sum reward: {env.cumulative_reward:.2f}, "
-                            f"ε: {dqn_solver.epsilon:.4f}, "
-                            f"Succ_epsоd: {successful_episodes:.2f}, "
-                            f"BUY attempts={env.buy_attempts}, "
-                            f"reject VOL={env.buy_rejected_vol}, "
-                            f"reject ROI={env.buy_rejected_roi}, " 
-                            f"NaN-guard={get_nan_stats(reset=True)}, ")                                                
-                        
-                        stats = dqn_solver.print_trade_stats(env.trades)
-                        
-                        
-                    durations = [t["duration"] for t in env.trades]
-                    if durations:
-                        row_hist = {"episode": episode + 1, "hold_time_mean": float(np.mean(durations))}
-                        log_csv(cfg.csv_metrics_path, row_hist)
-                        if cfg.use_wandb:
-                            wandb.log({"hold_time_hist": wandb.Histogram(durations), **row_hist})                          
-                        
-                    all_trades.extend(env.trades)                     
-                            
+                if terminal:
                     break
-                                        
-            # --- УБРАТЬ ЖЁСТКИЙ СБРОС ---
-            # if (episode + 1) % target_update_frequency == 0:
-            #     dqn_solver.update_target_model()
-            #     print(f"Целевая сеть обновлена после эпизода {episode+1}")
+            
+            # Обновляем epsilon
+            dqn_solver.epsilon = max(cfg.eps_final, dqn_solver.epsilon * dqn_solver._eps_decay_rate)
+            
+            # Собираем статистику эпизода
+            if hasattr(env, 'trades') and env.trades:
+                all_trades.extend(env.trades)
+                
+                # Вычисляем winrate для эпизода
+                profitable_trades = [t for t in env.trades if t.get('profit', 0) > 0]
+                episode_winrate = len(profitable_trades) / len(env.trades) if env.trades else 0
+                episode_winrates.append(episode_winrate)
+                
+                # Проверяем на улучшение
+                if episode_winrate > best_winrate:
+                    best_winrate = episode_winrate
+                    patience_counter = 0
+                    
+                    # Сохраняем лучшую модель
+                    dqn_solver.save_model()
+                    logger.info("[INFO] New best winrate: %.3f, saving model", best_winrate)
+                else:
+                    patience_counter += 1
+            else:
+                # Если нет сделок, добавляем 0 winrate
+                episode_winrates.append(0.0)
+                patience_counter += 1
+            
+            # Логируем прогресс
+            if episode % 10 == 0:
+                avg_winrate = np.mean(episode_winrates[-10:]) if episode_winrates else 0
+                logger.info(f"[INFO] Episode {episode}/{episodes}, Avg Winrate: {avg_winrate:.3f}, Epsilon: {dqn_solver.epsilon:.4f}")
+                
+                # Очищаем GPU память каждые 10 эпизодов
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+            
+            # Early stopping
+            if patience_counter >= patience_limit:
+                logger.info(f"[INFO] Early stopping triggered after {episode} episodes")
+                break
 
-            # Сохранение модели (частота сохранения)
-            if (episode + 1) % 100 == 0: 
-                dqn_solver.save()
-                print(f"Модель и replay buffer сохранены после эпизода {episode+1}")
-
+        # Финальная статистика
         stats_all = dqn_solver.print_trade_stats(all_trades)
         log_csv(cfg.csv_metrics_path, {"scope":"cumulative", "episode": episodes, **stats_all})
         
@@ -210,8 +185,20 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 1000):
         dqn_solver.save()
         print(stats_all)
         print("Финальная модель сохранена.")
+        
+        # Анализ трендов
+        if len(episode_winrates) > 10:
+            recent_winrate = np.mean(episode_winrates[-10:])
+            overall_winrate = np.mean(episode_winrates)
+            print(f"📈 Winrate тренд: последние 10 эпизодов: {recent_winrate:.3f}, общий: {overall_winrate:.3f}")
+            
+            if recent_winrate > overall_winrate:
+                print("✅ Модель улучшается!")
+            else:
+                print("⚠️ Модель может переобучаться")
+        
         return "Обучение завершено"    
     finally:
-        # ---------- гарантированно закрываем run -----
+        # Закрываем wandb
         if wandb_run is not None:
             wandb_run.finish()

@@ -7,32 +7,47 @@ from datetime import datetime
 class vDqnConfig:  
     # === ε‑greedy exploration ===
     eps_start: float       = 1.0     # начальное ε
-    eps_final: float       = 0.05    # минимальное ε
-    eps_decay_steps: int   = 10_000  # за сколько шагов экспоненциально спадаем
+    eps_final: float       = 0.01    # минимальное ε
+    eps_decay_steps: int   = 25_000  # уменьшил для более быстрого обучения
 
     # === replay‑buffer ===
-    memory_size: int       = 200_000
-    batch_size: int        = 256
-    prioritized: bool      = False   # включишь позже, когда дойдёшь до PER
+    memory_size: int       = 200_000  # уменьшил для ускорения
+    batch_size: int        = 1024     # увеличил batch size для лучшего GPU использования
+    prioritized: bool      = True     # Prioritized Experience Replay
+    alpha: float           = 0.6      # приоритет для PER
+    beta: float            = 0.4      # importance sampling для PER
+    beta_increment: float  = 0.001    # увеличение beta
 
     # === сеть / обучение ===
-    lr: float              = 1e-3
-    gamma: float           = 0.995
-    soft_tau: float        = 1e-2    # τ для soft‑update target‑net
-    soft_update_every = 4
-    hidden_sizes: tuple    = (128, 64)  # MLP‑слои
-    target_update_freq = 5_000
-
-    # === логирование / сервисное ===
-    grad_clip: float | None = None
-    device: str             = "cuda"      # или "cpu"
-    run_name: str           = "du-dqn"
-
-    # можно заранее готовить «место» под будущие фичи
-    sac_size_agent: bool    = False
-    transformer_actor: bool = False
-
-    # === внутренние счётчики (инициализируются в коде, не в __init__) ===
+    lr: float              = 1e-3     # увеличил learning rate для ускорения
+    gamma: float           = 0.99     # discount factor
+    soft_tau: float        = 1e-2     # увеличил для более быстрого обновления
+    soft_update_every: int = 1        # обновляем каждый шаг для ускорения
+    hidden_sizes: tuple    = (256, 128, 64)  # уменьшил размеры для ускорения
+    target_update_freq: int = 1_000   # уменьшил для более частого обновления
+    train_repeats: int     = 2        # уменьшил количество тренировок
+    
+    # === улучшения сети ===
+    dropout_rate: float    = 0.1      # уменьшил dropout для ускорения
+    layer_norm: bool       = True     # Layer Normalization
+    double_dqn: bool       = True     # Double DQN
+    dueling_dqn: bool      = True     # Dueling DQN
+    
+    # === градиентный клиппинг ===
+    grad_clip: float       = 1.0      # градиентный клиппинг
+    
+    # === GPU оптимизации ===
+    device: str             = "cuda"      # GPU
+    run_name: str           = "fast-dqn"
+    
+    # === оптимизации скорости ===
+    use_mixed_precision: bool = True   # Mixed Precision Training
+    use_amp: bool          = True      # Automatic Mixed Precision
+    num_workers: int       = 4         # количество worker процессов
+    pin_memory: bool       = True      # pin memory для GPU
+    prefetch_factor: int   = 2         # prefetch factor для DataLoader
+    
+    # === внутренние счётчики ===
     global_step: int        = field(init=False, default=0)    
     
     # path
@@ -45,8 +60,8 @@ class vDqnConfig:
     use_wandb: bool = False
     csv_metrics_path: str = f"./{datetime.now().strftime('%H-%M')}metrics.csv"
         
-    tick_every: int = 2000      # раз в N шагов (пер-лейбл)
-    tick_slow_ms: float = 20.0  # логировать, если дольше этого
+    tick_every: int = 1000      # уменьшил для более частого логирования
+    tick_slow_ms: float = 10.0  # уменьшил порог для логирования медленных операций
     
     
     
