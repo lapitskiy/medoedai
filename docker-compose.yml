@@ -1,61 +1,71 @@
+version: "3.9"
+
 services:
   postgres:
     image: postgres:14
     container_name: postgres
-    restart: always
+    restart: unless-stopped
     environment:
       POSTGRES_DB: medoed_db
       POSTGRES_USER: medoed_user
       POSTGRES_PASSWORD: medoed
-      POSTGRES_MULTIPLE_DATABASES: medoed_db,mlflow_db
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   redis:
     image: redis:latest
     container_name: redis
-    restart: always
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   medoedai:
     build: .
     container_name: medoedai
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
     ports:
       - "5050:5050"
     environment:
-      - TORCHSERVE_URL=http://serving:8080/predictions/medoedai_model
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - NVIDIA_VISIBLE_DEVICES=all
+      TORCHSERVE_URL: http://serving:8080/predictions/medoedai_model
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      PYTHONDONTWRITEBYTECODE: "1"
     volumes:
       - ./:/app
     working_dir: /app
     command: ["python", "main.py"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    gpus: all
 
   celery-worker:
     build: .
     container_name: celery-worker
     depends_on:
-      - medoedai
-      - redis 
+      medoedai:
+        condition: service_started
+      redis:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    restart: unless-stopped
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - PYTHONDONTWRITEBYTECODE=1       
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      PYTHONDONTWRITEBYTECODE: "1"
     env_file:
       - .env
     volumes:
@@ -63,37 +73,24 @@ services:
     working_dir: /app
     command: ["celery", "-A", "tasks.celery_tasks", "worker",
               "-Q", "train", "-P", "solo", "-c", "1", "--loglevel=info"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-              
+    gpus: all
+
   pytorch-gpu:
-    image: pytorch/pytorch:latest
+    image: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
     container_name: pytorch-gpu
     depends_on:
-      - celery-worker    
+      celery-worker:
+        condition: service_started
     restart: unless-stopped
     ports:
       - "8090:8090"
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - ./workspace:/workspace
       - ./models:/models
     working_dir: /workspace
     command: ["sleep", "infinity"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    gpus: all
 
 volumes:
   pgdata:
+
