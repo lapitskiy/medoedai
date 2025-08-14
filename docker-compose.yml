@@ -42,7 +42,8 @@ services:
       - "5050:5050"
     environment:
       TORCHSERVE_URL: http://serving:8080/predictions/medoedai_model
-      DISABLE_TORCH_COMPILE: "false"  # Отключить torch.compile для старых GPU
+      DISABLE_TORCH_COMPILE: "true"   # Принудительно отключить torch.compile для Tesla P100
+      FORCE_DISABLE_TORCH_COMPILE: "true"  # Дополнительная защита от torch.compile
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       PYTHONDONTWRITEBYTECODE: "1"
@@ -80,6 +81,8 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       PYTHONDONTWRITEBYTECODE: "1"
+      DISABLE_TORCH_COMPILE: "true"   # Отключить torch.compile для Tesla P100
+      FORCE_DISABLE_TORCH_COMPILE: "true"  # Дополнительная защита
     env_file:
       - .env
     volumes:

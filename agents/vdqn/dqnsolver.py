@@ -208,15 +208,22 @@ class DQNSolver:
                 # Проверяем CUDA capability для выбора совместимого режима
                 if self.cfg.device.type == 'cuda':
                     device_capability = torch.cuda.get_device_capability()
+                    device_name = torch.cuda.get_device_name()
                     print(f"🔍 CUDA Capability: {device_capability[0]}.{device_capability[1]}")
+                    print(f"🎯 GPU: {device_name}")
+                    
+                    # Специальная проверка для Tesla P100
+                    if "Tesla P100" in device_name:
+                        print("⚠️ Обнаружен Tesla P100 - отключаем torch.compile")
+                        raise RuntimeError("Tesla P100 не поддерживает torch.compile")
                     
                     if device_capability[0] >= 7:  # Volta+ (V100, A100, H100, etc.)
                         compile_mode = 'max-autotune'
                         print("✅ Используем режим 'max-autotune' для современного GPU")
-                    elif device_capability[0] >= 6:  # Pascal (P100, GTX 1080, etc.)
+                    elif device_capability[0] >= 6:  # Pascal (GTX 1080, etc., но не P100)
                         if getattr(self.cfg, 'torch_compile_fallback', True):
                             compile_mode = 'default'
-                            print("⚠️ GPU Pascal, используем режим 'default'")
+                            print("⚠️ GPU Pascal (не P100), используем режим 'default'")
                         else:
                             raise RuntimeError("GPU Pascal не поддерживает torch.compile в режиме max-autotune")
                     else:  # Maxwell и старше
@@ -236,6 +243,11 @@ class DQNSolver:
             except Exception as e:
                 print(f"⚠️ torch.compile не удалось применить: {e}")
                 print("📝 Модель будет работать без компиляции")
+                
+                # Автоматически отключаем torch.compile для этого запуска
+                self.cfg.use_torch_compile = False
+                self.cfg.torch_compile_force_disable = True
+                print("🔄 torch.compile автоматически отключен для этого запуска")
         else:
             if not hasattr(torch, 'compile'):
                 print("📝 PyTorch < 2.0, torch.compile недоступен")
