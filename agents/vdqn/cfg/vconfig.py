@@ -41,6 +41,18 @@ class vDqnConfig:
     run_name: str           = "stable-dqn"
     use_gpu_storage: bool   = True        # Хранить replay buffer на GPU
     use_torch_compile: bool = True        # PyTorch 2.x compile для максимального ускорения
+    torch_compile_fallback: bool = True   # Автоматический fallback для старых GPU
+    torch_compile_force_disable: bool = False  # Принудительно отключить torch.compile
+    
+    def __post_init__(self):
+        """Проверяем переменные окружения после инициализации"""
+        import os
+        
+        # Проверяем переменную окружения для отключения torch.compile
+        if os.environ.get('DISABLE_TORCH_COMPILE', 'false').lower() == 'true':
+            self.use_torch_compile = False
+            self.torch_compile_force_disable = True
+            print("⚠️ torch.compile отключен через переменную окружения DISABLE_TORCH_COMPILE=true")
     
     # === оптимизации скорости ===
     use_mixed_precision: bool = True   # Mixed Precision Training

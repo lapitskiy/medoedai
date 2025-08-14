@@ -42,6 +42,7 @@ services:
       - "5050:5050"
     environment:
       TORCHSERVE_URL: http://serving:8080/predictions/medoedai_model
+      DISABLE_TORCH_COMPILE: "true"  # Отключить torch.compile для CPU
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       PYTHONDONTWRITEBYTECODE: "1"

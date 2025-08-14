@@ -199,14 +199,42 @@ class DQNSolver:
         ).to(self.cfg.device)
         
         # 🚀 PyTorch 2.x Compile для максимального ускорения!
-        if getattr(self.cfg, 'use_torch_compile', True) and hasattr(torch, 'compile'):
+        if (getattr(self.cfg, 'use_torch_compile', True) and 
+            not getattr(self.cfg, 'torch_compile_force_disable', False) and 
+            hasattr(torch, 'compile')):
             try:
                 print("🚀 Компилирую модель с torch.compile для максимального ускорения...")
-                self.model = torch.compile(self.model, mode='max-autotune')
-                self.target_model = torch.compile(self.target_model, mode='max-autotune')
-                print("✅ Модели скомпилированы успешно!")
+                
+                # Проверяем CUDA capability для выбора совместимого режима
+                if self.cfg.device.type == 'cuda':
+                    device_capability = torch.cuda.get_device_capability()
+                    print(f"🔍 CUDA Capability: {device_capability[0]}.{device_capability[1]}")
+                    
+                    if device_capability[0] >= 7:  # Volta+ (V100, A100, H100, etc.)
+                        compile_mode = 'max-autotune'
+                        print("✅ Используем режим 'max-autotune' для современного GPU")
+                    elif device_capability[0] >= 6:  # Pascal (P100, GTX 1080, etc.)
+                        if getattr(self.cfg, 'torch_compile_fallback', True):
+                            compile_mode = 'default'
+                            print("⚠️ GPU Pascal, используем режим 'default'")
+                        else:
+                            raise RuntimeError("GPU Pascal не поддерживает torch.compile в режиме max-autotune")
+                    else:  # Maxwell и старше
+                        if getattr(self.cfg, 'torch_compile_fallback', True):
+                            compile_mode = 'default'
+                            print("⚠️ GPU Maxwell или старше, используем режим 'default'")
+                        else:
+                            raise RuntimeError("GPU слишком старый для torch.compile")
+                else:
+                    compile_mode = 'default'
+                    print("ℹ️ CPU режим, используем 'default'")
+                
+                self.model = torch.compile(self.model, mode=compile_mode)
+                self.target_model = torch.compile(self.target_model, mode=compile_mode)
+                print(f"✅ Модели скомпилированы успешно с режимом '{compile_mode}'!")
+                
             except Exception as e:
-                print(f"⚠️ torch.compile недоступен: {e}")
+                print(f"⚠️ torch.compile не удалось применить: {e}")
                 print("📝 Модель будет работать без компиляции")
         else:
             if not hasattr(torch, 'compile'):
