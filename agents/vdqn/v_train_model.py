@@ -8,7 +8,7 @@ from envs.dqn_model.gym.gutils import get_nan_stats, log_csv, setup_logger, setu
 
 cfg = vDqnConfig()
 
-def train_model(dfs: dict, load_previous: bool = False, episodes: int = 1000):
+def train_model(dfs: dict, load_previous: bool = False, episodes: int = 200):
     """
     Обучает улучшенную модель DQN для торговли криптовалютой с GPU оптимизациями.
 
