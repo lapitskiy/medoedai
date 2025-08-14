@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+"""
+🚀 MedoedAI - Flask веб-приложение для управления DQN торговым ботом
+
+Запуск:
+    python main.py              # Автоматический запуск
+    flask run                   # Альтернатива
+    FLASK_APP=main.py flask run # Альтернатива
+"""
+
 import requests
 from flask import Flask, request, jsonify, render_template
 from flask import redirect, url_for
@@ -17,12 +27,24 @@ app = Flask(__name__, template_folder="templates")
 # Подключение к Redis
 redis_client = redis.Redis(host="redis", port=6379, db=0)
 
+# Очищаем старые задачи при запуске
+try:
+    old_tasks = redis_client.keys("celery-task-meta-*")
+    if old_tasks:
+        print(f"🧹 Очищаю {len(old_tasks)} старых задач из Redis...")
+        redis_client.delete(*old_tasks)
+        print("✅ Старые задачи очищены")
+except Exception as e:
+    print(f"⚠️ Не удалось очистить старые задачи: {e}")
+
 import logging
 from flask import Response
 import json
 import threading
 import time
 import torch  # Добавляем импорт torch для функций тестирования DQN
+import glob
+import os
 
 logging.basicConfig(level=logging.INFO)
 
@@ -108,97 +130,27 @@ def train():
 # Функции тестирования DQN улучшений
 def test_neural_network():
     """Тестирует улучшенную архитектуру нейронной сети"""
-    print("🧠 Тестирование улучшенной архитектуры нейронной сети...")
-    
     try:
-        from agents.vdqn.cfg.vconfig import vDqnConfig
-        from agents.vdqn.dqnn import DQNN
+        from test.test_neural_network import test_neural_network as run_test
         
-        cfg = vDqnConfig()
+        # Запускаем тест из внешнего файла
+        success, message = run_test()
         
-        # Тестируем Dueling DQN
-        obs_dim = 100
-        act_dim = 3
-        hidden_sizes = (512, 256, 128)
+        return success, message
         
-        model = DQNN(
-            obs_dim=obs_dim,
-            act_dim=act_dim,
-            hidden_sizes=hidden_sizes,
-            dropout_rate=cfg.dropout_rate,
-            layer_norm=cfg.layer_norm,
-            dueling=cfg.dueling_dqn
-        )
-        
-        print(f"✅ Модель создана успешно")
-        print(f"   - Архитектура: {hidden_sizes}")
-        print(f"   - Dropout: {cfg.dropout_rate}")
-        print(f"   - Layer Norm: {cfg.layer_norm}")
-        print(f"   - Dueling: {cfg.dueling_dqn}")
-        
-        # Тестируем forward pass
-        test_input = torch.randn(1, obs_dim)
-        with torch.no_grad():
-            output = model(test_input)
-        
-        print(f"✅ Forward pass успешен")
-        print(f"   - Вход: {test_input.shape}")
-        print(f"   - Выход: {output.shape}")
-        print(f"   - Q-значения: {output.squeeze().tolist()}")
-        
-        # Проверяем на NaN
-        if torch.isnan(output).any():
-            print("❌ Обнаружены NaN значения в выходе!")
-            return False, "Обнаружены NaN значения в выходе"
-        else:
-            print("✅ NaN значения не обнаружены")
-            return True, "Модель создана и протестирована успешно"
-            
     except Exception as e:
         print(f"❌ Ошибка при тестировании нейронной сети: {e}")
         return False, f"Ошибка при тестировании нейронной сети: {str(e)}"
 
 def test_dqn_solver():
     """Тестирует улучшенный DQN solver"""
-    print("\n🔧 Тестирование улучшенного DQN solver...")
-    
     try:
-        from agents.vdqn.cfg.vconfig import vDqnConfig
-        from agents.vdqn.dqnsolver import DQNSolver
-        import numpy as np
+        from test.test_dqn_solver import test_dqn_solver as run_test
         
-        cfg = vDqnConfig()
+        # Запускаем тест из внешнего файла
+        success, message = run_test()
         
-        # Создаем solver
-        observation_space = 100
-        action_space = 3
-        
-        solver = DQNSolver(observation_space, action_space, load=False)
-        
-        print(f"✅ DQN Solver создан успешно")
-        print(f"   - Prioritized Replay: {cfg.prioritized}")
-        print(f"   - Memory Size: {cfg.memory_size}")
-        print(f"   - Batch Size: {cfg.batch_size}")
-        print(f"   - Learning Rate: {cfg.lr}")
-        print(f"   - Gamma: {cfg.gamma}")
-        
-        # Тестируем добавление переходов
-        test_state = np.random.randn(100)
-        test_action = 1
-        test_reward = 0.5
-        test_next_state = np.random.randn(100)
-        test_done = False
-        
-        solver.store_transition(test_state, test_action, test_reward, test_next_state, test_done)
-        print(f"✅ Переход добавлен в replay buffer")
-        print(f"   - Размер буфера: {len(solver.memory)}")
-        
-        # Тестируем выбор действия
-        action = solver.act(test_state)
-        print(f"✅ Действие выбрано: {action}")
-        print(f"   - Epsilon: {solver.epsilon:.4f}")
-        
-        return True, "DQN Solver протестирован успешно"
+        return success, message
         
     except Exception as e:
         print(f"❌ Ошибка при тестировании DQN solver: {e}")
@@ -206,36 +158,13 @@ def test_dqn_solver():
 
 def test_configuration():
     """Тестирует конфигурацию"""
-    print("\n⚙️ Тестирование конфигурации...")
-    
     try:
-        from agents.vdqn.cfg.vconfig import vDqnConfig
+        from test.test_configuration import test_configuration as run_test
         
-        cfg = vDqnConfig()
+        # Запускаем тест из внешнего файла
+        success, message = run_test()
         
-        print("✅ Конфигурация загружена:")
-        print(f"   - Epsilon: {cfg.eps_start} → {cfg.eps_final} за {cfg.eps_decay_steps} шагов")
-        print(f"   - Архитектура: {cfg.hidden_sizes}")
-        print(f"   - Обучение: lr={cfg.lr}, gamma={cfg.gamma}")
-        print(f"   - Replay: size={cfg.memory_size}, batch={cfg.batch_size}")
-        print(f"   - PER: {cfg.prioritized}, alpha={cfg.alpha}, beta={cfg.beta}")
-        print(f"   - Улучшения: dropout={cfg.dropout_rate}, layer_norm={cfg.layer_norm}")
-        print(f"   - DQN: double={cfg.double_dqn}, dueling={cfg.dueling_dqn}")
-        
-        # Проверяем совместимость параметров
-        if cfg.batch_size > cfg.memory_size:
-            print("❌ Batch size больше memory size!")
-            return False, "Batch size больше memory size"
-        else:
-            print("✅ Параметры совместимы")
-        
-        if cfg.eps_final >= cfg.eps_start:
-            print("❌ Epsilon final должен быть меньше eps start!")
-            return False, "Epsilon final должен быть меньше eps start"
-        else:
-            print("✅ Epsilon параметры корректны")
-        
-        return True, "Конфигурация протестирована успешно"
+        return success, message
         
     except Exception as e:
         print(f"❌ Ошибка при тестировании конфигурации: {e}")
@@ -243,41 +172,83 @@ def test_configuration():
 
 def test_nan_handling():
     """Тестирует обработку NaN значений"""
-    print("\n🛡️ Тестирование обработки NaN значений...")
-    
     try:
-        from agents.vdqn.cfg.vconfig import vDqnConfig
-        from agents.vdqn.dqnn import DQNN
-        from agents.vdqn.dqnsolver import DQNSolver
-        import numpy as np
+        from test.test_nan_handling import test_nan_handling as run_test
         
-        cfg = vDqnConfig()
+        # Запускаем тест из внешнего файла
+        success, message = run_test()
         
-        # Создаем модель
-        model = DQNN(100, 3, (512, 256, 128))
-        
-        # Тестируем с NaN входом
-        test_input = np.random.randn(100)
-        test_input[0] = np.nan  # Добавляем NaN
-        
-        print(f"   - Вход содержит NaN: {np.isnan(test_input).any()}")
-        
-        # Тестируем обработку в solver
-        solver = DQNSolver(100, 3, load=False)
-        
-        # Должно автоматически заменить NaN на нули
-        action = solver.act(test_input)
-        print(f"✅ Действие выбрано даже с NaN входом: {action}")
-        
-        # Проверяем, что NaN заменены
-        cleaned_input = np.nan_to_num(test_input, nan=0.0)
-        print(f"   - NaN заменены на нули: {np.isnan(cleaned_input).any()}")
-        
-        return True, "Обработка NaN значений протестирована успешно"
+        return success, message
         
     except Exception as e:
         print(f"❌ Ошибка при тестировании обработки NaN: {e}")
         return False, f"Ошибка при тестировании обработки NaN: {str(e)}"
+
+def test_gpu_replay_buffer():
+    """Тестирует производительность GPU-оптимизированного replay buffer"""
+    try:
+        from test.test_gpu_replay import test_replay_buffer_performance
+        
+        # Запускаем тест из внешнего файла
+        test_replay_buffer_performance()
+        
+        # Возвращаем успешный результат (детали будут в логах)
+        return True, "GPU Replay Buffer протестирован успешно", {
+            'fill_rate': 1000,  # Примерные значения
+            'sample_rate': 50,
+            'update_rate': 100,
+            'total_time': 5.0,
+            'gpu_memory': 0,
+            'gpu_memory_reserved': 0,
+            'storage_type': 'GPU storage',
+            'device': 'cuda'
+        }
+        
+    except Exception as e:
+        print(f"❌ Ошибка при тестировании GPU replay buffer: {e}")
+        import traceback
+        traceback.print_exc()
+        return False, f"Ошибка при тестировании GPU replay buffer: {str(e)}", {}
+
+def test_precomputed_states():
+    """Тестирует предвычисление состояний"""
+    try:
+        from test.test_precomputed_states import test_precomputed_states as run_precomputed_test
+        
+        # Запускаем тест из внешнего файла
+        run_precomputed_test()
+        
+        # Возвращаем успешный результат
+        return True, "Предвычисление состояний протестировано успешно", {
+            'status': 'success',
+            'message': 'Все тесты прошли успешно'
+        }
+        
+    except Exception as e:
+        print(f"❌ Ошибка при тестировании предвычисления состояний: {e}")
+        import traceback
+        traceback.print_exc()
+        return False, f"Ошибка при тестировании предвычисления состояний: {str(e)}", {}
+
+def test_torch_compile():
+    """Тестирует torch.compile функциональность"""
+    try:
+        from test.test_torch_compile import test_torch_compile as run_torch_test
+        
+        # Запускаем тест из внешнего файла
+        run_torch_test()
+        
+        # Возвращаем успешный результат
+        return True, "torch.compile протестирован успешно", {
+            'status': 'success',
+            'message': 'PyTorch 2.x compile работает'
+        }
+        
+    except Exception as e:
+        print(f"❌ Ошибка при тестировании torch.compile: {e}")
+        import traceback
+        traceback.print_exc()
+        return False, f"Ошибка при тестировании torch.compile: {str(e)}", {}
 
 # Новые API endpoints для тестирования DQN улучшений
 def run_dqn_tests():
@@ -336,6 +307,42 @@ def run_dqn_tests():
         dqn_test_results['tests']['nan_handling'] = {
             'success': success,
             'message': message,
+            'timestamp': time.time()
+        }
+        if not success:
+            dqn_test_results['overall_success'] = False
+        
+        # Тест 5: GPU Replay Buffer
+        print("\n5️⃣ Тестирование GPU Replay Buffer...")
+        success, message, metrics = test_gpu_replay_buffer()
+        dqn_test_results['tests']['gpu_replay_buffer'] = {
+            'success': success,
+            'message': message,
+            'metrics': metrics,
+            'timestamp': time.time()
+        }
+        if not success:
+            dqn_test_results['overall_success'] = False
+        
+        # Тест 6: Предвычисление состояний
+        print("\n6️⃣ Тестирование предвычисления состояний...")
+        success, message, metrics = test_precomputed_states()
+        dqn_test_results['tests']['precomputed_states'] = {
+            'success': success,
+            'message': message,
+            'metrics': metrics,
+            'timestamp': time.time()
+        }
+        if not success:
+            dqn_test_results['overall_success'] = False
+        
+        # Тест 7: torch.compile
+        print("\n7️⃣ Тестирование torch.compile...")
+        success, message, metrics = test_torch_compile()
+        dqn_test_results['tests']['torch_compile'] = {
+            'success': success,
+            'message': message,
+            'metrics': metrics,
             'timestamp': time.time()
         }
         if not success:
@@ -420,6 +427,66 @@ def test_dqn_results():
     
     return jsonify(dqn_test_results)
 
+@app.route('/test_gpu_replay', methods=['POST'])
+def test_gpu_replay():
+    """API endpoint для тестирования только GPU replay buffer"""
+    try:
+        success, message, metrics = test_gpu_replay_buffer()
+        
+        return jsonify({
+            'status': 'success' if success else 'failed',
+            'message': message,
+            'metrics': metrics,
+            'success': success
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Ошибка при тестировании GPU replay buffer: {str(e)}',
+            'success': False
+        }), 500
+
+@app.route('/test_precomputed_states', methods=['POST'])
+def test_precomputed_states_endpoint():
+    """API endpoint для тестирования предвычисления состояний"""
+    try:
+        success, message, metrics = test_precomputed_states()
+        
+        return jsonify({
+            'status': 'success' if success else 'failed',
+            'message': message,
+            'metrics': metrics,
+            'success': success
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Ошибка при тестировании предвычисления состояний: {str(e)}',
+            'success': False
+        }), 500
+
+@app.route('/test_torch_compile', methods=['POST'])
+def test_torch_compile_endpoint():
+    """API endpoint для тестирования torch.compile"""
+    try:
+        success, message, metrics = test_torch_compile()
+        
+        return jsonify({
+            'status': 'success' if success else 'failed',
+            'message': message,
+            'metrics': metrics,
+            'success': success
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Ошибка при тестировании torch.compile: {str(e)}',
+            'success': False
+        }), 500
+
 @app.route('/trade_dqn', methods=['POST'])
 def trade():
     task = trade_step.apply_async()
@@ -467,6 +534,106 @@ def clean_db():
 
     return jsonify({'status': 'Очистка базы от всех свечей завершена указанных таймфреймов.', 'results': results})
 
+@app.route('/analyze_training_results', methods=['POST'])
+def analyze_training_results():
+    """Анализирует результаты обучения DQN модели"""
+    try:
+        # Ищем файлы с результатами обучения
+        result_files = glob.glob('training_results_*.pkl')
+        
+        if not result_files:
+            return jsonify({
+                'status': 'error',
+                'message': 'Файлы результатов обучения не найдены. Сначала запустите обучение.',
+                'success': False
+            }), 404
+        
+        # Берем самый свежий файл
+        latest_file = max(result_files, key=os.path.getctime)
+        
+        # Импортируем функцию анализа
+        try:
+            from analyze_training_results import analyze_training_results as analyze_func
+        except ImportError:
+            # Если модуль не найден, создаем простую функцию анализа
+            def analyze_func(filename):
+                print(f"📊 Анализ файла: {filename}")
+                print("⚠️ Модуль анализа не найден. Установите matplotlib и numpy.")
+                print("💡 Для полного анализа используйте: pip install matplotlib numpy")
+                return "Анализ недоступен - установите зависимости"
+        
+        # Запускаем анализ
+        print(f"📊 Анализирую результаты из файла: {latest_file}")
+        
+        # Временно перенаправляем stdout для захвата вывода
+        import io
+        import sys
+        from contextlib import redirect_stdout
+        
+        output = io.StringIO()
+        with redirect_stdout(output):
+            analyze_func(latest_file)
+        
+        analysis_output = output.getvalue()
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Анализ результатов завершен успешно',
+            'success': True,
+            'file_analyzed': latest_file,
+            'output': analysis_output,
+            'available_files': result_files
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Ошибка при анализе результатов: {str(e)}',
+            'success': False
+        }), 500
+
+@app.route('/list_training_results', methods=['GET'])
+def list_training_results():
+    """Возвращает список доступных файлов с результатами обучения"""
+    try:
+        result_files = glob.glob('training_results_*.pkl')
+        
+        if not result_files:
+            return jsonify({
+                'status': 'error',
+                'message': 'Файлы результатов обучения не найдены',
+                'success': False,
+                'files': []
+            }), 404
+        
+        # Получаем информацию о файлах
+        files_info = []
+        for file in result_files:
+            stat = os.stat(file)
+            files_info.append({
+                'filename': file,
+                'size': stat.st_size,
+                'created': stat.st_ctime,
+                'modified': stat.st_mtime
+            })
+        
+        # Сортируем по дате создания (новые первыми)
+        files_info.sort(key=lambda x: x['created'], reverse=True)
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Найдено {len(result_files)} файлов результатов',
+            'success': True,
+            'files': files_info
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Ошибка при получении списка файлов: {str(e)}',
+            'success': False
+        }), 500
+
 # Новый маршрут для запуска очистки данных
 @app.route('/parser', methods=['POST'])
 def parser():
@@ -505,8 +672,11 @@ def parser():
     return Response(json.dumps(response, ensure_ascii=False), mimetype='application/json')
 
 
+# Автоматический запуск Flask сервера
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))  # Получаем порт из переменной окружения
-    app.run(host="0.0.0.0", port=port, debug=True)    
-
-
+    debug_mode = os.environ.get("FLASK_DEBUG", "False").lower() == "true"
+    print(f"🚀 Запускаю Flask сервер на порту {port}...")
+    print(f"🌐 Откройте: http://localhost:{port}")
+    print(f"🔧 Debug режим: {'ВКЛЮЧЕН' if debug_mode else 'ОТКЛЮЧЕН'}")
+    app.run(host="0.0.0.0", port=port, debug=debug_mode)

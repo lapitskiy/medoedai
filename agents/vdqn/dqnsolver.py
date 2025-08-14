@@ -21,80 +21,158 @@ cfg = vDqnConfig()
 print(f"Используемое устройство для PyTorch: {cfg.device}")
 
 class PrioritizedReplayBuffer:
-    """Приоритизированный буфер воспроизведения опыта с оптимизацией для GPU"""
+    """Приоритизированный буфер воспроизведения опыта с GPU оптимизациями"""
     
-    def __init__(self, capacity, alpha=0.6, beta=0.4, beta_increment=0.001):
+    def __init__(self, capacity, state_size, alpha=0.6, beta=0.4, beta_increment=0.001, use_gpu_storage=True):
         self.capacity = capacity
+        self.state_size = state_size
         self.alpha = alpha
         self.beta = beta
         self.beta_increment = beta_increment
-        self.buffer = []
-        self.priorities = []
-        self.position = 0
-        
-        # GPU оптимизации
         self.device = cfg.device
+        self.use_gpu_storage = use_gpu_storage and torch.cuda.is_available()
+        
+        # Инициализируем буферы на GPU или CPU с pinned memory
+        if self.use_gpu_storage:
+            # Полное хранение на GPU
+            self.states = torch.zeros((capacity, state_size), dtype=torch.float32, device=self.device)
+            self.next_states = torch.zeros((capacity, state_size), dtype=torch.float32, device=self.device)
+            self.actions = torch.zeros(capacity, dtype=torch.long, device=self.device)
+            self.rewards = torch.zeros(capacity, dtype=torch.float32, device=self.device)
+            self.dones = torch.zeros(capacity, dtype=torch.bool, device=self.device)
+            self.gamma_ns = torch.ones(capacity, dtype=torch.float32, device=self.device)
+            self.priorities = torch.ones(capacity, dtype=torch.float32, device=self.device)
+        else:
+            # Pinned memory на CPU для быстрого переноса на GPU
+            self.states = torch.zeros((capacity, state_size), dtype=torch.float32, pin_memory=True)
+            self.next_states = torch.zeros((capacity, state_size), dtype=torch.float32, pin_memory=True)
+            self.actions = torch.zeros(capacity, dtype=torch.long, pin_memory=True)
+            self.rewards = torch.zeros(capacity, dtype=torch.float32, pin_memory=True)
+            self.dones = torch.zeros(capacity, dtype=torch.bool, pin_memory=True)
+            self.gamma_ns = torch.ones(capacity, dtype=torch.float32, pin_memory=True)
+            self.priorities = torch.ones(capacity, dtype=torch.float32, pin_memory=True)
+        
+        self.position = 0
+        self.size = 0
+        
+        print(f"🚀 Replay Buffer: {'GPU storage' if self.use_gpu_storage else 'Pinned memory'} на {self.device}")
         
     def push(self, state, action, reward, next_state, done, gamma_n=1.0):
-        max_priority = max(self.priorities) if self.priorities else 1.0
+        # Конвертируем в тензоры если нужно
+        if not isinstance(state, torch.Tensor):
+            state = torch.FloatTensor(state)
+        if not isinstance(next_state, torch.Tensor):
+            next_state = torch.FloatTensor(next_state)
+        if not isinstance(action, torch.Tensor):
+            action = torch.LongTensor([action])
+        if not isinstance(reward, torch.Tensor):
+            reward = torch.FloatTensor([reward])
+        if not isinstance(done, torch.Tensor):
+            done = torch.BoolTensor([done])
+        if not isinstance(gamma_n, torch.Tensor):
+            gamma_n = torch.FloatTensor([gamma_n])
         
-        if len(self.buffer) < self.capacity:
-            self.buffer.append((state, action, reward, next_state, done, gamma_n))
-            self.priorities.append(max_priority)
-        else:
-            self.buffer[self.position] = (state, action, reward, next_state, done, gamma_n)
-            self.priorities[self.position] = max_priority
+        # Перемещаем на нужное устройство
+        if not self.use_gpu_storage:
+            state = state.to(self.device, non_blocking=True)
+            next_state = next_state.to(self.device, non_blocking=True)
+            action = action.to(self.device, non_blocking=True)
+            reward = reward.to(self.device, non_blocking=True)
+            done = done.to(self.device, non_blocking=True)
+            gamma_n = gamma_n.to(self.device, non_blocking=True)
+        
+        # Сохраняем данные
+        self.states[self.position] = state
+        self.next_states[self.position] = next_state
+        self.actions[self.position] = action
+        self.rewards[self.position] = reward
+        self.dones[self.position] = done
+        self.gamma_ns[self.position] = gamma_n
+        
+        # Устанавливаем максимальный приоритет для нового опыта
+        max_priority = self.priorities.max() if self.size > 0 else 1.0
+        self.priorities[self.position] = max_priority
         
         self.position = (self.position + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
     
     def sample(self, batch_size):
-        if len(self.buffer) == 0:
-            return [], [], [], [], [], [], []
+        if self.size == 0:
+            return None, None, None, None, None, None, None, None
         
         # Выбираем индексы на основе приоритетов
-        priorities = np.array(self.priorities[:len(self.buffer)])
+        priorities = self.priorities[:self.size]
         probs = priorities ** self.alpha
         probs /= probs.sum()
         
-        indices = np.random.choice(len(self.buffer), batch_size, p=probs)
+        indices = torch.multinomial(probs, batch_size, replacement=True)
         
         # Вычисляем веса для importance sampling
-        weights = (len(self.buffer) * probs[indices]) ** (-self.beta)
+        weights = (self.size * probs[indices]) ** (-self.beta)
         weights /= weights.max()
-        weights = torch.FloatTensor(weights).to(self.device)
+        
+        # Убеждаемся, что weights находятся на правильном устройстве
+        if self.use_gpu_storage:
+            weights = weights.to(self.device, non_blocking=True)
         
         # Увеличиваем beta
         self.beta = min(1.0, self.beta + self.beta_increment)
         
-        batch = [self.buffer[idx] for idx in indices]
-        states, actions, rewards, next_states, dones, gamma_ns = zip(*batch)
+        # Получаем batch (уже на правильном устройстве)
+        states = self.states[indices]
+        next_states = self.next_states[indices]
+        actions = self.actions[indices]
+        rewards = self.rewards[indices]
+        dones = self.dones[indices]
+        gamma_ns = self.gamma_ns[indices]
         
         return states, actions, rewards, next_states, dones, gamma_ns, weights, indices
     
     def update_priorities(self, indices, priorities):
-        for idx, priority in zip(indices, priorities):
-            if idx < len(self.priorities):
-                self.priorities[idx] = priority
+        # Убеждаемся, что priorities - это тензор
+        if not isinstance(priorities, torch.Tensor):
+            priorities = torch.FloatTensor(priorities)
+        
+        # Убеждаемся, что indices - это тензор
+        if not isinstance(indices, torch.Tensor):
+            indices = torch.LongTensor(indices)
+        
+        # Приводим к одному устройству
+        if self.use_gpu_storage:
+            priorities = priorities.to(self.device, non_blocking=True)
+            indices = indices.to(self.device, non_blocking=True)
+        else:
+            priorities = priorities.cpu()
+            indices = indices.cpu()
+        
+        # Обновляем приоритеты
+        self.priorities[indices] = priorities
     
     def __len__(self):
-        return len(self.buffer)
+        return self.size
 
 # --- DQNSolver адаптированный под PyTorch с GPU оптимизациями ---
 class DQNSolver:
     def __init__(self, observation_space, action_space, load=False):
-        self.cfg      = cfg or vDqnConfig()
+        self.cfg      = vDqnConfig()
         self.n_step   = getattr(self.cfg, "n_step", 3)   # 3‑5 шагов
         self.n_queue  = deque(maxlen=self.n_step)                
-        self.epsilon      = cfg.eps_start
+        self.epsilon      = self.cfg.eps_start
         self.action_space = action_space
         
         # Используем Prioritized Replay Buffer если включен
         if self.cfg.prioritized:
+            # Получаем размер состояния из observation_space
+            state_size = observation_space if isinstance(observation_space, int) else observation_space
+            use_gpu_storage = getattr(self.cfg, 'use_gpu_storage', True)
+            
             self.memory = PrioritizedReplayBuffer(
                 self.cfg.memory_size, 
+                state_size, 
                 self.cfg.alpha, 
                 self.cfg.beta, 
-                self.cfg.beta_increment
+                self.cfg.beta_increment,
+                use_gpu_storage
             )
         else:
             self.memory = deque(maxlen=self.cfg.memory_size)
@@ -119,6 +197,22 @@ class DQNSolver:
             layer_norm=self.cfg.layer_norm,
             dueling=self.cfg.dueling_dqn
         ).to(self.cfg.device)
+        
+        # 🚀 PyTorch 2.x Compile для максимального ускорения!
+        if getattr(self.cfg, 'use_torch_compile', True) and hasattr(torch, 'compile'):
+            try:
+                print("🚀 Компилирую модель с torch.compile для максимального ускорения...")
+                self.model = torch.compile(self.model, mode='max-autotune')
+                self.target_model = torch.compile(self.target_model, mode='max-autotune')
+                print("✅ Модели скомпилированы успешно!")
+            except Exception as e:
+                print(f"⚠️ torch.compile недоступен: {e}")
+                print("📝 Модель будет работать без компиляции")
+        else:
+            if not hasattr(torch, 'compile'):
+                print("📝 PyTorch < 2.0, torch.compile недоступен")
+            else:
+                print("📝 torch.compile отключен в конфигурации")
         
         # Копируем веса
         self.target_model.load_state_dict(self.model.state_dict())
@@ -245,24 +339,23 @@ class DQNSolver:
             states, actions, rewards, next_states, dones, gamma_ns, weights, indices = \
                 self.memory.sample(self.cfg.batch_size)
             
-            # Конвертируем в тензоры с оптимизацией для GPU
-            states = torch.stack([torch.FloatTensor(s) for s in states]).to(self.cfg.device, non_blocking=True)
-            actions = torch.LongTensor(actions).to(self.cfg.device, non_blocking=True)
-            rewards = torch.FloatTensor(rewards).to(self.cfg.device, non_blocking=True)
-            next_states = torch.stack([torch.FloatTensor(s) for s in next_states]).to(self.cfg.device, non_blocking=True)
-            dones = torch.BoolTensor(dones).to(self.cfg.device, non_blocking=True)
-            gamma_ns = torch.FloatTensor(gamma_ns).to(self.cfg.device, non_blocking=True)
-            weights = weights.to(self.cfg.device, non_blocking=True)
+            # Проверяем на None (пустой буфер)
+            if states is None:
+                return False, None, None, None
+            
+            # Данные уже на правильном устройстве благодаря GPU storage!
+            # Никаких дополнительных .to() не нужно
         else:
             batch = random.sample(self.memory, self.cfg.batch_size)
             states, actions, rewards, next_states, dones, gamma_ns = zip(*batch)
             
+            # Конвертируем в тензоры и перемещаем на GPU
             states = torch.stack(states).to(self.cfg.device, non_blocking=True)
-            actions = actions.to(self.cfg.device, non_blocking=True)
-            rewards = rewards.to(self.cfg.device, non_blocking=True)
+            actions = torch.LongTensor(actions).to(self.cfg.device, non_blocking=True)
+            rewards = torch.FloatTensor(rewards).to(self.cfg.device, non_blocking=True)
             next_states = torch.stack(next_states).to(self.cfg.device, non_blocking=True)
-            dones = dones.to(self.cfg.device, non_blocking=True)
-            gamma_ns = gamma_ns.to(self.cfg.device, non_blocking=True)
+            dones = torch.BoolTensor(dones).to(self.cfg.device, non_blocking=True)
+            gamma_ns = torch.FloatTensor(gamma_ns).to(self.cfg.device, non_blocking=True)
             weights = torch.ones(self.cfg.batch_size).to(self.cfg.device, non_blocking=True)
         
         # Проверяем на NaN
@@ -317,7 +410,17 @@ class DQNSolver:
         
         # Обновляем приоритеты если используется PER
         if self.cfg.prioritized:
-            priorities = (torch.abs(td_errors) + 1e-6).detach().cpu().numpy()
+            # Убеждаемся, что priorities и indices находятся на одном устройстве
+            priorities = (torch.abs(td_errors) + 1e-6).detach()
+            if self.memory.use_gpu_storage:
+                # Если используем GPU storage, оставляем priorities на GPU
+                priorities = priorities.to(self.memory.device)
+                indices = indices.to(self.memory.device)
+            else:
+                # Если используем CPU storage, переводим priorities на CPU
+                priorities = priorities.cpu()
+                indices = indices.cpu()
+            
             self.memory.update_priorities(indices, priorities)
         
         # Обновляем scheduler
@@ -375,9 +478,31 @@ class DQNSolver:
 
     def save(self):
         """Сохраняет модель и replay buffer"""
+        # Обрабатываем torch.compile префикс при сохранении
+        model_state_dict = self.model.state_dict()
+        target_state_dict = self.target_model.state_dict()
+        
+        # Убираем префикс _orig_mod если он есть
+        cleaned_model_state = {}
+        cleaned_target_state = {}
+        
+        for key, value in model_state_dict.items():
+            if key.startswith('_orig_mod.'):
+                new_key = key.replace('_orig_mod.', '')
+                cleaned_model_state[new_key] = value
+            else:
+                cleaned_model_state[key] = value
+                
+        for key, value in target_state_dict.items():
+            if key.startswith('_orig_mod.'):
+                new_key = key.replace('_orig_mod.', '')
+                cleaned_target_state[new_key] = value
+            else:
+                cleaned_target_state[key] = value
+        
         torch.save({
-            'model_state_dict': self.model.state_dict(),
-            'target_model_state_dict': self.target_model.state_dict(),
+            'model_state_dict': cleaned_model_state,
+            'target_model_state_dict': cleaned_target_state,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'epsilon': self.epsilon,
@@ -388,8 +513,8 @@ class DQNSolver:
         with open(self.cfg.buffer_path, 'wb') as f:
             pickle.dump(self.memory, f, protocol=HIGHEST_PROTOCOL)
         
-        print(f"Модель сохранена в {self.cfg.model_path}")
-        print(f"Replay buffer сохранен в {self.cfg.buffer_path}")
+        print(f"✅ Модель сохранена в {self.cfg.model_path}")
+        print(f"✅ Replay buffer сохранен в {self.cfg.buffer_path}")
 
     def load_model(self):
         """Загружает модель с проверкой совместимости архитектуры"""
@@ -401,9 +526,15 @@ class DQNSolver:
                 if 'model_state_dict' in checkpoint:
                     model_state = checkpoint['model_state_dict']
                     
-                    # Проверяем размеры первого слоя
-                    if 'net.feature_layers.0.weight' in model_state:
-                        saved_input_size = model_state['net.feature_layers.0.weight'].shape[1]
+                    # Проверяем размеры первого слоя (учитываем torch.compile префикс)
+                    first_layer_key = None
+                    for key in model_state.keys():
+                        if 'feature_layers.0.weight' in key:
+                            first_layer_key = key
+                            break
+                    
+                    if first_layer_key:
+                        saved_input_size = model_state[first_layer_key].shape[1]
                         current_input_size = self.model.net.feature_layers[0].weight.shape[1]
                         
                         if saved_input_size != current_input_size:
@@ -411,9 +542,27 @@ class DQNSolver:
                             print("🔄 Создаем новую модель с текущей архитектурой")
                             return
                     
-                    # Загружаем модель
-                    self.model.load_state_dict(checkpoint['model_state_dict'])
-                    self.target_model.load_state_dict(checkpoint['model_state_dict'])
+                    # Обрабатываем torch.compile префикс
+                    try:
+                        # Пробуем загрузить как есть
+                        self.model.load_state_dict(checkpoint['model_state_dict'])
+                        self.target_model.load_state_dict(checkpoint['model_state_dict'])
+                    except Exception as compile_error:
+                        # Если не получилось, пробуем убрать префикс _orig_mod
+                        if "_orig_mod" in str(compile_error):
+                            print("🔄 Обрабатываем torch.compile префикс...")
+                            adjusted_state_dict = {}
+                            for key, value in checkpoint['model_state_dict'].items():
+                                if key.startswith('_orig_mod.'):
+                                    new_key = key.replace('_orig_mod.', '')
+                                    adjusted_state_dict[new_key] = value
+                                else:
+                                    adjusted_state_dict[key] = value
+                            
+                            self.model.load_state_dict(adjusted_state_dict)
+                            self.target_model.load_state_dict(adjusted_state_dict)
+                        else:
+                            raise compile_error
                     
                     # Загружаем остальные параметры если они есть
                     if 'optimizer_state_dict' in checkpoint:

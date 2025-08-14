@@ -39,6 +39,8 @@ class vDqnConfig:
     # === GPU оптимизации ===
     device: str             = "cuda"      # GPU
     run_name: str           = "fast-dqn"
+    use_gpu_storage: bool   = True        # Хранить replay buffer на GPU
+    use_torch_compile: bool = True        # PyTorch 2.x compile для максимального ускорения
     
     # === оптимизации скорости ===
     use_mixed_precision: bool = True   # Mixed Precision Training

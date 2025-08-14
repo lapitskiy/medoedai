@@ -1,4 +1,5 @@
 from agents.vdqn.v_train_model import train_model
+from agents.vdqn.v_train_model_optimized import train_model_optimized
 from celery import Celery
 import time
 
@@ -75,7 +76,7 @@ def train_dqn(self):
                 if records[col].dtype.name == 'datetime64[ns]':
                     records[col] = records[col].astype(str)
         print(f"{key}: {json.dumps(records.to_dict(orient='records'), ensure_ascii=False, indent=2)}")
-    result = train_model(dfs=df, load_previous=True)
+    result = train_model_optimized(dfs=df, episodes=1000)
     return {"message": result}
 
 @celery.task(bind=True)
