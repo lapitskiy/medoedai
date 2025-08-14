@@ -49,7 +49,7 @@ def train_model_optimized(
     dfs: Dict,
     cfg: Optional[vDqnConfig] = None,
     episodes: int = 10,
-    patience_limit: int = 50,
+    patience_limit: int = 500,  # Увеличено с 50 до 500 для более длительного обучения
     use_wandb: bool = False
 ) -> str:
     """
@@ -59,7 +59,7 @@ def train_model_optimized(
         dfs: словарь с DataFrame для разных таймфреймов (df_5min, df_15min, df_1h)
         cfg: конфигурация модели
         episodes: количество эпизодов для тренировки
-        patience_limit: лимит терпения для early stopping
+        patience_limit: лимит терпения для early stopping (по умолчанию 500 эпизодов)
         use_wandb: использовать ли Weights & Biases
         
     Returns:

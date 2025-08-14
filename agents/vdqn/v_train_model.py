@@ -25,7 +25,7 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 200):
     all_trades = []
     best_winrate = 0.0
     patience_counter = 0
-    patience_limit = 50  # Early stopping после 50 эпизодов без улучшений
+    patience_limit = 500  # Early stopping после 500 эпизодов без улучшений (увеличено для более длительного обучения)
 
     wandb_run = None
 
