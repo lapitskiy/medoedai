@@ -573,8 +573,16 @@ def clean_db():
 def analyze_training_results():
     """Анализирует результаты обучения DQN модели"""
     try:
-        # Ищем файлы с результатами обучения
-        result_files = glob.glob('training_results_*.pkl')
+        # Ищем файлы с результатами обучения в папке temp/train_results
+        results_dir = "temp/train_results"
+        if not os.path.exists(results_dir):
+            return jsonify({
+                'status': 'error',
+                'message': f'Папка {results_dir} не найдена. Сначала запустите обучение.',
+                'success': False
+            }), 404
+        
+        result_files = glob.glob(os.path.join(results_dir, 'training_results_*.pkl'))
         
         if not result_files:
             return jsonify({
@@ -631,7 +639,17 @@ def analyze_training_results():
 def list_training_results():
     """Возвращает список доступных файлов с результатами обучения"""
     try:
-        result_files = glob.glob('training_results_*.pkl')
+        # Ищем файлы с результатами обучения в папке temp/train_results
+        results_dir = "temp/train_results"
+        if not os.path.exists(results_dir):
+            return jsonify({
+                'status': 'error',
+                'message': f'Папка {results_dir} не найдена',
+                'success': False,
+                'files': []
+            }), 404
+        
+        result_files = glob.glob(os.path.join(results_dir, 'training_results_*.pkl'))
         
         if not result_files:
             return jsonify({

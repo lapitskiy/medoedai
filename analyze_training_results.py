@@ -11,6 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import sys
 import os
+import glob
 from datetime import datetime
 
 def analyze_training_results(results_file):
@@ -158,12 +159,34 @@ def main():
     """
     Главная функция
     """
-    if len(sys.argv) != 2:
-        print("Использование: python analyze_training_results.py <results_file>")
+    if len(sys.argv) == 1:
+        # Если файл не указан, ищем самый свежий в temp/train_results
+        results_dir = "temp/train_results"
+        if not os.path.exists(results_dir):
+            print(f"❌ Папка {results_dir} не найдена!")
+            print("Создайте папку temp/train_results и запустите обучение")
+            return
+        
+        result_files = glob.glob(os.path.join(results_dir, 'training_results_*.pkl'))
+        if not result_files:
+            print(f"❌ Файлы результатов не найдены в {results_dir}")
+            print("Сначала запустите обучение")
+            return
+        
+        # Берем самый свежий файл
+        results_file = max(result_files, key=os.path.getctime)
+        print(f"📊 Автоматически выбран файл: {results_file}")
+        
+    elif len(sys.argv) == 2:
+        results_file = sys.argv[1]
+        # Если указан относительный путь, добавляем папку
+        if not os.path.isabs(results_file) and not results_file.startswith('temp/'):
+            results_file = os.path.join("temp/train_results", results_file)
+    else:
+        print("Использование: python analyze_training_results.py [results_file]")
+        print("Пример: python analyze_training_results.py")
         print("Пример: python analyze_training_results.py training_results_1234567890.pkl")
         return
-    
-    results_file = sys.argv[1]
     
     if not os.path.exists(results_file):
         print(f"❌ Файл {results_file} не найден!")

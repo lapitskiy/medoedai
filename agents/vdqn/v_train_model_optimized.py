@@ -375,8 +375,13 @@ def train_model_optimized(
             'model_path': 'dqn_model.pth'
         }
         
-        # Сохраняем результаты в файл
-        results_file = f'training_results_{int(time.time())}.pkl'
+        # Создаем папку если не существует
+        import os
+        results_dir = "temp/train_results"
+        os.makedirs(results_dir, exist_ok=True)
+        
+        # Сохраняем результаты в файл в папке temp/train_results
+        results_file = os.path.join(results_dir, f'training_results_{int(time.time())}.pkl')
         with open(results_file, 'wb') as f:
             pickle.dump(training_results, f, protocol=HIGHEST_PROTOCOL)
         
