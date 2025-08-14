@@ -338,18 +338,22 @@ class DQNSolver:
         if not trades:
             return {"trades_count": 0, "winrate": 0.0, "avg_profit": 0.0, "avg_loss": 0.0}
         
-        profits = [t["profit"] for t in trades if t["profit"] > 0]
-        losses = [t["profit"] for t in trades if t["profit"] < 0]
+        # Используем безопасный доступ к ключам, поддерживая оба варианта: "profit" и "roi"
+        def get_profit(trade):
+            return trade.get("profit", trade.get("roi", 0))
+        
+        profits = [get_profit(t) for t in trades if get_profit(t) > 0]
+        losses = [get_profit(t) for t in trades if get_profit(t) < 0]
         
         winrate = len(profits) / len(trades) if trades else 0.0
         avg_profit = np.mean(profits) if profits else 0.0
         avg_loss = np.mean(losses) if losses else 0.0
-        avg_roi = np.mean([t["profit"] for t in trades]) if trades else 0.0
+        avg_roi = np.mean([get_profit(t) for t in trades]) if trades else 0.0
         
         pl_ratio = abs(avg_profit / avg_loss) if avg_loss != 0 else 0.0
         
         # Считаем плохие сделки
-        bad_trades = [t for t in trades if abs(t["profit"]) < 0.001]  # <0.1%
+        bad_trades = [t for t in trades if abs(get_profit(t)) < 0.001]  # <0.1%
         bad_trades_count = len(bad_trades)
         
         stats = {
