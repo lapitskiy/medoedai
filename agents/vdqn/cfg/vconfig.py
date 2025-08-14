@@ -7,8 +7,8 @@ from datetime import datetime
 class vDqnConfig:  
     # === ε‑greedy exploration ===
     eps_start: float       = 1.0     # начальное ε
-    eps_final: float       = 0.05    # увеличил минимальное ε для большего исследования
-    eps_decay_steps: int   = 100_000 # увеличил для более медленного затухания исследования
+    eps_final: float       = 0.1    # увеличил минимальное ε для большего исследования
+    eps_decay_steps: int   = 500_000 # увеличил для более медленного затухания исследования
 
     # === replay‑buffer ===
     memory_size: int       = 200_000  # уменьшил для ускорения
