@@ -1,73 +1,84 @@
+version: "3.9"
+
 services:
   postgres:
     image: postgres:14
     container_name: postgres
-    restart: always
+    restart: unless-stopped
     environment:
       POSTGRES_DB: medoed_db
       POSTGRES_USER: medoed_user
       POSTGRES_PASSWORD: medoed
-      POSTGRES_MULTIPLE_DATABASES: medoed_db,mlflow_db
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   redis:
     image: redis:latest
     container_name: redis
-    restart: always
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   medoedai:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: medoedai
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
     ports:
       - "5050:5050"
     environment:
-      - TORCHSERVE_URL=http://serving:8080/predictions/medoedai_model
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0      
+      TORCHSERVE_URL: http://serving:8080/predictions/medoedai_model
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      PYTHONDONTWRITEBYTECODE: "1"
+      FLASK_DEBUG: "False"
     volumes:
-      - ./:/app
-    working_dir: /app
-    command: ["python", "main.py"]
-    deploy:
-      resources:
-        reservations:
-          devices: []
+      - .:/workspace
+    working_dir: /workspace
+    command: >
+      sh -c "
+        echo '🧹 Очищаю Redis перед запуском...' &&
+        python clear_redis.py &&
+        echo '✅ Redis очищен, запускаю Flask...' &&
+        python main.py
+      "
 
   celery-worker:
     build: .
     container_name: celery-worker
     depends_on:
-      - medoedai
-      - redis 
+      medoedai:
+        condition: service_started
+      redis:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    environment:    
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      #- HTTP_PROXY=socks5h://xray:1080
-      #- HTTPS_PROXY=socks5h://xray:1080
-      #- ALL_PROXY=socks5h://xray:1080
-      #- NO_PROXY=localhost,127.0.0.1,redis,postgres,medoedai,serving,*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
-      - WANDB_HTTP_TIMEOUT=60
-      - PYTHONDONTWRITEBYTECODE=1       
+    restart: unless-stopped
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      PYTHONDONTWRITEBYTECODE: "1"
     env_file:
       - .env
     volumes:
-      - ./:/app
-    working_dir: /app
+      - .:/workspace
+    working_dir: /workspace
     command: ["celery", "-A", "tasks.celery_tasks", "worker",
               "-Q", "train", "-P", "solo", "-c", "1", "--loglevel=info"]
-    deploy:
-          resources:
-            reservations:
-              devices: []           
 
 volumes:
   pgdata:

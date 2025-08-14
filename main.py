@@ -22,21 +22,6 @@ from tasks.celery_tasks import search_lstm_task, train_dqn, trade_step
 from utils.db_utils import clean_ohlcv_data, delete_ohlcv_for_symbol_timeframe, load_latest_candles_from_csv_to_db
 from utils.parser import parser_download_and_combine_with_library
 
-app = Flask(__name__, template_folder="templates")
-
-# Подключение к Redis
-redis_client = redis.Redis(host="redis", port=6379, db=0)
-
-# Очищаем старые задачи при запуске
-try:
-    old_tasks = redis_client.keys("celery-task-meta-*")
-    if old_tasks:
-        print(f"🧹 Очищаю {len(old_tasks)} старых задач из Redis...")
-        redis_client.delete(*old_tasks)
-        print("✅ Старые задачи очищены")
-except Exception as e:
-    print(f"⚠️ Не удалось очистить старые задачи: {e}")
-
 import logging
 from flask import Response
 import json
@@ -47,6 +32,56 @@ import glob
 import os
 
 logging.basicConfig(level=logging.INFO)
+
+# Создаем Flask приложение
+app = Flask(__name__)
+
+# Функция очистки Redis при запуске
+def clear_redis_on_startup():
+    """Очищает Redis при запуске приложения"""
+    try:
+        # Подключаемся к Redis (пробуем разные хосты)
+        redis_hosts = ['localhost', 'redis', '127.0.0.1']
+        r = None
+        
+        for host in redis_hosts:
+            try:
+                r = redis.Redis(host=host, port=6379, db=0, socket_connect_timeout=5)
+                r.ping()  # Проверяем соединение
+                print(f"✅ Подключились к Redis на {host}")
+                break
+            except Exception:
+                continue
+        
+        if r is None:
+            print("⚠️ Не удалось подключиться к Redis")
+            return None
+        
+        # Очищаем все данные
+        r.flushall()
+        print("✅ Redis очищен при запуске")
+        
+        # Проверяем, что очистка прошла успешно
+        if r.dbsize() == 0:
+            print("✅ Redis пуст, готов к работе")
+        else:
+            print(f"⚠️ В Redis осталось {r.dbsize()} ключей")
+            
+        return r
+            
+    except Exception as e:
+        print(f"⚠️ Не удалось очистить Redis: {e}")
+        print("Продолжаем работу без очистки Redis")
+        return None
+
+# Инициализируем Redis клиент и очищаем при запуске
+redis_client = clear_redis_on_startup()
+if redis_client is None:
+    # Fallback - создаем клиент без очистки
+    try:
+        redis_client = redis.Redis(host='localhost', port=6379, db=0)
+    except:
+        redis_client = redis.Redis(host='redis', port=6379, db=0)
 
 # Глобальные переменные для тестирования DQN улучшений
 dqn_test_results = {}
@@ -671,6 +706,21 @@ def parser():
     response = {'status': 'Парсинг завершен', 'results': results}
     return Response(json.dumps(response, ensure_ascii=False), mimetype='application/json')
 
+@app.route('/clear_redis', methods=['POST'])
+def clear_redis():
+    """Очищает Redis вручную"""
+    try:
+        global redis_client
+        redis_client.flushall()
+        return jsonify({
+            "success": True,
+            "message": "Redis очищен успешно"
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 # Автоматический запуск Flask сервера
 if __name__ == "__main__":

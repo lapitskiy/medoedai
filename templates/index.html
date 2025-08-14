@@ -247,6 +247,18 @@
         </tbody>
     </table>
 
+    <div class="card">
+        <div class="card-header">
+            <h5>🔧 Управление системой</h5>
+        </div>
+        <div class="card-body">
+            <button class="btn btn-warning" onclick="clearRedis()">
+                🧹 Очистить Redis
+            </button>
+            <div id="clearRedisResult" class="mt-2"></div>
+        </div>
+    </div>
+
     <script>
         let testInterval = null;
         let progressInterval = null;
@@ -961,6 +973,30 @@
                 // Восстанавливаем кнопку
                 analyzeBtn.disabled = false;
                 analyzeBtn.textContent = '📈 Анализировать результаты';
+            }
+        }
+
+        async function clearRedis() {
+            const resultDiv = document.getElementById('clearRedisResult');
+            resultDiv.textContent = 'Очистка Redis...';
+            try {
+                const response = await fetch('/clear_redis', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+                const result = await response.json();
+                if (result.success) {
+                    resultDiv.textContent = '✅ Redis успешно очищен!';
+                    resultDiv.className = 'test-status status-success';
+                } else {
+                    resultDiv.textContent = '❌ Ошибка при очистке Redis: ' + result.message;
+                    resultDiv.className = 'test-status status-error';
+                }
+            } catch (error) {
+                resultDiv.textContent = '❌ Ошибка при очистке Redis: ' + error.message;
+                resultDiv.className = 'test-status status-error';
             }
         }
     </script>

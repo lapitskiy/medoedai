@@ -167,7 +167,7 @@ class CryptoTradingEnvOptimized(gym.Env):
         print(f"📈 Количество индикаторов: {num_indicator_features}")
         print(f"💰 Начальный баланс: {initial_balance}")
         print(f"🔄 Размер окна: {window_size}")
-        print(f"⚠️ ВСЕ ФИЛЬТРЫ ПОКУПКИ ОТКЛЮЧЕНЫ ДЛЯ ТЕСТИРОВАНИЯ")
+        print(f"✅ ФИЛЬТРЫ ПОКУПКИ ВКЛЮЧЕНЫ: объем (0.5%) + ROI (-3%)")
         print(f"🚀 ПРЕДВЫЧИСЛЕНИЕ СОСТОЯНИЙ: env.step() = просто сдвиг индекса!")
 
     def _calculate_normalization_stats(self):
@@ -504,12 +504,12 @@ class CryptoTradingEnvOptimized(gym.Env):
                     self.balance -= buy_amount
                     self.last_buy_price = current_price
                     self.last_buy_step = self.current_step
-                    reward = 0.01  # Небольшая награда за покупку
+                    reward = 0.03  # Увеличил награду за успешную покупку с фильтрами
                     self._log(f"[{self.current_step}] 🔵 BUY: {crypto_to_buy:.4f} at {current_price:.2f}")
                 else:
-                    reward = -0.01  # Штраф за неудачную попытку покупки
+                    reward = -0.002  # Уменьшил штраф за отклонение фильтрами
             else:
-                reward = -0.05  # Штраф за попытку купить при наличии позиции
+                reward = -0.01  # Уменьшил штраф за попытку купить при наличии позиции
                 
         elif action == 2:  # SELL
             if self.crypto_held > 0:  # Только если держим криптовалюту
@@ -526,9 +526,9 @@ class CryptoTradingEnvOptimized(gym.Env):
                 
                 # Дополнительные награды за качество сделки
                 if pnl > 0.05:  # Прибыль > 5%
-                    reward += 0.1  # Бонус за хорошую сделку
+                    reward += 0.3  # Увеличил бонус за хорошую сделку с фильтрами
                 elif pnl < -0.03:  # Убыток > 3%
-                    reward -= 0.05  # Штраф за большой убыток
+                    reward -= 0.01  # Уменьшил штраф за большой убыток
                 
                 # Записываем сделку
                 self.trades.append({
@@ -546,7 +546,7 @@ class CryptoTradingEnvOptimized(gym.Env):
                 
                 self._log(f"[{self.current_step}] 🔴 SELL: {sell_amount:.2f}, PnL: {pnl:.2%}")
             else:
-                reward = -0.05  # Штраф за попытку продать без позиции
+                reward = -0.01  # Уменьшил штраф за попытку продать без позиции
         
         # Обработка HOLD действия (как в оригинале)
         if action == 0:
@@ -607,16 +607,20 @@ class CryptoTradingEnvOptimized(gym.Env):
                 # --- Награды за удержание позиции (как в оригинале) ---
                 if unrealized_pnl_percent > 0:
                     # Чем выше нереализованная прибыль, тем больше награда за удержание
-                    reward += unrealized_pnl_percent * 5
+                    reward += unrealized_pnl_percent * 2  # Уменьшил множитель с 5 до 2
                 else:
                     # Чем больше нереализованный убыток, тем больше штраф за удержание
-                    reward += unrealized_pnl_percent * 10
+                    reward += unrealized_pnl_percent * 3  # Уменьшил множитель с 10 до 3
             else:
                 # Если action == HOLD и нет открытой позиции
-                reward -= 0.005  # маленький штраф за бездействие
+                reward = 0.001  # Небольшое поощрение за разумное бездействие вместо штрафа
         
         # Обновляем статистики
         self._update_stats(current_price)
+        
+        # Небольшая награда за активность торговли (поощряем исследование)
+        if action != 0:  # Если действие не HOLD
+            reward += 0.001  # Небольшое поощрение за активность
         
         # Переходим к следующему шагу
         self.current_step += 1
@@ -645,11 +649,11 @@ class CryptoTradingEnvOptimized(gym.Env):
                     "duration": (self.current_step - self.last_buy_step) * 5 if self.last_buy_step else 0
                 })
             
-            # Выводим статистику времени эпизода
-            if self.episode_start_time is not None:
-                episode_duration = time.time() - self.episode_start_time
-                steps_per_second = self.episode_step_count / episode_duration if episode_duration > 0 else 0
-                print(f"⏱️ Эпизод завершен: {episode_duration:.2f}с, {self.episode_step_count} шагов, {steps_per_second:.1f} шаг/с")
+            # Статистика времени эпизода (теперь выводится в train_model_optimized.py)
+            # if self.episode_start_time is not None:
+            #     episode_duration = time.time() - self.episode_start_time
+            #     steps_per_second = self.episode_step_count / episode_duration if episode_duration > 0 else 0
+            #     print(f"⏱️ Эпизод завершен: {episode_duration:.2f}с, {self.episode_step_count} шагов, {steps_per_second:.1f} шаг/с")
         
         # Информация для отладки
         initial_balance = getattr(self.cfg, 'initial_balance', 10000.0)  # По умолчанию 10000
@@ -668,25 +672,28 @@ class CryptoTradingEnvOptimized(gym.Env):
         """
         self.buy_attempts += 1
         
-        # ВРЕМЕННО ОТКЛЮЧАЕМ ВСЕ ФИЛЬТРЫ ДЛЯ ТЕСТИРОВАНИЯ
-        # Проверка объема - ОТКЛЮЧЕНА
-        # current_volume = self.df_5min[self.current_step - 1, 4]
-        # vol_relative = calc_relative_vol_numpy(self.df_5min, self.current_step - 1, 12)
+        # ВКЛЮЧАЕМ ФИЛЬТРЫ ДЛЯ УЛУЧШЕНИЯ КАЧЕСТВА СДЕЛОК
         
-        # if vol_relative < 0.01:
-        #     self.buy_rejected_vol += 1
-        #     if self.current_step % 100 == 0:
-        #         print(f"🔍 Фильтр объема: vol_relative={vol_relative:.4f} < 0.01, отклонено")
-        #     return False
+        # 1. Проверка объема - ВКЛЮЧЕН с мягким порогом
+        current_volume = self.df_5min[self.current_step - 1, 4]
+        vol_relative = calc_relative_vol_numpy(self.df_5min, self.current_step - 1, 12)
         
-        # Проверка ROI - ОТКЛЮЧЕНА
-        # if len(self.roi_buf) > 0:
-        #     recent_roi_mean = np.mean(list(self.roi_buf))
-        #     if recent_roi_mean < -0.02:
-        #         self.buy_rejected_roi += 1
-        #         return False
+        if vol_relative < 0.002:  # Мягкий порог 0.5% вместо 1%
+            self.buy_rejected_vol += 1
+            if self.current_step % 100 == 0:
+                print(f"🔍 Фильтр объема: vol_relative={vol_relative:.4f} < 0.005, отклонено")
+            return False
         
-        # ВСЕ ФИЛЬТРЫ ОТКЛЮЧЕНЫ - ВСЕГДА РАЗРЕШАЕМ ПОКУПКУ
+        # 2. Проверка ROI - ВКЛЮЧЕН
+        if len(self.roi_buf) > 0:
+            recent_roi_mean = np.mean(list(self.roi_buf))
+            if recent_roi_mean < -0.03:  # Мягкий порог -3% вместо -2%
+                self.buy_rejected_roi += 1
+                if self.current_step % 100 == 0:
+                    print(f"🔍 Фильтр ROI: recent_roi_mean={recent_roi_mean:.4f} < -0.03, отклонено")
+                return False
+        
+        # Все фильтры пройдены - разрешаем покупку
         return True
 
     def _update_stats(self, current_price: float):

@@ -5,10 +5,11 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
-# Установка системных пакетов, если нужны
+# Установка системных пакетов, включая redis-cli
 RUN apt-get update && apt-get install -y \
     git \
     build-essential \
+    redis-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка зависимостей

@@ -469,15 +469,14 @@ class DQNSolver:
             "bad_trades_count": bad_trades_count
         }
         
-        print(f"📊 - Trades: {stats['trades_count']}, Winrate: {stats['winrate']*100:.2f}%, "
+        print(f"📊 Trades: {stats['trades_count']}, Winrate: {stats['winrate']*100:.2f}%, "
               f"Avg P: {stats['avg_profit']:.3f}, Avg L: {stats['avg_loss']:.3f}, "
-              f"P/L ratio: {stats['pl_ratio']:.2f}")
-        print(f"❗ Bad trades (<0.1% ROI): {stats['bad_trades_count']}")
+              f"P/L ratio: {stats['pl_ratio']:.2f}, Bad trades: {stats['bad_trades_count']}")
         
         return stats
 
     def save(self):
-        """Сохраняет модель и replay buffer"""
+        """Сохраняет модель и replay buffer (полное сохранение)"""
         # Обрабатываем torch.compile префикс при сохранении
         model_state_dict = self.model.state_dict()
         target_state_dict = self.target_model.state_dict()
@@ -547,21 +546,46 @@ class DQNSolver:
                         # Пробуем загрузить как есть
                         self.model.load_state_dict(checkpoint['model_state_dict'])
                         self.target_model.load_state_dict(checkpoint['model_state_dict'])
+                        print("✅ Модель загружена без обработки префикса")
                     except Exception as compile_error:
-                        # Если не получилось, пробуем убрать префикс _orig_mod
+                        # Если не получилось, пробуем обработать префикс _orig_mod
                         if "_orig_mod" in str(compile_error):
                             print("🔄 Обрабатываем torch.compile префикс...")
-                            adjusted_state_dict = {}
-                            for key, value in checkpoint['model_state_dict'].items():
-                                if key.startswith('_orig_mod.'):
-                                    new_key = key.replace('_orig_mod.', '')
-                                    adjusted_state_dict[new_key] = value
-                                else:
-                                    adjusted_state_dict[key] = value
                             
-                            self.model.load_state_dict(adjusted_state_dict)
-                            self.target_model.load_state_dict(adjusted_state_dict)
+                            # Проверяем, есть ли в сохраненной модели префикс _orig_mod
+                            has_orig_mod = any(key.startswith('_orig_mod.') for key in checkpoint['model_state_dict'].keys())
+                            
+                            print(f"🔍 Анализ ключей модели:")
+                            print(f"   • Ключи с _orig_mod: {has_orig_mod}")
+                            print(f"   • Примеры ключей: {list(checkpoint['model_state_dict'].keys())[:3]}")
+                            
+                            if has_orig_mod:
+                                # Убираем префикс _orig_mod из сохраненной модели
+                                print("📝 Убираем префикс _orig_mod из сохраненной модели...")
+                                adjusted_state_dict = {}
+                                for key, value in checkpoint['model_state_dict'].items():
+                                    if key.startswith('_orig_mod.'):
+                                        new_key = key.replace('_orig_mod.', '')
+                                        adjusted_state_dict[new_key] = value
+                                    else:
+                                        adjusted_state_dict[key] = value
+                                
+                                self.model.load_state_dict(adjusted_state_dict)
+                                self.target_model.load_state_dict(adjusted_state_dict)
+                                print("✅ Модель загружена с обработкой префикса")
+                            else:
+                                # Добавляем префикс _orig_mod к сохраненной модели
+                                print("📝 Добавляем префикс _orig_mod к сохраненной модели...")
+                                adjusted_state_dict = {}
+                                for key, value in checkpoint['model_state_dict'].items():
+                                    new_key = f"_orig_mod.{key}"
+                                    adjusted_state_dict[new_key] = value
+                            
+                                self.model.load_state_dict(adjusted_state_dict)
+                                self.target_model.load_state_dict(adjusted_state_dict)
+                                print("✅ Модель загружена с обработкой префикса")
                         else:
+                            print(f"❌ Ошибка не связана с torch.compile префиксом: {compile_error}")
                             raise compile_error
                     
                     # Загружаем остальные параметры если они есть
@@ -597,8 +621,39 @@ class DQNSolver:
             target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)        
 
     def save_model(self):
-        """Сохраняет модель (аналог save)"""
-        self.save()
+        """Сохраняет только модель (без replay buffer)"""
+        # Обрабатываем torch.compile префикс при сохранении
+        model_state_dict = self.model.state_dict()
+        target_state_dict = self.target_model.state_dict()
+        
+        # Убираем префикс _orig_mod если он есть
+        cleaned_model_state = {}
+        cleaned_target_state = {}
+        
+        for key, value in model_state_dict.items():
+            if key.startswith('_orig_mod.'):
+                new_key = key.replace('_orig_mod.', '')
+                cleaned_model_state[new_key] = value
+            else:
+                cleaned_model_state[key] = value
+                
+        for key, value in target_state_dict.items():
+            if key.startswith('_orig_mod.'):
+                new_key = key.replace('_orig_mod.', '')
+                cleaned_target_state[new_key] = value
+            else:
+                cleaned_target_state[key] = value
+        
+        torch.save({
+            'model_state_dict': cleaned_model_state,
+            'target_model_state_dict': cleaned_target_state,
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'epsilon': self.epsilon,
+            'cfg': self.cfg
+        }, self.cfg.model_path)
+        
+        print(f"✅ Модель сохранена в {self.cfg.model_path}")
         
     def update_target_model(self):
         """Hard update target network для ускорения"""

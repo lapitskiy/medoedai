@@ -145,6 +145,14 @@ def train_model_optimized(
         print(f"📈 Размер состояния: {env.observation_space_shape}")
         print(f"🎮 Размер действий: {env.action_space.n}")
         
+        # Информация о настройках сохранения
+        save_frequency = getattr(cfg, 'save_frequency', 50)
+        save_only_on_improvement = getattr(cfg, 'save_only_on_improvement', False)
+        if save_only_on_improvement:
+            print(f"💾 Сохранение: только при улучшении winrate")
+        else:
+            print(f"💾 Сохранение: каждые {save_frequency} эпизодов + при улучшении winrate")
+        
         # Основной цикл тренировки
         for episode in range(episodes):         
             state = env.reset()            
@@ -224,12 +232,6 @@ def train_model_optimized(
                 if terminal:
                     break
             
-            print(f"  🏁 Эпизод {episode} завершен, reward={episode_reward:.4f}")
-            
-            # Статистика действий (если доступна)
-            if hasattr(env, 'action_counts'):
-                print(f"  🎮 Действия: HOLD={env.action_counts.get(0, 0)}, BUY={env.action_counts.get(1, 0)}, SELL={env.action_counts.get(2, 0)}")
-            
             # Обновляем epsilon
             eps_final = getattr(cfg, 'eps_final', 0.01)  # По умолчанию минимальный epsilon 0.01
             dqn_solver.epsilon = max(eps_final, dqn_solver.epsilon * dqn_solver._eps_decay_rate)
@@ -243,18 +245,29 @@ def train_model_optimized(
                 episode_winrate = len(profitable_trades) / len(env.trades) if env.trades else 0
                 episode_winrates.append(episode_winrate)
                 
-                # Детальная статистика эпизода (как в оригинале)
+                # Детальная статистика эпизода (объединенная в одну строку)
                 episode_stats = dqn_solver.print_trade_stats(env.trades)
-                print(f"  📈 Статистика эпизода: сделок={len(env.trades)}, winrate={episode_winrate:.3f}")
-                print(f"  💰 Прибыль: {episode_stats['avg_profit']:.4f}, Убыток: {episode_stats['avg_loss']:.4f}")
-                print(f"  📊 P/L ratio: {episode_stats['pl_ratio']:.2f}, Bad trades: {episode_stats['bad_trades_count']}")
+                
+                # Объединяем всю статистику эпизода в одну строку
+                action_stats = ""
+                if hasattr(env, 'action_counts'):
+                    action_stats = f" | HOLD={env.action_counts.get(0, 0)}, BUY={env.action_counts.get(1, 0)}, SELL={env.action_counts.get(2, 0)}"
+                
+                # Добавляем информацию о времени выполнения
+                time_stats = ""
+                if hasattr(env, 'episode_start_time') and env.episode_start_time is not None:
+                    episode_duration = time.time() - env.episode_start_time
+                    steps_per_second = env.episode_step_count / episode_duration if episode_duration > 0 else 0
+                    time_stats = f" | {episode_duration:.2f}с, {env.episode_step_count} шагов, {steps_per_second:.1f} шаг/с"
+                
+                print(f"  🏁 Эпизод {episode} завершен | reward={episode_reward:.4f}{action_stats}{time_stats} | {episode_stats}")
                 
                 # Проверяем на улучшение
                 if episode_winrate > best_winrate:
                     best_winrate = episode_winrate
                     patience_counter = 0
                     
-                    # Сохраняем лучшую модель
+                    # Сохраняем лучшую модель только при улучшении
                     dqn_solver.save_model()
                     logger.info("[INFO] New best winrate: %.3f, saving model", best_winrate)
                     print(f"  🎉 Новый лучший winrate: {best_winrate:.3f}!")
@@ -264,15 +277,28 @@ def train_model_optimized(
                 # Если нет сделок, добавляем 0 winrate
                 episode_winrates.append(0.0)
                 patience_counter += 1
-                print(f"  ⚠️ Эпизод {episode}: нет сделок")
                 
-                # Показываем статистику фильтров
+                # Объединяем информацию о эпизоде без сделок в одну строку
+                action_stats = ""
+                if hasattr(env, 'action_counts'):
+                    action_stats = f" | HOLD={env.action_counts.get(0, 0)}, BUY={env.action_counts.get(1, 0)}, SELL={env.action_counts.get(2, 0)}"
+                
+                # Добавляем информацию о времени выполнения
+                time_stats = ""
+                if hasattr(env, 'episode_start_time') and env.episode_start_time is not None:
+                    episode_duration = time.time() - env.episode_start_time
+                    steps_per_second = env.episode_step_count / episode_duration if episode_duration > 0 else 0
+                    time_stats = f" | {episode_duration:.2f}с, {env.episode_step_count} шагов, {steps_per_second:.1f} шаг/с"
+                
+                filter_stats = ""
                 if hasattr(env, 'buy_attempts') and env.buy_attempts > 0:
                     vol_rejected = getattr(env, 'buy_rejected_vol', 0)
                     roi_rejected = getattr(env, 'buy_rejected_roi', 0)
-                    print(f"  🔍 Попытки покупки: {env.buy_attempts}, отклонено по объему: {vol_rejected}, отклонено по ROI: {roi_rejected}")
+                    filter_stats = f" | Попытки покупки: {env.buy_attempts}, отклонено по объему: {vol_rejected}, отклонено по ROI: {roi_rejected}"
+                
+                print(f"  ⚠️ Эпизод {episode} завершен | reward={episode_reward:.4f}{action_stats}{time_stats} | Нет сделок{filter_stats}")
             
-            # Логируем прогресс
+            # Логируем прогресс и периодически сохраняем модель
             if episode % 10 == 0:
                 avg_winrate = np.mean(episode_winrates[-10:]) if episode_winrates else 0
                 logger.info(f"[INFO] Episode {episode}/{episodes}, Avg Winrate: {avg_winrate:.3f}, Epsilon: {dqn_solver.epsilon:.4f}")
@@ -280,6 +306,14 @@ def train_model_optimized(
                 # Очищаем GPU память каждые 10 эпизодов
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+            
+            # Периодическое сохранение модели
+            save_frequency = getattr(cfg, 'save_frequency', 50)  # По умолчанию каждые 50 эпизодов
+            save_only_on_improvement = getattr(cfg, 'save_only_on_improvement', False)
+            
+            if not save_only_on_improvement and episode > 0 and episode % save_frequency == 0:
+                print(f"  💾 Периодическое сохранение модели (эпизод {episode})")
+                dqn_solver.save_model()
             
             # Early stopping
             if patience_counter >= patience_limit:
@@ -325,8 +359,9 @@ def train_model_optimized(
         if hasattr(cfg, 'use_wandb') and cfg.use_wandb:
             wandb.log({**stats_all, "scope": "cumulative", "episode": episodes})
         
+        # Финальное сохранение модели и replay buffer
+        print("\n💾 Финальное сохранение модели и replay buffer")
         dqn_solver.save()
-        print("\n✅ Модель сохранена")
         
         # Сохраняем детальные результаты обучения
         training_results = {

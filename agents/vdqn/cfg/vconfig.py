@@ -7,28 +7,28 @@ from datetime import datetime
 class vDqnConfig:  
     # === ε‑greedy exploration ===
     eps_start: float       = 1.0     # начальное ε
-    eps_final: float       = 0.01    # минимальное ε
-    eps_decay_steps: int   = 25_000  # уменьшил для более быстрого обучения
+    eps_final: float       = 0.05    # увеличил минимальное ε для большего исследования
+    eps_decay_steps: int   = 100_000 # увеличил для более медленного затухания исследования
 
     # === replay‑buffer ===
     memory_size: int       = 200_000  # уменьшил для ускорения
-    batch_size: int        = 1024     # увеличил batch size для лучшего GPU использования
+    batch_size: int        = 256      # уменьшил batch size для большего разнообразия
     prioritized: bool      = True     # Prioritized Experience Replay
     alpha: float           = 0.6      # приоритет для PER
     beta: float            = 0.4      # importance sampling для PER
     beta_increment: float  = 0.001    # увеличение beta
 
     # === сеть / обучение ===
-    lr: float              = 1e-3     # увеличил learning rate для ускорения
+    lr: float              = 5e-4     # уменьшил learning rate для стабильности
     gamma: float           = 0.99     # discount factor
-    soft_tau: float        = 1e-2     # увеличил для более быстрого обновления
-    soft_update_every: int = 1        # обновляем каждый шаг для ускорения
-    hidden_sizes: tuple    = (256, 128, 64)  # уменьшил размеры для ускорения
-    target_update_freq: int = 1_000   # уменьшил для более частого обновления
-    train_repeats: int     = 2        # уменьшил количество тренировок
+    soft_tau: float        = 5e-3     # уменьшил для более стабильного обновления
+    soft_update_every: int = 4        # обновляем реже для стабильности
+    hidden_sizes: tuple    = (512, 256, 128)  # увеличил размеры для лучшей способности обучения
+    target_update_freq: int = 5_000   # увеличил для более стабильного обучения
+    train_repeats: int     = 1        # уменьшил количество тренировок
     
     # === улучшения сети ===
-    dropout_rate: float    = 0.1      # уменьшил dropout для ускорения
+    dropout_rate: float    = 0.2      # увеличил dropout для регуляризации
     layer_norm: bool       = True     # Layer Normalization
     double_dqn: bool       = True     # Double DQN
     dueling_dqn: bool      = True     # Dueling DQN
@@ -38,7 +38,7 @@ class vDqnConfig:
     
     # === GPU оптимизации ===
     device: str             = "cuda"      # GPU
-    run_name: str           = "fast-dqn"
+    run_name: str           = "stable-dqn"
     use_gpu_storage: bool   = True        # Хранить replay buffer на GPU
     use_torch_compile: bool = True        # PyTorch 2.x compile для максимального ускорения
     
@@ -48,6 +48,10 @@ class vDqnConfig:
     num_workers: int       = 4         # количество worker процессов
     pin_memory: bool       = True      # pin memory для GPU
     prefetch_factor: int   = 2         # prefetch factor для DataLoader
+    
+    # === сохранение модели ===
+    save_frequency: int    = 50        # Сохранять модель каждые N эпизодов
+    save_only_on_improvement: bool = False  # Сохранять только при улучшении winrate
     
     # === внутренние счётчики ===
     global_step: int        = field(init=False, default=0)    

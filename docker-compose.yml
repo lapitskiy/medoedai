@@ -47,10 +47,22 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       FLASK_DEBUG: "False"
     volumes:
-      - ./:/app
-    working_dir: /app
-    command: ["python", "main.py"]
-    gpus: all
+      - .:/workspace
+    working_dir: /workspace
+    command: >
+      sh -c "
+        echo '🧹 Очищаю Redis перед запуском...' &&
+        python clear_redis.py &&
+        echo '✅ Redis очищен, запускаю Flask...' &&
+        python main.py
+      "
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   celery-worker:
     build: .
@@ -70,11 +82,17 @@ services:
     env_file:
       - .env
     volumes:
-      - ./:/app
-    working_dir: /app
+      - .:/workspace
+    working_dir: /workspace
     command: ["celery", "-A", "tasks.celery_tasks", "worker",
               "-Q", "train", "-P", "solo", "-c", "1", "--loglevel=info"]
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   pytorch-gpu:
     image: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
@@ -90,7 +108,13 @@ services:
       - ./models:/models
     working_dir: /workspace
     command: ["sleep", "infinity"]
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
 volumes:
   pgdata:
