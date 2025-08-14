@@ -19,3 +19,5 @@ logs/**
 *.py[cod]
 *$py.class
 *metrics.csv
+plots/**
+!temp/
