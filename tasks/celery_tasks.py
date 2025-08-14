@@ -76,7 +76,7 @@ def train_dqn(self):
                 if records[col].dtype.name == 'datetime64[ns]':
                     records[col] = records[col].astype(str)
         print(f"{key}: {json.dumps(records.to_dict(orient='records'), ensure_ascii=False, indent=2)}")
-    result = train_model_optimized(dfs=df, episodes=100)
+    result = train_model_optimized(dfs=df, episodes=1000)
     return {"message": result}
 
 @celery.task(bind=True)
