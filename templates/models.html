@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Управление моделями DQN</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+        }
+        .content {
+            padding: 30px;
+        }
+        .section {
+            margin-bottom: 40px;
+            padding: 25px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            background: #fafafa;
+        }
+        .section h2 {
+            color: #333;
+            margin-top: 0;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        .button-group {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin: 20px 0;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+            text-align: center;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        .btn-success {
+            background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
+            color: white;
+        }
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(86, 171, 47, 0.4);
+        }
+        .btn-danger {
+            background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+            color: white;
+        }
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(255, 65, 108, 0.4);
+        }
+        .btn-info {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+        }
+        .btn-info:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(79, 172, 254, 0.4);
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+        .models-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .model-card {
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+        }
+        .model-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+        }
+        .model-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .model-id {
+            font-weight: bold;
+            color: #667eea;
+            font-size: 18px;
+        }
+        .model-date {
+            color: #666;
+            font-size: 14px;
+        }
+        .model-files {
+            margin: 15px 0;
+        }
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            margin: 5px 0;
+            font-size: 14px;
+        }
+        .file-name {
+            font-weight: 500;
+            color: #333;
+        }
+        .file-size {
+            color: #666;
+            font-size: 12px;
+        }
+        .model-stats {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+            font-size: 14px;
+        }
+        .stat-label {
+            color: #666;
+        }
+        .stat-value {
+            font-weight: 600;
+            color: #333;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 6px;
+            margin: 10px 0;
+            font-weight: 600;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 16px;
+        }
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        .empty-state h3 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Управление моделями DQN</h1>
+            <p>Версионирование и управление обученными моделями</p>
+        </div>
+        
+        <div class="content">
+            <a href="/" class="back-link">← Вернуться на главную</a>
+            
+            <!-- Секция создания новой модели -->
+            <div class="section">
+                <h2>📦 Создать новую версию модели</h2>
+                <p>Скопирует текущие веса и результаты обучения в папку good_models с уникальным ID</p>
+                <div class="button-group">
+                    <button class="btn btn-success" onclick="createModelVersion()">
+                        🚀 Создать новую версию
+                    </button>
+                </div>
+                <div id="createStatus"></div>
+            </div>
+
+            <!-- Секция списка моделей -->
+            <div class="section">
+                <h2>📋 Доступные модели</h2>
+                <div class="button-group">
+                    <button class="btn btn-info" onclick="refreshModels()">
+                        🔄 Обновить список
+                    </button>
+                </div>
+                <div id="modelsList">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        Загрузка моделей...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Загрузить список моделей при загрузке страницы
+        document.addEventListener('DOMContentLoaded', function() {
+            refreshModels();
+        });
+
+        // Создать новую версию модели
+        async function createModelVersion() {
+            const statusDiv = document.getElementById('createStatus');
+            const button = event.target;
+            
+            button.disabled = true;
+            button.textContent = '⏳ Создание...';
+            statusDiv.innerHTML = '<div class="status info">Создание новой версии модели...</div>';
+            
+            try {
+                const response = await fetch('/create_model_version', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    statusDiv.innerHTML = `<div class="status success">
+                        ✅ Новая версия создана!<br>
+                        ID: ${result.model_id}<br>
+                        Файлы: ${result.files.join(', ')}
+                    </div>`;
+                    refreshModels(); // Обновить список
+                } else {
+                    statusDiv.innerHTML = `<div class="status error">
+                        ❌ Ошибка: ${result.error}
+                    </div>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<div class="status error">
+                    ❌ Ошибка сети: ${error.message}
+                </div>`;
+            } finally {
+                button.disabled = false;
+                button.textContent = '🚀 Создать новую версию';
+            }
+        }
+
+        // Обновить список моделей
+        async function refreshModels() {
+            const modelsDiv = document.getElementById('modelsList');
+            modelsDiv.innerHTML = '<div class="loading"><div class="spinner"></div>Загрузка моделей...</div>';
+            
+            try {
+                const response = await fetch('/get_models_list');
+                const result = await response.json();
+                
+                if (result.success) {
+                    if (result.models.length === 0) {
+                        modelsDiv.innerHTML = `
+                            <div class="empty-state">
+                                <h3>📭 Модели не найдены</h3>
+                                <p>Создайте первую версию модели, чтобы начать</p>
+                            </div>
+                        `;
+                    } else {
+                        modelsDiv.innerHTML = `
+                            <div class="models-grid">
+                                ${result.models.map(model => createModelCard(model)).join('')}
+                            </div>
+                        `;
+                    }
+                } else {
+                    modelsDiv.innerHTML = `<div class="status error">❌ Ошибка: ${result.error}</div>`;
+                }
+            } catch (error) {
+                modelsDiv.innerHTML = `<div class="status error">❌ Ошибка сети: ${error.message}</div>`;
+            }
+        }
+
+        // Создать карточку модели
+        function createModelCard(model) {
+            const stats = model.stats || {};
+            return `
+                <div class="model-card">
+                    <div class="model-header">
+                        <div class="model-id">${model.id}</div>
+                        <div class="model-date">${model.date}</div>
+                    </div>
+                    
+                    <div class="model-files">
+                        <div class="file-item">
+                            <span class="file-name">${model.files.model}</span>
+                            <span class="file-size">${model.files.model_size}</span>
+                        </div>
+                        <div class="file-item">
+                            <span class="file-name">${model.files.replay}</span>
+                            <span class="file-size">${model.files.replay_size}</span>
+                        </div>
+                        <div class="file-item">
+                            <span class="file-name">${model.files.results}</span>
+                            <span class="file-size">${model.files.results_size}</span>
+                        </div>
+                    </div>
+                    
+                    ${stats.winrate ? `
+                        <div class="model-stats">
+                            <div class="stat-item">
+                                <span class="stat-label">Winrate:</span>
+                                <span class="stat-value">${(stats.winrate * 100).toFixed(1)}%</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">P/L Ratio:</span>
+                                <span class="stat-value">${stats.pl_ratio?.toFixed(2) || 'N/A'}</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Сделок:</span>
+                                <span class="stat-value">${stats.trades_count || 'N/A'}</span>
+                            </div>
+                        </div>
+                    ` : ''}
+                    
+                    <div class="button-group">
+                        <button class="btn btn-info" onclick="analyzeModel('${model.id}')">
+                            📊 Анализ
+                        </button>
+                        <button class="btn btn-danger" onclick="deleteModel('${model.id}')">
+                            🗑️ Удалить
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Анализировать модель
+        async function analyzeModel(modelId) {
+            const button = event.target;
+            const originalText = button.textContent;
+            
+            button.disabled = true;
+            button.textContent = '⏳ Анализ...';
+            
+            try {
+                const response = await fetch('/analyze_model', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ model_id: modelId })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Открыть результаты анализа в новом окне
+                    const analysisWindow = window.open('', '_blank');
+                    analysisWindow.document.write(`
+                        <html>
+                            <head>
+                                <title>Анализ модели ${modelId}</title>
+                                <style>
+                                    body { font-family: Arial, sans-serif; padding: 20px; }
+                                    pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
+                                </style>
+                            </head>
+                            <body>
+                                <h1>📊 Анализ модели ${modelId}</h1>
+                                <pre>${result.analysis}</pre>
+                            </body>
+                        </html>
+                    `);
+                } else {
+                    alert(`❌ Ошибка анализа: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`❌ Ошибка сети: ${error.message}`);
+            } finally {
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        }
+
+        // Удалить модель
+        async function deleteModel(modelId) {
+            if (!confirm(`🗑️ Вы уверены, что хотите удалить модель ${modelId}?`)) {
+                return;
+            }
+            
+            const button = event.target;
+            const originalText = button.textContent;
+            
+            button.disabled = true;
+            button.textContent = '⏳ Удаление...';
+            
+            try {
+                const response = await fetch('/delete_model', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ model_id: modelId })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert(`✅ Модель ${modelId} успешно удалена!`);
+                    refreshModels(); // Обновить список
+                } else {
+                    alert(`❌ Ошибка удаления: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`❌ Ошибка сети: ${error.message}`);
+            } finally {
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        }
+    </script>
+</body>
+</html>

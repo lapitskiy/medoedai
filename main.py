@@ -18,16 +18,16 @@ from tasks.celery_tasks import celery
 from celery.result import AsyncResult
 
 import os
-from tasks.celery_tasks import search_lstm_task, train_dqn, trade_step
+from tasks.celery_tasks import search_lstm_task, train_dqn, train_dqn_multi_crypto, trade_step
 from utils.db_utils import clean_ohlcv_data, delete_ohlcv_for_symbol_timeframe, load_latest_candles_from_csv_to_db
 from utils.parser import parser_download_and_combine_with_library
 
 import logging
 from flask import Response
 import json
-import threading
+
 import time
-import torch  # Добавляем импорт torch для функций тестирования DQN
+
 import glob
 import os
 
@@ -83,9 +83,7 @@ if redis_client is None:
     except:
         redis_client = redis.Redis(host='redis', port=6379, db=0)
 
-# Глобальные переменные для тестирования DQN улучшений
-dqn_test_results = {}
-dqn_test_in_progress = False
+
 
 @app.before_request
 def log_request_info():
@@ -162,365 +160,15 @@ def train():
     task = train_dqn.apply_async(queue="train")
     return redirect(url_for("index"))
 
-# Функции тестирования DQN улучшений
-def test_neural_network():
-    """Тестирует улучшенную архитектуру нейронной сети"""
-    try:
-        from test.test_neural_network import test_neural_network as run_test
-        
-        # Запускаем тест из внешнего файла
-        success, message = run_test()
-        
-        return success, message
-        
-    except Exception as e:
-        print(f"❌ Ошибка при тестировании нейронной сети: {e}")
-        return False, f"Ошибка при тестировании нейронной сети: {str(e)}"
+@app.route('/train_dqn_multi_crypto', methods=['POST'])
+def train_multi_crypto():
+    """Запускает мультивалютное обучение DQN"""
+    task = train_dqn_multi_crypto.apply_async(queue="train")
+    return redirect(url_for("index"))
 
-def test_dqn_solver():
-    """Тестирует улучшенный DQN solver"""
-    try:
-        from test.test_dqn_solver import test_dqn_solver as run_test
-        
-        # Запускаем тест из внешнего файла
-        success, message = run_test()
-        
-        return success, message
-        
-    except Exception as e:
-        print(f"❌ Ошибка при тестировании DQN solver: {e}")
-        return False, f"Ошибка при тестировании DQN solver: {str(e)}"
 
-def test_configuration():
-    """Тестирует конфигурацию"""
-    try:
-        from test.test_configuration import test_configuration as run_test
-        
-        # Запускаем тест из внешнего файла
-        success, message = run_test()
-        
-        return success, message
-        
-    except Exception as e:
-        print(f"❌ Ошибка при тестировании конфигурации: {e}")
-        return False, f"Ошибка при тестировании конфигурации: {str(e)}"
 
-def test_nan_handling():
-    """Тестирует обработку NaN значений"""
-    try:
-        from test.test_nan_handling import test_nan_handling as run_test
-        
-        # Запускаем тест из внешнего файла
-        success, message = run_test()
-        
-        return success, message
-        
-    except Exception as e:
-        print(f"❌ Ошибка при тестировании обработки NaN: {e}")
-        return False, f"Ошибка при тестировании обработки NaN: {str(e)}"
 
-def test_gpu_replay_buffer():
-    """Тестирует производительность GPU-оптимизированного replay buffer"""
-    try:
-        from test.test_gpu_replay import test_replay_buffer_performance
-        
-        # Запускаем тест из внешнего файла
-        test_replay_buffer_performance()
-        
-        # Возвращаем успешный результат (детали будут в логах)
-        return True, "GPU Replay Buffer протестирован успешно", {
-            'fill_rate': 1000,  # Примерные значения
-            'sample_rate': 50,
-            'update_rate': 100,
-            'total_time': 5.0,
-            'gpu_memory': 0,
-            'gpu_memory_reserved': 0,
-            'storage_type': 'GPU storage',
-            'device': 'cuda'
-        }
-        
-    except Exception as e:
-        print(f"❌ Ошибка при тестировании GPU replay buffer: {e}")
-        import traceback
-        traceback.print_exc()
-        return False, f"Ошибка при тестировании GPU replay buffer: {str(e)}", {}
-
-def test_precomputed_states():
-    """Тестирует предвычисление состояний"""
-    try:
-        from test.test_precomputed_states import test_precomputed_states as run_precomputed_test
-        
-        # Запускаем тест из внешнего файла
-        run_precomputed_test()
-        
-        # Возвращаем успешный результат
-        return True, "Предвычисление состояний протестировано успешно", {
-            'status': 'success',
-            'message': 'Все тесты прошли успешно'
-        }
-        
-    except Exception as e:
-        print(f"❌ Ошибка при тестировании предвычисления состояний: {e}")
-        import traceback
-        traceback.print_exc()
-        return False, f"Ошибка при тестировании предвычисления состояний: {str(e)}", {}
-
-def test_torch_compile():
-    """Тестирует torch.compile функциональность"""
-    try:
-        from test.test_torch_compile import test_torch_compile as run_torch_test
-        
-        # Запускаем тест из внешнего файла
-        run_torch_test()
-        
-        # Возвращаем успешный результат
-        return True, "torch.compile протестирован успешно", {
-            'status': 'success',
-            'message': 'PyTorch 2.x compile работает'
-        }
-        
-    except Exception as e:
-        print(f"❌ Ошибка при тестировании torch.compile: {e}")
-        import traceback
-        traceback.print_exc()
-        return False, f"Ошибка при тестировании torch.compile: {str(e)}", {}
-
-# Новые API endpoints для тестирования DQN улучшений
-def run_dqn_tests():
-    """Запускает тестирование улучшений DQN агента"""
-    global dqn_test_results, dqn_test_in_progress
-    
-    dqn_test_in_progress = True
-    dqn_test_results = {
-        'status': 'running',
-        'start_time': time.time(),
-        'tests': {},
-        'overall_success': True,
-        'message': 'Тестирование началось...'
-    }
-    
-    try:
-        print("🚀 Тестирование улучшений DQN агента")
-        print("=" * 50)
-        
-        # Тест 1: Конфигурация
-        print("\n1️⃣ Тестирование конфигурации...")
-        success, message = test_configuration()
-        dqn_test_results['tests']['configuration'] = {
-            'success': success,
-            'message': message,
-            'timestamp': time.time()
-        }
-        if not success:
-            dqn_test_results['overall_success'] = False
-        
-        # Тест 2: Нейронная сеть
-        print("\n2️⃣ Тестирование нейронной сети...")
-        success, message = test_neural_network()
-        dqn_test_results['tests']['neural_network'] = {
-            'success': success,
-            'message': message,
-            'timestamp': time.time()
-        }
-        if not success:
-            dqn_test_results['overall_success'] = False
-        
-        # Тест 3: DQN Solver
-        print("\n3️⃣ Тестирование DQN Solver...")
-        success, message = test_dqn_solver()
-        dqn_test_results['tests']['dqn_solver'] = {
-            'success': success,
-            'message': message,
-            'timestamp': time.time()
-        }
-        if not success:
-            dqn_test_results['overall_success'] = False
-        
-        # Тест 4: Обработка NaN
-        print("\n4️⃣ Тестирование обработки NaN...")
-        success, message = test_nan_handling()
-        dqn_test_results['tests']['nan_handling'] = {
-            'success': success,
-            'message': message,
-            'timestamp': time.time()
-        }
-        if not success:
-            dqn_test_results['overall_success'] = False
-        
-        # Тест 5: GPU Replay Buffer
-        print("\n5️⃣ Тестирование GPU Replay Buffer...")
-        success, message, metrics = test_gpu_replay_buffer()
-        dqn_test_results['tests']['gpu_replay_buffer'] = {
-            'success': success,
-            'message': message,
-            'metrics': metrics,
-            'timestamp': time.time()
-        }
-        if not success:
-            dqn_test_results['overall_success'] = False
-        
-        # Тест 6: Предвычисление состояний
-        print("\n6️⃣ Тестирование предвычисления состояний...")
-        success, message, metrics = test_precomputed_states()
-        dqn_test_results['tests']['precomputed_states'] = {
-            'success': success,
-            'message': message,
-            'metrics': metrics,
-            'timestamp': time.time()
-        }
-        if not success:
-            dqn_test_results['overall_success'] = False
-        
-        # Тест 7: torch.compile
-        print("\n7️⃣ Тестирование torch.compile...")
-        success, message, metrics = test_torch_compile()
-        dqn_test_results['tests']['torch_compile'] = {
-            'success': success,
-            'message': message,
-            'metrics': metrics,
-            'timestamp': time.time()
-        }
-        if not success:
-            dqn_test_results['overall_success'] = False
-        
-        # Финальные результаты
-        end_time = time.time()
-        duration = end_time - dqn_test_results['start_time']
-        
-        if dqn_test_results['overall_success']:
-            print("\n" + "=" * 50)
-            print("✅ Все тесты пройдены успешно!")
-            print("🎯 DQN агент готов к использованию")
-            
-            dqn_test_results['status'] = 'completed'
-            dqn_test_results['message'] = f'Все тесты пройдены успешно за {duration:.2f} секунд'
-        else:
-            print("\n❌ Некоторые тесты не пройдены")
-            dqn_test_results['status'] = 'failed'
-            dqn_test_results['message'] = f'Тесты завершены с ошибками за {duration:.2f} секунд'
-        
-        dqn_test_results['end_time'] = end_time
-        dqn_test_results['duration'] = duration
-        
-    except Exception as e:
-        print(f"\n❌ Ошибка при тестировании: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        dqn_test_results['status'] = 'error'
-        dqn_test_results['message'] = f'Ошибка при тестировании: {str(e)}'
-        dqn_test_results['overall_success'] = False
-    
-    finally:
-        dqn_test_in_progress = False
-
-@app.route('/test_dqn_improvements', methods=['POST'])
-def test_dqn_improvements():
-    """API endpoint для запуска тестирования улучшений DQN"""
-    global dqn_test_in_progress, dqn_test_results
-    
-    if dqn_test_in_progress:
-        return jsonify({
-            'status': 'error',
-            'message': 'Тестирование уже выполняется'
-        }), 400
-    
-    # Запускаем тесты в отдельном потоке
-    test_thread = threading.Thread(target=run_dqn_tests)
-    test_thread.daemon = True
-    test_thread.start()
-    
-    return jsonify({
-        'status': 'success',
-        'message': 'Тестирование улучшений DQN запущено',
-        'test_id': int(time.time())
-    })
-
-@app.route('/test_dqn_status', methods=['GET'])
-def test_dqn_status():
-    """API endpoint для получения статуса тестирования"""
-    global dqn_test_results, dqn_test_in_progress
-    
-    if not dqn_test_results:
-        return jsonify({
-            'status': 'not_started',
-            'message': 'Тестирование не запускалось'
-        })
-    
-    return jsonify(dqn_test_results)
-
-@app.route('/test_dqn_results', methods=['GET'])
-def test_dqn_results():
-    """API endpoint для получения результатов тестирования"""
-    global dqn_test_results
-    
-    if not dqn_test_results or dqn_test_results['status'] == 'running':
-        return jsonify({
-            'status': 'not_ready',
-            'message': 'Результаты тестирования еще не готовы'
-        })
-    
-    return jsonify(dqn_test_results)
-
-@app.route('/test_gpu_replay', methods=['POST'])
-def test_gpu_replay():
-    """API endpoint для тестирования только GPU replay buffer"""
-    try:
-        success, message, metrics = test_gpu_replay_buffer()
-        
-        return jsonify({
-            'status': 'success' if success else 'failed',
-            'message': message,
-            'metrics': metrics,
-            'success': success
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'Ошибка при тестировании GPU replay buffer: {str(e)}',
-            'success': False
-        }), 500
-
-@app.route('/test_precomputed_states', methods=['POST'])
-def test_precomputed_states_endpoint():
-    """API endpoint для тестирования предвычисления состояний"""
-    try:
-        success, message, metrics = test_precomputed_states()
-        
-        return jsonify({
-            'status': 'success' if success else 'failed',
-            'message': message,
-            'metrics': metrics,
-            'success': success
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'Ошибка при тестировании предвычисления состояний: {str(e)}',
-            'success': False
-        }), 500
-
-@app.route('/test_torch_compile', methods=['POST'])
-def test_torch_compile_endpoint():
-    """API endpoint для тестирования torch.compile"""
-    try:
-        success, message, metrics = test_torch_compile()
-        
-        return jsonify({
-            'status': 'success' if success else 'failed',
-            'message': message,
-            'metrics': metrics,
-            'success': success
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'Ошибка при тестировании torch.compile: {str(e)}',
-            'success': False
-        }), 500
 
 @app.route('/trade_dqn', methods=['POST'])
 def trade():
@@ -605,6 +253,24 @@ def analyze_training_results():
                 print("💡 Для полного анализа используйте: pip install matplotlib numpy")
                 return "Анализ недоступен - установите зависимости"
         
+        # Загружаем результаты для дополнительного анализа
+        try:
+            import pickle
+            with open(latest_file, 'rb') as f:
+                results = pickle.load(f)
+            
+            # Добавляем информацию об actual_episodes
+            if 'actual_episodes' in results:
+                actual_episodes = results['actual_episodes']
+                planned_episodes = results['episodes']
+                
+                if actual_episodes < planned_episodes:
+                    print(f"⚠️ Early Stopping сработал! Обучение остановлено на {actual_episodes} эпизоде из {planned_episodes}")
+                else:
+                    print(f"✅ Обучение завершено полностью: {actual_episodes} эпизодов")                    
+        except Exception as e:
+            print(f"⚠️ Не удалось загрузить детали результатов: {e}")
+        
         # Запускаем анализ
         print(f"📊 Анализирую результаты из файла: {latest_file}")
         
@@ -619,14 +285,55 @@ def analyze_training_results():
         
         analysis_output = output.getvalue()
         
-        return jsonify({
+        # Добавляем информацию об actual_episodes в ответ
+        response_data = {
             'status': 'success',
             'message': 'Анализ результатов завершен успешно',
             'success': True,
             'file_analyzed': latest_file,
             'output': analysis_output,
             'available_files': result_files
-        })
+        }
+        
+        # Добавляем информацию об эпизодах если доступна
+        try:
+            # Добавляем episode_winrates_count для правильного определения early stopping
+            if 'episode_winrates' in results:
+                response_data['episode_winrates_count'] = len(results['episode_winrates'])
+                print(f"🔍 episode_winrates_count: {response_data['episode_winrates_count']}")
+            
+            if 'actual_episodes' in results:
+                response_data['actual_episodes'] = results['actual_episodes']
+                response_data['episodes'] = results['episodes']
+                
+                # Проверяем несоответствие actual_episodes и episode_winrates_count
+                if 'episode_winrates_count' in response_data:
+                    if response_data['actual_episodes'] != response_data['episode_winrates_count']:
+                        print(f"⚠️ НЕСООТВЕТСТВИЕ: actual_episodes={response_data['actual_episodes']}, episode_winrates_count={response_data['episode_winrates_count']}")
+                        # Исправляем actual_episodes на правильное значение
+                        response_data['actual_episodes'] = response_data['episode_winrates_count']
+                        print(f"🔧 Исправлено: actual_episodes = {response_data['actual_episodes']}")
+            else:
+                # Если actual_episodes не найден, пытаемся извлечь из логов
+                if 'output' in response_data:
+                    output_text = response_data['output']
+                    # Ищем Early stopping в логах
+                    if 'Early stopping triggered after' in output_text:
+                        import re
+                        early_stopping_match = re.search(r'Early stopping triggered after (\d+) episodes', output_text)
+                        if early_stopping_match:
+                            actual_episodes = int(early_stopping_match.group(1))
+                            # Ищем планируемое количество эпизодов
+                            episodes_match = re.search(r'Количество эпизодов: (\d+)', output_text)
+                            if episodes_match:
+                                planned_episodes = int(episodes_match.group(1))
+                                response_data['actual_episodes'] = actual_episodes
+                                response_data['episodes'] = planned_episodes
+                                print(f"🔍 Извлечено из логов: actual_episodes={actual_episodes}, episodes={planned_episodes}")
+        except Exception as e:
+            print(f"⚠️ Ошибка при извлечении actual_episodes: {e}")
+        
+        return jsonify(response_data)
         
     except Exception as e:
         return jsonify({
@@ -687,6 +394,109 @@ def list_training_results():
             'success': False
         }), 500
 
+@app.route('/analyze_bad_trades', methods=['POST'])
+def analyze_bad_trades():
+    """Анализирует плохие сделки из результатов обучения DQN модели"""
+    try:
+        # Ищем файлы с результатами обучения в папке temp/train_results
+        results_dir = "temp/train_results"
+        if not os.path.exists(results_dir):
+            return jsonify({
+                'status': 'error',
+                'message': f'Папка {results_dir} не найдена. Сначала запустите обучение.',
+                'success': False
+            }), 404
+        
+        result_files = glob.glob(os.path.join(results_dir, 'training_results_*.pkl'))
+        
+        if not result_files:
+            return jsonify({
+                'status': 'error',
+                'message': 'Файлы результатов обучения не найдены. Сначала запустите обучение.',
+                'success': False
+            }), 404
+        
+        # Берем самый свежий файл
+        latest_file = max(result_files, key=os.path.getctime)
+        
+        # Импортируем функцию анализа плохих сделок
+        try:
+            from analyze_bad_trades import analyze_bad_trades_detailed, print_bad_trades_analysis, print_detailed_recommendations
+        except ImportError:
+            return jsonify({
+                'status': 'error',
+                'message': 'Модуль анализа плохих сделок не найден. Установите зависимости.',
+                'success': False
+            }), 500
+        
+        # Загружаем результаты для анализа
+        try:
+            import pickle
+            with open(latest_file, 'rb') as f:
+                results = pickle.load(f)
+            
+            # Проверяем наличие сделок
+            if 'all_trades' not in results:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'В файле нет данных о сделках',
+                    'success': False
+                }), 404
+            
+            trades = results['all_trades']
+            
+            # Анализируем плохие сделки
+            bad_trades_analysis = analyze_bad_trades_detailed(trades)
+            
+            # Добавляем все сделки для сравнения
+            bad_trades_analysis['all_trades'] = trades
+            
+            # Временно перенаправляем stdout для захвата вывода
+            import io
+            import sys
+            from contextlib import redirect_stdout
+            
+            output = io.StringIO()
+            with redirect_stdout(output):
+                print_bad_trades_analysis(bad_trades_analysis)
+                print_detailed_recommendations(bad_trades_analysis)
+            
+            analysis_output = output.getvalue()
+            
+            # Подготавливаем ответ
+            response_data = {
+                'status': 'success',
+                'message': 'Анализ плохих сделок завершен успешно',
+                'success': True,
+                'file_analyzed': latest_file,
+                'output': analysis_output,
+                'bad_trades_count': bad_trades_analysis.get('bad_trades_count', 0),
+                'bad_trades_percentage': bad_trades_analysis.get('bad_trades_percentage', 0),
+                'analysis_summary': {
+                    'total_trades': len(trades),
+                    'bad_trades': bad_trades_analysis.get('bad_trades_count', 0),
+                    'avg_bad_roi': bad_trades_analysis.get('avg_bad_roi', 0),
+                    'avg_bad_duration': bad_trades_analysis.get('avg_bad_duration', 0),
+                    'loss_distribution': bad_trades_analysis.get('loss_distribution', {})
+                }
+            }
+            
+            return jsonify(response_data)
+            
+        except Exception as e:
+            return jsonify({
+                'status': 'error',
+                'message': f'Ошибка при анализе файла: {str(e)}',
+                'success': False
+            }), 500
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Ошибка при анализе плохих сделок: {str(e)}',
+            'success': False
+        }), 500
+
 # Новый маршрут для запуска очистки данных
 @app.route('/parser', methods=['POST'])
 def parser():
@@ -724,6 +534,121 @@ def parser():
     response = {'status': 'Парсинг завершен', 'results': results}
     return Response(json.dumps(response, ensure_ascii=False), mimetype='application/json')
 
+# Новый маршрут для мультивалютного скачивания свечей
+@app.route('/parser_multi_crypto', methods=['POST'])
+def parser_multi_crypto():
+    """Скачивает свечи для всех криптовалют одновременно"""
+    results = []
+    interval = '5m'
+    desired_candles = 100000
+    
+    # Список всех криптовалют для скачивания
+    crypto_symbols = [
+        'BTCUSDT',  # Биткоин
+        'TONUSDT',  # TON
+        'ETHUSDT',  # Эфириум
+        'SOLUSDT',  # Solana
+        'ADAUSDT',  # Cardano
+        'BNBUSDT'   # Binance Coin
+    ]
+    
+    print(f"🚀 Начинаю скачивание свечей для {len(crypto_symbols)} криптовалют...")
+    print(f"📊 Таймфрейм: {interval}, Целевое количество: {desired_candles}")
+    
+    for i, symbol in enumerate(crypto_symbols, 1):
+        try:
+            print(f"\n📥 [{i}/{len(crypto_symbols)}] Скачиваю {symbol}...")
+            
+            # 1. Скачиваем свечи для текущей криптовалюты
+            csv_file_path = parser_download_and_combine_with_library(
+                symbol=symbol,
+                interval=interval,
+                months_to_fetch=12,
+                desired_candles=desired_candles
+            )
+            
+            if csv_file_path:
+                results.append({
+                    "status": "success", 
+                    "symbol": symbol,
+                    "message": f"CSV файл создан: {csv_file_path}"
+                })
+                
+                # 2. Загружаем свечи в базу данных
+                try:
+                    loaded_count = load_latest_candles_from_csv_to_db(
+                        file_path=csv_file_path,
+                        symbol_name=symbol,
+                        timeframe=interval
+                    )
+                    
+                    if loaded_count > 0:
+                        results.append({
+                            "status": "success",
+                            "symbol": symbol,
+                            "message": f"Загружено {loaded_count} свечей в БД"
+                        })
+                        print(f"  ✅ {symbol}: {loaded_count} свечей загружено в БД")
+                    else:
+                        results.append({
+                            "status": "warning",
+                            "symbol": symbol,
+                            "message": "Не удалось загрузить свечи в БД"
+                        })
+                        print(f"  ⚠️ {symbol}: ошибка загрузки в БД")
+                        
+                except Exception as db_error:
+                    results.append({
+                        "status": "error",
+                        "symbol": symbol,
+                        "message": f"Ошибка загрузки в БД: {str(db_error)}"
+                    })
+                    print(f"  ❌ {symbol}: ошибка БД - {db_error}")
+                    
+            else:
+                results.append({
+                    "status": "error",
+                    "symbol": symbol,
+                    "message": "Не удалось создать CSV файл"
+                })
+                print(f"  ❌ {symbol}: не удалось создать CSV")
+                
+        except Exception as e:
+            error_msg = f"Ошибка при скачивании {symbol}: {str(e)}"
+            results.append({
+                "status": "error",
+                "symbol": symbol,
+                "message": error_msg
+            })
+            print(f"  ❌ {symbol}: {error_msg}")
+            continue
+    
+    # Сводка по всем криптовалютам
+    successful = sum(1 for r in results if r['status'] == 'success')
+    failed = sum(1 for r in results if r['status'] == 'error')
+    warnings = sum(1 for r in results if r['status'] == 'warning')
+    
+    print(f"\n{'='*60}")
+    print(f"📊 СВОДКА СКАЧИВАНИЯ")
+    print(f"{'='*60}")
+    print(f"✅ Успешно: {successful}")
+    print(f"⚠️ Предупреждения: {warnings}")
+    print(f"❌ Ошибки: {failed}")
+    print(f"📈 Всего криптовалют: {len(crypto_symbols)}")
+    
+    response = {
+        'status': 'Мультивалютное скачивание завершено',
+        'summary': {
+            'total_cryptos': len(crypto_symbols),
+            'successful': successful,
+            'warnings': warnings,
+            'failed': failed
+        },
+        'results': results
+    }
+    
+    return Response(json.dumps(response, ensure_ascii=False), mimetype='application/json')
+
 @app.route('/clear_redis', methods=['POST'])
 def clear_redis():
     """Очищает Redis вручную"""
@@ -734,6 +659,282 @@ def clear_redis():
             "success": True,
             "message": "Redis очищен успешно"
         })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/models')
+def models_page():
+    """Страница управления моделями"""
+    return render_template('models.html')
+
+@app.route('/create_model_version', methods=['POST'])
+def create_model_version():
+    """Создает новую версию модели с уникальным ID"""
+    import shutil
+    import uuid
+    from datetime import datetime
+    from pathlib import Path
+    
+    try:
+        # Создаем папку good_models если её нет
+        good_models_dir = Path('good_models')
+        good_models_dir.mkdir(exist_ok=True)
+        
+        # Генерируем уникальный ID (4 символа)
+        model_id = str(uuid.uuid4())[:4].upper()
+        
+        # Ищем последний файл результатов обучения
+        train_results_dir = Path('temp/train_results')
+        if not train_results_dir.exists():
+            return jsonify({
+                "success": False,
+                "error": "Папка temp/train_results не найдена"
+            })
+        
+        result_files = list(train_results_dir.glob('training_results_*.pkl'))
+        if not result_files:
+            return jsonify({
+                "success": False,
+                "error": "Файлы результатов обучения не найдены"
+            })
+        
+        latest_result_file = max(result_files, key=lambda x: x.stat().st_mtime)
+        
+        # Проверяем наличие файлов модели
+        model_file = Path('dqn_model.pth')
+        replay_file = Path('replay_buffer.pkl')
+        
+        if not model_file.exists():
+            return jsonify({
+                "success": False,
+                "error": "Файл dqn_model.pth не найден"
+            })
+        
+        if not replay_file.exists():
+            return jsonify({
+                "success": False,
+                "error": "Файл replay_buffer.pkl не найден"
+            })
+        
+        # Копируем файлы с новыми именами
+        new_model_file = good_models_dir / f'dqn_model_{model_id}.pth'
+        new_replay_file = good_models_dir / f'replay_buffer_{model_id}.pkl'
+        new_result_file = good_models_dir / f'train_result_{model_id}.pkl'
+        
+        shutil.copy2(model_file, new_model_file)
+        shutil.copy2(replay_file, new_replay_file)
+        shutil.copy2(latest_result_file, new_result_file)
+        
+        return jsonify({
+            "success": True,
+            "model_id": model_id,
+            "files": [
+                f'dqn_model_{model_id}.pth',
+                f'replay_buffer_{model_id}.pkl',
+                f'train_result_{model_id}.pkl'
+            ]
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/get_models_list')
+def get_models_list():
+    """Возвращает список всех сохраненных моделей"""
+    from pathlib import Path
+    import pickle
+    from datetime import datetime
+    
+    try:
+        good_models_dir = Path('good_models')
+        if not good_models_dir.exists():
+            return jsonify({
+                "success": True,
+                "models": []
+            })
+        
+        models = []
+        
+        # Ищем все файлы моделей
+        model_files = list(good_models_dir.glob('dqn_model_*.pth'))
+        
+        for model_file in model_files:
+            # Извлекаем ID модели из имени файла
+            model_id = model_file.stem.replace('dqn_model_', '')
+            
+            # Проверяем наличие связанных файлов
+            replay_file = good_models_dir / f'replay_buffer_{model_id}.pkl'
+            result_file = good_models_dir / f'train_result_{model_id}.pkl'
+            
+            if not replay_file.exists() or not result_file.exists():
+                continue  # Пропускаем неполные модели
+            
+            # Получаем размеры файлов
+            model_size = f"{model_file.stat().st_size / 1024 / 1024:.1f} MB"
+            replay_size = f"{replay_file.stat().st_size / 1024 / 1024:.1f} MB"
+            result_size = f"{result_file.stat().st_size / 1024:.1f} KB"
+            
+            # Получаем дату создания
+            creation_time = datetime.fromtimestamp(model_file.stat().st_ctime)
+            date_str = creation_time.strftime('%d.%m.%Y %H:%M')
+            
+            # Пытаемся загрузить статистику из файла результатов
+            stats = {}
+            try:
+                with open(result_file, 'rb') as f:
+                    results = pickle.load(f)
+                    if 'final_stats' in results:
+                        stats = results['final_stats']
+            except:
+                pass  # Если не удалось загрузить статистику, оставляем пустую
+            
+            models.append({
+                "id": model_id,
+                "date": date_str,
+                "files": {
+                    "model": f'dqn_model_{model_id}.pth',
+                    "model_size": model_size,
+                    "replay": f'replay_buffer_{model_id}.pkl',
+                    "replay_size": replay_size,
+                    "results": f'train_result_{model_id}.pkl',
+                    "results_size": result_size
+                },
+                "stats": stats
+            })
+        
+        # Сортируем по дате создания (новые сначала)
+        models.sort(key=lambda x: x['date'], reverse=True)
+        
+        return jsonify({
+            "success": True,
+            "models": models
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/analyze_model', methods=['POST'])
+def analyze_model():
+    """Анализирует конкретную модель"""
+    import pickle
+    from pathlib import Path
+    
+    try:
+        data = request.get_json()
+        model_id = data.get('model_id')
+        
+        if not model_id:
+            return jsonify({
+                "success": False,
+                "error": "ID модели не указан"
+            })
+        
+        result_file = Path(f'good_models/train_result_{model_id}.pkl')
+        if not result_file.exists():
+            return jsonify({
+                "success": False,
+                "error": f"Файл результатов для модели {model_id} не найден"
+            })
+        
+        # Загружаем результаты
+        with open(result_file, 'rb') as f:
+            results = pickle.load(f)
+        
+        # Формируем анализ
+        analysis = f"""📊 АНАЛИЗ МОДЕЛИ {model_id}
+{'='*50}
+
+📅 Дата обучения: {results.get('training_date', 'Неизвестно')}
+⏱️ Время обучения: {results.get('total_training_time', 0) / 3600:.1f} часов
+🎯 Эпизодов: {results.get('actual_episodes', results.get('episodes', 'Неизвестно'))}
+
+📈 СТАТИСТИКА:
+"""
+        
+        if 'final_stats' in results:
+            stats = results['final_stats']
+            analysis += f"""
+• Winrate: {stats.get('winrate', 0) * 100:.1f}%
+• P/L Ratio: {stats.get('pl_ratio', 0):.2f}
+• Сделок: {stats.get('trades_count', 0)}
+• Средняя прибыль: {stats.get('avg_profit', 0) * 100:.2f}%
+• Средний убыток: {stats.get('avg_loss', 0) * 100:.2f}%
+• Плохих сделок: {stats.get('bad_trades_count', 0)}
+"""
+        
+        if 'all_trades' in results:
+            trades = results['all_trades']
+            analysis += f"""
+📊 ДЕТАЛЬНАЯ СТАТИСТИКА СДЕЛОК:
+• Всего сделок: {len(trades)}
+• Прибыльных: {sum(1 for t in trades if t.get('roi', 0) > 0)}
+• Убыточных: {sum(1 for t in trades if t.get('roi', 0) < 0)}
+• Нейтральных: {sum(1 for t in trades if abs(t.get('roi', 0)) < 0.001)}
+"""
+        
+        return jsonify({
+            "success": True,
+            "analysis": analysis
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/delete_model', methods=['POST'])
+def delete_model():
+    """Удаляет модель и все связанные файлы"""
+    from pathlib import Path
+    import os
+    
+    try:
+        data = request.get_json()
+        model_id = data.get('model_id')
+        
+        if not model_id:
+            return jsonify({
+                "success": False,
+                "error": "ID модели не указан"
+            })
+        
+        good_models_dir = Path('good_models')
+        
+        # Удаляем все файлы модели
+        files_to_delete = [
+            good_models_dir / f'dqn_model_{model_id}.pth',
+            good_models_dir / f'replay_buffer_{model_id}.pkl',
+            good_models_dir / f'train_result_{model_id}.pkl'
+        ]
+        
+        deleted_files = []
+        for file_path in files_to_delete:
+            if file_path.exists():
+                os.remove(file_path)
+                deleted_files.append(file_path.name)
+        
+        if not deleted_files:
+            return jsonify({
+                "success": False,
+                "error": f"Файлы модели {model_id} не найдены"
+            })
+        
+        return jsonify({
+            "success": True,
+            "message": f"Модель {model_id} удалена",
+            "deleted_files": deleted_files
+        })
+        
     except Exception as e:
         return jsonify({
             "success": False,

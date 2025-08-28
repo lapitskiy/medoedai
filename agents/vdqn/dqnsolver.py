@@ -96,6 +96,29 @@ class PrioritizedReplayBuffer:
         self.position = (self.position + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
     
+    def push_n_step(self, n_step_transitions):
+        """
+        Добавляет n-step transitions в replay buffer
+        
+        Args:
+            n_step_transitions: список n-step transitions от environment
+        """
+        for transition in n_step_transitions:
+            # Дополнительная проверка на None
+            if (transition['state'] is not None and 
+                transition['action'] is not None and 
+                transition['reward'] is not None and 
+                transition['next_state'] is not None):
+                
+                self.push(
+                    state=transition['state'],
+                    action=transition['action'],
+                    reward=transition['reward'],
+                    next_state=transition['next_state'],
+                    done=transition['done'],
+                    gamma_n=1.0  # gamma уже применен в n-step return
+                )
+    
     def sample(self, batch_size):
         if self.size == 0:
             return None, None, None, None, None, None, None, None
@@ -179,24 +202,46 @@ class DQNSolver:
         
         self._eps_decay_rate = math.exp(math.log(self.cfg.eps_final / self.cfg.eps_start) / self.cfg.eps_decay_steps)
 
-        # Создаем модели
-        self.model = DQNN(
-            observation_space, 
-            action_space, 
-            self.cfg.hidden_sizes,
-            dropout_rate=self.cfg.dropout_rate,
-            layer_norm=self.cfg.layer_norm,
-            dueling=self.cfg.dueling_dqn
-        ).to(self.cfg.device)
-        
-        self.target_model = DQNN(
-            observation_space, 
-            action_space, 
-            self.cfg.hidden_sizes,
-            dropout_rate=self.cfg.dropout_rate,
-            layer_norm=self.cfg.layer_norm,
-            dueling=self.cfg.dueling_dqn
-        ).to(self.cfg.device)
+        # Создаем модели с поддержкой Rainbow компонентов
+        if getattr(self.cfg, 'use_noisy_networks', True):
+            # Используем Noisy Dueling DQN
+            from agents.vdqn.dqnn import NoisyDuelingDQN
+            self.model = NoisyDuelingDQN(
+                observation_space, 
+                action_space, 
+                self.cfg.hidden_sizes,
+                dropout_rate=self.cfg.dropout_rate,
+                layer_norm=self.cfg.layer_norm
+            ).to(self.cfg.device)
+            
+            self.target_model = NoisyDuelingDQN(
+                observation_space, 
+                action_space, 
+                self.cfg.hidden_sizes,
+                dropout_rate=self.cfg.dropout_rate,
+                layer_norm=self.cfg.layer_norm
+            ).to(self.cfg.device)
+            
+            print("🔀 Используем Noisy Dueling DQN для лучшего exploration")
+        else:
+            # Используем обычный DQN
+            self.model = DQNN(
+                observation_space, 
+                action_space, 
+                self.cfg.hidden_sizes,
+                dropout_rate=self.cfg.dropout_rate,
+                layer_norm=self.cfg.layer_norm,
+                dueling=self.cfg.dueling_dqn
+            ).to(self.cfg.device)
+            
+            self.target_model = DQNN(
+                observation_space, 
+                action_space, 
+                self.cfg.hidden_sizes,
+                dropout_rate=self.cfg.dropout_rate,
+                layer_norm=self.cfg.layer_norm,
+                dueling=self.cfg.dueling_dqn
+            ).to(self.cfg.device)
         
         # 🚀 PyTorch 2.x Compile для максимального ускорения!
         if (getattr(self.cfg, 'use_torch_compile', True) and 
@@ -465,6 +510,12 @@ class DQNSolver:
         
         # Обновляем scheduler
         self.scheduler.step()
+        
+        # Сбрасываем шум в Noisy Networks после обновления
+        if hasattr(self.model, 'reset_noise'):
+            self.model.reset_noise()
+        if hasattr(self.target_model, 'reset_noise'):
+            self.target_model.reset_noise()
         
         # Переводим модель обратно в режим оценки для ускорения inference
         self.model.eval()

@@ -1,86 +1,174 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Search App</title>
+    <title>MedoedAI - DQN Trading Bot</title>
     <style>
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
-        }
-        th, td {
-            border: 1px solid black;
-            padding: 8px;
-            text-align: left;
-        }
-        th {
-            background-color: #f2f2f2;
-        }
-        
-        .test-section {
-            margin: 20px 0;
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
             padding: 20px;
-            border: 2px solid #007bff;
-            border-radius: 8px;
-            background-color: #f8f9fa;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
         }
-        
-        .test-button {
-            background-color: #28a745;
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+        }
+        .content {
+            padding: 30px;
+        }
+        .section {
+            margin-bottom: 40px;
+            padding: 25px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            background: #fafafa;
+        }
+        .section h2 {
+            color: #333;
+            margin-top: 0;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        .button-group {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin: 20px 0;
+        }
+        .btn {
             padding: 12px 24px;
             border: none;
-            border-radius: 6px;
+            border-radius: 8px;
             cursor: pointer;
             font-size: 16px;
-            margin: 10px 5px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+            text-align: center;
         }
-        
-        .test-button:hover {
-            background-color: #218838;
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
         }
-        
-        .test-button:disabled {
-            background-color: #6c757d;
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        .btn-success {
+            background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
+            color: white;
+        }
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(86, 171, 47, 0.4);
+        }
+        .btn-danger {
+            background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+            color: white;
+        }
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(255, 65, 108, 0.4);
+        }
+        .btn-info {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+        }
+        .btn-info:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(79, 172, 254, 0.4);
+        }
+        .btn-warning {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+        .btn-warning:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(240, 147, 251, 0.4);
+        }
+        .btn:disabled {
+            opacity: 0.6;
             cursor: not-allowed;
+            transform: none !important;
         }
-        
-        .test-status {
-            margin: 15px 0;
-            padding: 15px;
+        .status {
+            padding: 10px;
             border-radius: 6px;
-            font-weight: bold;
+            margin: 10px 0;
+            font-weight: 600;
         }
-        
-        .status-running {
-            background-color: #fff3cd;
-            border: 1px solid #ffeaa7;
-            color: #856404;
-        }
-        
-        .status-success {
-            background-color: #d4edda;
-            border: 1px solid #c3e6cb;
+        .status.success {
+            background: #d4edda;
             color: #155724;
+            border: 1px solid #c3e6cb;
         }
-        
-        .status-error {
-            background-color: #f8d7da;
-            border: 1px solid #f5c6cb;
+        .status.error {
+            background: #f8d7da;
             color: #721c24;
+            border: 1px solid #f5c6cb;
         }
-        
-        .test-results {
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .status.running {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        .results {
             margin: 15px 0;
             padding: 15px;
-            background-color: #e9ecef;
+            background: #e9ecef;
             border-radius: 6px;
             font-family: monospace;
             white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
         }
-        
+        .tasks-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .tasks-table th,
+        .tasks-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+        .tasks-table th {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-weight: 600;
+        }
+        .tasks-table tr:hover {
+            background: #f8f9fa;
+        }
         .progress-bar {
             width: 100%;
             height: 20px;
@@ -89,201 +177,263 @@
             overflow: hidden;
             margin: 10px 0;
         }
-        
         .progress-fill {
             height: 100%;
-            background-color: #007bff;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             transition: width 0.3s ease;
             width: 0%;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+        }
+        .card {
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .card-header {
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        .card-header h5 {
+            margin: 0;
+            color: #333;
+            font-size: 1.2em;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #333;
+        }
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
         }
     </style>
 </head>
 <body>
-    <h1>Welcome to Search App</h1>
-
-    <form action="/train_dqn" method="post">
-        <input type="hidden" name="query" value="test_query">
-        <button type="submit">Запустить DQN обучение</button>
-    </form><br>
-    
-    <!-- Секция тестирования DQN улучшений -->
-    <div class="test-section">
-        <h2>🧪 Тестирование DQN Улучшений</h2>
-        <p>Проверьте работоспособность улучшенного DQN агента перед обучением</p>
-        
-        <button id="testDqnBtn" class="test-button" onclick="startDqnTesting()">
-            🚀 Запустить Тестирование DQN
-        </button>
-        
-        <button id="checkStatusBtn" class="test-button" onclick="checkDqnStatus()" style="display: none;">
-            🔍 Проверить Статус
-        </button>
-        
-        <button id="viewResultsBtn" class="test-button" onclick="viewDqnResults()" style="display: none;">
-            📊 Показать Результаты
-        </button>
-        
-        <div id="testStatus" class="test-status" style="display: none;"></div>
-        
-        <div class="progress-bar" id="progressBar" style="display: none;">
-            <div class="progress-fill" id="progressFill"></div>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 MedoedAI - DQN Trading Bot</h1>
+            <p>Интеллектуальная система торговли криптовалютами</p>
         </div>
         
-        <div id="testResults" class="test-results" style="display: none;"></div>
-    </div>
+        <div class="content">
+            <!-- Секция обучения DQN -->
+            <div class="section">
+                <h2>🎯 Обучение DQN модели</h2>
+                <p>Запустите обучение Deep Q-Network модели для торговли криптовалютами</p>
+                
+                <div class="button-group">
+                    <form action="/train_dqn" method="post" style="display: inline;">
+                        <input type="hidden" name="query" value="test_query">
+                        <button type="submit" class="btn btn-primary">
+                            🚀 Запустить DQN обучение (BTC)
+                        </button>
+                    </form>
+                    
+                    <form action="/train_dqn_multi_crypto" method="post" style="display: inline;">
+                        <input type="hidden" name="query" value="test_query">
+                        <button type="submit" class="btn btn-success">
+                            🌟 Запустить DQN обучение (Все криптовалюты)
+                        </button>
+                    </form>
+                </div>
+            </div>
 
-    <!-- Секция тестирования GPU Replay Buffer -->
-    <div class="test-section">
-        <h2>🚀 Тестирование GPU Replay Buffer</h2>
-        <p>Проверьте производительность GPU-оптимизированного replay buffer</p>
-        
-        <button id="testGpuReplayBtn" class="test-button" onclick="testGpuReplay()">
-            ⚡ Тестировать GPU Replay Buffer
-        </button>
-        
-        <div id="gpuReplayStatus" class="test-status" style="display: none;"></div>
-        
-        <div id="gpuReplayResults" class="test-results" style="display: none;"></div>
-    </div>
+            <!-- Секция анализа результатов обучения -->
+            <div class="section">
+                <h2>📊 Анализ результатов обучения</h2>
+                <p>Анализируйте результаты обучения DQN модели и создавайте графики</p>
+                
+                <div class="button-group">
+                    <button id="listResultsBtn" class="btn btn-info" onclick="listTrainingResults()">
+                        📋 Список результатов
+                    </button>
+                    
+                    <button id="analyzeResultsBtn" class="btn btn-primary" onclick="analyzeTrainingResults()">
+                        📈 Анализировать результаты
+                    </button>
+                </div>
+                
+                <div id="analysisStatus" class="status" style="display: none;"></div>
+                <div id="analysisResults" class="results" style="display: none;"></div>
+                <div id="filesList" class="results" style="display: none;"></div>
+            </div>
 
-    <!-- Секция тестирования предвычисления состояний -->
-    <div class="test-section">
-        <h2>⚡ Тестирование предвычисления состояний</h2>
-        <p>Проверьте работу предвычисления состояний для оптимизации</p>
-        
-        <button id="testPrecomputedBtn" class="test-button" onclick="testPrecomputedStates()">
-            🔄 Тестировать предвычисление состояний
-        </button>
-        
-        <div id="precomputedStatus" class="test-status" style="display: none;"></div>
-        
-        <div id="precomputedResults" class="test-results" style="display: none;"></div>
-    </div>
+            <!-- Секция анализа плохих сделок -->
+            <div class="section">
+                <h2>🔍 Анализ плохих сделок</h2>
+                <p>Детальный анализ проблемных сделок для понимания ошибок модели</p>
+                
+                <div class="button-group">
+                    <button id="analyzeBadTradesBtn" class="btn btn-warning" onclick="analyzeBadTrades()">
+                        🔍 Анализировать плохие сделки
+                    </button>
+                </div>
+                
+                <div id="badTradesStatus" class="status" style="display: none;"></div>
+                <div id="badTradesResults" class="results" style="display: none;"></div>
+                <div id="badTradesSummary" class="results" style="display: none;"></div>
+            </div>
 
-    <!-- Секция тестирования torch.compile -->
-    <div class="test-section">
-        <h2>🚀 Тестирование torch.compile</h2>
-        <p>Проверьте работу PyTorch 2.x compile для максимального ускорения</p>
-        
-        <button id="testTorchCompileBtn" class="test-button" onclick="testTorchCompile()">
-            ⚡ Тестировать torch.compile
-        </button>
-        
-        <div id="torchCompileStatus" class="test-status" style="display: none;"></div>
-        
-        <div id="torchCompileResults" class="test-results" style="display: none;"></div>
-    </div>
+            <!-- Секция управления моделями -->
+            <div class="section">
+                <h2>🤖 Управление моделями</h2>
+                <p>Версионирование и управление обученными моделями DQN</p>
+                
+                <div class="button-group">
+                    <a href="/models" class="btn btn-success">
+                        🚀 Управление моделями
+                    </a>
+                </div>
+            </div>
 
-    <!-- Секция запуска всех тестов -->
-    <div class="test-section">
-        <h2>🎯 Запуск всех тестов DQN</h2>
-        <p>Запустите полное тестирование всех компонентов DQN агента</p>
-        
-        <button id="runAllTestsBtn" class="test-button" onclick="runAllTests()">
-            🚀 Запустить все тесты
-        </button>
-        
-        <div id="allTestsStatus" class="test-status" style="display: none;"></div>
-        
-        <div id="allTestsResults" class="test-results" style="display: none;"></div>
-    </div>
+            <!-- Секция данных -->
+            <div class="section">
+                <h2>📥 Управление данными</h2>
+                <p>Скачивание и очистка данных для обучения</p>
+                
+                <div class="button-group">
+                    <form action="/parser" method="post" style="display: inline;">
+                        <input type="hidden" name="query" value="test_query">
+                        <button type="submit" class="btn btn-info">
+                            📊 Скачать свечи BTC
+                        </button>
+                    </form>
+                    
+                    <form action="/parser_multi_crypto" method="post" style="display: inline;">
+                        <input type="hidden" name="query" value="test_query">
+                        <button type="submit" class="btn btn-success">
+                            🌟 Скачать все криптовалюты
+                        </button>
+                    </form>
+                </div>
+            </div>
 
-    <!-- Секция анализа результатов обучения -->
-    <div class="test-section">
-        <h2>📊 Анализ результатов обучения</h2>
-        <p>Анализируйте результаты обучения DQN модели и создавайте графики</p>
-        
-        <button id="listResultsBtn" class="test-button" onclick="listTrainingResults()">
-            📋 Список результатов
-        </button>
-        
-        <button id="analyzeResultsBtn" class="test-button" onclick="analyzeTrainingResults()">
-            📈 Анализировать результаты
-        </button>
-        
-        <div id="analysisStatus" class="test-status" style="display: none;"></div>
-        
-        <div id="analysisResults" class="test-results" style="display: none;"></div>
-        
-        <div id="filesList" class="test-results" style="display: none;"></div>
-    </div>
+            <!-- Секция очистки -->
+            <div class="section">
+                <h2>🧹 Очистка данных</h2>
+                <p>Очистка базы данных от некорректных данных</p>
+                
+                <div class="button-group">
+                    <form action="/clean_data" method="post" style="display: inline;">
+                        <input type="hidden" name="query" value="test_query">
+                        <button type="submit" class="btn btn-warning">
+                            🧹 Очистить от пиков
+                        </button>
+                    </form>
+                    
+                    <form action="/clean_db" method="post" style="display: inline;">
+                        <input type="hidden" name="query" value="test_query">
+                        <button type="submit" class="btn btn-danger">
+                            🗑️ Очистить от свечей
+                        </button>
+                    </form>
+                </div>
+            </div>
 
-    <form action="/clean_data" method="post">
-        <input type="hidden" name="query" value="test_query">
-        <button type="submit">Запустить очистку postgers от пиков<</button>
-    </form>    
-    <br>
-    <form action="/clean_db" method="post">
-        <input type="hidden" name="query" value="test_query">
-        <button type="submit">Запустить очистку postgers отcсвечей<</button>
-    </form>      
-    <br>
-    <form action="/parser" method="post">
-        <input type="hidden" name="query" value="test_query">
-        <button type="submit">Скачать свечи<</button>
-    </form>   <br>   
-        <form action="/task-start-search" method="post">
-        <input type="hidden" name="query" value="test_query">
-        <button type="submit">Запустить RandomSearch</button>
-    </form>
+            <!-- Секция RandomSearch -->
+            <div class="section">
+                <h2>🔍 RandomSearch</h2>
+                <p>Запуск поиска оптимальных параметров</p>
+                
+                <div class="button-group">
+                    <form action="/task-start-search" method="post" style="display: inline;">
+                        <input type="hidden" name="query" value="test_query">
+                        <button type="submit" class="btn btn-primary">
+                            🔍 Запустить RandomSearch
+                        </button>
+                    </form>
+                </div>
+            </div>
 
-    <h2>Статус задач</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Task ID</th>
-                <th>State</th>
-                <th>Result</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for task in tasks %}
-            <tr>
-                <td>{{ task.task_id }}</td>
-                <td>{{ task.state }}</td>
-                <td>{{ task.result if task.result else "Выполняется..." }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+            <!-- Секция управления системой -->
+            <div class="section">
+                <h2>🔧 Управление системой</h2>
+                <p>Системные операции и мониторинг</p>
+                
+                <div class="button-group">
+                    <button class="btn btn-warning" onclick="clearRedis()">
+                        🧹 Очистить Redis
+                    </button>
+                </div>
+                
+                <div id="clearRedisResult" class="status" style="display: none;"></div>
+            </div>
 
-    <div class="card">
-        <div class="card-header">
-            <h5>🔧 Управление системой</h5>
-        </div>
-        <div class="card-body">
-            <button class="btn btn-warning" onclick="clearRedis()">
-                🧹 Очистить Redis
-            </button>
-            <div id="clearRedisResult" class="mt-2"></div>
+            <!-- Секция статуса задач -->
+            <div class="section">
+                <h2>📋 Статус задач</h2>
+                <p>Мониторинг выполнения задач Celery</p>
+                
+                <table class="tasks-table">
+                    <thead>
+                        <tr>
+                            <th>Task ID</th>
+                            <th>State</th>
+                            <th>Result</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for task in tasks %}
+                        <tr>
+                            <td>{{ task.task_id }}</td>
+                            <td>{{ task.state }}</td>
+                            <td>{{ task.result if task.result else "Выполняется..." }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 
     <script>
-        let testInterval = null;
-        let progressInterval = null;
-        
-        async function startDqnTesting() {
-            const testBtn = document.getElementById('testDqnBtn');
-            const statusBtn = document.getElementById('checkStatusBtn');
-            const statusDiv = document.getElementById('testStatus');
-            const progressBar = document.getElementById('progressBar');
-            const progressFill = document.getElementById('progressFill');
+        // Функция для мультивалютного скачивания
+        async function startMultiCryptoDownload() {
+            const downloadBtn = document.querySelector('form[action="/parser_multi_crypto"] button');
+            const originalText = downloadBtn.textContent;
             
-            // Отключаем кнопку и показываем статус
-            testBtn.disabled = true;
-            testBtn.textContent = '⏳ Тестирование запущено...';
-            statusDiv.style.display = 'block';
-            statusDiv.className = 'test-status status-running';
-            statusDiv.textContent = '🚀 Запуск тестирования DQN улучшений...';
-            
-            // Показываем прогресс бар
-            progressBar.style.display = 'block';
-            progressFill.style.width = '0%';
+            // Отключаем кнопку и показываем прогресс
+            downloadBtn.disabled = true;
+            downloadBtn.textContent = '⏳ Скачивание запущено...';
             
             try {
-                // Запускаем тестирование
-                const response = await fetch('/test_dqn_improvements', {
+                // Запускаем скачивание
+                const response = await fetch('/parser_multi_crypto', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -292,558 +442,50 @@
                 
                 const result = await response.json();
                 
-                if (result.status === 'success') {
-                    statusDiv.textContent = '✅ Тестирование запущено успешно! Отслеживаем прогресс...';
-                    
-                    // Запускаем анимацию прогресса
-                    let progress = 0;
-                    progressInterval = setInterval(() => {
-                        progress += Math.random() * 15;
-                        if (progress > 90) progress = 90;
-                        progressFill.style.width = progress + '%';
-                    }, 500);
-                    
-                    // Показываем кнопку проверки статуса
-                    statusBtn.style.display = 'inline-block';
-                    
-                    // Начинаем проверку статуса
-                    startStatusChecking();
-                    
-                } else {
-                    throw new Error(result.message);
-                }
-                
-            } catch (error) {
-                statusDiv.className = 'test-status status-error';
-                statusDiv.textContent = '❌ Ошибка при запуске тестирования: ' + error.message;
-                testBtn.disabled = false;
-                testBtn.textContent = '🚀 Запустить Тестирование DQN';
-                progressBar.style.display = 'none';
-            }
-        }
-        
-        function startStatusChecking() {
-            // Проверяем статус каждые 2 секунды
-            testInterval = setInterval(async () => {
-                try {
-                    const response = await fetch('/test_dqn_status');
-                    const status = await response.json();
-                    
-                    const statusDiv = document.getElementById('testStatus');
-                    const progressFill = document.getElementById('progressFill');
-                    const viewResultsBtn = document.getElementById('viewResultsBtn');
-                    
-                    if (status.status === 'completed') {
-                        // Тестирование завершено
-                        clearInterval(testInterval);
-                        clearInterval(progressInterval);
-                        
-                        progressFill.style.width = '100%';
-                        statusDiv.className = 'test-status status-success';
-                        statusDiv.textContent = '✅ ' + status.message;
-                        
-                        // Показываем кнопку просмотра результатов
-                        viewResultsBtn.style.display = 'inline-block';
-                        
-                        // Восстанавливаем основную кнопку
-                        const testBtn = document.getElementById('testDqnBtn');
-                        testBtn.disabled = false;
-                        testBtn.textContent = '🚀 Запустить Тестирование DQN';
-                        
-                    } else if (status.status === 'failed') {
-                        // Тестирование завершено с ошибками
-                        clearInterval(testInterval);
-                        clearInterval(progressInterval);
-                        
-                        progressFill.style.width = '100%';
-                        statusDiv.className = 'test-status status-error';
-                        statusDiv.textContent = '❌ ' + status.message;
-                        
-                        // Восстанавливаем основную кнопку
-                        const testBtn = document.getElementById('testDqnBtn');
-                        testBtn.disabled = false;
-                        testBtn.textContent = '🚀 Запустить Тестирование DQN';
-                        
-                    } else if (status.status === 'error') {
-                        // Ошибка при тестировании
-                        clearInterval(testInterval);
-                        clearInterval(progressInterval);
-                        
-                        statusDiv.className = 'test-status status-error';
-                        statusDiv.textContent = '❌ ' + status.message;
-                        
-                        // Восстанавливаем основную кнопку
-                        const testBtn = document.getElementById('testDqnBtn');
-                        testBtn.disabled = false;
-                        testBtn.textContent = '🚀 Запустить Тестирование DQN';
-                        
-                    } else if (status.status === 'running') {
-                        // Тестирование выполняется
-                        statusDiv.textContent = '⏳ Тестирование выполняется... Пожалуйста, подождите.';
-                    }
-                    
-                } catch (error) {
-                    console.error('Ошибка при проверке статуса:', error);
-                }
-            }, 2000);
-        }
-        
-        async function checkDqnStatus() {
-            try {
-                const response = await fetch('/test_dqn_status');
-                const status = await response.json();
-                
-                const statusDiv = document.getElementById('testStatus');
-                statusDiv.style.display = 'block';
-                
-                if (status.status === 'running') {
-                    statusDiv.className = 'test-status status-running';
-                    statusDiv.textContent = '⏳ Тестирование выполняется...';
-                } else if (status.status === 'completed') {
-                    statusDiv.className = 'test-status status-success';
-                    statusDiv.textContent = '✅ ' + status.message;
-                } else if (status.status === 'failed') {
-                    statusDiv.className = 'test-status status-error';
-                    statusDiv.textContent = '❌ ' + status.message;
-                } else if (status.status === 'error') {
-                    statusDiv.className = 'test-status status-error';
-                    statusDiv.textContent = '❌ ' + status.message;
-                }
-                
-            } catch (error) {
-                console.error('Ошибка при проверке статуса:', error);
-            }
-        }
-        
-        async function viewDqnResults() {
-            try {
-                const response = await fetch('/test_dqn_results');
-                const results = await response.json();
-                
-                const resultsDiv = document.getElementById('testResults');
-                resultsDiv.style.display = 'block';
-                
-                if (results.status === 'completed' || results.status === 'failed') {
-                    let resultsText = `📊 РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ DQN\n`;
-                    resultsText += `================================\n\n`;
-                    resultsText += `Статус: ${results.status}\n`;
-                    resultsText += `Сообщение: ${results.message}\n`;
-                    resultsText += `Время выполнения: ${results.duration ? results.duration.toFixed(2) + ' сек' : 'N/A'}\n\n`;
-                    
-                    if (results.tests) {
-                        resultsText += `ДЕТАЛЬНЫЕ РЕЗУЛЬТАТЫ:\n`;
-                        resultsText += `===================\n\n`;
-                        
-                        for (const [testName, testResult] of Object.entries(results.tests)) {
-                            const emoji = testResult.success ? '✅' : '❌';
-                            const status = testResult.success ? 'УСПЕХ' : 'ОШИБКА';
-                            resultsText += `${emoji} ${testName.toUpperCase()}: ${status}\n`;
-                            resultsText += `   Сообщение: ${testResult.message}\n\n`;
-                        }
-                    }
-                    
-                    if (results.overall_success) {
-                        resultsText += `🎯 ВСЕ ТЕСТЫ ПРОЙДЕНЫ УСПЕШНО!\n`;
-                        resultsText += `DQN агент готов к использованию.\n\n`;
-                        resultsText += `📈 ОЖИДАЕМЫЕ УЛУЧШЕНИЯ:\n`;
-                        resultsText += `   - Winrate: 50.23% → 55-65%\n`;
-                        resultsText += `   - P/L Ratio: 1.01 → 1.3-1.5\n`;
-                        resultsText += `   - Bad Trades: 31,352 → 15,000-20,000\n`;
-                        resultsText += `   - Стабильность: Значительно улучшена\n`;
-                    } else {
-                        resultsText += `⚠️ НЕКОТОРЫЕ ТЕСТЫ НЕ ПРОЙДЕНЫ!\n`;
-                        resultsText += `Проверьте логи и исправьте ошибки.\n`;
-                    }
-                    
-                    resultsDiv.textContent = resultsText;
-                } else {
-                    resultsDiv.textContent = 'Результаты тестирования еще не готовы.';
-                }
-                
-            } catch (error) {
-                console.error('Ошибка при получении результатов:', error);
-                const resultsDiv = document.getElementById('testResults');
-                resultsDiv.style.display = 'block';
-                resultsDiv.textContent = '❌ Ошибка при получении результатов: ' + error.message;
-            }
-        }
-        
-        async function testGpuReplay() {
-            const testBtn = document.getElementById('testGpuReplayBtn');
-            const statusDiv = document.getElementById('gpuReplayStatus');
-            const resultsDiv = document.getElementById('gpuReplayResults');
-            
-            // Отключаем кнопку и показываем статус
-            testBtn.disabled = true;
-            testBtn.textContent = '⏳ Тестирование GPU Replay...';
-            statusDiv.style.display = 'block';
-            statusDiv.className = 'test-status status-running';
-            statusDiv.textContent = '🚀 Запуск тестирования GPU Replay Buffer...';
-            
-            // Скрываем предыдущие результаты
-            resultsDiv.style.display = 'none';
-            
-            try {
-                // Запускаем тестирование
-                const response = await fetch('/test_gpu_replay', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    }
-                });
-                
-                const result = await response.json();
-                
-                if (result.status === 'success' || result.status === 'failed') {
-                    // Тестирование завершено
-                    statusDiv.className = result.success ? 'test-status status-success' : 'test-status status-error';
-                    statusDiv.textContent = (result.success ? '✅ ' : '❌ ') + result.message;
-                    
+                if (result.status === 'Мультивалютное скачивание завершено') {
                     // Показываем результаты
-                    resultsDiv.style.display = 'block';
+                    let message = `✅ Скачивание завершено!\n\n`;
+                    message += `📊 Сводка:\n`;
+                    message += `• Всего криптовалют: ${result.summary.total_cryptos}\n`;
+                    message += `• Успешно: ${result.summary.successful}\n`;
+                    message += `• Предупреждения: ${result.summary.warnings}\n`;
+                    message += `• Ошибки: ${result.summary.failed}\n\n`;
+                    message += `📈 Детали:\n`;
                     
-                    let resultsText = `📊 РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ GPU REPLAY BUFFER\n`;
-                    resultsText += `==========================================\n\n`;
-                    resultsText += `Статус: ${result.status}\n`;
-                    resultsText += `Сообщение: ${result.message}\n\n`;
+                    result.results.forEach(r => {
+                        const statusIcon = r.status === 'success' ? '✅' : r.status === 'warning' ? '⚠️' : '❌';
+                        message += `${statusIcon} ${r.symbol}: ${r.message}\n`;
+                    });
                     
-                    if (result.metrics) {
-                        resultsText += `ДЕТАЛЬНЫЕ МЕТРИКИ:\n`;
-                        resultsText += `==================\n\n`;
-                        resultsText += `• Заполнение: ${result.metrics.fill_rate?.toFixed(1) || 'N/A'} элементов/с\n`;
-                        resultsText += `• Сэмплирование: ${result.metrics.sample_rate?.toFixed(1) || 'N/A'} батчей/с\n`;
-                        resultsText += `• Обновления: ${result.metrics.update_rate?.toFixed(1) || 'N/A'} обновлений/с\n`;
-                        resultsText += `• Общее время: ${result.metrics.total_time?.toFixed(2) || 'N/A'}с\n`;
-                        resultsText += `• Тип хранения: ${result.metrics.storage_type || 'N/A'}\n`;
-                        resultsText += `• Устройство: ${result.metrics.device || 'N/A'}\n`;
-                        
-                        if (result.metrics.gpu_memory > 0) {
-                            resultsText += `• GPU память: ${result.metrics.gpu_memory.toFixed(1)}MB (выделено)\n`;
-                            resultsText += `• GPU память: ${result.metrics.gpu_memory_reserved.toFixed(1)}MB (зарезервировано)\n`;
-                        }
-                        
-                        resultsText += `\n🎯 ОЦЕНКА ПРОИЗВОДИТЕЛЬНОСТИ:\n`;
-                        const fillRate = result.metrics.fill_rate || 0;
-                        const sampleRate = result.metrics.sample_rate || 0;
-                        
-                        if (fillRate > 1000 && sampleRate > 50) {
-                            resultsText += `🚀 ОТЛИЧНО - GPU оптимизация работает идеально!\n`;
-                        } else if (fillRate > 500 && sampleRate > 20) {
-                            resultsText += `✅ ХОРОШО - GPU оптимизация работает хорошо\n`;
-                        } else {
-                            resultsText += `⚠️ ТРЕБУЕТ ОПТИМИЗАЦИИ - возможно, нужно настроить параметры\n`;
-                        }
-                        
-                        resultsText += `\n💡 РЕКОМЕНДАЦИИ:\n`;
-                        if (result.metrics.storage_type === 'GPU storage') {
-                            resultsText += `• Используется GPU storage - отлично для производительности\n`;
-                        } else {
-                            resultsText += `• Используется Pinned memory - хорошо для совместимости\n`;
-                        }
-                        
-                        if (fillRate < 500) {
-                            resultsText += `• Скорость заполнения низкая - проверьте размер состояния\n`;
-                        }
-                        
-                        if (sampleRate < 20) {
-                            resultsText += `• Скорость сэмплирования низкая - проверьте batch size\n`;
-                        }
-                    }
+                    alert(message);
                     
-                    resultsDiv.textContent = resultsText;
+                    // Обновляем страницу для отображения новых данных
+                    location.reload();
                     
                 } else {
-                    throw new Error(result.message);
+                    throw new Error('Неожиданный ответ от сервера');
                 }
                 
             } catch (error) {
-                statusDiv.className = 'test-status status-error';
-                statusDiv.textContent = '❌ Ошибка при тестировании: ' + error.message;
+                console.error('Ошибка при скачивании:', error);
+                alert(`❌ Ошибка при скачивании: ${error.message}`);
             } finally {
                 // Восстанавливаем кнопку
-                testBtn.disabled = false;
-                testBtn.textContent = '⚡ Тестировать GPU Replay Buffer';
+                downloadBtn.disabled = false;
+                downloadBtn.textContent = originalText;
             }
         }
         
-        async function testPrecomputedStates() {
-            const testBtn = document.getElementById('testPrecomputedBtn');
-            const statusDiv = document.getElementById('precomputedStatus');
-            const resultsDiv = document.getElementById('precomputedResults');
-            
-            // Отключаем кнопку и показываем статус
-            testBtn.disabled = true;
-            testBtn.textContent = '⏳ Тестирование предвычисления...';
-            statusDiv.style.display = 'block';
-            statusDiv.className = 'test-status status-running';
-            statusDiv.textContent = '🚀 Запуск тестирования предвычисления состояний...';
-            
-            // Скрываем предыдущие результаты
-            resultsDiv.style.display = 'none';
-            
-            try {
-                // Запускаем тестирование
-                const response = await fetch('/test_precomputed_states', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    }
+        // Добавляем обработчик для кнопки мультивалютного скачивания
+        document.addEventListener('DOMContentLoaded', function() {
+            const multiCryptoForm = document.querySelector('form[action="/parser_multi_crypto"]');
+            if (multiCryptoForm) {
+                multiCryptoForm.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    startMultiCryptoDownload();
                 });
-                
-                const result = await response.json();
-                
-                if (result.status === 'success' || result.status === 'failed') {
-                    // Тестирование завершено
-                    statusDiv.className = result.success ? 'test-status status-success' : 'test-status status-error';
-                    statusDiv.textContent = (result.success ? '✅ ' : '❌ ') + result.message;
-                    
-                    // Показываем результаты
-                    resultsDiv.style.display = 'block';
-                    
-                    let resultsText = `📊 РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ ПРЕДВЫЧИСЛЕНИЯ СОСТОЯНИЙ\n`;
-                    resultsText += `==================================================\n\n`;
-                    resultsText += `Статус: ${result.status}\n`;
-                    resultsText += `Сообщение: ${result.message}\n\n`;
-                    
-                    if (result.metrics) {
-                        resultsText += `ДЕТАЛЬНЫЕ МЕТРИКИ:\n`;
-                        resultsText += `==================\n\n`;
-                        resultsText += `• Статус: ${result.metrics.status || 'N/A'}\n`;
-                        resultsText += `• Сообщение: ${result.metrics.message || 'N/A'}\n`;
-                    }
-                    
-                    resultsText += `\n🎯 ОЦЕНКА:\n`;
-                    if (result.success) {
-                        resultsText += `✅ Предвычисление состояний работает корректно\n`;
-                        resultsText += `🚀 Окружение готово к быстрой работе\n`;
-                        resultsText += `⚡ Состояния будут загружаться мгновенно\n`;
-                    } else {
-                        resultsText += `❌ Обнаружены проблемы с предвычислением\n`;
-                        resultsText += `⚠️ Проверьте логи для деталей\n`;
-                    }
-                    
-                    resultsText += `\n💡 ПРЕИМУЩЕСТВА ПРЕДВЫЧИСЛЕНИЯ:\n`;
-                    resultsText += `• Мгновенный доступ к состояниям\n`;
-                    resultsText += `• Устранение задержек при обучении\n`;
-                    resultsText += `• Оптимизация hot-path операций\n`;
-                    resultsText += `• Снижение нагрузки на CPU\n`;
-                    
-                    resultsDiv.textContent = resultsText;
-                    
-                } else {
-                    throw new Error(result.message);
-                }
-                
-            } catch (error) {
-                statusDiv.className = 'test-status status-error';
-                statusDiv.textContent = '❌ Ошибка при тестировании: ' + error.message;
-            } finally {
-                // Восстанавливаем кнопку
-                testBtn.disabled = false;
-                testBtn.textContent = '🔄 Тестировать предвычисление состояний';
             }
-        }
-
-        async function testTorchCompile() {
-            const testBtn = document.getElementById('testTorchCompileBtn');
-            const statusDiv = document.getElementById('torchCompileStatus');
-            const resultsDiv = document.getElementById('torchCompileResults');
-            
-            // Отключаем кнопку и показываем статус
-            testBtn.disabled = true;
-            testBtn.textContent = '⏳ Тестирование torch.compile...';
-            statusDiv.style.display = 'block';
-            statusDiv.className = 'test-status status-running';
-            statusDiv.textContent = '🚀 Запуск тестирования torch.compile...';
-            
-            // Скрываем предыдущие результаты
-            resultsDiv.style.display = 'none';
-            
-            try {
-                // Запускаем тестирование
-                const response = await fetch('/test_torch_compile', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    }
-                });
-                
-                const result = await response.json();
-                
-                if (result.status === 'success' || result.status === 'failed') {
-                    // Тестирование завершено
-                    statusDiv.className = result.success ? 'test-status status-success' : 'test-status status-error';
-                    statusDiv.textContent = (result.success ? '✅ ' : '❌ ') + result.message;
-                    
-                    // Показываем результаты
-                    resultsDiv.style.display = 'block';
-                    
-                    let resultsText = `📊 РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ TORCH.COMPILE\n`;
-                    resultsText += `==========================================\n\n`;
-                    resultsText += `Статус: ${result.status}\n`;
-                    resultsText += `Сообщение: ${result.message}\n\n`;
-                    
-                    if (result.metrics) {
-                        resultsText += `ДЕТАЛЬНЫЕ МЕТРИКИ:\n`;
-                        resultsText += `==================\n\n`;
-                        resultsText += `• Статус: ${result.metrics.status || 'N/A'}\n`;
-                        resultsText += `• Сообщение: ${result.metrics.message || 'N/A'}\n`;
-                    }
-                    
-                    resultsText += `\n🎯 ОЦЕНКА:\n`;
-                    if (result.success) {
-                        resultsText += `✅ torch.compile работает корректно\n`;
-                        resultsText += `🚀 Модель будет работать с максимальным ускорением\n`;
-                        resultsText += `⚡ Ожидается ускорение 30-50%\n`;
-                    } else {
-                        resultsText += `❌ torch.compile недоступен или не работает\n`;
-                        resultsText += `⚠️ Модель будет работать без компиляции\n`;
-                    }
-                    
-                    resultsText += `\n💡 ПРЕИМУЩЕСТВА TORCH.COMPILE:\n`;
-                    resultsText += `• Автоматическая оптимизация графов\n`;
-                    resultsText += `• Ускорение до 30-50%\n`;
-                    resultsText += `• Оптимизация памяти\n`;
-                    resultsText += `• Лучшая производительность на GPU\n`;
-                    
-                    resultsDiv.textContent = resultsText;
-                    
-                } else {
-                    throw new Error(result.message);
-                }
-                
-            } catch (error) {
-                statusDiv.className = 'test-status status-error';
-                statusDiv.textContent = '❌ Ошибка при тестировании: ' + error.message;
-            } finally {
-                // Восстанавливаем кнопку
-                testBtn.disabled = false;
-                testBtn.textContent = '⚡ Тестировать torch.compile';
-            }
-        }
-
-        async function runAllTests() {
-            const testBtn = document.getElementById('runAllTestsBtn');
-            const statusDiv = document.getElementById('allTestsStatus');
-            const resultsDiv = document.getElementById('allTestsResults');
-            
-            // Отключаем кнопку и показываем статус
-            testBtn.disabled = true;
-            testBtn.textContent = '⏳ Запуск всех тестов...';
-            statusDiv.style.display = 'block';
-            statusDiv.className = 'test-status status-running';
-            statusDiv.textContent = '🚀 Запуск всех тестов DQN...';
-            
-            // Скрываем предыдущие результаты
-            resultsDiv.style.display = 'none';
-            
-            try {
-                // Запускаем тестирование
-                const response = await fetch('/test_dqn_improvements', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    }
-                });
-                
-                const result = await response.json();
-                
-                if (result.status === 'success') {
-                    statusDiv.textContent = '✅ Все тесты запущены! Отслеживаем прогресс...';
-                    
-                    // Начинаем проверку статуса
-                    startAllTestsStatusChecking();
-                    
-                } else {
-                    throw new Error(result.message);
-                }
-                
-            } catch (error) {
-                statusDiv.className = 'test-status status-error';
-                statusDiv.textContent = '❌ Ошибка при запуске тестов: ' + error.message;
-                testBtn.disabled = false;
-                testBtn.textContent = '🚀 Запустить все тесты';
-            }
-        }
-
-        function startAllTestsStatusChecking() {
-            // Проверяем статус каждые 2 секунды
-            const interval = setInterval(async () => {
-                try {
-                    const response = await fetch('/test_dqn_status');
-                    const status = await response.json();
-                    
-                    const statusDiv = document.getElementById('allTestsStatus');
-                    const resultsDiv = document.getElementById('allTestsResults');
-                    const testBtn = document.getElementById('runAllTestsBtn');
-                    
-                    if (status.status === 'completed') {
-                        // Тестирование завершено
-                        clearInterval(interval);
-                        
-                        statusDiv.className = 'test-status status-success';
-                        statusDiv.textContent = '✅ ' + status.message;
-                        
-                        // Показываем результаты
-                        resultsDiv.style.display = 'block';
-                        
-                        let resultsText = `📊 РЕЗУЛЬТАТЫ ВСЕХ ТЕСТОВ DQN\n`;
-                        resultsText += `================================\n\n`;
-                        resultsText += `Статус: ${status.status}\n`;
-                        resultsText += `Сообщение: ${status.message}\n`;
-                        resultsText += `Время выполнения: ${status.duration?.toFixed(2) || 'N/A'} секунд\n\n`;
-                        
-                        if (status.tests) {
-                            resultsText += `ДЕТАЛЬНЫЕ РЕЗУЛЬТАТЫ:\n`;
-                            resultsText += `====================\n\n`;
-                            
-                            for (const [testName, testResult] of Object.entries(status.tests)) {
-                                const emoji = testResult.success ? '✅' : '❌';
-                                resultsText += `${emoji} ${testName}: ${testResult.message}\n`;
-                            }
-                        }
-                        
-                        resultsText += `\n🎯 ОБЩАЯ ОЦЕНКА:\n`;
-                        if (status.overall_success) {
-                            resultsText += `🎉 ВСЕ ТЕСТЫ ПРОЙДЕНЫ УСПЕШНО!\n`;
-                            resultsText += `🚀 DQN агент готов к использованию\n`;
-                            resultsText += `⚡ Все оптимизации работают корректно\n`;
-                        } else {
-                            resultsText += `⚠️ НЕКОТОРЫЕ ТЕСТЫ НЕ ПРОЙДЕНЫ\n`;
-                            resultsText += `🔧 Требуется дополнительная настройка\n`;
-                        }
-                        
-                        resultsDiv.textContent = resultsText;
-                        
-                        // Восстанавливаем кнопку
-                        testBtn.disabled = false;
-                        testBtn.textContent = '🚀 Запустить все тесты';
-                        
-                    } else if (status.status === 'failed') {
-                        // Тестирование завершено с ошибками
-                        clearInterval(interval);
-                        
-                        statusDiv.className = 'test-status status-error';
-                        statusDiv.textContent = '❌ ' + status.message;
-                        
-                        // Показываем результаты
-                        resultsDiv.style.display = 'block';
-                        resultsDiv.textContent = `❌ Тестирование завершено с ошибками:\n${status.message}`;
-                        
-                        // Восстанавливаем кнопку
-                        testBtn.disabled = false;
-                        testBtn.textContent = '🚀 Запустить все тесты';
-                        
-                    } else if (status.status === 'running') {
-                        // Тестирование выполняется
-                        statusDiv.textContent = '🔄 Тестирование выполняется... ' + status.message;
-                    }
-                    
-                } catch (error) {
-                    console.error('Ошибка при проверке статуса:', error);
-                }
-            }, 2000);
-        }
+        });
 
         // Функции для анализа результатов обучения
         async function listTrainingResults() {
@@ -855,7 +497,7 @@
             listBtn.disabled = true;
             listBtn.textContent = '⏳ Поиск файлов...';
             statusDiv.style.display = 'block';
-            statusDiv.className = 'test-status status-running';
+            statusDiv.className = 'status running';
             statusDiv.textContent = '🔍 Поиск файлов результатов обучения...';
             
             try {
@@ -869,7 +511,7 @@
                 const result = await response.json();
                 
                 if (result.success) {
-                    statusDiv.className = 'test-status status-success';
+                    statusDiv.className = 'status success';
                     statusDiv.textContent = '✅ ' + result.message;
                     
                     // Показываем список файлов
@@ -898,7 +540,7 @@
                 }
                 
             } catch (error) {
-                statusDiv.className = 'test-status status-error';
+                statusDiv.className = 'status error';
                 statusDiv.textContent = '❌ Ошибка при поиске файлов: ' + error.message;
             } finally {
                 // Восстанавливаем кнопку
@@ -916,7 +558,7 @@
             analyzeBtn.disabled = true;
             analyzeBtn.textContent = '⏳ Анализ...';
             statusDiv.style.display = 'block';
-            statusDiv.className = 'test-status status-running';
+            statusDiv.className = 'status running';
             statusDiv.textContent = '📊 Анализ результатов обучения...';
             
             try {
@@ -930,7 +572,7 @@
                 const result = await response.json();
                 
                 if (result.success) {
-                    statusDiv.className = 'test-status status-success';
+                    statusDiv.className = 'status success';
                     statusDiv.textContent = '✅ ' + result.message;
                     
                     // Показываем результаты анализа
@@ -940,6 +582,59 @@
                     analysisText += `=====================================\n\n`;
                     analysisText += `📄 Файл: ${result.file_analyzed}\n`;
                     analysisText += `📅 Время анализа: ${new Date().toLocaleString()}\n\n`;
+                    
+                    // ИСПРАВЛЕНИЕ: Анализируем реальное количество эпизодов и early stopping
+                    let actualEpisodes = result.actual_episodes;
+                    let earlyStoppingDetected = false;
+                    
+                    // 1. Проверяем наличие early stopping в выводе
+                    if (result.output && result.output.includes('Early stopping triggered after')) {
+                        const earlyStoppingMatch = result.output.match(/Early stopping triggered after (\d+) episodes/);
+                        if (earlyStoppingMatch) {
+                            actualEpisodes = parseInt(earlyStoppingMatch[1]);
+                            earlyStoppingDetected = true;
+                            analysisText += `🔄 Early Stopping сработал! Обучение остановлено на ${actualEpisodes} эпизоде из ${result.episodes}\n`;
+                            analysisText += `📊 Причина: Достигнут стабильный winrate или сработали другие критерии остановки\n`;
+                            analysisText += `💡 Обучение остановлено автоматически для предотвращения переобучения\n\n`;
+                        }
+                    }
+                    // 2. Проверяем несоответствие actual_episodes и episode_winrates
+                    else if (result.actual_episodes && result.episode_winrates_count) {
+                        if (result.actual_episodes !== result.episode_winrates_count) {
+                            actualEpisodes = result.episode_winrates_count;
+                            earlyStoppingDetected = true;
+                            analysisText += `🔄 Early Stopping сработал! Обучение остановлено на ${actualEpisodes} эпизоде из ${result.episodes}\n`;
+                            analysisText += `📊 Причина: Достигнут стабильный winrate или сработали другие критерии остановки\n`;
+                            analysisText += `💡 Обучение остановлено автоматически для предотвращения переобучения\n\n`;
+                        }
+                    }
+                    // 3. Проверяем если actual_episodes меньше планируемых
+                    else if (result.actual_episodes && result.episodes && result.actual_episodes < result.episodes) {
+                        actualEpisodes = result.actual_episodes;
+                        earlyStoppingDetected = true;
+                        analysisText += `🔄 Early Stopping сработал! Обучение остановлено на ${actualEpisodes} эпизоде из ${result.episodes}\n`;
+                        analysisText += `📊 Причина: Достигнут стабильный winrate или сработали другие критерии остановки\n`;
+                        analysisText += `💡 Обучение остановлено автоматически для предотвращения переобучения\n\n`;
+                    }
+                    // 4. Если нет early stopping, показываем полное завершение
+                    else if (result.actual_episodes && result.episodes) {
+                        actualEpisodes = result.actual_episodes;
+                        analysisText += `✅ Обучение завершено полностью: ${actualEpisodes} эпизодов\n\n`;
+                    }
+                    // 5. Fallback - ищем информацию в выводе
+                    else if (result.output && result.output.includes('Реальные эпизоды:')) {
+                        const realEpisodesMatch = result.output.match(/Реальные эпизоды: (\d+)/);
+                        if (realEpisodesMatch) {
+                            actualEpisodes = parseInt(realEpisodesMatch[1]);
+                            analysisText += `✅ Обучение завершено: ${actualEpisodes} эпизодов\n\n`;
+                        }
+                    } else if (result.output && result.output.includes('Early Stopping сработал')) {
+                        analysisText += `🔄 Early Stopping сработал! Обучение остановлено автоматически\n`;
+                        analysisText += `📊 Причина: Достигнут стабильный winrate или сработали другие критерии остановки\n\n`;
+                        earlyStoppingDetected = true;
+                    } else {
+                        analysisText += `⚠️ Информация о реальных эпизодах не найдена\n\n`;
+                    }
                     
                     if (result.output) {
                         analysisText += result.output;
@@ -963,7 +658,7 @@
                 }
                 
             } catch (error) {
-                statusDiv.className = 'test-status status-error';
+                statusDiv.className = 'status error';
                 statusDiv.textContent = '❌ Ошибка при анализе: ' + error.message;
                 
                 // Показываем детали ошибки
@@ -976,9 +671,103 @@
             }
         }
 
+        async function analyzeBadTrades() {
+            const statusDiv = document.getElementById('badTradesStatus');
+            const resultsDiv = document.getElementById('badTradesResults');
+            const summaryDiv = document.getElementById('badTradesSummary');
+            const analyzeBtn = document.getElementById('analyzeBadTradesBtn');
+            
+            // Отключаем кнопку и показываем статус
+            analyzeBtn.disabled = true;
+            analyzeBtn.textContent = '⏳ Анализ...';
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'status running';
+            statusDiv.textContent = '🔍 Анализ плохих сделок...';
+            
+            // Скрываем предыдущие результаты
+            resultsDiv.style.display = 'none';
+            summaryDiv.style.display = 'none';
+            
+            try {
+                const response = await fetch('/analyze_bad_trades', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    statusDiv.className = 'status success';
+                    statusDiv.textContent = '✅ ' + result.message;
+                    
+                    // Показываем краткую сводку
+                    summaryDiv.style.display = 'block';
+                    let summaryText = `📊 СВОДКА АНАЛИЗА ПЛОХИХ СДЕЛОК\n`;
+                    summaryText += `=====================================\n\n`;
+                    summaryText += `📄 Файл: ${result.file_analyzed.split('/').pop()}\n`;
+                    summaryText += `📅 Время анализа: ${new Date().toLocaleString()}\n\n`;
+                    
+                    if (result.analysis_summary) {
+                        const summary = result.analysis_summary;
+                        summaryText += `💰 СТАТИСТИКА СДЕЛОК:\n`;
+                        summaryText += `   • Всего сделок: ${summary.total_trades}\n`;
+                        summaryText += `   • Плохих сделок: ${summary.bad_trades} (${result.bad_trades_percentage.toFixed(2)}%)\n`;
+                        summaryText += `   • Средний ROI плохих сделок: ${(summary.avg_bad_roi * 100).toFixed(4)}%\n`;
+                        summaryText += `   • Средняя длительность плохих сделок: ${summary.avg_bad_duration.toFixed(1)} мин\n\n`;
+                        
+                        if (summary.loss_distribution) {
+                            const dist = summary.loss_distribution;
+                            summaryText += `📈 РАСПРЕДЕЛЕНИЕ ПО ТИПАМ:\n`;
+                            summaryText += `   • Очень маленькие убытки: ${dist.very_small_losses || 0}\n`;
+                            summaryText += `   • Очень маленькие прибыли: ${dist.very_small_profits || 0}\n`;
+                            summaryText += `   • Нейтральные сделки: ${dist.neutral_trades || 0}\n\n`;
+                        }
+                        
+                        // Оценка качества
+                        if (result.bad_trades_percentage > 5) {
+                            summaryText += `⚠️ ВНИМАНИЕ: Высокий процент плохих сделок (${result.bad_trades_percentage.toFixed(2)}%)\n`;
+                            summaryText += `   Требуется дополнительная оптимизация модели\n\n`;
+                        } else if (result.bad_trades_percentage > 3) {
+                            summaryText += `🟡 Средний процент плохих сделок (${result.bad_trades_percentage.toFixed(2)}%)\n`;
+                            summaryText += `   Есть возможности для улучшения\n\n`;
+                        } else {
+                            summaryText += `✅ Низкий процент плохих сделок (${result.bad_trades_percentage.toFixed(2)}%)\n`;
+                            summaryText += `   Хороший результат!\n\n`;
+                        }
+                    }
+                    
+                    summaryDiv.textContent = summaryText;
+                    
+                    // Показываем детальные результаты
+                    resultsDiv.style.display = 'block';
+                    resultsDiv.textContent = result.output;
+                    
+                } else {
+                    throw new Error(result.message);
+                }
+                
+            } catch (error) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Ошибка при анализе: ' + error.message;
+                
+                // Показываем детали ошибки
+                resultsDiv.style.display = 'block';
+                resultsDiv.textContent = `❌ ОШИБКА АНАЛИЗА ПЛОХИХ СДЕЛОК:\n${error.message}\n\n💡 Убедитесь, что:\n• Обучение завершено\n• Файлы результатов существуют\n• Установлены зависимости для анализа`;
+            } finally {
+                // Восстанавливаем кнопку
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = '🔍 Анализировать плохие сделки';
+            }
+        }
+
         async function clearRedis() {
             const resultDiv = document.getElementById('clearRedisResult');
-            resultDiv.textContent = 'Очистка Redis...';
+            resultDiv.style.display = 'block';
+            resultDiv.textContent = '🧹 Очистка Redis...';
+            resultDiv.className = 'status running';
+            
             try {
                 const response = await fetch('/clear_redis', {
                     method: 'POST',
@@ -989,14 +778,14 @@
                 const result = await response.json();
                 if (result.success) {
                     resultDiv.textContent = '✅ Redis успешно очищен!';
-                    resultDiv.className = 'test-status status-success';
+                    resultDiv.className = 'status success';
                 } else {
                     resultDiv.textContent = '❌ Ошибка при очистке Redis: ' + result.message;
-                    resultDiv.className = 'test-status status-error';
+                    resultDiv.className = 'status error';
                 }
             } catch (error) {
                 resultDiv.textContent = '❌ Ошибка при очистке Redis: ' + error.message;
-                resultDiv.className = 'test-status status-error';
+                resultDiv.className = 'status error';
             }
         }
     </script>

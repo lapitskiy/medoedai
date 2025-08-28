@@ -346,3 +346,122 @@ def optimize_hyperparameters(metrics_data: List[Dict[str, Any]], trades: List[Di
         }
     
     return recommendations
+
+def analyze_bad_trades(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Детальный анализ плохих сделок для понимания ошибок модели
+    
+    Args:
+        trades: Список сделок
+        
+    Returns:
+        Словарь с анализом плохих сделок
+    """
+    
+    if not trades:
+        return {}
+    
+    df = pd.DataFrame(trades)
+    
+    # Определяем плохие сделки (ROI < 0.1%)
+    bad_trades = df[abs(df['roi']) < 0.001]
+    
+    if len(bad_trades) == 0:
+        return {'bad_trades_count': 0, 'message': 'Плохих сделок не найдено'}
+    
+    analysis = {
+        'bad_trades_count': len(bad_trades),
+        'bad_trades_percentage': len(bad_trades) / len(trades) * 100,
+        'bad_trades_details': []
+    }
+    
+    # Анализируем каждую плохую сделку
+    for idx, trade in bad_trades.iterrows():
+        trade_analysis = {
+            'trade_id': idx,
+            'roi': trade.get('roi', 0),
+            'duration': trade.get('duration', 0),
+            'entry_time': trade.get('entry_time', 'N/A'),
+            'exit_time': trade.get('exit_time', 'N/A'),
+            'entry_price': trade.get('entry_price', 0),
+            'exit_price': trade.get('exit_price', 0),
+            'volume': trade.get('volume', 0),
+            'action': trade.get('action', 'N/A'),
+            'market_conditions': trade.get('market_conditions', 'N/A')
+        }
+        analysis['bad_trades_details'].append(trade_analysis)
+    
+    # Статистика плохих сделок
+    bad_rois = bad_trades['roi']
+    analysis.update({
+        'avg_bad_roi': bad_rois.mean(),
+        'min_bad_roi': bad_rois.min(),
+        'max_bad_roi': bad_rois.max(),
+        'bad_roi_std': bad_rois.std(),
+        
+        # Анализ по времени
+        'avg_bad_duration': bad_trades['duration'].mean() if 'duration' in bad_trades.columns else 0,
+        'min_bad_duration': bad_trades['duration'].min() if 'duration' in bad_trades.columns else 0,
+        'max_bad_duration': bad_trades['duration'].max() if 'duration' in bad_trades.columns else 0,
+        
+        # Анализ по объему
+        'avg_bad_volume': bad_trades['volume'].mean() if 'volume' in bad_trades.columns else 0,
+        'min_bad_volume': bad_trades['volume'].min() if 'volume' in bad_trades.columns else 0,
+        'max_bad_volume': bad_trades['volume'].max() if 'volume' in bad_trades.columns else 0
+    })
+    
+    # Группировка по причинам
+    very_small_losses = bad_trades[bad_trades['roi'] < 0]
+    very_small_profits = bad_trades[bad_trades['roi'] > 0]
+    
+    analysis['loss_distribution'] = {
+        'very_small_losses': len(very_small_losses),
+        'very_small_profits': len(very_small_profits),
+        'neutral_trades': len(bad_trades) - len(very_small_losses) - len(very_small_profits)
+    }
+    
+    return analysis
+
+def print_bad_trades_analysis(analysis: Dict[str, Any]):
+    """
+    Красивый вывод анализа плохих сделок
+    """
+    if not analysis or analysis.get('bad_trades_count', 0) == 0:
+        print("✅ Плохих сделок не найдено!")
+        return
+    
+    print(f"\n🔍 АНАЛИЗ ПЛОХИХ СДЕЛОК ({analysis['bad_trades_count']} шт.)")
+    print("=" * 60)
+    
+    print(f"📊 Общая статистика:")
+    print(f"  • Количество плохих сделок: {analysis['bad_trades_count']}")
+    print(f"  • Процент от общих сделок: {analysis['bad_trades_percentage']:.2f}%")
+    print(f"  • Средний ROI: {analysis['avg_bad_roi']:.6f} ({analysis['avg_bad_roi']*100:.4f}%)")
+    print(f"  • Минимальный ROI: {analysis['min_bad_roi']:.6f} ({analysis['min_bad_roi']*100:.4f}%)")
+    print(f"  • Максимальный ROI: {analysis['max_bad_roi']:.6f} ({analysis['max_bad_roi']*100:.4f}%)")
+    
+    print(f"\n⏱️ Временной анализ:")
+    print(f"  • Средняя длительность: {analysis['avg_bad_duration']:.1f} минут")
+    print(f"  • Минимальная длительность: {analysis['min_bad_duration']:.1f} минут")
+    print(f"  • Максимальная длительность: {analysis['max_bad_duration']:.1f} минут")
+    
+    print(f"\n📈 Распределение по типам:")
+    dist = analysis['loss_distribution']
+    print(f"  • Очень маленькие убытки: {dist['very_small_losses']} ({dist['very_small_losses']/analysis['bad_trades_count']*100:.1f}%)")
+    print(f"  • Очень маленькие прибыли: {dist['very_small_profits']} ({dist['very_small_profits']/analysis['bad_trades_count']*100:.1f}%)")
+    print(f"  • Нейтральные сделки: {dist['neutral_trades']} ({dist['neutral_trades']/analysis['bad_trades_count']*100:.1f}%)")
+    
+    print(f"\n💡 Рекомендации:")
+    if dist['very_small_losses'] > dist['very_small_profits']:
+        print(f"  • Большинство плохих сделок - убыточные")
+        print(f"  • Рекомендуется улучшить точность входа в позицию")
+    else:
+        print(f"  • Большинство плохих сделок - малоприбыльные")
+        print(f"  • Рекомендуется улучшить управление выходом из позиции")
+    
+    if analysis['avg_bad_duration'] < 300:  # Меньше 5 часов
+        print(f"  • Плохие сделки имеют короткую длительность")
+        print(f"  • Возможно, модель слишком быстро закрывает позиции")
+    elif analysis['avg_bad_duration'] > 600:  # Больше 10 часов
+        print(f"  • Плохие сделки имеют длительную продолжительность")
+        print(f"  • Возможно, модель слишком долго держит убыточные позиции")

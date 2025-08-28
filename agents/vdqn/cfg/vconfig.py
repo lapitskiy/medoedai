@@ -7,8 +7,8 @@ from datetime import datetime
 class vDqnConfig:  
     # === ε‑greedy exploration ===
     eps_start: float       = 1.0     # начальное ε
-    eps_final: float       = 0.1    # увеличил минимальное ε для большего исследования
-    eps_decay_steps: int   = 500_000 # увеличил для более медленного затухания исследования
+    eps_final: float       = 0.05    # увеличил минимальное ε для большего исследования
+    eps_decay_steps: int   = 1_000_000 # увеличил для более медленного затухания исследования
 
     # === replay‑buffer ===
     memory_size: int       = 200_000  # уменьшил для ускорения
@@ -19,7 +19,7 @@ class vDqnConfig:
     beta_increment: float  = 0.001    # увеличение beta
 
     # === сеть / обучение ===
-    lr: float              = 5e-4     # уменьшил learning rate для стабильности
+    lr: float              = 0.001     # уменьшил learning rate для стабильности
     gamma: float           = 0.99     # discount factor
     soft_tau: float        = 5e-3     # уменьшил для более стабильного обновления
     soft_update_every: int = 4        # обновляем реже для стабильности
@@ -64,6 +64,21 @@ class vDqnConfig:
     # === сохранение модели ===
     save_frequency: int    = 50        # Сохранять модель каждые N эпизодов
     save_only_on_improvement: bool = False  # Сохранять только при улучшении winrate
+    
+    # === Early Stopping параметры ===
+    early_stopping_patience: int = 3000  # Базовый patience для early stopping
+    min_episodes_before_stopping: int = 1000  # Увеличено с 500 до 1000
+    early_stopping_trend_threshold: float = 0.03  # Увеличено с 0.02 до 0.03 для более мягкого stopping
+    long_term_patience_multiplier: float = 2.5  # Увеличено с 2.0 до 2.5
+    
+    # === Rainbow DQN параметры ===
+    use_n_step_learning: bool = True      # Включить n-step learning
+    n_step: int = 3                       # Количество шагов для n-step learning
+    use_distributional_rl: bool = False   # Включить Distributional RL (пока отключено)
+    n_atoms: int = 51                     # Количество атомов для Distributional RL
+    v_min: float = -10.0                  # Минимальное значение для Distributional RL
+    v_max: float = 10.0                   # Максимальное значение для Distributional RL
+    use_noisy_networks: bool = True       # Включить Noisy Networks
     
     # === внутренние счётчики ===
     global_step: int        = field(init=False, default=0)    
