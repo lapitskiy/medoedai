@@ -21,3 +21,29 @@ logs/**
 *metrics.csv
 plots/**
 !temp/
+
+# Большие файлы моделей и данных
+good_models/
+models/
+*.pkl
+*.pth
+*.h5
+*.hdf5
+*.bin
+*.model
+*.weights
+*.ckpt
+*.safetensors
+
+# Временные файлы
+temp/
+cache/
+*.tmp
+*.temp
+*.log
+*.out
+*.err
+
+# Данные криптовалют
+temp/binance_data/
+temp/train_results/
