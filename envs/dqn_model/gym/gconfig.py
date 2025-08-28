@@ -52,6 +52,10 @@ class GymConfig:
     low_vol_fraction: float      = 0.4   # во сколько раз режем позицию при low-vol
     vol_gate_min_eps: float      = 0.10  # включать режим, когда ε <= этого значения
     low_vol_hold_penalty: float  = 0.01  # лёгкий штраф к reward при low-vol входе
+    
+    # --- Multi-step Learning параметры ---
+    n_step: int = 3              # Количество шагов для n-step learning
+    gamma: float = 0.99          # Discount factor для n-step returns
 
  
      

@@ -6,10 +6,22 @@ import numpy as np
 import random
 import torch
 import time
+import pandas as pd  # ИСПРАВЛЕНИЕ: Добавляем pandas для datetime операций
 from sklearn.preprocessing import StandardScaler
 from envs.dqn_model.gym.gconfig import GymConfig
 from typing import Optional, Dict
 from collections import deque
+
+# Импортируем адаптивную нормализацию
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'utils'))
+try:
+    from adaptive_normalization import adaptive_normalizer
+    ADAPTIVE_NORMALIZATION_AVAILABLE = True
+except ImportError:
+    print("⚠️ Адаптивная нормализация недоступна, используем стандартные параметры")
+    ADAPTIVE_NORMALIZATION_AVAILABLE = False
 
 class CryptoTradingEnvOptimized(gym.Env):
     metadata = {'render.modes': ['human']}
@@ -36,15 +48,52 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.vol_buf = deque(maxlen=window_size)
         self.roi_buf = deque(maxlen=window_size)
         
-        # вход в позицию на 30%
-        self.position_fraction = 0.30
+        # ДИНАМИЧЕСКИЙ размер позиции на основе рыночных условий
+        self.base_position_fraction = 0.30  # Базовый размер позиции
+        self.position_fraction = self.base_position_fraction  # Текущий размер позиции
+        self.position_confidence_threshold = 0.7  # Порог уверенности для увеличения позиции
 
         # Константы окружения
         self.trade_fee_percent = 0.00075 # Комиссия 0.075%
         
-        # Константы риск-менеджмента (как в оригинале)
-        self.STOP_LOSS_PCT = -0.03    # -3%
-        self.TAKE_PROFIT_PCT = +0.05  # +5%
+        # Адаптивные параметры риск-менеджмента
+        self.symbol = getattr(dfs, 'symbol', 'BTCUSDT')  # Получаем символ криптовалюты
+        
+        if ADAPTIVE_NORMALIZATION_AVAILABLE:
+            # Получаем адаптивные параметры для конкретной криптовалюты
+            trading_params = adaptive_normalizer.get_trading_params(self.symbol, dfs['df_5min'])
+            self.STOP_LOSS_PCT = trading_params['stop_loss_pct']
+            self.TAKE_PROFIT_PCT = trading_params['take_profit_pct']
+            self.min_hold_steps = trading_params['min_hold_steps']
+            self.volume_threshold = trading_params['volume_threshold']
+            print(f"🔧 Адаптивные параметры для {self.symbol}:")
+            print(f"  • Stop Loss: {self.STOP_LOSS_PCT:.3f}")
+            print(f"  • Take Profit: {self.TAKE_PROFIT_PCT:.3f}")
+            print(f"  • Min Hold: {self.min_hold_steps} шагов")
+            print(f"  • Volume Threshold: {self.volume_threshold:.4f}")
+        else:
+            # УЛУЧШЕНО: Динамические параметры риск-менеджмента
+            self.base_stop_loss = -0.03      # Базовый stop-loss
+            self.base_take_profit = +0.06    # Базовый take-profit
+            self.base_min_hold = 8           # Базовое минимальное время удержания
+            self.volume_threshold = 0.0001   # Базовый порог объема
+            
+            # Динамические параметры (будут обновляться во время торговли)
+            self.STOP_LOSS_PCT = self.base_stop_loss
+            self.TAKE_PROFIT_PCT = self.base_take_profit
+            self.min_hold_steps = self.base_min_hold
+            
+            print(f"🔧 ДИНАМИЧЕСКИЕ параметры для {self.symbol}:")
+            print(f"  • Базовый Stop Loss: {self.base_stop_loss:.3f}")
+            print(f"  • Базовый Take Profit: {self.base_take_profit:.3f}")
+            print(f"  • Базовый Min Hold: {self.base_min_hold} шагов")
+            print(f"  • Volume Threshold: {self.volume_threshold:.4f}")
+            print(f"  • Параметры будут адаптироваться к рыночным условиям")
+        
+        # Multi-step Learning параметры
+        self.n_step = getattr(self.cfg, 'n_step', 3)  # Количество шагов для n-step learning
+        self.n_step_buffer = deque(maxlen=self.n_step)  # Буфер для n-step transitions
+        self.gamma = getattr(self.cfg, 'gamma', 0.99)  # Discount factor
         
         # Конвертируем pandas DataFrames в numpy arrays и предварительно обрабатываем
         df_5min_raw = dfs['df_5min'].values if hasattr(dfs['df_5min'], 'values') else dfs['df_5min']
@@ -69,6 +118,28 @@ class CryptoTradingEnvOptimized(gym.Env):
          self.indicators, self.individual_indicators) = preprocess_dataframes(
             df_5min_raw, df_15min_raw, df_1h_raw, self.indicators_config
         )
+        
+        # ИСПРАВЛЕНИЕ: Создаем datetime информацию для фильтра времени
+        try:
+            if hasattr(dfs, 'df_5min') and hasattr(dfs['df_5min'], 'index'):
+                # Если у нас есть pandas DataFrame с datetime индексом
+                self._candle_datetimes = dfs['df_5min'].index.to_pydatetime()
+            elif hasattr(dfs, 'df_5min') and hasattr(dfs['df_5min'], 'columns'):
+                # Если у нас есть pandas DataFrame с колонками
+                if 'datetime' in dfs['df_5min'].columns:
+                    self._candle_datetimes = pd.to_datetime(dfs['df_5min']['datetime']).dt.to_pydatetime()
+                elif 'timestamp' in dfs['df_5min'].columns:
+                    self._candle_datetimes = pd.to_datetime(dfs['df_5min']['timestamp'], unit='ms').dt.to_pydatetime()
+                else:
+                    # Создаем фиктивные datetime для совместимости
+                    self._candle_datetimes = [pd.Timestamp.now() + pd.Timedelta(minutes=i*5) for i in range(len(self.df_5min))]
+            else:
+                # Fallback: создаем фиктивные datetime
+                self._candle_datetimes = [pd.Timestamp.now() + pd.Timedelta(minutes=i*5) for i in range(len(self.df_5min))]
+        except Exception as e:
+            print(f"⚠️ Не удалось создать datetime информацию: {e}")
+            # Создаем фиктивные datetime для совместимости
+            self._candle_datetimes = [pd.Timestamp.now() + pd.Timedelta(minutes=i*5) for i in range(len(self.df_5min))]
         
         self.total_steps = len(self.df_5min)
         self.lookback_window = lookback_window 
@@ -130,10 +201,7 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.balance_scaler = StandardScaler()
         self.crypto_held_scaler = StandardScaler()
         
-        # Предвычисляем все состояния для максимальной производительности
-        print("🚀 Предвычисляю все состояния...")
         self._precompute_all_states()
-        print("✅ Все состояния предвычислены!")
                 
         # Получаем начальный баланс с значением по умолчанию
         initial_balance = getattr(self.cfg, 'initial_balance', 10000.0)  # По умолчанию 10000
@@ -151,6 +219,9 @@ class CryptoTradingEnvOptimized(gym.Env):
         # Список сделок
         self.trades = []
         
+        # ИСПРАВЛЕНИЕ: Добавляем общий список сделок для правильного расчета winrate
+        self.all_trades = []
+        
         # Статистики для фильтров
         self.vol_stats = {'mean': 0, 'std': 1}
         self.roi_stats = {'mean': 0, 'std': 1}
@@ -165,10 +236,7 @@ class CryptoTradingEnvOptimized(gym.Env):
         print(f"✅ Оптимизированное окружение инициализировано")
         print(f"📊 Размер данных: 5min={len(self.df_5min)}, 15min={len(self.df_15min)}, 1h={len(self.df_1h)}")
         print(f"📈 Количество индикаторов: {num_indicator_features}")
-        print(f"💰 Начальный баланс: {initial_balance}")
         print(f"🔄 Размер окна: {window_size}")
-        print(f"✅ ФИЛЬТРЫ ПОКУПКИ ВКЛЮЧЕНЫ: объем (0.5%) + ROI (-3%)")
-        print(f"🚀 ПРЕДВЫЧИСЛЕНИЕ СОСТОЯНИЙ: env.step() = просто сдвиг индекса!")
 
     def _calculate_normalization_stats(self):
         """
@@ -444,8 +512,11 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.trailing_stop_counter = 0
         self.max_price_during_hold = None
         
-        # Очистка списка сделок
-        self.trades = []
+        # ИСПРАВЛЯЕМ: НЕ очищаем сделки между эпизодами для правильного расчета winrate
+        # self.trades = []  # ЗАКОММЕНТИРОВАНО
+        if not hasattr(self, 'all_trades'):
+            self.all_trades = []  # Создаем общий список сделок если его нет
+
         
         # Сброс статистик
         self.vol_buf.clear()
@@ -497,15 +568,39 @@ class CryptoTradingEnvOptimized(gym.Env):
             if self.crypto_held == 0:  # Только если не держим криптовалюту
                 # Проверяем фильтры
                 if self._check_buy_filters():
-                    # Покупаем
+                    # ДИНАМИЧЕСКИЙ размер позиции на основе уверенности
+                    entry_confidence = self._calculate_entry_confidence()
+                    
+                    # Адаптируем размер позиции: высокая уверенность = большая позиция
+                    if entry_confidence > self.position_confidence_threshold:
+                        # Высокая уверенность - увеличиваем позицию
+                        self.position_fraction = min(self.base_position_fraction * 1.5, 0.5)  # Максимум 50%
+                        if self._can_log:
+                            print(f"🎯 Высокая уверенность ({entry_confidence:.2f}): увеличиваем позицию до {self.position_fraction:.1%}")
+                    elif entry_confidence > 0.5:
+                        # Средняя уверенность - стандартная позиция
+                        self.position_fraction = self.base_position_fraction
+                    else:
+                        # Низкая уверенность - уменьшаем позицию
+                        self.position_fraction = max(self.base_position_fraction * 0.7, 0.15)  # Минимум 15%
+                        if self._can_log:
+                            print(f"🎯 Низкая уверенность ({entry_confidence:.2f}): уменьшаем позицию до {self.position_fraction:.1%}")
+                    
+                    # Покупаем с динамическим размером позиции
                     buy_amount = self.balance * self.position_fraction
                     crypto_to_buy = buy_amount / current_price
                     self.crypto_held = crypto_to_buy
                     self.balance -= buy_amount
                     self.last_buy_price = current_price
                     self.last_buy_step = self.current_step
-                    reward = 0.03  # Увеличил награду за успешную покупку с фильтрами
-                    self._log(f"[{self.current_step}] 🔵 BUY: {crypto_to_buy:.4f} at {current_price:.2f}")
+                    
+                    # Награда зависит от уверенности входа
+                    base_reward = 0.03
+                    confidence_bonus = entry_confidence * 0.02  # Дополнительная награда за высокую уверенность
+                    reward = base_reward + confidence_bonus
+                    
+                    if self._can_log:
+                        print(f"🔵 BUY: {crypto_to_buy:.4f} at {current_price:.2f}, уверенность: {entry_confidence:.2f}, награда: {reward:.4f}")
                 else:
                     reward = -0.002  # Уменьшил штраф за отклонение фильтрами
             else:
@@ -513,6 +608,15 @@ class CryptoTradingEnvOptimized(gym.Env):
                 
         elif action == 2:  # SELL
             if self.crypto_held > 0:  # Только если держим криптовалюту
+                # Проверяем минимальное время удержания
+                if hasattr(self, 'last_buy_step') and self.last_buy_step is not None:
+                    hold_time = self.current_step - self.last_buy_step
+                    if hold_time < self.min_hold_steps:
+                        # Штраф за слишком раннюю продажу
+                        reward = -0.02
+                        #self._log(f"[{self.current_step}] ⚠️ Слишком ранняя продажа: {hold_time} шагов < {self.min_hold_steps}")
+                        return self._get_state(), reward, False, {}
+                
                 # Продаем
                 sell_amount = self.crypto_held * current_price
                 self.balance += sell_amount
@@ -524,19 +628,30 @@ class CryptoTradingEnvOptimized(gym.Env):
                 # Награда за продажу (как в оригинале)
                 reward += np.tanh(pnl * 25) * 2  # За результат сделки
                 
-                # Дополнительные награды за качество сделки
+                # Дополнительные награды за качество сделки (УЛУЧШЕНО)
                 if pnl > 0.05:  # Прибыль > 5%
-                    reward += 0.3  # Увеличил бонус за хорошую сделку с фильтрами
+                    reward += 0.5  # Увеличил с 0.3 до 0.5 для больших прибылей
+                elif pnl > 0.02:  # Прибыль > 2%
+                    reward += 0.2  # Новая награда за среднюю прибыль
                 elif pnl < -0.03:  # Убыток > 3%
-                    reward -= 0.01  # Уменьшил штраф за большой убыток
+                    reward -= 0.005  # Уменьшил штраф с -0.01 до -0.005
+                elif pnl < -0.01:  # Убыток > 1%
+                    reward -= 0.001  # Небольшой штраф за малые убытки
                 
-                # Записываем сделку
-                self.trades.append({
+                # ИСПРАВЛЯЕМ: Записываем сделку в оба списка для правильного расчета winrate
+                trade_data = {
                     "roi": pnl,
                     "net": net_profit_loss,
                     "reward": reward,
                     "duration": (self.current_step - self.last_buy_step) * 5 if self.last_buy_step else 0
-                })
+                }
+                self.trades.append(trade_data)
+                
+                # Также добавляем в общий список сделок
+                if not hasattr(self, 'all_trades'):
+                    self.all_trades = []                    
+                self.all_trades.append(trade_data)
+                                
                 
                 self.crypto_held = 0
                 self.last_buy_price = None
@@ -544,13 +659,31 @@ class CryptoTradingEnvOptimized(gym.Env):
                 self.trailing_stop_counter = 0
                 self.max_price_during_hold = None
                 
-                self._log(f"[{self.current_step}] 🔴 SELL: {sell_amount:.2f}, PnL: {pnl:.2%}")
+                #self._log(f"[{self.current_step}] 🔴 SELL: {sell_amount:.2f}, PnL: {pnl:.2%}")
             else:
                 reward = -0.01  # Уменьшил штраф за попытку продать без позиции
+        
+        # Добавляем переход в n-step buffer только если не terminal
+        if not done:
+            transition = {
+                'state': self._get_state(),
+                'action': action,
+                'reward': reward,
+                'next_state': None,  # Будет заполнено позже
+                'done': done
+            }
+            self.n_step_buffer.append(transition)
         
         # Обработка HOLD действия (как в оригинале)
         if action == 0:
             if self.crypto_held > 0 and self.last_buy_price is not None:
+                # Награда за длительное удержание позиции
+                if hasattr(self, 'last_buy_step') and self.last_buy_step is not None:
+                    hold_time = self.current_step - self.last_buy_step
+                    if hold_time >= self.min_hold_steps * 2:  # Двойное минимальное время
+                        reward += 0.001  # Небольшая награда за терпение
+                        if self.current_step % 100 == 0:
+                            self._log(f"[{self.current_step}] 🕐 Награда за терпение: {hold_time} шагов")
                 # --- Трейлинг-стоп (как в оригинале) ---
                 if self.epsilon <= 0.2:  # фаза exploitation
                     # 1. обновляем максимум
@@ -569,7 +702,12 @@ class CryptoTradingEnvOptimized(gym.Env):
                         self.trailing_stop_counter += 1
                     
                     # 3. три подряд бара с drawdown > 2% → принудительный SELL
-                    if self.trailing_stop_counter >= 3:
+                    # Но только если позиция держится достаточно долго
+                    if (self.trailing_stop_counter >= 3 and 
+                        hasattr(self, 'last_buy_step') and 
+                        self.last_buy_step is not None and
+                        (self.current_step - self.last_buy_step) >= self.min_hold_steps):
+                        
                         reward -= 0.03
                         self._log(f"[{self.current_step}] 🔻 TRAILING STOP — SELL by drawdown: {drawdown:.2%}")
                         self._force_sell(current_price, 'TRAILING STOP')
@@ -604,13 +742,13 @@ class CryptoTradingEnvOptimized(gym.Env):
                     reward += 0.05  # поощрение за фиксацию профита
                     self._force_sell(current_price, "🎯 - TAKE-PROFIT hit")
                 
-                # --- Награды за удержание позиции (как в оригинале) ---
+                # --- Награды за удержание позиции (УЛУЧШЕНО) ---
                 if unrealized_pnl_percent > 0:
                     # Чем выше нереализованная прибыль, тем больше награда за удержание
-                    reward += unrealized_pnl_percent * 2  # Уменьшил множитель с 5 до 2
+                    reward += unrealized_pnl_percent * 3  # Увеличил с 2 до 3 для лучшего удержения прибыли
                 else:
                     # Чем больше нереализованный убыток, тем больше штраф за удержание
-                    reward += unrealized_pnl_percent * 3  # Уменьшил множитель с 10 до 3
+                    reward += unrealized_pnl_percent * 2  # Уменьшил с 3 до 2 для меньшего давления
             else:
                 # Если action == HOLD и нет открытой позиции
                 reward = 0.001  # Небольшое поощрение за разумное бездействие вместо штрафа
@@ -618,9 +756,26 @@ class CryptoTradingEnvOptimized(gym.Env):
         # Обновляем статистики
         self._update_stats(current_price)
         
-        # Небольшая награда за активность торговли (поощряем исследование)
+        # АДАПТИВНЫЕ НАГРАДЫ для разных рыночных условий
         if action != 0:  # Если действие не HOLD
-            reward += 0.001  # Небольшое поощрение за активность
+            base_activity_reward = 0.001
+            
+            # Адаптируем награду к времени дня (НЕ блокируем, а обучаем)
+            if hasattr(self, '_candle_datetimes') and self.current_step - 1 < len(self._candle_datetimes):
+                current_hour = self._candle_datetimes[self.current_step - 1].hour
+                
+                if 6 <= current_hour <= 22:
+                    # Активные часы - стандартная награда
+                    reward += base_activity_reward
+                else:
+                    # Низкая ликвидность - повышенная награда за смелость
+                    # Агент учится торговать в сложных условиях
+                    reward += base_activity_reward * 1.5
+                    if self._can_log:
+                        print(f"🎯 Повышенная награда за торговлю в {current_hour}:00 UTC (низкая ликвидность)")
+            else:
+                # Если нет информации о времени - стандартная награда
+                reward += base_activity_reward
         
         # Переходим к следующему шагу
         self.current_step += 1
@@ -642,12 +797,15 @@ class CryptoTradingEnvOptimized(gym.Env):
                 pnl = (final_price - self.last_buy_price) / self.last_buy_price
                 net_profit_loss = final_sell_amount - (self.crypto_held * self.last_buy_price)
                 
-                self.trades.append({
+                trade_data = {
                     "roi": pnl,
                     "net": net_profit_loss,
                     "reward": 0,
                     "duration": (self.current_step - self.last_buy_step) * 5 if self.last_buy_step else 0
-                })
+                }
+                self.trades.append(trade_data)
+                if self._can_log:
+                    print(f"    📝 Финальная сделка: ROI={pnl:.4f}, прибыль={trade_data['roi'] > 0}, всего сделок={len(self.trades)}")
             
             # Статистика времени эпизода (теперь выводится в train_model_optimized.py)
             # if self.episode_start_time is not None:
@@ -664,41 +822,123 @@ class CryptoTradingEnvOptimized(gym.Env):
             "reward": reward
         })
         
+        # Обновляем next_state для всех переходов в n-step buffer
+        for transition in self.n_step_buffer:
+            if transition['next_state'] is None:
+                transition['next_state'] = self._get_state()
+        
+        # Отладочная информация        
         return self._get_state(), reward, done, info
 
     def _check_buy_filters(self) -> bool:
         """
-        Проверяет фильтры для покупки
+        Проверяет фильтры для покупки (УЛУЧШЕНО)
         """
         self.buy_attempts += 1
         
         # ВКЛЮЧАЕМ ФИЛЬТРЫ ДЛЯ УЛУЧШЕНИЯ КАЧЕСТВА СДЕЛОК
         
-        # 1. Проверка объема - ВКЛЮЧЕН с мягким порогом
+        # 1. Проверка объема - АДАПТИВНЫЙ порог
         current_volume = self.df_5min[self.current_step - 1, 4]
         vol_relative = calc_relative_vol_numpy(self.df_5min, self.current_step - 1, 12)
         
-        if vol_relative < 0.002:  # Мягкий порог 0.5% вместо 1%
+        if vol_relative < self.volume_threshold:
             self.buy_rejected_vol += 1
             if self.current_step % 100 == 0:
-                print(f"🔍 Фильтр объема: vol_relative={vol_relative:.4f} < 0.005, отклонено")
+                print(f"🔍 Фильтр объема: vol_relative={vol_relative:.4f} < {self.volume_threshold:.4f}, отклонено")
             return False
         
-        # 2. Проверка ROI - ВКЛЮЧЕН
+        # 2. Проверка ROI - УЛУЧШЕНО: Более умный фильтр
         if len(self.roi_buf) > 0:
             recent_roi_mean = np.mean(list(self.roi_buf))
-            if recent_roi_mean < -0.03:  # Мягкий порог -3% вместо -2%
+            if recent_roi_mean < -0.04:  # Ужесточаем с -5% до -4%
                 self.buy_rejected_roi += 1
                 if self.current_step % 100 == 0:
-                    print(f"🔍 Фильтр ROI: recent_roi_mean={recent_roi_mean:.4f} < -0.03, отклонено")
+                    print(f"🔍 Фильтр ROI: recent_roi_mean={recent_roi_mean:.4f} < -0.04, отклонено")
+                return False
+        
+        # 3. НОВЫЙ: Фильтр по тренду цены
+        if self.current_step >= 20:
+            recent_prices = self.df_5min[self.current_step-20:self.current_step, 3]  # Close prices
+            price_trend = (recent_prices[-1] - recent_prices[0]) / recent_prices[0]
+            if price_trend < -0.02:  # Тренд вниз > 2%
+                if self.current_step % 100 == 0:
+                    print(f"🔍 Фильтр тренда: price_trend={price_trend:.4f} < -0.02, отклонено")
+                return False
+        
+        # 4. НОВЫЙ: Фильтр по волатильности
+        if self.current_step >= 12:
+            recent_highs = self.df_5min[self.current_step-12:self.current_step, 1]  # High prices
+            recent_lows = self.df_5min[self.current_step-12:self.current_step, 2]   # Low prices
+            volatility = np.mean((recent_highs - recent_lows) / recent_lows)
+            if volatility < 0.005:  # Слишком низкая волатильность
+                if self.current_step % 100 == 0:
+                    print(f"🔍 Фильтр волатильности: volatility={volatility:.4f} < 0.005, отклонено")
+                return False
+        
+        # 5. НОВЫЙ: Фильтр по силе тренда (ADX-подобный)
+        if self.current_step >= 20:
+            # Рассчитываем силу тренда на основе изменения цены
+            recent_prices = self.df_5min[self.current_step-20:self.current_step, 3]  # Close prices
+            price_changes = np.diff(recent_prices)
+            trend_strength = np.abs(np.mean(price_changes)) / (np.std(price_changes) + 1e-8)
+            
+            if trend_strength < 0.3:  # Слишком слабый тренд
+                if self.current_step % 100 == 0:
+                    print(f"🔍 Фильтр тренда: trend_strength={trend_strength:.4f} < 0.3, отклонено")
                 return False
         
         # Все фильтры пройдены - разрешаем покупку
         return True
+    
+    def _calculate_entry_confidence(self) -> float:
+        """
+        Рассчитывает уверенность входа в позицию на основе множественных факторов
+        """
+        confidence = 0.0
+        
+        try:
+            # 1. Уверенность по объему (0-25%)
+            if self.current_step >= 12:
+                vol_relative = calc_relative_vol_numpy(self.df_5min, self.current_step - 1, 12)
+                vol_confidence = min(vol_relative / (self.volume_threshold * 2), 1.0) * 0.25
+                confidence += vol_confidence
+            
+            # 2. Уверенность по тренду (0-25%)
+            if self.current_step >= 20:
+                recent_prices = self.df_5min[self.current_step-20:self.current_step, 3]
+                price_changes = np.diff(recent_prices)
+                trend_strength = np.abs(np.mean(price_changes)) / (np.std(price_changes) + 1e-8)
+                trend_confidence = min(trend_strength / 0.5, 1.0) * 0.25
+                confidence += trend_confidence
+            
+            # 3. Уверенность по историческому ROI (0-25%)
+            if len(self.roi_buf) >= 10:
+                recent_roi_mean = np.mean(list(self.roi_buf)[-10:])
+                roi_confidence = max(0, (recent_roi_mean + 0.1) / 0.2) * 0.25  # Нормализуем от -10% до +10%
+                confidence += roi_confidence
+            
+            # 4. Уверенность по времени дня (0-25%)
+            if hasattr(self, '_candle_datetimes') and self.current_step - 1 < len(self._candle_datetimes):
+                current_hour = self._candle_datetimes[self.current_step - 1].hour
+                if 6 <= current_hour <= 22:  # Активные часы
+                    time_confidence = 0.25
+                else:  # Низкая ликвидность
+                    time_confidence = 0.15  # Немного снижаем уверенность
+                confidence += time_confidence
+            else:
+                confidence += 0.20  # Средняя уверенность если нет информации о времени
+            
+        except Exception as e:
+            if self._can_log:
+                print(f"⚠️ Ошибка при расчете уверенности: {e}")
+            confidence = 0.5  # Средняя уверенность при ошибке
+        
+        return min(max(confidence, 0.0), 1.0)  # Ограничиваем от 0 до 1
 
     def _update_stats(self, current_price: float):
         """
-        Обновляет статистики
+        Обновляет статистики и динамические параметры
         """
         # Обновляем статистики объема
         current_volume = self.df_5min[self.current_step - 1, 4]
@@ -710,6 +950,9 @@ class CryptoTradingEnvOptimized(gym.Env):
             unrealized_roi = (current_price - self.last_buy_price) / self.last_buy_price
             self.roi_buf.append(unrealized_roi)
             update_roi_stats(self.roi_buf, self.roi_stats)
+        
+        # ДИНАМИЧЕСКОЕ ОБНОВЛЕНИЕ ПАРАМЕТРОВ РИСК-МЕНЕДЖМЕНТА
+        self._update_dynamic_parameters(current_price)
 
     def _force_sell(self, current_price: float, reason: str):
         """
@@ -722,12 +965,19 @@ class CryptoTradingEnvOptimized(gym.Env):
             pnl = (current_price - self.last_buy_price) / self.last_buy_price
             net_profit_loss = sell_amount - (self.crypto_held * self.last_buy_price)
             
-            self.trades.append({
+            # ИСПРАВЛЯЕМ: Записываем сделку в оба списка
+            trade_data = {
                 "roi": pnl,
                 "net": net_profit_loss,
                 "reward": 0,
                 "duration": (self.current_step - self.last_buy_step) * 5 if self.last_buy_step else 0
-            })
+            }
+            self.trades.append(trade_data)
+            
+            # Также добавляем в общий список сделок
+            if not hasattr(self, 'all_trades'):
+                self.all_trades = []
+            self.all_trades.append(trade_data)
             
             self.crypto_held = 0
             self.last_buy_price = None
@@ -740,3 +990,187 @@ class CryptoTradingEnvOptimized(gym.Env):
     def _log(self, *args, **kwargs):
         if self._can_log:
             print(*args, **kwargs)
+    
+    def _update_dynamic_parameters(self, current_price: float):
+        """
+        Динамически обновляет параметры риск-менеджмента на основе рыночных условий
+        """
+        if not hasattr(self, 'base_stop_loss'):
+            return  # Если не используем динамические параметры
+        
+        # Обновляем параметры каждые 100 шагов для стабильности
+        if self.current_step % 100 != 0:
+            return
+        
+        try:
+            # 1. Адаптация к волатильности
+            if len(self.vol_buf) >= 20:
+                recent_volatility = np.std(list(self.vol_buf)[-20:]) / (np.mean(list(self.vol_buf)[-20:]) + 1e-8)
+                
+                # Если волатильность высокая - ужесточаем stop-loss
+                if recent_volatility > 0.5:  # Высокая волатильность
+                    self.STOP_LOSS_PCT = self.base_stop_loss * 1.5  # Увеличиваем stop-loss
+                    self.TAKE_PROFIT_PCT = self.base_take_profit * 1.2  # Увеличиваем take-profit
+                    if self._can_log:
+                        print(f"🔧 Высокая волатильность: SL={self.STOP_LOSS_PCT:.3f}, TP={self.TAKE_PROFIT_PCT:.3f}")
+                elif recent_volatility < 0.1:  # Низкая волатильность
+                    self.STOP_LOSS_PCT = self.base_stop_loss * 0.8  # Уменьшаем stop-loss
+                    self.TAKE_PROFIT_PCT = self.base_take_profit * 0.9  # Уменьшаем take-profit
+                    if self._can_log:
+                        print(f"🔧 Низкая волатильность: SL={self.STOP_LOSS_PCT:.3f}, TP={self.TAKE_PROFIT_PCT:.3f}")
+                else:
+                    # Возвращаем к базовым значениям
+                    self.STOP_LOSS_PCT = self.base_stop_loss
+                    self.TAKE_PROFIT_PCT = self.base_take_profit
+            
+            # 2. Адаптация к тренду
+            if len(self.roi_buf) >= 30:
+                recent_trend = np.mean(list(self.roi_buf)[-30:])
+                
+                # Если тренд положительный - увеличиваем take-profit
+                if recent_trend > 0.02:  # Хороший тренд
+                    self.TAKE_PROFIT_PCT = min(self.base_take_profit * 1.3, 0.15)  # Максимум 15%
+                    self.min_hold_steps = max(self.base_min_hold - 2, 4)  # Уменьшаем время удержания
+                    if self._can_log:
+                        print(f"🔧 Хороший тренд: TP={self.TAKE_PROFIT_PCT:.3f}, MinHold={self.min_hold_steps}")
+                elif recent_trend < -0.02:  # Плохой тренд
+                    self.STOP_LOSS_PCT = self.base_stop_loss * 0.7  # Ужесточаем stop-loss
+                    self.min_hold_steps = self.base_min_hold + 4  # Увеличиваем время удержания
+                    if self._can_log:
+                        print(f"🔧 Плохой тренд: SL={self.STOP_LOSS_PCT:.3f}, MinHold={self.min_hold_steps}")
+                else:
+                    # Возвращаем к базовым значениям
+                    self.TAKE_PROFIT_PCT = self.base_take_profit
+                    self.min_hold_steps = self.base_min_hold
+            
+            # 3. Адаптация к времени дня (НЕ блокируем, а адаптируем параметры)
+            if hasattr(self, '_candle_datetimes') and self.current_step - 1 < len(self._candle_datetimes):
+                current_hour = self._candle_datetimes[self.current_step - 1].hour
+                
+                # Адаптируем параметры к времени дня, но НЕ блокируем торговлю
+                # Агент сам научится торговать в разных условиях
+                if 6 <= current_hour <= 22:
+                    # Активные часы - более агрессивные параметры
+                    self.TAKE_PROFIT_PCT = min(self.TAKE_PROFIT_PCT * 1.1, 0.15)
+                    self.min_hold_steps = max(self.min_hold_steps - 1, 4)
+                    if self._can_log:
+                        print(f"🔧 Активные часы ({current_hour}:00 UTC): агрессивные параметры")
+                else:
+                    # Низкая ликвидность - более консервативные параметры, но торговля разрешена
+                    self.STOP_LOSS_PCT = self.STOP_LOSS_PCT * 0.9
+                    self.min_hold_steps = self.min_hold_steps + 2
+                    if self._can_log:
+                        print(f"🔧 Низкая ликвидность ({current_hour}:00 UTC): консервативные параметры (торговля разрешена)")
+            
+            # 4. Ограничиваем параметры разумными пределами
+            self.STOP_LOSS_PCT = max(self.STOP_LOSS_PCT, -0.08)  # Не более -8%
+            self.STOP_LOSS_PCT = min(self.STOP_LOSS_PCT, -0.01)  # Не менее -1%
+            self.TAKE_PROFIT_PCT = max(self.TAKE_PROFIT_PCT, 0.03)   # Не менее 3%
+            self.TAKE_PROFIT_PCT = min(self.TAKE_PROFIT_PCT, 0.20)   # Не более 20%
+            self.min_hold_steps = max(self.min_hold_steps, 4)     # Не менее 4 шагов
+            self.min_hold_steps = min(self.min_hold_steps, 20)    # Не более 20 шагов
+            
+            # 5. НОВЫЙ: Динамическое обновление размера позиции на основе рыночных условий
+            if hasattr(self, 'base_position_fraction'):
+                # Адаптируем базовый размер позиции к текущим рыночным условиям
+                market_conditions_score = 0.0
+                
+                # Оценка рыночных условий по волатильности
+                if len(self.vol_buf) >= 20:
+                    recent_volatility = np.std(list(self.vol_buf)[-20:]) / (np.mean(list(self.vol_buf)[-20:]) + 1e-8)
+                    if 0.1 <= recent_volatility <= 0.5:  # Оптимальная волатильность
+                        market_conditions_score += 0.3
+                    elif recent_volatility > 0.5:  # Высокая волатильность
+                        market_conditions_score += 0.1  # Снижаем размер позиции
+                    else:  # Низкая волатильность
+                        market_conditions_score += 0.2
+                
+                # Оценка по тренду
+                if len(self.roi_buf) >= 30:
+                    recent_trend = np.mean(list(self.roi_buf)[-30:])
+                    if recent_trend > 0.02:  # Хороший тренд
+                        market_conditions_score += 0.4
+                    elif recent_trend > -0.01:  # Нейтральный тренд
+                        market_conditions_score += 0.3
+                    else:  # Плохой тренд
+                        market_conditions_score += 0.1
+                
+                # Оценка по времени дня
+                if hasattr(self, '_candle_datetimes') and self.current_step - 1 < len(self._candle_datetimes):
+                    current_hour = self._candle_datetimes[self.current_step - 1].hour
+                    if 6 <= current_hour <= 22:  # Активные часы
+                        market_conditions_score += 0.3
+                    else:  # Низкая ликвидность
+                        market_conditions_score += 0.1
+                else:
+                    market_conditions_score += 0.2
+                
+                # Нормализуем оценку рыночных условий (0-1)
+                market_conditions_score = min(max(market_conditions_score, 0.0), 1.0)
+                
+                # Адаптируем базовый размер позиции
+                if market_conditions_score > 0.7:  # Отличные условия
+                    self.base_position_fraction = min(0.4, self.base_position_fraction * 1.1)  # Увеличиваем до 40%
+                elif market_conditions_score > 0.5:  # Хорошие условия
+                    self.base_position_fraction = min(0.35, self.base_position_fraction * 1.05)  # Увеличиваем до 35%
+                elif market_conditions_score > 0.3:  # Средние условия
+                    self.base_position_fraction = max(0.25, self.base_position_fraction * 0.95)  # Уменьшаем до 25%
+                else:  # Плохие условия
+                    self.base_position_fraction = max(0.2, self.base_position_fraction * 0.9)   # Уменьшаем до 20%
+                
+                if self._can_log:
+                    print(f"🔧 Рыночные условия: {market_conditions_score:.2f}, базовый размер позиции: {self.base_position_fraction:.1%}")
+            
+        except Exception as e:
+            if self._can_log:
+                print(f"⚠️ Ошибка при обновлении динамических параметров: {e}")
+            # Возвращаем к базовым значениям при ошибке
+            self.STOP_LOSS_PCT = self.base_stop_loss
+            self.TAKE_PROFIT_PCT = self.base_take_profit
+            self.min_hold_steps = self.base_min_hold
+    
+    def get_n_step_return(self, n_steps: int = None) -> list:
+        """
+        Возвращает n-step transitions для обучения
+        
+        Args:
+            n_steps: количество шагов (по умолчанию использует self.n_step)
+            
+        Returns:
+            list: список n-step transitions
+        """
+        if n_steps is None:
+            n_steps = self.n_step
+            
+        if len(self.n_step_buffer) < n_steps:
+            return []
+            
+        transitions = []
+        for i in range(len(self.n_step_buffer) - n_steps + 1):
+            # Берем n последовательных переходов
+            n_step_transitions = list(self.n_step_buffer)[i:i+n_steps]
+            
+            # Проверяем, что все next_state заполнены
+            if any(t['next_state'] is None for t in n_step_transitions):
+                continue  # Пропускаем неполные transitions
+            
+            # Рассчитываем n-step return
+            total_reward = 0
+            for j, transition in enumerate(n_step_transitions):
+                total_reward += transition['reward'] * (self.gamma ** j)
+            
+            # Создаем n-step transition
+            first_transition = n_step_transitions[0]
+            last_transition = n_step_transitions[-1]
+            
+            n_step_transition = {
+                'state': first_transition['state'],
+                'action': first_transition['action'],
+                'reward': total_reward,
+                'next_state': last_transition['next_state'],
+                'done': last_transition['done']
+            }
+            
+            transitions.append(n_step_transition)
+            
+        return transitions

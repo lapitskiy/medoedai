@@ -49,7 +49,7 @@ def train_model_optimized(
     dfs: Dict,
     cfg: Optional[vDqnConfig] = None,
     episodes: int = 10,
-    patience_limit: int = 500,  # Увеличено с 50 до 500 для более длительного обучения
+    patience_limit: int = 3000,  # Увеличено с 2000 до 3000 для более длительного обучения
     use_wandb: bool = False
 ) -> str:
     """
@@ -59,7 +59,7 @@ def train_model_optimized(
         dfs: словарь с DataFrame для разных таймфреймов (df_5min, df_15min, df_1h)
         cfg: конфигурация модели
         episodes: количество эпизодов для тренировки
-        patience_limit: лимит терпения для early stopping (по умолчанию 500 эпизодов)
+        patience_limit: лимит терпения для early stopping (по умолчанию 2000 эпизодов)
         use_wandb: использовать ли Weights & Biases
         
     Returns:
@@ -88,25 +88,53 @@ def train_model_optimized(
             cfg = vDqnConfig()
             print("⚠️ Конфигурация не передана, использую конфигурацию по умолчанию")
         
-        # Подготавливаем данные
-        dfs = prepare_data_for_training(dfs)
+        # Проверяем тип данных: мультивалютные или одиночные
+        is_multi_crypto = False
+        if dfs and isinstance(dfs, dict):
+            # Проверяем, есть ли ключи с названиями криптовалют
+            first_key = list(dfs.keys())[0]
+            if isinstance(first_key, str) and first_key.endswith('USDT'):
+                # Это мультивалютные данные
+                is_multi_crypto = True
+                print(f"🌍 Обнаружены мультивалютные данные для {len(dfs)} криптовалют")
+                for symbol, data in dfs.items():
+                    print(f"  • {symbol}: {data.get('candle_count', 'N/A')} свечей")
         
-        # Создаем окружение
-        env = CryptoTradingEnvOptimized(
-            dfs=dfs,
-            cfg=cfg,
-            lookback_window=20,
-            indicators_config=None  # Используем дефолтную конфигурацию
-        )
+        if is_multi_crypto:
+            # Используем мультивалютное окружение
+            from envs.dqn_model.gym.crypto_trading_env_multi import MultiCryptoTradingEnv
+            env = MultiCryptoTradingEnv(dfs=dfs, cfg=cfg)
+            print(f"✅ Создано мультивалютное окружение для {len(dfs)} криптовалют")
+        else:
+            # Используем обычное окружение для одной криптовалюты
+            dfs = prepare_data_for_training(dfs)
+            env = CryptoTradingEnvOptimized(
+                dfs=dfs,
+                cfg=cfg,
+                lookback_window=20,
+                indicators_config=None  # Используем дефолтную конфигурацию
+            )
+            print(f"✅ Создано обычное окружение для одной криптовалюты")
         
         # Начинаем отсчет времени тренировки
         training_start_time = time.time()
         
         # Проверяем, что окружение правильно инициализировано
         if not hasattr(env, 'observation_space_shape'):
-            raise ValueError("Окружение не имеет observation_space_shape")
+            # Попробуем вычислить размер состояния из observation_space
+            if hasattr(env, 'observation_space') and hasattr(env.observation_space, 'shape'):
+                env.observation_space_shape = env.observation_space.shape[0]
+                print(f"⚠️ Вычислен размер состояния из observation_space: {env.observation_space_shape}")
+            else:
+                raise ValueError("Окружение не имеет observation_space_shape и не может быть вычислен")
         
-        print(f"✅ Окружение создано, размер состояния: {env.observation_space_shape}")
+        # Получаем символ криптовалюты для логирования
+        if is_multi_crypto:
+            crypto_symbol = "МУЛЬТИВАЛЮТА"  # Для мультивалютного окружения
+            print(f"✅ Мультивалютное окружение создано, размер состояния: {env.observation_space_shape}")
+        else:
+            crypto_symbol = getattr(env, 'symbol', 'UNKNOWN')
+            print(f"✅ Окружение создано для {crypto_symbol}, размер состояния: {env.observation_space_shape}")
         
         # Создаем DQN solver
         print(f"🚀 Создаю DQN solver")
@@ -140,19 +168,45 @@ def train_model_optimized(
         patience_counter = 0
         global_step = 0
         grad_steps = 0
+        actual_episodes = episodes  # ИСПРАВЛЕНИЕ: Переменная для отслеживания реального количества эпизодов
         
-        print(f"🎯 Начинаю тренировку на {episodes} эпизодов")
-        print(f"📈 Размер состояния: {env.observation_space_shape}")
-        print(f"🎮 Размер действий: {env.action_space.n}")
+        # Принудительное exploration в начале для Noisy Networks
+        if getattr(cfg, 'use_noisy_networks', True):
+            dqn_solver.epsilon = 0.3  # Начинаем с 30% exploration
+            #print(f"🔀 Noisy Networks: принудительное exploration с epsilon={dqn_solver.epsilon}")
         
+        # Улучшенные переменные для early stopping (УЛУЧШЕНО)
+        min_episodes_before_stopping = getattr(cfg, 'min_episodes_before_stopping', max(4000, episodes // 3))  # Увеличил с 3000 до 4000 и с 1/4 до 1/3
+        winrate_history = []  # История winrate для анализа трендов
+        recent_improvement_threshold = 0.002  # Увеличил с 0.001 до 0.002 для более стабильного обучения
+        
+        # Адаптивный patience_limit в зависимости от количества эпизодов
+        if episodes >= 10000:
+            patience_limit = max(patience_limit, episodes // 3)  # Для очень длинных тренировок - минимум 1/3 (было 1/2)
+        elif episodes >= 5000:
+            patience_limit = max(patience_limit, episodes // 4)  # Для длинных тренировок - минимум 1/4 (было 1/3)
+        elif episodes >= 2000:
+            patience_limit = max(patience_limit, episodes // 3)  # Для средних тренировок - минимум 1/3 (было 1/2)
+        
+        # Увеличиваем patience для длинных тренировок
+        patience_limit = max(patience_limit, 8000)  # Минимум 8000 эпизодов (было 5000)
+        
+        long_term_patience = int(patience_limit * getattr(cfg, 'long_term_patience_multiplier', 2.5))
+        trend_threshold = getattr(cfg, 'early_stopping_trend_threshold', 0.05)  # Увеличиваем порог тренда с 0.03 до 0.05
+        
+        # Определяем название для логирования
+        training_name = "МУЛЬТИВАЛЮТА" if is_multi_crypto else crypto_symbol
+        print(f"🎯 Начинаю тренировку на {episodes} эпизодов для {training_name}")
+        print(f"📊 Параметры Early Stopping:")
+        print(f"  • min_episodes_before_stopping: {min_episodes_before_stopping}")
+        print(f"  • patience_limit: {patience_limit}")
+        print(f"  • long_term_patience: {long_term_patience}")
+        print(f"  • trend_threshold: {trend_threshold}")
+        print(f"  • Самый ранний stopping: {min_episodes_before_stopping + patience_limit} эпизодов")            
         # Информация о настройках сохранения
         save_frequency = getattr(cfg, 'save_frequency', 50)
         save_only_on_improvement = getattr(cfg, 'save_only_on_improvement', False)
-        if save_only_on_improvement:
-            print(f"💾 Сохранение: только при улучшении winrate")
-        else:
-            print(f"💾 Сохранение: каждые {save_frequency} эпизодов + при улучшении winrate")
-        
+
         # Основной цикл тренировки
         for episode in range(episodes):         
             state = env.reset()            
@@ -161,13 +215,15 @@ def train_model_optimized(
                 state = np.array(state, dtype=np.float32)
             elif not isinstance(state, np.ndarray):
                 state = np.array(state, dtype=np.float32)
-            
-            # Проверяем размер состояния
-            if episode == 0:
-                print(f"🔍 Первое состояние: тип={type(state)}, размер={state.shape if hasattr(state, 'shape') else len(state)}")
-            
+
             episode_reward = 0
-            print(f"  🎯 Эпизод {episode} начат, reward={episode_reward}")
+            
+            # Получаем текущую криптовалюту для мультивалютного окружения
+            current_crypto = crypto_symbol
+            if is_multi_crypto and hasattr(env, 'current_symbol'):
+                current_crypto = env.current_symbol
+            
+            print(f"  🎯 Эпизод {episode} для {current_crypto} начат, reward={episode_reward}")
             
             # Эпизод
             step_count = 0
@@ -201,6 +257,14 @@ def train_model_optimized(
                 # Сохраняем переход в replay buffer
                 dqn_solver.store_transition(state, action, reward, state_next, terminal)
                 
+                # Получаем n-step transitions и добавляем их в replay buffer
+                # Только если эпизод не завершен (не terminal)
+                if not terminal:
+                    n_step_transitions = env.get_n_step_return()
+                    if n_step_transitions:
+                        dqn_solver.memory.push_n_step(n_step_transitions)
+                
+
                 # Обновляем состояние
                 state = state_next
                 
@@ -213,10 +277,10 @@ def train_model_optimized(
                 episode_reward += reward
                 global_step += 1
                 
-                # Обучаем модель реже для ускорения (как было раньше)
-                soft_update_every = getattr(cfg, 'soft_update_every', 100)  # По умолчанию каждые 100 шагов
-                batch_size = getattr(cfg, 'batch_size', 64)  # По умолчанию размер батча 64
-                target_update_freq = getattr(cfg, 'target_update_freq', 1000)  # По умолчанию каждые 1000 шагов
+                # Обучаем модель чаще для лучшего обучения (УЛУЧШЕНО)
+                soft_update_every = getattr(cfg, 'soft_update_every', 50)   # Уменьшил с 100 до 50 для более частого обучения
+                batch_size = getattr(cfg, 'batch_size', 128)               # Увеличил с 64 до 128 для лучшей стабильности
+                target_update_freq = getattr(cfg, 'target_update_freq', 500)  # Уменьшил с 1000 до 500 для более частого обновления target
                 
                 if global_step % soft_update_every == 0 and len(dqn_solver.memory) >= batch_size:                    
                     success, loss, abs_q, q_gap = dqn_solver.experience_replay(need_metrics=True)
@@ -227,26 +291,71 @@ def train_model_optimized(
                         if global_step % target_update_freq == 0:
                             dqn_solver.update_target_model()
                     else:
-                        print(f"      ⚠️ Обучение не удалось")
+                        print(f"      ⚠️   Обучение не удалось")
 
                 if terminal:
                     break
             
-            # Обновляем epsilon
-            eps_final = getattr(cfg, 'eps_final', 0.01)  # По умолчанию минимальный epsilon 0.01
-            dqn_solver.epsilon = max(eps_final, dqn_solver.epsilon * dqn_solver._eps_decay_rate)
+            # Обновляем epsilon (только если не используем Noisy Networks)
+            if not getattr(cfg, 'use_noisy_networks', True):
+                eps_final = getattr(cfg, 'eps_final', 0.01)  # По умолчанию минимальный epsilon 0.01
+                dqn_solver.epsilon = max(eps_final, dqn_solver.epsilon * dqn_solver._eps_decay_rate)
+            else:
+                # При использовании Noisy Networks оставляем небольшой epsilon для стабильности
+                dqn_solver.epsilon = max(0.05, dqn_solver.epsilon * 0.999)  # Минимум 5%
             
             # Собираем статистику эпизода
-            if hasattr(env, 'trades') and env.trades:
-                all_trades.extend(env.trades)
-                
-                # Вычисляем winrate для эпизода
-                profitable_trades = [t for t in env.trades if t.get('roi', 0) > 0]
-                episode_winrate = len(profitable_trades) / len(env.trades) if env.trades else 0
+            # РАДИКАЛЬНОЕ ИСПРАВЛЕНИЕ: Используем env.all_trades для расчета winrate
+            trades_before = len(all_trades)
+            
+            # ИСПРАВЛЕНИЕ: Получаем сделки из env.all_trades вместо env.trades
+            if hasattr(env, 'all_trades') and env.all_trades:
+                episode_trades = env.all_trades
+            else:
+                # Fallback: используем env.trades
+                episode_trades = env.trades if hasattr(env, 'trades') and env.trades else []
+            
+            # ИСПРАВЛЕНИЕ: Инициализируем episode_winrate по умолчанию
+            episode_winrate = 0.0
+            
+            if hasattr(env, 'all_trades') and env.all_trades:
+                # Используем все сделки из окружения для расчета winrate
+                all_profitable = [t for t in env.all_trades if t.get('roi', 0) > 0]
+                episode_winrate = len(all_profitable) / len(env.all_trades) if env.all_trades else 0
                 episode_winrates.append(episode_winrate)
                 
-                # Детальная статистика эпизода (объединенная в одну строку)
-                episode_stats = dqn_solver.print_trade_stats(env.trades)
+                # Детальная статистика эпизода
+                episode_stats = dqn_solver.print_trade_stats(env.all_trades)
+                
+                # Добавляем сделки в общий список если их там нет
+                if len(all_trades) < len(env.all_trades):
+                    all_trades.extend(env.all_trades[len(all_trades):])
+                    
+            elif episode_trades:
+                # Fallback: используем env.trades
+                all_trades.extend(episode_trades)
+                
+                # Вычисляем winrate для эпизода
+                profitable_trades = [t for t in episode_trades if t.get('roi', 0) > 0]
+                episode_winrate = len(profitable_trades) / len(episode_trades) if episode_trades else 0
+                episode_winrates.append(episode_winrate)
+                
+                # Детальная статистика эпизода
+                episode_stats = dqn_solver.print_trade_stats(episode_trades)
+            else:
+                # Если нет сделок вообще, используем последние сделки из all_trades
+                if len(all_trades) > 0:
+                    # Берем последние сделки для расчета winrate
+                    recent_trades = all_trades[-min(10, len(all_trades)):]  # Последние 10 сделок
+                    profitable_trades = [t for t in recent_trades if t.get('roi', 0) > 0]
+                    episode_winrate = len(profitable_trades) / len(recent_trades) if recent_trades else 0
+                    episode_winrates.append(episode_winrate)
+                    episode_stats = dqn_solver.print_trade_stats(recent_trades)
+                else:
+                    # Только если действительно нет сделок
+                    episode_winrate = 0.0  # ИСПРАВЛЕНИЕ: Определяем episode_winrate
+                    episode_winrates.append(episode_winrate)
+                    episode_stats = "Нет сделок"
                 
                 # Объединяем всю статистику эпизода в одну строку
                 action_stats = ""
@@ -260,9 +369,9 @@ def train_model_optimized(
                     steps_per_second = env.episode_step_count / episode_duration if episode_duration > 0 else 0
                     time_stats = f" | {episode_duration:.2f}с, {env.episode_step_count} шагов, {steps_per_second:.1f} шаг/с"
                 
-                print(f"  🏁 Эпизод {episode} завершен | reward={episode_reward:.4f}{action_stats}{time_stats} | {episode_stats}")
+                print(f"  🏁 Эпизод {episode} для {current_crypto} завершен | reward={episode_reward:.4f}{action_stats}{time_stats} | {episode_stats}")
                 
-                # Проверяем на улучшение
+                # Проверяем на улучшение с более умной логикой
                 if episode_winrate > best_winrate:
                     best_winrate = episode_winrate
                     patience_counter = 0
@@ -270,38 +379,44 @@ def train_model_optimized(
                     # Сохраняем лучшую модель только при улучшении
                     dqn_solver.save_model()
                     logger.info("[INFO] New best winrate: %.3f, saving model", best_winrate)
-                    print(f"  🎉 Новый лучший winrate: {best_winrate:.3f}!")
                 else:
-                    patience_counter += 1
-            else:
-                # Если нет сделок, добавляем 0 winrate
-                episode_winrates.append(0.0)
-                patience_counter += 1
-                
-                # Объединяем информацию о эпизоде без сделок в одну строку
-                action_stats = ""
-                if hasattr(env, 'action_counts'):
-                    action_stats = f" | HOLD={env.action_counts.get(0, 0)}, BUY={env.action_counts.get(1, 0)}, SELL={env.action_counts.get(2, 0)}"
-                
-                # Добавляем информацию о времени выполнения
-                time_stats = ""
-                if hasattr(env, 'episode_start_time') and env.episode_start_time is not None:
-                    episode_duration = time.time() - env.episode_start_time
-                    steps_per_second = env.episode_step_count / episode_duration if episode_duration > 0 else 0
-                    time_stats = f" | {episode_duration:.2f}с, {env.episode_step_count} шагов, {steps_per_second:.1f} шаг/с"
-                
-                filter_stats = ""
-                if hasattr(env, 'buy_attempts') and env.buy_attempts > 0:
-                    vol_rejected = getattr(env, 'buy_rejected_vol', 0)
-                    roi_rejected = getattr(env, 'buy_rejected_roi', 0)
-                    filter_stats = f" | Попытки покупки: {env.buy_attempts}, отклонено по объему: {vol_rejected}, отклонено по ROI: {roi_rejected}"
-                
-                print(f"  ⚠️ Эпизод {episode} завершен | reward={episode_reward:.4f}{action_stats}{time_stats} | Нет сделок{filter_stats}")
+                    # Мягкая логика patience - увеличиваем только при явном ухудшении
+                    if episode >= min_episodes_before_stopping:
+                        # Анализируем тренд winrate
+                        if len(episode_winrates) >= 30:  # Увеличено с 20 до 30 для более стабильного анализа
+                            recent_avg = np.mean(episode_winrates[-30:])  # Увеличено окно анализа
+                            older_avg = np.mean(episode_winrates[-60:-30]) if len(episode_winrates) >= 60 else recent_avg  # Увеличено окно
+                            
+                            # Если есть стабильный тренд улучшения, сбрасываем patience
+                            if recent_avg > older_avg + recent_improvement_threshold:
+                                patience_counter = max(0, patience_counter - 5)  # Уменьшаем patience сильнее (было -3)
+                            elif recent_avg > older_avg:
+                                patience_counter = max(0, patience_counter - 2)  # Небольшое улучшение (было -1)
+                            elif recent_avg < older_avg - 0.05:  # Увеличиваем порог ухудшения с 0.03 до 0.05
+                                patience_counter += 1
+                            # Если изменения небольшие, не меняем patience
+                        else:
+                            patience_counter += 0  # Не увеличиваем patience в начале
+                    else:
+                        # В начале обучения не увеличиваем patience
+                        patience_counter = 0
+
             
             # Логируем прогресс и периодически сохраняем модель
             if episode % 10 == 0:
                 avg_winrate = np.mean(episode_winrates[-10:]) if episode_winrates else 0
-                logger.info(f"[INFO] Episode {episode}/{episodes}, Avg Winrate: {avg_winrate:.3f}, Epsilon: {dqn_solver.epsilon:.4f}")
+                
+                # Получаем текущую криптовалюту для логирования
+                log_crypto = current_crypto
+                
+                logger.info(f"[INFO] Episode {episode}/{episodes} для {log_crypto}, Avg Winrate: {avg_winrate:.3f}, Epsilon: {dqn_solver.epsilon:.4f}")
+                
+                # Показываем информацию о early stopping
+                if episode >= min_episodes_before_stopping:
+                    remaining_patience = patience_limit - patience_counter
+                    print(f"  📊 Early stopping для {log_crypto}: patience {patience_counter}/{patience_limit} (осталось {remaining_patience})")
+                    if patience_counter > patience_limit * 0.8:  # Показываем предупреждение при приближении к лимиту
+                        print(f"  ⚠️ ВНИМАНИЕ: patience_counter приближается к лимиту!")                    
                 
                 # Очищаем GPU память каждые 10 эпизодов
                 if torch.cuda.is_available():
@@ -312,26 +427,60 @@ def train_model_optimized(
             save_only_on_improvement = getattr(cfg, 'save_only_on_improvement', False)
             
             if not save_only_on_improvement and episode > 0 and episode % save_frequency == 0:
-                print(f"  💾 Периодическое сохранение модели (эпизод {episode})")
                 dqn_solver.save_model()
             
-            # Early stopping
-            if patience_counter >= patience_limit:
-                logger.info(f"[INFO] Early stopping triggered after {episode} episodes")
-                break
+            # Улучшенный Early stopping с множественными критериями
+            if episode >= min_episodes_before_stopping:
+                # Дополнительная защита от слишком раннего stopping
+                if episode < episodes // 2:  # Не останавливаемся в первой половине обучения (было 1/3)
+                    patience_counter = min(patience_counter, patience_limit // 4)  # Ограничиваем patience сильнее (было 1/3)
+                elif episode < episodes * 3 // 4:  # Дополнительная защита до 3/4 (было 1/2)
+                    patience_counter = min(patience_counter, patience_limit // 2)
+                
+                # Основной критерий - patience
+                if patience_counter >= patience_limit:
+                    logger.info(f"[INFO] Early stopping triggered for {training_name} after {episode} episodes (patience limit reached)")
+                    print(f"  ⚠️ Early stopping: достигнут лимит patience ({patience_limit})")
+                    print(f"  🔍 Отладка: patience_counter={patience_counter}, patience_limit={patience_limit}")
+                    # ИСПРАВЛЕНИЕ: Обновляем actual_episodes при early stopping
+                    actual_episodes = episode
+                    break
+                
+                # Дополнительный критерий - анализ трендов (УЛУЧШЕНО)
+                if len(episode_winrates) >= 400 and episode >= episodes * 4 // 5:  # Увеличил требования: 400 эпизодов и последняя 1/5
+                    recent_winrate = np.mean(episode_winrates[-80:])   # Увеличил окно анализа с 50 до 80
+                    mid_winrate = np.mean(episode_winrates[-160:-80])  # Увеличил окно с 100:-50 до 160:-80
+                    early_winrate = np.mean(episode_winrates[-240:-160])  # Увеличил окно с 150:-100 до 240:-160
+                    
+                    # Если winrate стабильно падает на протяжении 240 эпизодов (более строгое условие)
+                    if (recent_winrate < mid_winrate < early_winrate and 
+                        mid_winrate - recent_winrate > trend_threshold * 2.5 and  # Увеличил порог с 2.0 до 2.5
+                        early_winrate - mid_winrate > trend_threshold * 2.5):
+                        
+                        logger.info(f"[INFO] Early stopping triggered for {training_name} after {episode} episodes (declining trend)")
+                        # ИСПРАВЛЕНИЕ: Обновляем actual_episodes при early stopping
+                        actual_episodes = episode
+                        break
+                
+                                # Долгосрочный критерий - если модель стабильна, даем больше времени
+                if patience_counter >= long_term_patience:
+                    logger.info(f"[INFO] Early stopping triggered for {training_name} after {episode} episodes (long-term patience)")
+                    # ИСПРАВЛЕНИЕ: Обновляем actual_episodes при early stopping
+                    actual_episodes = episode
+                    break
 
         # Финальная статистика
         training_end_time = time.time()
         total_training_time = training_end_time - training_start_time
         
         print("\n" + "="*60)
-        print("📊 ФИНАЛЬНАЯ СТАТИСТИКА ОБУЧЕНИЯ")
+        print(f"📊 ФИНАЛЬНАЯ СТАТИСТИКА ОБУЧЕНИЯ для {training_name}")
         print("="*60)
         
         print(f"⏱️ ВРЕМЯ ОБУЧЕНИЯ:")
         print(f"  • Общее время: {total_training_time:.2f} секунд ({total_training_time/60:.1f} минут)")
-        print(f"  • Время на эпизод: {total_training_time/episodes:.2f} секунд")
-        print(f"  • Эпизодов в минуту: {episodes/(total_training_time/60):.1f}")
+        print(f"  • Время на эпизод: {total_training_time/episode:.2f} секунд")
+        print(f"  • Эпизодов в минуту: {episode/(total_training_time/60):.1f}")
         
         stats_all = dqn_solver.print_trade_stats(all_trades)
         
@@ -345,7 +494,12 @@ def train_model_optimized(
             print(f"  • Общая прибыль: {total_profit:.4f}")
             print(f"  • Общий убыток: {total_loss:.4f}")
             print(f"  • Средняя длительность сделки: {avg_duration:.1f} минут")
-            print(f"  • Всего эпизодов: {episodes}")
+            print(f"  • Планируемые эпизоды: {episodes}")
+            print(f"  • Реальные эпизоды: {episode}")
+            if episode < episodes:
+                print(f"  • Early Stopping: Сработал на {episode} эпизоде")
+            else:
+                print(f"  • Early Stopping: Не сработал")
             print(f"  • Средний winrate: {np.mean(episode_winrates):.3f}")
         else:
             print(f"\n⚠️ Нет сделок за все {episodes} эпизодов!")
@@ -365,14 +519,16 @@ def train_model_optimized(
         
         # Сохраняем детальные результаты обучения
         training_results = {
-            'episodes': episodes,
+            'episodes': episodes,  # Планируемое количество эпизодов
+            'actual_episodes': episode,  # Реальное количество завершенных эпизодов (текущий эпизод)
             'total_training_time': total_training_time,
             'episode_winrates': episode_winrates,
             'all_trades': all_trades,
             'best_winrate': best_winrate,
             'final_stats': stats_all,
             'training_date': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'model_path': 'dqn_model.pth'
+            'model_path': 'dqn_model.pth',
+            'early_stopping_triggered': episode < episodes  # True если early stopping сработал
         }
         
         # Создаем папку если не существует
