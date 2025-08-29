@@ -135,6 +135,27 @@ def train_model_optimized(
         else:
             crypto_symbol = getattr(env, 'symbol', 'UNKNOWN')
             print(f"✅ Окружение создано для {crypto_symbol}, размер состояния: {env.observation_space_shape}")
+
+        # Настраиваем директорию вывода и имена файлов под символ
+        def _symbol_code(sym: str) -> str:
+            if not isinstance(sym, str) or not sym:
+                return "model"
+            s = sym.upper().replace('/', '')
+            for suffix in ["USDT", "USD", "USDC", "BUSD", "USDP"]:
+                if s.endswith(suffix):
+                    s = s[:-len(suffix)]
+                    break
+            s = s.lower() if s else "model"
+            if s in ("мультивалюта", "multi", "multicrypto"):
+                s = "multi"
+            return s
+
+        result_dir = os.path.join("result")
+        os.makedirs(result_dir, exist_ok=True)
+        symbol_code = _symbol_code(crypto_symbol)
+        # Обновляем пути сохранения в конфиге, чтобы все сохранения шли в result/
+        cfg.model_path = os.path.join(result_dir, f"dqn_model_{symbol_code}.pth")
+        cfg.buffer_path = os.path.join(result_dir, f"replay_buffer_{symbol_code}.pkl")
         
         # Создаем DQN solver
         print(f"🚀 Создаю DQN solver")
@@ -547,13 +568,12 @@ def train_model_optimized(
             'early_stopping_triggered': episode < episodes  # True если early stopping сработал
         }
         
-        # Создаем папку если не существует
-        import os
-        results_dir = "temp/train_results"
+        # Создаем папку если не существует (используем result/)
+        results_dir = os.path.join("result")
         os.makedirs(results_dir, exist_ok=True)
         
-        # Сохраняем результаты в файл в папке temp/train_results
-        results_file = os.path.join(results_dir, f'training_results_{int(time.time())}.pkl')
+        # Сохраняем результаты в файле c символом
+        results_file = os.path.join(results_dir, f'train_result_{symbol_code}.pkl')
         with open(results_file, 'wb') as f:
             pickle.dump(training_results, f, protocol=HIGHEST_PROTOCOL)
         

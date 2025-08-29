@@ -50,3 +50,6 @@ temp/train_results/
 
 
 celerybeat-schedule.*
+ 
+# Артефакты обучения
+result/

@@ -320,8 +320,8 @@ def clean_db():
 def analyze_training_results():
     """Анализирует результаты обучения DQN модели"""
     try:
-        # Ищем файлы с результатами обучения в папке temp/train_results
-        results_dir = "temp/train_results"
+        # Ищем файлы с результатами обучения в папке result
+        results_dir = "result"
         if not os.path.exists(results_dir):
             return jsonify({
                 'status': 'error',
@@ -329,7 +329,7 @@ def analyze_training_results():
                 'success': False
             }), 404
         
-        result_files = glob.glob(os.path.join(results_dir, 'training_results_*.pkl'))
+        result_files = glob.glob(os.path.join(results_dir, 'train_result_*.pkl'))
         
         if not result_files:
             return jsonify({
@@ -445,8 +445,8 @@ def analyze_training_results():
 def list_training_results():
     """Возвращает список доступных файлов с результатами обучения"""
     try:
-        # Ищем файлы с результатами обучения в папке temp/train_results
-        results_dir = "temp/train_results"
+        # Ищем файлы с результатами обучения в папке result
+        results_dir = "result"
         if not os.path.exists(results_dir):
             return jsonify({
                 'status': 'error',
@@ -455,7 +455,7 @@ def list_training_results():
                 'files': []
             }), 404
         
-        result_files = glob.glob(os.path.join(results_dir, 'training_results_*.pkl'))
+        result_files = glob.glob(os.path.join(results_dir, 'train_result_*.pkl'))
         
         if not result_files:
             return jsonify({
@@ -497,8 +497,8 @@ def list_training_results():
 def analyze_bad_trades():
     """Анализирует плохие сделки из результатов обучения DQN модели"""
     try:
-        # Ищем файлы с результатами обучения в папке temp/train_results
-        results_dir = "temp/train_results"
+        # Ищем файлы с результатами обучения в папке result
+        results_dir = "result"
         if not os.path.exists(results_dir):
             return jsonify({
                 'status': 'error',
@@ -506,7 +506,7 @@ def analyze_bad_trades():
                 'success': False
             }), 404
         
-        result_files = glob.glob(os.path.join(results_dir, 'training_results_*.pkl'))
+        result_files = glob.glob(os.path.join(results_dir, 'train_result_*.pkl'))
         
         if not result_files:
             return jsonify({
@@ -783,6 +783,13 @@ def create_model_version():
     from pathlib import Path
     
     try:
+        # Читаем символ из запроса (опционально)
+        try:
+            data = request.get_json(silent=True) or {}
+        except Exception:
+            data = {}
+        requested_symbol = (data.get('symbol') or '').strip()
+        
         # Создаем папку good_models если её нет
         good_models_dir = Path('good_models')
         good_models_dir.mkdir(exist_ok=True)
@@ -790,57 +797,76 @@ def create_model_version():
         # Генерируем уникальный ID (4 символа)
         model_id = str(uuid.uuid4())[:4].upper()
         
-        # Ищем последний файл результатов обучения
-        train_results_dir = Path('temp/train_results')
-        if not train_results_dir.exists():
+        # Новая логика источников: используем папку result/ и символ (если задан)
+        result_dir = Path('result')
+        if not result_dir.exists():
             return jsonify({
                 "success": False,
-                "error": "Папка temp/train_results не найдена"
+                "error": "Папка result не найдена. Сначала запустите обучение."
             })
         
-        result_files = list(train_results_dir.glob('training_results_*.pkl'))
-        if not result_files:
-            return jsonify({
-                "success": False,
-                "error": "Файлы результатов обучения не найдены"
-            })
+        # Определяем base_code (символьный префикс)
+        def normalize_symbol(sym: str) -> str:
+            if not sym:
+                return ''
+            s = sym.upper().replace('/', '')
+            for suffix in ["USDT", "USD", "USDC", "BUSD", "USDP"]:
+                if s.endswith(suffix):
+                    s = s[:-len(suffix)]
+                    break
+            s = s.lower()
+            if s in ("мультивалюта", "multi", "multicrypto"):
+                s = "multi"
+            return s
         
-        latest_result_file = max(result_files, key=lambda x: x.stat().st_mtime)
+        base_code = normalize_symbol(requested_symbol)
+        
+        selected_result_file = None
+        if base_code:
+            # Ищем точный train_result_<base_code>.pkl
+            candidate = result_dir / f"train_result_{base_code}.pkl"
+            if candidate.exists():
+                selected_result_file = candidate
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": f"Файл результатов для символа {base_code} не найден в result/"
+                })
+        else:
+            # Fallback: берём самый свежий train_result_*.pkl
+            result_files = list(result_dir.glob('train_result_*.pkl'))
+            if not result_files:
+                return jsonify({
+                    "success": False,
+                    "error": "Файлы результатов обучения не найдены в result/"
+                })
+            selected_result_file = max(result_files, key=lambda x: x.stat().st_mtime)
+            # Пытаемся извлечь символ из имени
+            try:
+                fname = selected_result_file.stem  # train_result_<code>
+                parts = fname.split('_', 2)
+                if len(parts) >= 3:
+                    base_code = parts[2].lower()
+            except Exception:
+                pass
 
-        # Определяем базовое имя символа для включения в имя файлов
-        base_code = "model"
-        try:
-            import pickle
-            with open(latest_result_file, 'rb') as f:
-                _res = pickle.load(f)
-                sym = _res.get('symbol') or _res.get('crypto_symbol') or ""
-                if isinstance(sym, str) and sym:
-                    s = sym.upper().replace('/', '')
-                    # Извлекаем базовый тикер до USDT, USD, USDC и т.п.
-                    for suffix in ["USDT", "USD", "USDC", "BUSD", "USDP"]:
-                        if s.endswith(suffix):
-                            s = s[:-len(suffix)]
-                            break
-                    base_code = s.lower() if s else "model"
-                else:
-                    base_code = "multi"
-        except Exception:
+        if not base_code:
             base_code = "model"
         
-        # Проверяем наличие файлов модели
-        model_file = Path('dqn_model.pth')
-        replay_file = Path('replay_buffer.pkl')
+        # Определяем пути источников в result/
+        model_file = result_dir / f'dqn_model_{base_code}.pth'
+        replay_file = result_dir / f'replay_buffer_{base_code}.pkl'
         
         if not model_file.exists():
             return jsonify({
                 "success": False,
-                "error": "Файл dqn_model.pth не найден"
+                "error": f"Файл {model_file.name} не найден в result/"
             })
         
         if not replay_file.exists():
             return jsonify({
                 "success": False,
-                "error": "Файл replay_buffer.pkl не найден"
+                "error": f"Файл {replay_file.name} не найден в result/"
             })
         
         # Копируем файлы с новыми именами с включением символа
@@ -851,7 +877,7 @@ def create_model_version():
         
         shutil.copy2(model_file, new_model_file)
         shutil.copy2(replay_file, new_replay_file)
-        shutil.copy2(latest_result_file, new_result_file)
+        shutil.copy2(selected_result_file, new_result_file)
         
         return jsonify({
             "success": True,

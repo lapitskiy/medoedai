@@ -251,7 +251,20 @@
             <!-- Секция создания новой модели -->
             <div class="section">
                 <h2>📦 Создать новую версию модели</h2>
-                <p>Скопирует текущие веса и результаты обучения в папку good_models с уникальным ID</p>
+                <p>Скопирует веса/буфер/результаты из <code>result/</code> в <code>good_models/</code> с уникальным ID</p>
+                <div class="form-group">
+                    <label>Символ</label>
+                    <select id="symbolSelect" class="form-control" onchange="refreshModels()">
+                        <option value="">Все</option>
+                        <option value="btc">BTC</option>
+                        <option value="eth">ETH</option>
+                        <option value="sol">SOL</option>
+                        <option value="ton">TON</option>
+                        <option value="ada">ADA</option>
+                        <option value="bnb">BNB</option>
+                        <option value="multi">MULTI</option>
+                    </select>
+                </div>
                 <div class="button-group">
                     <button class="btn btn-success" onclick="createModelVersion()">
                         🚀 Создать новую версию
@@ -288,6 +301,7 @@
         async function createModelVersion() {
             const statusDiv = document.getElementById('createStatus');
             const button = event.target;
+            const symbolValue = document.getElementById('symbolSelect').value;
             
             button.disabled = true;
             button.textContent = '⏳ Создание...';
@@ -298,7 +312,8 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
-                    }
+                    },
+                    body: JSON.stringify({ symbol: symbolValue })
                 });
                 
                 const result = await response.json();
@@ -328,6 +343,7 @@
         // Обновить список моделей
         async function refreshModels() {
             const modelsDiv = document.getElementById('modelsList');
+            const symbolValue = document.getElementById('symbolSelect') ? document.getElementById('symbolSelect').value : '';
             modelsDiv.innerHTML = '<div class="loading"><div class="spinner"></div>Загрузка моделей...</div>';
             
             try {
@@ -335,7 +351,12 @@
                 const result = await response.json();
                 
                 if (result.success) {
-                    if (result.models.length === 0) {
+                    let models = result.models;
+                    // Фильтруем по символу из id модели (префикс до _)
+                    if (symbolValue) {
+                        models = models.filter(m => (m.id || '').toLowerCase().startsWith(symbolValue.toLowerCase() + '_'));
+                    }
+                    if (models.length === 0) {
                         modelsDiv.innerHTML = `
                             <div class="empty-state">
                                 <h3>📭 Модели не найдены</h3>
@@ -345,7 +366,7 @@
                     } else {
                         modelsDiv.innerHTML = `
                             <div class="models-grid">
-                                ${result.models.map(model => createModelCard(model)).join('')}
+                                ${models.map(model => createModelCard(model)).join('')}
                             </div>
                         `;
                     }

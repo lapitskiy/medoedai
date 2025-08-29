@@ -403,7 +403,8 @@
                     
                     result.models.forEach(model => {
                         const option = document.createElement('option');
-                        option.value = `/workspace/good_models/dqn_model_${model.id}.pth`;
+                        // Полный путь для контейнера trading_agent
+                        option.value = `/workspace/good_models/${model.files.model}`;
                         option.textContent = `${model.id} (${model.date})`;
                         option.dataset.modelId = model.id;
                         modelSelect.appendChild(option);
