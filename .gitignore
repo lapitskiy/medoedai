@@ -47,3 +47,6 @@ cache/
 # Данные криптовалют
 temp/binance_data/
 temp/train_results/
+
+
+celerybeat-schedule.*
