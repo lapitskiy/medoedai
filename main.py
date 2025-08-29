@@ -103,6 +103,59 @@ if redis_client is None:
 
 
 
+def ensure_symbol_worker(queue_name: str) -> dict:
+    """Гарантирует наличие отдельного Celery-воркера для указанной очереди.
+
+    - Проверяет Redis-лок `celery:worker:<queue>`
+    - Проверяет процесс внутри контейнера `celery-worker`
+    - При отсутствии — запускает новый процесс воркера для очереди
+    """
+    try:
+        lock_key = f"celery:worker:{queue_name}"
+        # Быстрая проверка по Redis-метке
+        try:
+            if redis_client.get(lock_key):
+                return {"started": False, "reason": "already_marked_running"}
+        except Exception:
+            pass
+
+        import docker
+        client = docker.from_env()
+        container = client.containers.get('celery-worker')
+
+        # Проверяем по процессам внутри контейнера
+        check_cmd = f"sh -lc 'pgrep -af \"celery.*-Q {queue_name}\" >/dev/null 2>&1'"
+        exec_res = container.exec_run(check_cmd, tty=True)
+        already_running = (exec_res.exit_code == 0)
+
+        if already_running:
+            # Ставим метку в Redis и выходим
+            try:
+                redis_client.setex(lock_key, 24 * 3600, 'running')
+            except Exception:
+                pass
+            return {"started": False, "reason": "process_exists"}
+
+        # Запускаем новый воркер-процесс в фоне
+        start_cmd = (
+            "sh -lc '"
+            "mkdir -p /workspace/logs && "
+            f"(OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 TORCH_NUM_THREADS=4 nohup celery -A tasks.celery_tasks worker -Q {queue_name} -P solo -c 1 --loglevel=info "
+            f"> /workspace/logs/{queue_name}.log 2>&1 & echo $! > /workspace/logs/{queue_name}.pid) "
+            "'"
+        )
+        container.exec_run(start_cmd, tty=True)
+
+        # Отмечаем в Redis
+        try:
+            redis_client.setex(lock_key, 24 * 3600, 'running')
+        except Exception:
+            pass
+
+        return {"started": True}
+    except Exception as e:
+        return {"started": False, "error": str(e)}
+
 @app.before_request
 def log_request_info():
     logging.info(f"Request from {request.remote_addr}: {request.method} {request.path}")
@@ -144,7 +197,7 @@ def start_task():
 @app.route("/task-status/<task_id>", methods=["GET"])
 def get_task_status(task_id):
     """Проверяет статус задачи по task_id"""
-    task = long_running_task.AsyncResult(task_id)
+    task = AsyncResult(task_id, app=celery)
 
     if task.state == "PENDING":
         response = {"state": "PENDING", "status": "Задача в очереди"}
@@ -188,7 +241,28 @@ def train_multi_crypto():
 def train_dqn_symbol_route():
     data = request.get_json(silent=True) or {}
     symbol = data.get('symbol') or request.form.get('symbol') or 'BTCUSDT'
-    task = train_dqn_symbol.apply_async(args=[symbol], queue="train")
+    # Очередь per-symbol
+    queue_name = f"train_{symbol.lower()}"
+
+    # Лок на обучение per-symbol, чтобы не ставить дубль
+    train_lock_key = f"celery:train:{symbol.upper()}"
+    try:
+        # set NX с TTL 24ч
+        locked = redis_client.set(train_lock_key, 'queued', nx=True, ex=24 * 3600)
+        if not locked:
+            app.logger.info(f"Задача обучения {symbol} уже запущена или в очереди (lock)")
+            return redirect(url_for("index"))
+    except Exception as _e:
+        app.logger.error(f"Не удалось установить train-lock для {symbol}: {_e}")
+
+    # Гарантируем воркера на эту очередь
+    try:
+        ensure_symbol_worker(queue_name)
+    except Exception as _e:
+        app.logger.error(f"Не удалось гарантировать воркера для {queue_name}: {_e}")
+
+    # Отправляем задачу в специализированную очередь
+    task = train_dqn_symbol.apply_async(args=[symbol], queue=queue_name)
     return redirect(url_for("index"))
 
 
