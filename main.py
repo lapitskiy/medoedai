@@ -272,32 +272,31 @@ def train_dqn_symbol_route():
     # Очередь per-symbol
     queue_name = f"train_{symbol.lower()}"
 
-    # Лок на обучение per-symbol, чтобы не ставить дубль
-    train_lock_key = f"celery:train:{symbol.upper()}"
+    # Проверка активной задачи per-symbol в Redis + Celery
+    running_key = f"celery:train:task:{symbol.upper()}"
     try:
-        # set NX с TTL 24ч
-        locked = redis_client.set(train_lock_key, 'queued', nx=True, ex=24 * 3600)
-        if not locked:
-            app.logger.info(f"Задача обучения {symbol} уже запущена или в очереди (lock)")
-            return redirect(url_for("index"))
+        existing_task_id = redis_client.get(running_key)
+        if existing_task_id:
+            try:
+                existing_task_id = existing_task_id.decode('utf-8')
+            except Exception:
+                existing_task_id = str(existing_task_id)
+            ar = AsyncResult(existing_task_id, app=celery)
+            if ar.state in ("PENDING", "STARTED", "RETRY", "IN_PROGRESS"):
+                app.logger.info(f"train for {symbol} already running: {existing_task_id} state={ar.state}")
+                return redirect(url_for("index"))
     except Exception as _e:
-        app.logger.error(f"Не удалось установить train-lock для {symbol}: {_e}")
-
-    # Гарантируем воркера на эту очередь
-    try:
-        ensure_info = ensure_symbol_worker(queue_name)
-        app.logger.info(f"/train_dqn_symbol ensure_info={ensure_info}")
-    except Exception as _e:
-        app.logger.error(f"Не удалось гарантировать воркера для {queue_name}: {_e}")
+        app.logger.error(f"Не удалось проверить активную задачу для {symbol}: {_e}")
 
     # Временно отправляем в общую очередь 'train' (слушается базовым воркером)
     task = train_dqn_symbol.apply_async(args=[symbol], queue="train")
     app.logger.info(f"/train_dqn_symbol queued symbol={symbol} queue=train task_id={task.id}")
-    # Сохраняем task_id для отображения на главной
+    # Сохраняем task_id для отображения на главной и отметку per-symbol
     try:
         redis_client.lrem("ui:tasks", 0, task.id)  # убираем дубликаты
         redis_client.lpush("ui:tasks", task.id)
         redis_client.ltrim("ui:tasks", 0, 49)     # ограничиваем список
+        redis_client.setex(running_key, 24 * 3600, task.id)
     except Exception as _e:
         app.logger.error(f"/train_dqn_symbol: не удалось записать ui:tasks: {_e}")
     return redirect(url_for("index"))
