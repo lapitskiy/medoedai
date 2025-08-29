@@ -290,9 +290,9 @@ def train_dqn_symbol_route():
     except Exception as _e:
         app.logger.error(f"Не удалось гарантировать воркера для {queue_name}: {_e}")
 
-    # Отправляем задачу в специализированную очередь
-    task = train_dqn_symbol.apply_async(args=[symbol], queue=queue_name)
-    app.logger.info(f"/train_dqn_symbol queued symbol={symbol} queue={queue_name} task_id={task.id}")
+    # Временно отправляем в общую очередь 'train' (слушается базовым воркером)
+    task = train_dqn_symbol.apply_async(args=[symbol], queue="train")
+    app.logger.info(f"/train_dqn_symbol queued symbol={symbol} queue=train task_id={task.id}")
     # Сохраняем task_id для отображения на главной
     try:
         redis_client.lrem("ui:tasks", 0, task.id)  # убираем дубликаты

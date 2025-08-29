@@ -263,14 +263,16 @@ def start_trading_task(self, symbols, model_path=None):
     except Exception as e:
         return {"success": False, "error": f'Docker error: {str(e)}'}
 
-celery.conf.beat_schedule = {
-    'start-trading-every-5-minutes': {
-        'task': 'tasks.celery_tasks.start_trading_task',
-        'schedule': crontab(minute='*/5'),
-        'args': (['BTC/USDT'], '/workspace/good_model/dqn_model.pth')  # Replace with desired symbols and model path
-    },
-}
-
-celery.conf.timezone = 'UTC'
+# Включаем периодический запуск торговли только если явно задан флаг окружения
+import os
+if os.environ.get('ENABLE_TRADING_BEAT', '0') in ('1', 'true', 'True'):
+    celery.conf.beat_schedule = {
+        'start-trading-every-5-minutes': {
+            'task': 'tasks.celery_tasks.start_trading_task',
+            'schedule': crontab(minute='*/5'),
+            'args': (['BTC/USDT'], '/workspace/good_model/dqn_model.pth')
+        },
+    }
+    celery.conf.timezone = 'UTC'
 
    
