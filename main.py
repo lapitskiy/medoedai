@@ -18,7 +18,7 @@ from tasks.celery_tasks import celery
 from celery.result import AsyncResult
 
 import os
-from tasks.celery_tasks import search_lstm_task, train_dqn, train_dqn_multi_crypto, trade_step
+from tasks.celery_tasks import search_lstm_task, train_dqn, train_dqn_multi_crypto, trade_step, start_trading_task, train_dqn_symbol
 from utils.db_utils import clean_ohlcv_data, delete_ohlcv_for_symbol_timeframe, load_latest_candles_from_csv_to_db
 from utils.parser import parser_download_and_combine_with_library
 
@@ -30,6 +30,24 @@ import time
 
 import glob
 import os
+
+import docker
+
+from tasks.celery_tasks import start_trading_task
+
+# Убираем импорт TradingAgent и глобальный экземпляр
+# from trading_agent.trading_agent import TradingAgent
+# trading_agent = None
+
+# Убираем функцию init_trading_agent
+# def init_trading_agent():
+#     """Инициализация торгового агента"""
+#     global trading_agent
+#     try:
+#         trading_agent = TradingAgent()
+#         app.logger.info("Торговый агент инициализирован")
+#     except Exception as e:
+#         app.logger.error(f"Ошибка инициализации торгового агента: {e}")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -164,6 +182,13 @@ def train():
 def train_multi_crypto():
     """Запускает мультивалютное обучение DQN"""
     task = train_dqn_multi_crypto.apply_async(queue="train")
+    return redirect(url_for("index"))
+
+@app.route('/train_dqn_symbol', methods=['POST'])
+def train_dqn_symbol_route():
+    data = request.get_json(silent=True) or {}
+    symbol = data.get('symbol') or request.form.get('symbol') or 'BTCUSDT'
+    task = train_dqn_symbol.apply_async(args=[symbol], queue="train")
     return redirect(url_for("index"))
 
 
@@ -670,6 +695,11 @@ def models_page():
     """Страница управления моделями"""
     return render_template('models.html')
 
+@app.route('/trading_agent')
+def trading_agent_page():
+    """Страница торгового агента"""
+    return render_template('trading_agent.html')
+
 @app.route('/create_model_version', methods=['POST'])
 def create_model_version():
     """Создает новую версию модели с уникальным ID"""
@@ -702,6 +732,26 @@ def create_model_version():
             })
         
         latest_result_file = max(result_files, key=lambda x: x.stat().st_mtime)
+
+        # Определяем базовое имя символа для включения в имя файлов
+        base_code = "model"
+        try:
+            import pickle
+            with open(latest_result_file, 'rb') as f:
+                _res = pickle.load(f)
+                sym = _res.get('symbol') or _res.get('crypto_symbol') or ""
+                if isinstance(sym, str) and sym:
+                    s = sym.upper().replace('/', '')
+                    # Извлекаем базовый тикер до USDT, USD, USDC и т.п.
+                    for suffix in ["USDT", "USD", "USDC", "BUSD", "USDP"]:
+                        if s.endswith(suffix):
+                            s = s[:-len(suffix)]
+                            break
+                    base_code = s.lower() if s else "model"
+                else:
+                    base_code = "multi"
+        except Exception:
+            base_code = "model"
         
         # Проверяем наличие файлов модели
         model_file = Path('dqn_model.pth')
@@ -719,10 +769,11 @@ def create_model_version():
                 "error": "Файл replay_buffer.pkl не найден"
             })
         
-        # Копируем файлы с новыми именами
-        new_model_file = good_models_dir / f'dqn_model_{model_id}.pth'
-        new_replay_file = good_models_dir / f'replay_buffer_{model_id}.pkl'
-        new_result_file = good_models_dir / f'train_result_{model_id}.pkl'
+        # Копируем файлы с новыми именами с включением символа
+        named_id = f"{base_code}_{model_id}"
+        new_model_file = good_models_dir / f'dqn_model_{named_id}.pth'
+        new_replay_file = good_models_dir / f'replay_buffer_{named_id}.pkl'
+        new_result_file = good_models_dir / f'train_result_{named_id}.pkl'
         
         shutil.copy2(model_file, new_model_file)
         shutil.copy2(replay_file, new_replay_file)
@@ -730,11 +781,11 @@ def create_model_version():
         
         return jsonify({
             "success": True,
-            "model_id": model_id,
+            "model_id": named_id,
             "files": [
-                f'dqn_model_{model_id}.pth',
-                f'replay_buffer_{model_id}.pkl',
-                f'train_result_{model_id}.pkl'
+                f'dqn_model_{named_id}.pth',
+                f'replay_buffer_{named_id}.pkl',
+                f'train_result_{named_id}.pkl'
             ]
         })
         
@@ -765,7 +816,7 @@ def get_models_list():
         model_files = list(good_models_dir.glob('dqn_model_*.pth'))
         
         for model_file in model_files:
-            # Извлекаем ID модели из имени файла
+            # Извлекаем ID модели из имени файла (может включать символ)
             model_id = model_file.stem.replace('dqn_model_', '')
             
             # Проверяем наличие связанных файлов
@@ -941,6 +992,384 @@ def delete_model():
             "error": str(e)
         }), 500
 
+# ==================== ТОРГОВЫЕ ENDPOINT'Ы ====================
+
+@app.route('/api/trading/start', methods=['POST'])
+def start_trading():
+    """
+    Запуск торговли в контейнере trading_agent через Celery задачу
+    """
+    try:
+        data = request.get_json() or {}
+        symbols = data.get('symbols', ['BTC/USDT'])
+        model_path = data.get('model_path', '/workspace/good_model/dqn_model.pth')
+        
+        # Сохраняем выбранные параметры в Redis для последующих вызовов (status/stop/balance/history)
+        try:
+            redis_client.set('trading:model_path', model_path)
+            import json as _json
+            redis_client.set('trading:symbols', _json.dumps(symbols, ensure_ascii=False))
+        except Exception as _e:
+            app.logger.error(f"Не удалось сохранить параметры торговли в Redis: {_e}")
+
+        # Запускаем Celery задачу для старта торговли в очереди 'celery'
+        task = start_trading_task.apply_async(args=[symbols, model_path], countdown=0, expires=300, queue='celery')
+        
+        return jsonify({
+            'success': True,
+            'message': 'Торговля запущена через Celery задачу',
+            'task_id': task.id
+        }), 200
+    except Exception as e:
+        app.logger.error(f"Ошибка запуска торговли: {e}")
+        return jsonify({
+            'success': False, 
+            'error': str(e)
+        }), 500
+
+@app.route('/api/trading/stop', methods=['POST'])
+def stop_trading():
+    """Остановка торговли в контейнере trading_agent"""
+    try:
+        # Подключаемся к Docker
+        client = docker.from_env()
+        
+        try:
+            # Получаем контейнер trading_agent
+            container = client.containers.get('trading_agent')
+            
+            # Проверяем что контейнер запущен
+            if container.status != 'running':
+                return jsonify({
+                    'success': False, 
+                    'error': f'Контейнер trading_agent не запущен. Статус: {container.status}'
+                }), 500
+            
+            # Получаем ранее выбранный путь к модели (если есть)
+            model_path = None
+            try:
+                mp = redis_client.get('trading:model_path')
+                if mp:
+                    model_path = mp.decode('utf-8')
+            except Exception:
+                pass
+
+            # Останавливаем торговлю через exec
+            if model_path:
+                cmd = f'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); result = agent.stop_trading(); print(\\"RESULT: \\" + json.dumps(result))"'
+            else:
+                cmd = 'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.stop_trading(); print(\\"RESULT: \\" + json.dumps(result))"'
+            
+            exec_result = container.exec_run(cmd, tty=True)
+            
+            # Логируем результат выполнения команды
+            app.logger.info(f"Stop trading - Exit code: {exec_result.exit_code}")
+            if exec_result.output:
+                output_str = exec_result.output.decode('utf-8')
+                app.logger.info(f"Stop trading - Output: {output_str}")
+            
+            if exec_result.exit_code == 0:
+                output = exec_result.output.decode('utf-8') if exec_result.output else ""
+                # Ищем результат в выводе
+                if 'RESULT:' in output:
+                    result_str = output.split('RESULT:')[1].strip()
+                    try:
+                        import json
+                        result = json.loads(result_str)
+                        return jsonify(result), 200
+                    except Exception as parse_error:
+                        app.logger.error(f"Ошибка парсинга результата: {parse_error}")
+                        return jsonify({
+                            'success': True,
+                            'message': 'Торговля остановлена',
+                            'output': output
+                        }), 200
+                else:
+                    return jsonify({
+                        'success': True,
+                        'message': 'Торговля остановлена',
+                        'output': output
+                    }), 200
+            else:
+                error_output = exec_result.output.decode('utf-8') if exec_result.output else "No error output"
+                app.logger.error(f"Ошибка выполнения команды остановки торговли: {error_output}")
+                return jsonify({
+                    'success': False,
+                    'error': f'Ошибка выполнения команды: {error_output}'
+                }), 500
+                
+        except docker.errors.NotFound:
+            return jsonify({
+                'success': False, 
+                'error': 'Контейнер trading_agent не найден. Запустите docker-compose up trading_agent'
+            }), 500
+        except Exception as e:
+            return jsonify({
+                'success': False, 
+                'error': f'Ошибка Docker: {str(e)}'
+            }), 500
+            
+    except Exception as e:
+        app.logger.error(f"Ошибка остановки торговли: {e}")
+        return jsonify({
+            'success': False, 
+            'error': str(e)
+        }), 500
+
+@app.route('/api/trading/status', methods=['GET'])
+def trading_status():
+    """Статус торговли из контейнера trading_agent"""
+    try:
+        # Подключаемся к Docker
+        client = docker.from_env()
+        
+        try:
+            # Получаем контейнер trading_agent
+            container = client.containers.get('trading_agent')
+            
+            # Проверяем что контейнер запущен
+            if container.status != 'running':
+                return jsonify({
+                    'success': False, 
+                    'error': f'Контейнер trading_agent не запущен. Статус: {container.status}'
+                }), 500
+            
+            # Получаем ранее выбранный путь к модели (если есть)
+            model_path = None
+            try:
+                mp = redis_client.get('trading:model_path')
+                if mp:
+                    model_path = mp.decode('utf-8')
+            except Exception:
+                pass
+
+            # Получаем статус через exec
+            if model_path:
+                cmd = f'python -c "import sys, json; print(sys.version); from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); result = agent.get_trading_status(); print(\\\"RESULT: \\\" + json.dumps(result))"'
+            else:
+                cmd = 'python -c "import sys, json; print(sys.version); from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.get_trading_status(); print(\\\"RESULT: \\\" + json.dumps(result))"'
+            
+            exec_result = container.exec_run(cmd, tty=True)
+            
+            # Логируем результат выполнения команды
+            app.logger.info(f"Get status - Command: {cmd}")
+            app.logger.info(f"Get status - Exit code: {exec_result.exit_code}")
+            if exec_result.output:
+                output_str = exec_result.output.decode('utf-8')
+                app.logger.info(f"Get status - Output: {output_str}")
+            else:
+                app.logger.info("Get status - No output received")
+            
+            if exec_result.exit_code == 0:
+                output = exec_result.output.decode('utf-8') if exec_result.output else ""
+                # Ищем результат в выводе
+                if 'RESULT:' in output:
+                    result_str = output.split('RESULT:')[1].strip()
+                    try:
+                        import json
+                        result = json.loads(result_str)
+                        return jsonify(result), 200
+                    except Exception as parse_error:
+                        app.logger.error(f"Ошибка парсинга статуса: {parse_error}")
+                        return jsonify({
+                            'success': True,
+                            'message': 'Статус получен',
+                            'output': output
+                        }), 200
+                else:
+                    return jsonify({
+                        'success': True,
+                        'message': 'Статус получен',
+                        'output': output
+                    }), 200
+            else:
+                error_output = exec_result.output.decode('utf-8') if exec_result.output else "No error output"
+                app.logger.error(f"Ошибка получения статуса: {error_output}")
+                return jsonify({
+                    'success': False,
+                    'error': f'Ошибка выполнения команды: {error_output}'
+                }), 500
+                
+        except docker.errors.NotFound:
+            return jsonify({
+                'success': False, 
+                'error': 'Контейнер trading_agent не найден. Запустите docker-compose up trading_agent'
+            }), 500
+        except Exception as e:
+            return jsonify({
+                'success': False, 
+                'error': f'Ошибка Docker: {str(e)}'
+            }), 500
+            
+    except Exception as e:
+        app.logger.error(f"Ошибка получения статуса: {e}")
+        return jsonify({
+            'success': False, 
+            'error': str(e)
+        }), 500
+
+@app.route('/api/trading/balance', methods=['GET'])
+def trading_balance():
+    """Баланс на бирже из контейнера trading_agent"""
+    try:
+        # Подключаемся к Docker
+        client = docker.from_env()
+        
+        try:
+            # Получаем контейнер trading_agent
+            container = client.containers.get('trading_agent')
+            
+            # Проверяем что контейнер запущен
+            if container.status != 'running':
+                return jsonify({
+                    'success': False, 
+                    'error': f'Контейнер trading_agent не запущен. Статус: {container.status}'
+                }), 500
+            
+            # Получаем ранее выбранный путь к модели (если есть)
+            model_path = None
+            try:
+                mp = redis_client.get('trading:model_path')
+                if mp:
+                    model_path = mp.decode('utf-8')
+            except Exception:
+                pass
+
+            # Получаем баланс через exec
+            if model_path:
+                cmd = f'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); result = agent.get_balance(); print(\\"RESULT: \\" + json.dumps(result))"'
+            else:
+                cmd = 'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.get_balance(); print(\\"RESULT: \\" + json.dumps(result))"'
+            
+            exec_result = container.exec_run(cmd, tty=True)
+            
+            if exec_result.exit_code == 0:
+                output = exec_result.output.decode('utf-8')
+                # Ищем результат в выводе
+                if 'RESULT:' in output:
+                    result_str = output.split('RESULT:')[1].strip()
+                    try:
+                        import json
+                        result = json.loads(result_str)
+                        return jsonify(result), 200
+                    except:
+                        return jsonify({
+                            'success': True,
+                            'message': 'Баланс получен',
+                            'output': output
+                        }), 200
+                else:
+                    return jsonify({
+                        'success': True,
+                        'message': 'Баланс получен',
+                        'output': output
+                    }), 200
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': f'Ошибка выполнения команды: {exec_result.output.decode("utf-8")}'
+                }), 500
+                
+        except docker.errors.NotFound:
+            return jsonify({
+                'success': False, 
+                'error': 'Контейнер trading_agent не найден. Запустите docker-compose up trading_agent'
+            }), 500
+        except Exception as e:
+            return jsonify({
+                'success': False, 
+                'error': f'Ошибка Docker: {str(e)}'
+            }), 500
+            
+    except Exception as e:
+        app.logger.error(f"Ошибка получения баланса: {e}")
+        return jsonify({
+            'success': False, 
+            'error': str(e)
+        }), 500
+
+@app.route('/api/trading/history', methods=['GET'])
+def trading_history():
+    """История торговли из контейнера trading_agent"""
+    try:
+        # Подключаемся к Docker
+        client = docker.from_env()
+        
+        try:
+            # Получаем контейнер trading_agent
+            container = client.containers.get('trading_agent')
+            
+            # Проверяем что контейнер запущен
+            if container.status != 'running':
+                return jsonify({
+                    'success': False, 
+                    'error': f'Контейнер trading_agent не запущен. Статус: {container.status}'
+                }), 500
+            
+            # Получаем ранее выбранный путь к модели (если есть)
+            model_path = None
+            try:
+                mp = redis_client.get('trading:model_path')
+                if mp:
+                    model_path = mp.decode('utf-8')
+            except Exception:
+                pass
+
+            # Получаем историю через exec
+            if model_path:
+                cmd = f'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); result = agent.get_trading_history(); print(\\"RESULT: \\" + json.dumps(result))"'
+            else:
+                cmd = 'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.get_trading_history(); print(\\"RESULT: \\" + json.dumps(result))"'
+            
+            exec_result = container.exec_run(cmd, tty=True)
+            
+            if exec_result.exit_code == 0:
+                output = exec_result.output.decode('utf-8')
+                # Ищем результат в выводе
+                if 'RESULT:' in output:
+                    result_str = output.split('RESULT:')[1].strip()
+                    try:
+                        import json
+                        result = json.loads(result_str)
+                        return jsonify(result), 200
+                    except:
+                        return jsonify({
+                            'success': True,
+                            'message': 'История получена',
+                            'output': output
+                        }), 200
+                else:
+                    return jsonify({
+                        'success': True,
+                        'message': 'История получена',
+                        'output': output
+                    }), 200
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': f'Ошибка выполнения команды: {exec_result.output.decode("utf-8")}'
+                }), 500
+                
+        except docker.errors.NotFound:
+            return jsonify({
+                'success': False, 
+                'error': 'Контейнер trading_agent не найден. Запустите docker-compose up trading_agent'
+            }), 500
+        except Exception as e:
+            return jsonify({
+                'success': False, 
+                'error': f'Ошибка Docker: {str(e)}'
+            }), 500
+            
+    except Exception as e:
+        app.logger.error(f"Ошибка получения истории: {e}")
+        return jsonify({
+            'success': False, 
+            'error': str(e)
+        }), 500
+
+# =============================================================
+
 # Автоматический запуск Flask сервера
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))  # Получаем порт из переменной окружения
@@ -948,4 +1377,8 @@ if __name__ == "__main__":
     print(f"🚀 Запускаю Flask сервер на порту {port}...")
     print(f"🌐 Откройте: http://localhost:{port}")
     print(f"🔧 Debug режим: {'ВКЛЮЧЕН' if debug_mode else 'ОТКЛЮЧЕН'}")
+    
+    # Убираем инициализацию торгового агента
+    # init_trading_agent()
+    
     app.run(host="0.0.0.0", port=port, debug=debug_mode)

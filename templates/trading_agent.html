@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MedoedAI - Торговый агент</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+        }
+        .content {
+            padding: 30px;
+        }
+        .section {
+            margin-bottom: 40px;
+            padding: 25px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            background: #fafafa;
+        }
+        .section h2 {
+            color: #333;
+            margin-top: 0;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        .button-group {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin: 20px 0;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+            text-align: center;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        .btn-success {
+            background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
+            color: white;
+        }
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(86, 171, 47, 0.4);
+        }
+        .btn-danger {
+            background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+            color: white;
+        }
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(255, 65, 108, 0.4);
+        }
+        .btn-info {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+        }
+        .btn-info:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(79, 172, 254, 0.4);
+        }
+        .btn-warning {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+        .btn-warning:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(240, 147, 251, 0.4);
+        }
+        .status {
+            margin-top: 15px;
+            padding: 15px;
+            border-radius: 8px;
+            font-weight: 600;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #333;
+        }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .back-btn {
+            background: linear-gradient(135deg, #6c757d 0%, #495057 100%);
+            color: white;
+            margin-bottom: 20px;
+        }
+        .back-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(108, 117, 125, 0.4);
+        }
+        .trading-status {
+            background: #e8f5e8;
+            border: 2px solid #28a745;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .trading-status h3 {
+            color: #28a745;
+            margin-top: 0;
+        }
+        .trading-status p {
+            margin: 10px 0;
+            font-weight: 600;
+        }
+        .trading-history {
+            background: #f8f9fa;
+            border: 2px solid #dee2e6;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .trading-history h3 {
+            color: #495057;
+            margin-top: 0;
+        }
+        .trade-item {
+            background: white;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .trade-item .trade-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .trade-action {
+            font-weight: bold;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        .trade-action.buy {
+            background: #d4edda;
+            color: #155724;
+        }
+        .trade-action.sell {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .trade-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            font-size: 14px;
+        }
+        .trade-detail {
+            background: #f8f9fa;
+            padding: 8px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .trade-detail .label {
+            font-weight: 600;
+            color: #495057;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+        .trade-detail .value {
+            color: #333;
+            margin-top: 5px;
+        }
+        .model-info {
+            background: #e8f5e8;
+            border: 2px solid #28a745;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        .model-info h4 {
+            color: #28a745;
+            margin-top: 0;
+            margin-bottom: 10px;
+        }
+        .model-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+        }
+        .model-detail-item {
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #c3e6cb;
+        }
+        .model-detail-label {
+            font-weight: 600;
+            color: #495057;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        .model-detail-value {
+            color: #333;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>💰 Торговый агент</h1>
+            <p>Управление торговлей на реальном рынке через обученную модель DQN</p>
+        </div>
+
+        <div class="content">
+            <!-- Кнопка возврата -->
+            <a href="/" class="btn back-btn">← Вернуться на главную</a>
+
+            <!-- Секция управления торговлей -->
+            <div class="section">
+                <h2>🎯 Управление торговлей</h2>
+                <p>Запуск и остановка торгового бота</p>
+                
+                <div class="form-group">
+                    <label>Модель для торговли:</label>
+                    <select id="modelSelect" class="form-control" onchange="showModelInfo()">
+                        <option value="">Выберите модель...</option>
+                    </select>
+                </div>
+                
+                <div id="modelInfo" class="model-info" style="display: none;">
+                    <h4>📊 Информация о модели</h4>
+                    <div id="modelInfoContent"></div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Торговая пара:</label>
+                    <div>
+                        <label><input type="checkbox" value="BTC/USDT" class="trading-symbol" checked> BTC/USDT</label><br>
+                        <label><input type="checkbox" value="ETH/USDT" class="trading-symbol"> ETH/USDT</label><br>
+                        <label><input type="checkbox" value="SOL/USDT" class="trading-symbol"> SOL/USDT</label><br>
+                        <label><input type="checkbox" value="TON/USDT" class="trading-symbol"> TON/USDT</label><br>
+                        <label><input type="checkbox" value="ADA/USDT" class="trading-symbol"> ADA/USDT</label><br>
+                        <label><input type="checkbox" value="BNB/USDT" class="trading-symbol"> BNB/USDT</label>
+                    </div>
+                </div>
+                
+                <div class="button-group">
+                    <button class="btn btn-success" onclick="startTrading()">
+                        🚀 Запустить торговлю
+                    </button>
+                    <button class="btn btn-danger" onclick="stopTrading()">
+                        🛑 Остановить торговлю
+                    </button>
+                </div>
+                
+                <div id="tradingResult" class="status" style="display: none;"></div>
+            </div>
+
+            <!-- Секция статуса торговли -->
+            <div class="section">
+                <h2>📊 Статус торговли</h2>
+                <p>Текущее состояние торгового бота</p>
+                
+                <div class="button-group">
+                    <button class="btn btn-info" onclick="getTradingStatus()">
+                        🔍 Получить статус
+                    </button>
+                    <button class="btn btn-info" onclick="getBalance()">
+                        💰 Баланс на бирже
+                    </button>
+                </div>
+                
+                <div id="tradingStatus" class="trading-status" style="display: none;">
+                    <h3>📊 Статус торговли</h3>
+                    <div id="statusContent"></div>
+                </div>
+                
+                <div id="balanceStatus" class="trading-status" style="display: none;">
+                    <h3>💰 Баланс на бирже</h3>
+                    <div id="balanceContent"></div>
+                </div>
+            </div>
+
+            <!-- Секция истории торговли -->
+            <div class="section">
+                <h2>📈 История торговли</h2>
+                <p>Детальная информация о всех сделках</p>
+                
+                <div class="button-group">
+                    <button class="btn btn-primary" onclick="getTradingHistory()">
+                        📊 История сделок
+                    </button>
+                </div>
+                
+                <div id="tradingHistory" class="trading-history" style="display: none;">
+                    <h3>📈 История сделок</h3>
+                    <div id="historyContent"></div>
+                </div>
+            </div>
+
+            <!-- Секция мониторинга -->
+            <div class="section">
+                <h2>🔍 Мониторинг</h2>
+                <p>Автоматическое обновление статуса каждые 30 секунд</p>
+                
+                <div class="button-group">
+                    <button class="btn btn-info" onclick="startMonitoring()">
+                        🔄 Запустить мониторинг
+                    </button>
+                    <button class="btn btn-warning" onclick="stopMonitoring()">
+                        ⏸️ Остановить мониторинг
+                    </button>
+                </div>
+                
+                <div id="monitoringStatus" class="status info" style="display: none;">
+                    Мониторинг активен - статус обновляется каждые 30 секунд
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let monitoringInterval = null;
+
+        let modelsData = [];
+
+        // Загрузка списка моделей при загрузке страницы
+        async function loadModels() {
+            try {
+                const response = await fetch('/get_models_list');
+                const result = await response.json();
+                
+                if (result.success) {
+                    modelsData = result.models;
+                    const modelSelect = document.getElementById('modelSelect');
+                    modelSelect.innerHTML = '<option value="">Выберите модель...</option>';
+                    
+                    result.models.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = `/workspace/good_models/dqn_model_${model.id}.pth`;
+                        option.textContent = `${model.id} (${model.date})`;
+                        option.dataset.modelId = model.id;
+                        modelSelect.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки моделей:', error);
+            }
+        }
+
+        // Показать информацию о выбранной модели
+        function showModelInfo() {
+            const modelSelect = document.getElementById('modelSelect');
+            const modelInfo = document.getElementById('modelInfo');
+            const modelInfoContent = document.getElementById('modelInfoContent');
+            
+            if (modelSelect.value) {
+                const selectedOption = modelSelect.selectedOptions[0];
+                const modelId = selectedOption.dataset.modelId;
+                const model = modelsData.find(m => m.id === modelId);
+                
+                if (model) {
+                    const stats = model.stats || {};
+                    modelInfoContent.innerHTML = `
+                        <div class="model-details">
+                            <div class="model-detail-item">
+                                <div class="model-detail-label">ID модели</div>
+                                <div class="model-detail-value">${model.id}</div>
+                            </div>
+                            <div class="model-detail-item">
+                                <div class="model-detail-label">Дата создания</div>
+                                <div class="model-detail-value">${model.date}</div>
+                            </div>
+                            <div class="model-detail-item">
+                                <div class="model-detail-label">Размер модели</div>
+                                <div class="model-detail-value">${model.files.model_size}</div>
+                            </div>
+                            ${stats.winrate ? `
+                            <div class="model-detail-item">
+                                <div class="model-detail-label">Winrate</div>
+                                <div class="model-detail-value">${(stats.winrate * 100).toFixed(1)}%</div>
+                            </div>
+                            <div class="model-detail-item">
+                                <div class="model-detail-label">P/L Ratio</div>
+                                <div class="model-detail-value">${stats.pl_ratio?.toFixed(2) || 'N/A'}</div>
+                            </div>
+                            <div class="model-detail-item">
+                                <div class="model-detail-label">Сделок</div>
+                                <div class="model-detail-value">${stats.trades_count || 'N/A'}</div>
+                            </div>
+                            ` : '<div class="model-detail-item"><div class="model-detail-value">Статистика недоступна</div></div>'}
+                        </div>
+                    `;
+                    modelInfo.style.display = 'block';
+                } else {
+                    modelInfo.style.display = 'none';
+                }
+            } else {
+                modelInfo.style.display = 'none';
+            }
+        }
+
+        // Запуск торговли
+        async function startTrading() {
+            const selectedSymbols = Array.from(document.querySelectorAll('.trading-symbol:checked')).map(checkbox => checkbox.value);
+            const selectedModel = document.getElementById('modelSelect').value;
+            
+            if (!selectedModel) {
+                showStatus('tradingResult', 'error', 'Пожалуйста, выберите модель для торговли');
+                return;
+            }
+            
+            if (selectedSymbols.length === 0) {
+                showStatus('tradingResult', 'error', 'Пожалуйста, выберите хотя бы одну торговую пару');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/trading/start', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ 
+                        symbols: selectedSymbols,
+                        model_path: selectedModel
+                    })
+                });
+                
+                const result = await response.json();
+                showStatus('tradingResult', result.success ? 'success' : 'error', 
+                    result.success ? result.message : result.error);
+                
+                if (result.success) {
+                    // Автоматически получаем статус после запуска
+                    setTimeout(getTradingStatus, 1000);
+                }
+            } catch (error) {
+                showStatus('tradingResult', 'error', 'Ошибка при запуске торговли: ' + error.message);
+            }
+        }
+
+        // Остановка торговли
+        async function stopTrading() {
+            try {
+                const response = await fetch('/api/trading/stop', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+                
+                const result = await response.json();
+                showStatus('tradingResult', result.success ? 'success' : 'error', 
+                    result.success ? result.message : result.error);
+                
+                if (result.success) {
+                    // Автоматически получаем статус после остановки
+                    setTimeout(getTradingStatus, 1000);
+                }
+            } catch (error) {
+                showStatus('tradingResult', 'error', 'Ошибка при остановке торговли: ' + error.message);
+            }
+        }
+
+        // Получение статуса торговли
+        async function getTradingStatus() {
+            try {
+                const response = await fetch('/api/trading/status');
+                const result = await response.json();
+                
+                if (result.success) {
+                    const statusDiv = document.getElementById('tradingStatus');
+                    const contentDiv = document.getElementById('statusContent');
+                    
+                    contentDiv.innerHTML = `
+                        <p><strong>Статус:</strong> ${result.is_trading ? '🟢 Активна' : '🔴 Остановлена'}</p>
+                        <p><strong>Пара:</strong> ${result.symbol || 'Не указана'}</p>
+                        <p><strong>Количество:</strong> ${result.amount || 'Не указано'}</p>
+                        <p><strong>Позиция:</strong> ${result.position ? 'Открыта' : 'Нет'}</p>
+                        <p><strong>Сделок:</strong> ${result.trades_count}</p>
+                    `;
+                    
+                    statusDiv.style.display = 'block';
+                } else {
+                    showStatus('tradingResult', 'error', result.error);
+                }
+            } catch (error) {
+                showStatus('tradingResult', 'error', 'Ошибка при получении статуса: ' + error.message);
+            }
+        }
+
+        // Получение баланса
+        async function getBalance() {
+            try {
+                const response = await fetch('/api/trading/balance');
+                const result = await response.json();
+                
+                if (result.success) {
+                    const balanceDiv = document.getElementById('balanceStatus');
+                    const contentDiv = document.getElementById('balanceContent');
+                    
+                    contentDiv.innerHTML = `
+                        <p><strong>USDT:</strong> ${result.balance.USDT.toFixed(2)}</p>
+                        <p><strong>BTC:</strong> ${result.balance.BTC.toFixed(8)}</p>
+                    `;
+                    
+                    balanceDiv.style.display = 'block';
+                } else {
+                    showStatus('tradingResult', 'error', result.error);
+                }
+            } catch (error) {
+                showStatus('tradingResult', 'error', 'Ошибка при получении баланса: ' + error.message);
+            }
+        }
+
+        // Получение истории торговли
+        async function getTradingHistory() {
+            try {
+                const response = await fetch('/api/trading/history');
+                const result = await response.json();
+                
+                if (result.success) {
+                    const historyDiv = document.getElementById('tradingHistory');
+                    const contentDiv = document.getElementById('historyContent');
+                    
+                    if (result.trades && result.trades.length > 0) {
+                        let historyHTML = `<p><strong>Всего сделок:</strong> ${result.total_trades}</p>`;
+                        
+                        result.trades.forEach((trade, index) => {
+                            const tradeTime = new Date(trade.time).toLocaleString('ru-RU');
+                            const actionClass = trade.action === 'buy' ? 'buy' : 'sell';
+                            
+                            historyHTML += `
+                                <div class="trade-item">
+                                    <div class="trade-header">
+                                        <span class="trade-action ${actionClass}">${trade.action.toUpperCase()}</span>
+                                        <span>${tradeTime}</span>
+                                    </div>
+                                    <div class="trade-details">
+                                        <div class="trade-detail">
+                                            <div class="label">Цена</div>
+                                            <div class="value">$${trade.price}</div>
+                                        </div>
+                                        <div class="trade-detail">
+                                            <div class="label">Количество</div>
+                                            <div class="value">${trade.amount}</div>
+                                        </div>
+                                        ${trade.pnl ? `
+                                        <div class="trade-detail">
+                                            <div class="label">P&L</div>
+                                            <div class="value" style="color: ${trade.pnl >= 0 ? 'green' : 'red'}">
+                                                ${trade.pnl >= 0 ? '+' : ''}$${trade.pnl.toFixed(4)}
+                                            </div>
+                                        </div>
+                                        ` : ''}
+                                    </div>
+                                </div>
+                            `;
+                        });
+                        
+                        contentDiv.innerHTML = historyHTML;
+                    } else {
+                        contentDiv.innerHTML = '<p>История сделок пуста</p>';
+                    }
+                    
+                    historyDiv.style.display = 'block';
+                } else {
+                    showStatus('tradingResult', 'error', result.error);
+                }
+            } catch (error) {
+                showStatus('tradingResult', 'error', 'Ошибка при получении истории: ' + error.message);
+            }
+        }
+
+        // Запуск мониторинга
+        function startMonitoring() {
+            if (monitoringInterval) {
+                clearInterval(monitoringInterval);
+            }
+            
+            monitoringInterval = setInterval(() => {
+                getTradingStatus();
+                getBalance();
+            }, 30000); // 30 секунд
+            
+            document.getElementById('monitoringStatus').style.display = 'block';
+            showStatus('tradingResult', 'info', 'Мониторинг запущен');
+        }
+
+        // Остановка мониторинга
+        function stopMonitoring() {
+            if (monitoringInterval) {
+                clearInterval(monitoringInterval);
+                monitoringInterval = null;
+            }
+            
+            document.getElementById('monitoringStatus').style.display = 'none';
+            showStatus('tradingResult', 'info', 'Мониторинг остановлен');
+        }
+
+        // Показать статус
+        function showStatus(elementId, type, message) {
+            const element = document.getElementById(elementId);
+            element.textContent = message;
+            element.className = `status ${type}`;
+            element.style.display = 'block';
+            
+            // Автоскрытие через 5 секунд
+            setTimeout(() => {
+                element.style.display = 'none';
+            }, 5000);
+        }
+
+        // Автоматически получаем статус при загрузке страницы
+        window.addEventListener('load', () => {
+            loadModels();
+            getTradingStatus();
+            getBalance();
+        });
+    </script>
+</body>
+</html>

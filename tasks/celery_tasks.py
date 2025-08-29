@@ -8,6 +8,8 @@ import pandas as pd
 import json
 
 from utils.db_utils import db_get_or_fetch_ohlcv  # Импортируем функцию загрузки данных
+from datetime import datetime
+from celery.schedules import crontab
 
 # Настраиваем Celery с Redis как брокером и бекендом
 celery = Celery(
@@ -132,125 +134,67 @@ def train_dqn(self):
     return {"message": result}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
+def train_dqn_symbol(self, symbol: str):
+    """Обучение DQN для одного символа (BTCUSDT/ETHUSDT/...)
+
+    Загружает данные из БД, готовит 5m/15m/1h, запускает train_model_optimized.
+    """
+    self.update_state(state="IN_PROGRESS", meta={"progress": 0, "symbol": symbol})
+
+    try:
+        print(f"\n🚀 Старт обучения для {symbol} [{datetime.now()}]")
+        df_5min = db_get_or_fetch_ohlcv(
+            symbol_name=symbol,
+            timeframe='5m',
+            limit_candles=100000
+        )
+
+        if df_5min is None or df_5min.empty:
+            return {"message": f"❌ Данные для {symbol} не найдены"}
+
+        import pandas as pd
+        df_5min['datetime'] = pd.to_datetime(df_5min['timestamp'], unit='ms')
+        df_5min.set_index('datetime', inplace=True)
+
+        df_15min = df_5min.resample('15min').agg({
+            'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum',
+        }).dropna().reset_index()
+
+        df_1h = df_5min.resample('1h').agg({
+            'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum',
+        }).dropna().reset_index()
+
+        dfs = {
+            'df_5min': df_5min,
+            'df_15min': df_15min,
+            'df_1h': df_1h,
+        }
+
+        print(f"📈 {symbol}: 5m={len(df_5min)}, 15m={len(df_15min)}, 1h={len(df_1h)}")
+
+        result = train_model_optimized(dfs=dfs, episodes=10000)
+        return {"message": f"✅ Обучение {symbol} завершено: {result}"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"message": f"❌ Ошибка обучения {symbol}: {str(e)}"}
+
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
 def train_dqn_multi_crypto(self):
     """Задача для мультивалютного обучения DQN"""
-    
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
-    
     print("🚀 Начинаю мультивалютное обучение DQN...")
-    
-    # Список всех криптовалют для обучения
-    crypto_symbols = [
-        'BTCUSDT',  # Биткоин
-        'TONUSDT',  # TON
-        'ETHUSDT',  # Эфириум
-        'SOLUSDT',  # Solana
-        'ADAUSDT',  # Cardano
-        'BNBUSDT'   # Binance Coin
-    ]
-    
-    all_dfs = {}
-    
-    for symbol in crypto_symbols:
-        try:
-            print(f"📥 Загружаю {symbol}...")
-            
-            # Загружаем данные из базы
-            df_5min = db_get_or_fetch_ohlcv(
-                symbol_name=symbol, 
-                timeframe='5m', 
-                limit_candles=100000
-            )
-            
-            if df_5min is not None and not df_5min.empty:
-                print(f"  ✅ {symbol}: {len(df_5min)} свечей загружено")
-                
-                # Подготавливаем данные для этого символа
-                df_5min['datetime'] = pd.to_datetime(df_5min['timestamp'], unit='ms')
-                df_5min.set_index('datetime', inplace=True)
-                
-                # Создаем 15-минутные и 1-часовые данные
-                df_15min = df_5min.resample('15min').agg({
-                    'open': 'first',
-                    'high': 'max',
-                    'low': 'min',
-                    'close': 'last',
-                    'volume': 'sum',
-                }).dropna().reset_index()
-                
-                df_1h = df_5min.resample('1h').agg({
-                    'open': 'first',
-                    'high': 'max',
-                    'low': 'min',
-                    'close': 'last',
-                    'volume': 'sum',
-                }).dropna().reset_index()
-                
-                # Сохраняем в общий словарь
-                all_dfs[symbol] = {
-                    'df_5min': df_5min,
-                    'df_15min': df_15min,
-                    'df_1h': df_1h,
-                    'symbol': symbol,
-                    'candle_count': len(df_5min)
-                }
-                
-            else:
-                print(f"  ⚠️ {symbol}: данные не найдены, пропускаем")
-                
-        except Exception as e:
-            print(f"  ❌ {symbol}: ошибка загрузки - {e}")
-            continue
-    
-    if not all_dfs:
-        print("❌ Не удалось загрузить данные ни для одной криптовалюты")
-        return {"message": "Ошибка: данные не загружены"}
-    
-    print(f"\n📈 Успешно загружено {len(all_dfs)} криптовалют")
-    
-    # Проверяем количество свечей
-    for symbol, data in all_dfs.items():
-        print(f"  • {symbol}: {data['candle_count']} свечей")
-    
-    # Запускаем мультивалютное обучение
-    print(f"\n🎯 Запуск мультивалютного обучения...")
-    
-    # Проверяем структуру данных перед передачей
-    print("\n🔍 Проверка структуры данных:")
-    for symbol, data in all_dfs.items():
-        print(f"  {symbol}:")
-        print(f"    df_5min: {type(data['df_5min'])} - {len(data['df_5min'])} строк")
-        print(f"    df_15min: {type(data['df_15min'])} - {len(data['df_15min'])} строк")
-        print(f"    df_1h: {type(data['df_1h'])} - {len(data['df_1h'])} строк")
-        print(f"    symbol: {data['symbol']}")
-        print(f"    candle_count: {data['candle_count']}")
-    
     try:
-        # Импортируем функцию мультивалютного обучения
-        from agents.vdqn.v_train_model_optimized import train_model_optimized
-        
-        # ИСПРАВЛЕНИЕ: Передаем ВСЕ данные криптовалют для мультивалютного обучения
-        print(f"🎯 Передаем данные всех {len(all_dfs)} криптовалют для мультивалютного обучения")
-        print(f"📊 Структура данных для мультивалютного обучения:")
-        for symbol, data in all_dfs.items():
-            print(f"  • {symbol}: {data['candle_count']} свечей")
-        
-        print(f"🚀 Запуск МУЛЬТИВАЛЮТНОГО обучения:")
-        print(f"  • Автоматическое переключение между криптовалютами для каждого эпизода")
-        print(f"  • Случайный выбор криптовалюты при каждом reset()")
-        print(f"  • Обучение на разнообразных рыночных условиях")
-        print(f"  • Более стабильная модель благодаря разнообразию данных")
-        
-        # Передаем все данные криптовалют в мультивалютное окружение
-        result = train_model_optimized(dfs=all_dfs, episodes=10001, use_wandb=False)
+        # Новый модуль для мульти-обучения
+        from agents.multi.v_train_multi import train_multi
+        result = train_multi(symbols=[
+            'BTCUSDT','TONUSDT','ETHUSDT','SOLUSDT','ADAUSDT','BNBUSDT'
+        ], episodes=10001)
         return {"message": f"Мультивалютное обучение завершено: {result}"}
     except Exception as e:
-        error_msg = f"Ошибка при мультивалютном обучении: {str(e)}"
-        print(f"❌ {error_msg}")
         import traceback
-        print(f"🔍 Полный traceback:")
         traceback.print_exc()
-        return {"message": error_msg}
+        return {"message": f"Ошибка мульти-обучения: {str(e)}"}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
 def trade_step():
@@ -262,5 +206,71 @@ def trade_step():
     # Здесь ты можешь сделать реальный ордер через API биржи
 
     return f"Торговое действие: {action}"
+
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
+def start_trading_task(self, symbols, model_path=None):
+    """
+    Task to start trading in the trading_agent container every 5 minutes.
+    """
+    import docker
+    
+    self.update_state(state="IN_PROGRESS", meta={"progress": 0})
+    
+    # Connect to Docker
+    client = docker.from_env()
+    
+    try:
+        # Get the trading_agent container
+        container = client.containers.get('trading_agent')
+        
+        # Check if the container is running
+        if container.status != 'running':
+            return {"success": False, "error": f'Container trading_agent is not running. Status: {container.status}'}
+        
+        # Start trading via exec
+        if model_path:
+            cmd = f'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); result = agent.start_trading(symbols={symbols}); print(\\"RESULT: \\" + json.dumps(result))"'
+        else:
+            cmd = f'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.start_trading(symbols={symbols}); print(\\"RESULT: \\" + json.dumps(result))"'
+        
+        exec_result = container.exec_run(cmd, tty=True)
+        
+        # Log the execution result
+        print(f"Start trading - Command: {cmd}")
+        print(f"Start trading - Exit code: {exec_result.exit_code}")
+        if exec_result.output:
+            output_str = exec_result.output.decode('utf-8')
+            print(f"Start trading - Output: {output_str}")
+        
+        if exec_result.exit_code == 0:
+            output = exec_result.output.decode('utf-8')
+            # Log the result
+            if 'RESULT:' in output:
+                result_str = output.split('RESULT:')[1].strip()
+                try:
+                    import json
+                    result = json.loads(result_str)
+                    return result
+                except:
+                    return {"success": True, "message": f'Trading started for {symbols}', "output": output}
+            else:
+                return {"success": True, "message": f'Trading started for {symbols}', "output": output}
+        else:
+            return {"success": False, "error": f'Command execution error: {exec_result.output.decode("utf-8")}'}
+        
+    except docker.errors.NotFound:
+        return {"success": False, "error": 'Container trading_agent not found. Start it with docker-compose up trading_agent'}
+    except Exception as e:
+        return {"success": False, "error": f'Docker error: {str(e)}'}
+
+celery.conf.beat_schedule = {
+    'start-trading-every-5-minutes': {
+        'task': 'tasks.celery_tasks.start_trading_task',
+        'schedule': crontab(minute='*/5'),
+        'args': (['BTC/USDT'], '/workspace/good_model/dqn_model.pth')  # Replace with desired symbols and model path
+    },
+}
+
+celery.conf.timezone = 'UTC'
 
    

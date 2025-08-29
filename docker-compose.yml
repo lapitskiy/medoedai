@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:14
@@ -50,6 +48,7 @@ services:
       FLASK_DEBUG: "False"
     volumes:
       - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock  # Добавлено для доступа к Docker API
     working_dir: /workspace
     command: >
       sh -c "
@@ -87,9 +86,10 @@ services:
       - .env
     volumes:
       - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /workspace
     command: ["celery", "-A", "tasks.celery_tasks", "worker",
-              "-Q", "train", "-P", "solo", "-c", "1", "--loglevel=info"]
+              "-Q", "train,celery", "-P", "solo", "-c", "1", "--loglevel=info"]
     deploy:
       resources:
         reservations:
@@ -119,6 +119,48 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  trading_agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.trading_agent
+    container_name: trading_agent
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - BYBIT_API_KEY=${BYBIT_API_KEY:-}
+      - BYBIT_SECRET_KEY=${BYBIT_SECRET_KEY:-}
+      - TRADING_MODE=${TRADING_MODE:-sandbox}
+    volumes:
+      - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock  # Добавлено для доступа к Docker API
+    working_dir: /workspace
+    command: ["sleep", "infinity"]  # Добавлено для удержания контейнера в активном состоянии
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]    
+
+  celery-beat:
+    build: .
+    container_name: celery-beat
+    command: ["celery", "-A", "tasks.celery_tasks", "beat", "--loglevel=info"]
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    volumes:
+      - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: /workspace
+    depends_on:
+      - redis
+      - celery-worker
+    restart: unless-stopped
 
 volumes:
   pgdata:

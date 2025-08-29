@@ -64,3 +64,4 @@ binance_historical_data
 alembic
 PySocks
 torch
+docker

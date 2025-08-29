@@ -518,16 +518,32 @@ def train_model_optimized(
         dqn_solver.save()
         
         # Сохраняем детальные результаты обучения
+        # Определяем список плохих сделок (убыточные сделки)
+        bad_trades_list = []
+        try:
+            if all_trades:
+                bad_trades_list = [t for t in all_trades if t.get('roi', 0) < 0]
+        except Exception:
+            bad_trades_list = []
+
+        bad_trades_count = len(bad_trades_list)
+        total_trades_count = len(all_trades) if all_trades else 0
+        bad_trades_percentage = (bad_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
+
         training_results = {
             'episodes': episodes,  # Планируемое количество эпизодов
             'actual_episodes': episode,  # Реальное количество завершенных эпизодов (текущий эпизод)
             'total_training_time': total_training_time,
             'episode_winrates': episode_winrates,
             'all_trades': all_trades,
+            'bad_trades': bad_trades_list,
+            'bad_trades_count': bad_trades_count,
+            'bad_trades_percentage': bad_trades_percentage,
             'best_winrate': best_winrate,
             'final_stats': stats_all,
             'training_date': time.strftime('%Y-%m-%d %H:%M:%S'),
             'model_path': 'dqn_model.pth',
+            'symbol': training_name,
             'early_stopping_triggered': episode < episodes  # True если early stopping сработал
         }
         

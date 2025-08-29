@@ -837,24 +837,34 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.buy_attempts += 1
         
         # ВКЛЮЧАЕМ ФИЛЬТРЫ ДЛЯ УЛУЧШЕНИЯ КАЧЕСТВА СДЕЛОК
+        # На фазе исследования (высокая epsilon) сильно ослабляем/пропускаем фильтры,
+        # чтобы агент получал опыт и сделки не были редкими
+        try:
+            if getattr(self, 'epsilon', 1.0) > 0.2:
+                return True
+        except Exception:
+            pass
         
         # 1. Проверка объема - АДАПТИВНЫЙ порог
         current_volume = self.df_5min[self.current_step - 1, 4]
         vol_relative = calc_relative_vol_numpy(self.df_5min, self.current_step - 1, 12)
         
-        if vol_relative < self.volume_threshold:
+        # Ослабляем порог объёма: используем максимум между конфигом и мягким значением
+        vol_thr = max(getattr(self, 'volume_threshold', 0.0005), 0.0010)
+        if vol_relative < vol_thr:
             self.buy_rejected_vol += 1
             if self.current_step % 100 == 0:
-                print(f"🔍 Фильтр объема: vol_relative={vol_relative:.4f} < {self.volume_threshold:.4f}, отклонено")
+                print(f"🔍 Фильтр объема: vol_relative={vol_relative:.4f} < {vol_thr:.4f}, отклонено")
             return False
         
         # 2. Проверка ROI - УЛУЧШЕНО: Более умный фильтр
         if len(self.roi_buf) > 0:
             recent_roi_mean = np.mean(list(self.roi_buf))
-            if recent_roi_mean < -0.04:  # Ужесточаем с -5% до -4%
+            # Ослабляем ограничение для исследования
+            if recent_roi_mean < -0.06:
                 self.buy_rejected_roi += 1
                 if self.current_step % 100 == 0:
-                    print(f"🔍 Фильтр ROI: recent_roi_mean={recent_roi_mean:.4f} < -0.04, отклонено")
+                    print(f"🔍 Фильтр ROI: recent_roi_mean={recent_roi_mean:.4f} < -0.06, отклонено")
                 return False
         
         # 3. НОВЫЙ: Фильтр по тренду цены
@@ -871,9 +881,10 @@ class CryptoTradingEnvOptimized(gym.Env):
             recent_highs = self.df_5min[self.current_step-12:self.current_step, 1]  # High prices
             recent_lows = self.df_5min[self.current_step-12:self.current_step, 2]   # Low prices
             volatility = np.mean((recent_highs - recent_lows) / recent_lows)
-            if volatility < 0.005:  # Слишком низкая волатильность
+            # Ослабляем порог волатильности
+            if volatility < 0.002:
                 if self.current_step % 100 == 0:
-                    print(f"🔍 Фильтр волатильности: volatility={volatility:.4f} < 0.005, отклонено")
+                    print(f"🔍 Фильтр волатильности: volatility={volatility:.4f} < 0.002, отклонено")
                 return False
         
         # 5. НОВЫЙ: Фильтр по силе тренда (ADX-подобный)
@@ -883,9 +894,10 @@ class CryptoTradingEnvOptimized(gym.Env):
             price_changes = np.diff(recent_prices)
             trend_strength = np.abs(np.mean(price_changes)) / (np.std(price_changes) + 1e-8)
             
-            if trend_strength < 0.3:  # Слишком слабый тренд
+            # Ослабляем порог силы тренда
+            if trend_strength < 0.15:
                 if self.current_step % 100 == 0:
-                    print(f"🔍 Фильтр тренда: trend_strength={trend_strength:.4f} < 0.3, отклонено")
+                    print(f"🔍 Фильтр тренда: trend_strength={trend_strength:.4f} < 0.15, отклонено")
                 return False
         
         # Все фильтры пройдены - разрешаем покупку

@@ -257,19 +257,45 @@
                 <p>Запустите обучение Deep Q-Network модели для торговли криптовалютами</p>
                 
                 <div class="button-group">
-                    <form action="/train_dqn" method="post" style="display: inline;">
-                        <input type="hidden" name="query" value="test_query">
-                        <button type="submit" class="btn btn-primary">
-                            🚀 Запустить DQN обучение (BTC)
-                        </button>
+                    <form action="/train_dqn_symbol" method="post" style="display: inline;">
+                        <input type="hidden" name="symbol" value="BTCUSDT">
+                        <button type="submit" class="btn btn-primary">🚀 Обучить BTC</button>
                     </form>
-                    
+                    <form action="/train_dqn_symbol" method="post" style="display: inline;">
+                        <input type="hidden" name="symbol" value="TONUSDT">
+                        <button type="submit" class="btn btn-primary">🚀 Обучить TON</button>
+                    </form>
+                    <form action="/train_dqn_symbol" method="post" style="display: inline;">
+                        <input type="hidden" name="symbol" value="ETHUSDT">
+                        <button type="submit" class="btn btn-primary">🚀 Обучить ETH</button>
+                    </form>
+                    <form action="/train_dqn_symbol" method="post" style="display: inline;">
+                        <input type="hidden" name="symbol" value="SOLUSDT">
+                        <button type="submit" class="btn btn-primary">🚀 Обучить SOL</button>
+                    </form>
+                    <form action="/train_dqn_symbol" method="post" style="display: inline;">
+                        <input type="hidden" name="symbol" value="ADAUSDT">
+                        <button type="submit" class="btn btn-primary">🚀 Обучить ADA</button>
+                    </form>
+                    <form action="/train_dqn_symbol" method="post" style="display: inline;">
+                        <input type="hidden" name="symbol" value="BNBUSDT">
+                        <button type="submit" class="btn btn-primary">🚀 Обучить BNB</button>
+                    </form>
                     <form action="/train_dqn_multi_crypto" method="post" style="display: inline;">
-                        <input type="hidden" name="query" value="test_query">
-                        <button type="submit" class="btn btn-success">
-                            🌟 Запустить DQN обучение (Все криптовалюты)
-                        </button>
+                        <button type="submit" class="btn btn-success">🌟 Обучить мультивалютную</button>
                     </form>
+                </div>
+            </div>
+
+            <!-- Секция торгового агента -->
+            <div class="section">
+                <h2>💰 Торговый агент</h2>
+                <p>Управление торговлей на реальном рынке через обученную модель</p>
+                
+                <div class="button-group">
+                    <a href="/trading_agent" class="btn btn-primary">
+                        🚀 Торговый агент
+                    </a>
                 </div>
             </div>
 
@@ -320,6 +346,8 @@
                     </a>
                 </div>
             </div>
+
+
 
             <!-- Секция данных -->
             <div class="section">
