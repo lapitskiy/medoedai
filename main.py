@@ -122,11 +122,13 @@ def ensure_symbol_worker(queue_name: str) -> dict:
         import docker
         client = docker.from_env()
         container = client.containers.get('celery-worker')
+        app.logger.info(f"[ensure_worker] container 'celery-worker' status={container.status}")
 
         # Проверяем по процессам внутри контейнера
         check_cmd = f"sh -lc 'pgrep -af \"celery.*-Q {queue_name}\" >/dev/null 2>&1'"
         exec_res = container.exec_run(check_cmd, tty=True)
         already_running = (exec_res.exit_code == 0)
+        app.logger.info(f"[ensure_worker] check queue={queue_name} exit={exec_res.exit_code}")
 
         if already_running:
             # Ставим метку в Redis и выходим
@@ -144,7 +146,12 @@ def ensure_symbol_worker(queue_name: str) -> dict:
             f"> /workspace/logs/{queue_name}.log 2>&1 & echo $! > /workspace/logs/{queue_name}.pid) "
             "'"
         )
-        container.exec_run(start_cmd, tty=True)
+        res = container.exec_run(start_cmd, tty=True)
+        app.logger.info(f"[ensure_worker] start queue={queue_name} exit={res.exit_code}")
+
+        # Повторная проверка
+        exec_res2 = container.exec_run(check_cmd, tty=True)
+        app.logger.info(f"[ensure_worker] recheck queue={queue_name} exit={exec_res2.exit_code}")
 
         # Отмечаем в Redis
         try:
@@ -154,6 +161,7 @@ def ensure_symbol_worker(queue_name: str) -> dict:
 
         return {"started": True}
     except Exception as e:
+        app.logger.error(f"[ensure_worker] error: {e}")
         return {"started": False, "error": str(e)}
 
 @app.before_request
@@ -257,12 +265,14 @@ def train_dqn_symbol_route():
 
     # Гарантируем воркера на эту очередь
     try:
-        ensure_symbol_worker(queue_name)
+        ensure_info = ensure_symbol_worker(queue_name)
+        app.logger.info(f"/train_dqn_symbol ensure_info={ensure_info}")
     except Exception as _e:
         app.logger.error(f"Не удалось гарантировать воркера для {queue_name}: {_e}")
 
     # Отправляем задачу в специализированную очередь
     task = train_dqn_symbol.apply_async(args=[symbol], queue=queue_name)
+    app.logger.info(f"/train_dqn_symbol queued symbol={symbol} queue={queue_name} task_id={task.id}")
     return redirect(url_for("index"))
 
 
