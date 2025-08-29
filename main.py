@@ -172,19 +172,39 @@ def log_request_info():
 @app.route("/")
 def index():
     """Возвращает список всех задач Celery и их состояние"""
-    task_ids = redis_client.keys("celery-task-meta-*")  # Ищем все задачи
-    print(f"task_ids {print(task_ids)}")
     tasks = []
 
-    for task_id in task_ids:
-        task_id = task_id.decode("utf-8").replace("celery-task-meta-", "")
-        task = AsyncResult(task_id, app=celery)
+    # 1) Показываем последние отправленные задачи из списка ui:tasks
+    try:
+        recent_ids = redis_client.lrange("ui:tasks", 0, 49) or []
+        for raw_id in recent_ids:
+            try:
+                task_id = raw_id.decode("utf-8")
+            except Exception:
+                task_id = str(raw_id)
+            task = AsyncResult(task_id, app=celery)
+            tasks.append({
+                "task_id": task_id,
+                "state": task.state,
+                "result": task.result if task.successful() else None
+            })
+    except Exception as _e:
+        app.logger.error(f"/ index: ошибка чтения ui:tasks: {_e}")
 
-        tasks.append({
-            "task_id": task_id,
-            "state": task.state,
-            "result": task.result if task.successful() else None
-        })
+    # 2) Fallback: сканируем backend по ключам (может быть пусто для PENDING)
+    if not tasks:
+        try:
+            task_keys = redis_client.keys("celery-task-meta-*") or []
+            for key in task_keys:
+                task_id = key.decode("utf-8").replace("celery-task-meta-", "")
+                task = AsyncResult(task_id, app=celery)
+                tasks.append({
+                    "task_id": task_id,
+                    "state": task.state,
+                    "result": task.result if task.successful() else None
+                })
+        except Exception as _e:
+            app.logger.error(f"/ index: ошибка сканирования backend: {_e}")
 
     return render_template("index.html", tasks=tasks)
 
@@ -273,6 +293,13 @@ def train_dqn_symbol_route():
     # Отправляем задачу в специализированную очередь
     task = train_dqn_symbol.apply_async(args=[symbol], queue=queue_name)
     app.logger.info(f"/train_dqn_symbol queued symbol={symbol} queue={queue_name} task_id={task.id}")
+    # Сохраняем task_id для отображения на главной
+    try:
+        redis_client.lrem("ui:tasks", 0, task.id)  # убираем дубликаты
+        redis_client.lpush("ui:tasks", task.id)
+        redis_client.ltrim("ui:tasks", 0, 49)     # ограничиваем список
+    except Exception as _e:
+        app.logger.error(f"/train_dqn_symbol: не удалось записать ui:tasks: {_e}")
     return redirect(url_for("index"))
 
 
