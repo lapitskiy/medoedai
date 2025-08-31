@@ -153,9 +153,12 @@ def train_model_optimized(
         result_dir = os.path.join("result")
         os.makedirs(result_dir, exist_ok=True)
         symbol_code = _symbol_code(crypto_symbol)
-        # Обновляем пути сохранения в конфиге, чтобы все сохранения шли в result/
-        cfg.model_path = os.path.join(result_dir, f"dqn_model_{symbol_code}.pth")
-        cfg.buffer_path = os.path.join(result_dir, f"replay_buffer_{symbol_code}.pkl")
+        # Короткий UUID для версионирования
+        import uuid
+        short_id = str(uuid.uuid4())[:4].lower()
+        # Обновляем пути сохранения в конфиге, чтобы все сохранения шли в result/ с суффиксом id
+        cfg.model_path = os.path.join(result_dir, f"dqn_model_{symbol_code}_{short_id}.pth")
+        cfg.buffer_path = os.path.join(result_dir, f"replay_buffer_{symbol_code}_{short_id}.pkl")
         
         # Создаем DQN solver
         print(f"🚀 Создаю DQN solver")
@@ -164,6 +167,12 @@ def train_model_optimized(
             observation_space=env.observation_space_shape,
             action_space=env.action_space.n
         )
+        # ВАЖНО: переназначаем пути сохранения под result/<symbol>_<id>
+        try:
+            dqn_solver.cfg.model_path = cfg.model_path
+            dqn_solver.cfg.buffer_path = cfg.buffer_path
+        except Exception:
+            pass
         
         # 🚀 Дополнительная оптимизация PyTorch 2.x
         if torch.cuda.is_available():
@@ -563,8 +572,10 @@ def train_model_optimized(
             'best_winrate': best_winrate,
             'final_stats': stats_all,
             'training_date': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'model_path': 'dqn_model.pth',
+            'model_path': cfg.model_path,
+            'buffer_path': cfg.buffer_path,
             'symbol': training_name,
+            'model_id': short_id,
             'early_stopping_triggered': episode < episodes  # True если early stopping сработал
         }
         
@@ -572,8 +583,8 @@ def train_model_optimized(
         results_dir = os.path.join("result")
         os.makedirs(results_dir, exist_ok=True)
         
-        # Сохраняем результаты в файле c символом
-        results_file = os.path.join(results_dir, f'train_result_{symbol_code}.pkl')
+        # Сохраняем результаты в файле c символом и id
+        results_file = os.path.join(results_dir, f'train_result_{symbol_code}_{short_id}.pkl')
         with open(results_file, 'wb') as f:
             pickle.dump(training_results, f, protocol=HIGHEST_PROTOCOL)
         

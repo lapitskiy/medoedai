@@ -168,11 +168,12 @@ def train_dqn_symbol(self, symbol: str):
             'df_5min': df_5min,
             'df_15min': df_15min,
             'df_1h': df_1h,
+            'symbol': symbol,
         }
 
         print(f"📈 {symbol}: 5m={len(df_5min)}, 15m={len(df_15min)}, 1h={len(df_1h)}")
 
-        result = train_model_optimized(dfs=dfs, episodes=10000)
+        result = train_model_optimized(dfs=dfs, episodes=5)
         return {"message": f"✅ Обучение {symbol} завершено: {result}"}
     except Exception as e:
         import traceback
@@ -213,6 +214,11 @@ def start_trading_task(self, symbols, model_path=None):
     Task to start trading in the trading_agent container every 5 minutes.
     """
     import docker
+    import os
+
+    # Защита: если beat не должен работать, выходим сразу (даже если старое расписание осталось)
+    if os.environ.get('ENABLE_TRADING_BEAT', '0') not in ('1', 'true', 'True'):
+        return {"success": False, "skipped": True, "reason": "ENABLE_TRADING_BEAT=0"}
     
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
     

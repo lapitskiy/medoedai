@@ -1,3 +1,78 @@
+from typing import List, Dict, Any
+import numpy as np
+
+
+def analyze_bad_trades_detailed(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Простой анализ плохих сделок.
+    Ожидается, что каждая сделка имеет ключи: 'roi' (прибыль в долях), 'duration' (в минутах, опц.).
+    """
+    if not trades:
+        return {
+            'bad_trades': [],
+            'bad_trades_count': 0,
+            'bad_trades_percentage': 0.0,
+            'avg_bad_roi': 0.0,
+            'avg_bad_duration': 0.0,
+            'loss_distribution': {},
+        }
+
+    total_trades = len(trades)
+    bad_trades = [t for t in trades if float(t.get('roi', 0.0)) < 0.0]
+    bad_count = len(bad_trades)
+    bad_pct = (bad_count / total_trades * 100.0) if total_trades else 0.0
+
+    bad_rois = [float(t.get('roi', 0.0)) for t in bad_trades]
+    bad_durations = [float(t.get('duration', 0.0)) for t in bad_trades if t.get('duration') is not None]
+
+    avg_bad_roi = float(np.mean(bad_rois)) if bad_rois else 0.0
+    avg_bad_duration = float(np.mean(bad_durations)) if bad_durations else 0.0
+
+    # Грубая категоризация убытков
+    loss_distribution = {
+        'very_small_losses': sum(1 for r in bad_rois if -0.002 <= r < 0),     # до -0.2%
+        'small_losses':      sum(1 for r in bad_rois if -0.01 <= r < -0.002), # до -1%
+        'medium_losses':     sum(1 for r in bad_rois if -0.03 <= r < -0.01),  # до -3%
+        'large_losses':      sum(1 for r in bad_rois if r < -0.03),           # больше -3%
+    }
+
+    return {
+        'bad_trades': bad_trades,
+        'bad_trades_count': bad_count,
+        'bad_trades_percentage': bad_pct,
+        'avg_bad_roi': avg_bad_roi,
+        'avg_bad_duration': avg_bad_duration,
+        'loss_distribution': loss_distribution,
+    }
+
+
+def print_bad_trades_analysis(analysis: Dict[str, Any]) -> None:
+    print("============================================================")
+    print("📉 АНАЛИЗ ПЛОХИХ СДЕЛОК")
+    print("============================================================")
+    print(f"Всего плохих сделок: {analysis.get('bad_trades_count', 0)}")
+    print(f"Процент плохих сделок: {analysis.get('bad_trades_percentage', 0):.2f}%")
+    print(f"Средний ROI плохих сделок: {analysis.get('avg_bad_roi', 0.0) * 100:.4f}%")
+    print(f"Средняя длительность плохих сделок: {analysis.get('avg_bad_duration', 0.0):.1f} мин")
+    dist = analysis.get('loss_distribution', {})
+    if dist:
+        print("\nРаспределение по убыткам:")
+        for k, v in dist.items():
+            print(f"  • {k}: {v}")
+
+
+def print_detailed_recommendations(analysis: Dict[str, Any]) -> None:
+    print("\n============================================================")
+    print("🧠 РЕКОМЕНДАЦИИ ПО СНИЖЕНИЮ ПЛОХИХ СДЕЛОК")
+    print("============================================================")
+    bad_pct = analysis.get('bad_trades_percentage', 0)
+    avg_bad_roi = analysis.get('avg_bad_roi', 0.0)
+    if bad_pct > 5:
+        print("• Ужесточить фильтр объема/волатильности в фазе exploitation (eps<=0.2)")
+    if avg_bad_roi < -0.01:
+        print("• Поднять стоп-лосс (меньше просадка), увеличить минимальное время удержания")
+    print("• Проверьте распределение: very_small_losses → можно игнорировать как шум")
+    print("• Подкрутите take-profit/stop-loss через адаптивные параметры")
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """

@@ -374,8 +374,19 @@ def analyze_training_results():
                 'success': False
             }), 404
         
-        # Берем самый свежий файл
-        latest_file = max(result_files, key=os.path.getctime)
+        # Опционально берём конкретный файл из тела запроса
+        data = request.get_json(silent=True) or {}
+        requested_file = data.get('file')
+        selected_file = None
+        if requested_file:
+            # Простая валидация: путь внутри result/
+            safe_path = os.path.abspath(requested_file)
+            base_path = os.path.abspath(results_dir)
+            if safe_path.startswith(base_path) and os.path.exists(safe_path):
+                selected_file = safe_path
+        # Если не указан/невалиден — берём самый свежий
+        if not selected_file:
+            selected_file = max(result_files, key=os.path.getctime)
         
         # Импортируем функцию анализа
         try:
@@ -391,7 +402,7 @@ def analyze_training_results():
         # Загружаем результаты для дополнительного анализа
         try:
             import pickle
-            with open(latest_file, 'rb') as f:
+            with open(selected_file, 'rb') as f:
                 results = pickle.load(f)
             
             # Добавляем информацию об actual_episodes
@@ -407,7 +418,7 @@ def analyze_training_results():
             print(f"⚠️ Не удалось загрузить детали результатов: {e}")
         
         # Запускаем анализ
-        print(f"📊 Анализирую результаты из файла: {latest_file}")
+        print(f"📊 Анализирую результаты из файла: {selected_file}")
         
         # Временно перенаправляем stdout для захвата вывода
         import io
@@ -416,7 +427,7 @@ def analyze_training_results():
         
         output = io.StringIO()
         with redirect_stdout(output):
-            analyze_func(latest_file)
+            analyze_func(selected_file)
         
         analysis_output = output.getvalue()
         
@@ -425,7 +436,7 @@ def analyze_training_results():
             'status': 'success',
             'message': 'Анализ результатов завершен успешно',
             'success': True,
-            'file_analyzed': latest_file,
+            'file_analyzed': selected_file,
             'output': analysis_output,
             'available_files': result_files
         }
@@ -551,23 +562,61 @@ def analyze_bad_trades():
                 'success': False
             }), 404
         
-        # Берем самый свежий файл
-        latest_file = max(result_files, key=os.path.getctime)
+        # Выбор конкретного файла из тела запроса (если указан)
+        data = request.get_json(silent=True) or {}
+        requested_file = data.get('file')
+        selected_file = None
+        if requested_file:
+            safe_path = os.path.abspath(requested_file)
+            base_path = os.path.abspath(results_dir)
+            if safe_path.startswith(base_path) and os.path.exists(safe_path):
+                selected_file = safe_path
+        if not selected_file:
+            selected_file = max(result_files, key=os.path.getctime)
         
-        # Импортируем функцию анализа плохих сделок
+        # Импортируем функцию анализа плохих сделок (с fallback без зависимостей)
         try:
             from analyze_bad_trades import analyze_bad_trades_detailed, print_bad_trades_analysis, print_detailed_recommendations
-        except ImportError:
-            return jsonify({
-                'status': 'error',
-                'message': 'Модуль анализа плохих сделок не найден. Установите зависимости.',
-                'success': False
-            }), 500
+        except ImportError as e:
+            app.logger.warning(f"Fallback analyze_bad_trades (ImportError: {e})")
+            import numpy as _np
+            def analyze_bad_trades_detailed(trades):
+                if not trades:
+                    return {
+                        'bad_trades': [], 'bad_trades_count': 0,
+                        'bad_trades_percentage': 0.0, 'avg_bad_roi': 0.0,
+                        'avg_bad_duration': 0.0, 'loss_distribution': {},
+                    }
+                total = len(trades)
+                bad = [t for t in trades if float(t.get('roi', 0.0)) < 0.0]
+                bad_rois = [float(t.get('roi', 0.0)) for t in bad]
+                bad_durs = [float(t.get('duration', 0.0)) for t in bad if t.get('duration') is not None]
+                return {
+                    'bad_trades': bad,
+                    'bad_trades_count': len(bad),
+                    'bad_trades_percentage': (len(bad)/total*100.0) if total else 0.0,
+                    'avg_bad_roi': float(_np.mean(bad_rois)) if bad_rois else 0.0,
+                    'avg_bad_duration': float(_np.mean(bad_durs)) if bad_durs else 0.0,
+                    'loss_distribution': {
+                        'very_small_losses': sum(1 for r in bad_rois if -0.002 <= r < 0),
+                        'small_losses':      sum(1 for r in bad_rois if -0.01  <= r < -0.002),
+                        'medium_losses':     sum(1 for r in bad_rois if -0.03  <= r < -0.01),
+                        'large_losses':      sum(1 for r in bad_rois if r < -0.03),
+                    }
+                }
+            def print_bad_trades_analysis(analysis):
+                print("📉 АНАЛИЗ ПЛОХИХ СДЕЛОК")
+                print(f"Всего плохих сделок: {analysis.get('bad_trades_count', 0)}")
+                print(f"Процент плохих сделок: {analysis.get('bad_trades_percentage', 0):.2f}%")
+                print(f"Средний ROI плохих сделок: {analysis.get('avg_bad_roi', 0.0)*100:.4f}%")
+                print(f"Средняя длительность плохих сделок: {analysis.get('avg_bad_duration', 0.0):.1f} мин")
+            def print_detailed_recommendations(analysis):
+                print("🧠 РЕКОМЕНДАЦИИ: ")
         
         # Загружаем результаты для анализа
         try:
             import pickle
-            with open(latest_file, 'rb') as f:
+            with open(selected_file, 'rb') as f:
                 results = pickle.load(f)
             
             # Проверяем наличие сделок
@@ -603,7 +652,7 @@ def analyze_bad_trades():
                 'status': 'success',
                 'message': 'Анализ плохих сделок завершен успешно',
                 'success': True,
-                'file_analyzed': latest_file,
+                'file_analyzed': selected_file,
                 'output': analysis_output,
                 'bad_trades_count': bad_trades_analysis.get('bad_trades_count', 0),
                 'bad_trades_percentage': bad_trades_analysis.get('bad_trades_percentage', 0),

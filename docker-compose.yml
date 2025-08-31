@@ -82,14 +82,22 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       DISABLE_TORCH_COMPILE: "true"   # Отключить torch.compile для Tesla P100
       FORCE_DISABLE_TORCH_COMPILE: "true"  # Дополнительная защита
+      # Параллелизм Celery
+      CELERY_POOL: prefork
+      CELERY_CONCURRENCY: "6"
+      # Ограничение потоков внутри NumPy/MKL/Torch
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      TORCH_NUM_THREADS: "4"
+      # Явно скрыть GPU для воркера
+      CUDA_VISIBLE_DEVICES: ""
     env_file:
       - .env
     volumes:
       - .:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /workspace
-    command: ["celery", "-A", "tasks.celery_tasks", "worker",
-              "-Q", "train,celery", "-P", "solo", "-c", "1", "--loglevel=info"]
+    command: ["sh","-lc","celery -A tasks.celery_tasks worker -Q train,celery -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-6} --loglevel=info"]
     deploy:
       resources:
         reservations:

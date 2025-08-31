@@ -57,7 +57,11 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.trade_fee_percent = 0.00075 # Комиссия 0.075%
         
         # Адаптивные параметры риск-менеджмента
-        self.symbol = getattr(dfs, 'symbol', 'BTCUSDT')  # Получаем символ криптовалюты
+        # Корректно извлекаем символ из dfs (dict) или объекта
+        if isinstance(dfs, dict):
+            self.symbol = dfs.get('symbol', 'BTCUSDT')
+        else:
+            self.symbol = getattr(dfs, 'symbol', 'BTCUSDT')
         
         if ADAPTIVE_NORMALIZATION_AVAILABLE:
             # Получаем адаптивные параметры для конкретной криптовалюты
@@ -771,8 +775,7 @@ class CryptoTradingEnvOptimized(gym.Env):
                     # Низкая ликвидность - повышенная награда за смелость
                     # Агент учится торговать в сложных условиях
                     reward += base_activity_reward * 1.5
-                    if self._can_log:
-                        print(f"🎯 Повышенная награда за торговлю в {current_hour}:00 UTC (низкая ликвидность)")
+                    
             else:
                 # Если нет информации о времени - стандартная награда
                 reward += base_activity_reward
@@ -836,21 +839,30 @@ class CryptoTradingEnvOptimized(gym.Env):
         """
         self.buy_attempts += 1
         
-        # ВКЛЮЧАЕМ ФИЛЬТРЫ ДЛЯ УЛУЧШЕНИЯ КАЧЕСТВА СДЕЛОК
-        # На фазе исследования (высокая epsilon) сильно ослабляем/пропускаем фильтры,
-        # чтобы агент получал опыт и сделки не были редкими
+        # АДАПТИВНАЯ СТРОГОСТЬ ФИЛЬТРОВ ПО ЭПСИЛОНУ
+        # eps > 0.8 → свободное исследование (почти без фильтров)
+        # eps 0.8..0.2 → плавное ужесточение
+        # eps <= 0.2 → строгие пороги
+        eps = 1.0
         try:
-            if getattr(self, 'epsilon', 1.0) > 0.2:
-                return True
+            eps = float(getattr(self, 'epsilon', 1.0))
         except Exception:
-            pass
+            eps = 1.0
+        
+        if eps > 0.8:
+            return True
+        # Степень строгости [0..1]
+        strictness = np.clip((0.8 - eps) / (0.8 - 0.2), 0.0, 1.0)
         
         # 1. Проверка объема - АДАПТИВНЫЙ порог
         current_volume = self.df_5min[self.current_step - 1, 4]
         vol_relative = calc_relative_vol_numpy(self.df_5min, self.current_step - 1, 12)
         
-        # Ослабляем порог объёма: используем максимум между конфигом и мягким значением
-        vol_thr = max(getattr(self, 'volume_threshold', 0.0005), 0.0010)
+        # Порог объема: от мягкого 0.0010 к строгому 0.0030 (или конфигурационному, если выше)
+        cfg_thr = float(getattr(self, 'volume_threshold', 0.0005))
+        base_lenient_vol = max(cfg_thr, 0.0010)
+        base_strict_vol  = max(cfg_thr, 0.0030)
+        vol_thr = base_lenient_vol + strictness * (base_strict_vol - base_lenient_vol)
         if vol_relative < vol_thr:
             self.buy_rejected_vol += 1
             if self.current_step % 100 == 0:
@@ -860,20 +872,23 @@ class CryptoTradingEnvOptimized(gym.Env):
         # 2. Проверка ROI - УЛУЧШЕНО: Более умный фильтр
         if len(self.roi_buf) > 0:
             recent_roi_mean = np.mean(list(self.roi_buf))
-            # Ослабляем ограничение для исследования
-            if recent_roi_mean < -0.06:
+            # Порог по среднему ROI: от -6% (мягко) к -1% (строго)
+            roi_thr = -0.06 + strictness * ( -0.01 + 0.06 )  # -0.06 → -0.01
+            if recent_roi_mean < roi_thr:
                 self.buy_rejected_roi += 1
                 if self.current_step % 100 == 0:
-                    print(f"🔍 Фильтр ROI: recent_roi_mean={recent_roi_mean:.4f} < -0.06, отклонено")
+                    print(f"🔍 Фильтр ROI: recent_roi_mean={recent_roi_mean:.4f} < {roi_thr:.4f}, отклонено")
                 return False
         
         # 3. НОВЫЙ: Фильтр по тренду цены
         if self.current_step >= 20:
             recent_prices = self.df_5min[self.current_step-20:self.current_step, 3]  # Close prices
             price_trend = (recent_prices[-1] - recent_prices[0]) / recent_prices[0]
-            if price_trend < -0.02:  # Тренд вниз > 2%
+            # Порог тренда: от -2.0% (мягко) к -0.5% (строго)
+            trend_thr = -0.02 + strictness * ( -0.005 + 0.02 )  # -0.02 → -0.005
+            if price_trend < trend_thr:
                 if self.current_step % 100 == 0:
-                    print(f"🔍 Фильтр тренда: price_trend={price_trend:.4f} < -0.02, отклонено")
+                    print(f"🔍 Фильтр тренда: price_trend={price_trend:.4f} < {trend_thr:.4f}, отклонено")
                 return False
         
         # 4. НОВЫЙ: Фильтр по волатильности
@@ -881,10 +896,11 @@ class CryptoTradingEnvOptimized(gym.Env):
             recent_highs = self.df_5min[self.current_step-12:self.current_step, 1]  # High prices
             recent_lows = self.df_5min[self.current_step-12:self.current_step, 2]   # Low prices
             volatility = np.mean((recent_highs - recent_lows) / recent_lows)
-            # Ослабляем порог волатильности
-            if volatility < 0.002:
+            # Порог волатильности: от 0.002 (мягко) к 0.0045 (строго)
+            volat_thr = 0.002 + strictness * (0.0045 - 0.002)
+            if volatility < volat_thr:
                 if self.current_step % 100 == 0:
-                    print(f"🔍 Фильтр волатильности: volatility={volatility:.4f} < 0.002, отклонено")
+                    print(f"🔍 Фильтр волатильности: volatility={volatility:.4f} < {volat_thr:.4f}, отклонено")
                 return False
         
         # 5. НОВЫЙ: Фильтр по силе тренда (ADX-подобный)
@@ -893,11 +909,11 @@ class CryptoTradingEnvOptimized(gym.Env):
             recent_prices = self.df_5min[self.current_step-20:self.current_step, 3]  # Close prices
             price_changes = np.diff(recent_prices)
             trend_strength = np.abs(np.mean(price_changes)) / (np.std(price_changes) + 1e-8)
-            
-            # Ослабляем порог силы тренда
-            if trend_strength < 0.15:
+            # Порог силы тренда: от 0.15 (мягко) к 0.35 (строго)
+            ts_thr = 0.15 + strictness * (0.35 - 0.15)
+            if trend_strength < ts_thr:
                 if self.current_step % 100 == 0:
-                    print(f"🔍 Фильтр тренда: trend_strength={trend_strength:.4f} < 0.15, отклонено")
+                    print(f"🔍 Фильтр тренда: trend_strength={trend_strength:.4f} < {ts_thr:.4f}, отклонено")
                 return False
         
         # Все фильтры пройдены - разрешаем покупку

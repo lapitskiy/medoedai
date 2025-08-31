@@ -43,14 +43,15 @@ class PrioritizedReplayBuffer:
             self.gamma_ns = torch.ones(capacity, dtype=torch.float32, device=self.device)
             self.priorities = torch.ones(capacity, dtype=torch.float32, device=self.device)
         else:
-            # Pinned memory на CPU для быстрого переноса на GPU
-            self.states = torch.zeros((capacity, state_size), dtype=torch.float32, pin_memory=True)
-            self.next_states = torch.zeros((capacity, state_size), dtype=torch.float32, pin_memory=True)
-            self.actions = torch.zeros(capacity, dtype=torch.long, pin_memory=True)
-            self.rewards = torch.zeros(capacity, dtype=torch.float32, pin_memory=True)
-            self.dones = torch.zeros(capacity, dtype=torch.bool, pin_memory=True)
-            self.gamma_ns = torch.ones(capacity, dtype=torch.float32, pin_memory=True)
-            self.priorities = torch.ones(capacity, dtype=torch.float32, pin_memory=True)
+            # Pinned memory на CPU имеет смысл только если доступна CUDA
+            pin_flag = torch.cuda.is_available()
+            self.states = torch.zeros((capacity, state_size), dtype=torch.float32, pin_memory=pin_flag)
+            self.next_states = torch.zeros((capacity, state_size), dtype=torch.float32, pin_memory=pin_flag)
+            self.actions = torch.zeros(capacity, dtype=torch.long, pin_memory=pin_flag)
+            self.rewards = torch.zeros(capacity, dtype=torch.float32, pin_memory=pin_flag)
+            self.dones = torch.zeros(capacity, dtype=torch.bool, pin_memory=pin_flag)
+            self.gamma_ns = torch.ones(capacity, dtype=torch.float32, pin_memory=pin_flag)
+            self.priorities = torch.ones(capacity, dtype=torch.float32, pin_memory=pin_flag)
         
         self.position = 0
         self.size = 0
@@ -336,6 +337,9 @@ class DQNSolver:
                 self.scaler = torch.cuda.amp.GradScaler()
             else:
                 self.scaler = None
+        else:
+            # На CPU scaler не используется, но атрибут должен существовать
+            self.scaler = None
         
         # Загружаем модель если нужно
         if load:

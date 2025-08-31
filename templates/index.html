@@ -299,37 +299,22 @@
                 </div>
             </div>
 
-            <!-- Секция анализа результатов обучения -->
+            <!-- Объединенная секция анализа -->
             <div class="section">
-                <h2>📊 Анализ результатов обучения</h2>
-                <p>Анализируйте результаты обучения DQN модели и создавайте графики</p>
-                
-                <div class="button-group">
-                    <button id="listResultsBtn" class="btn btn-info" onclick="listTrainingResults()">
-                        📋 Список результатов
-                    </button>
-                    
-                    <button id="analyzeResultsBtn" class="btn btn-primary" onclick="analyzeTrainingResults()">
-                        📈 Анализировать результаты
-                    </button>
+                <h2>📊 Аналитика результатов</h2>
+                <p>Выберите файл результатов и запустите нужный анализ</p>
+                <div class="form-group">
+                    <label>Файл результатов (result/train_result_*.pkl)</label>
+                    <select id="resultsFileSelect"></select>
                 </div>
-                
+                <div class="button-group">
+                    <button id="listResultsBtn" class="btn btn-info" onclick="listTrainingResults()">📋 Обновить список</button>
+                    <button id="analyzeResultsBtn" class="btn btn-primary" onclick="analyzeTrainingResultsSelected()">📈 Анализ результатов</button>
+                    <button id="analyzeBadTradesBtn" class="btn btn-warning" onclick="analyzeBadTradesSelected()">🔍 Плохие сделки</button>
+                </div>
                 <div id="analysisStatus" class="status" style="display: none;"></div>
                 <div id="analysisResults" class="results" style="display: none;"></div>
                 <div id="filesList" class="results" style="display: none;"></div>
-            </div>
-
-            <!-- Секция анализа плохих сделок -->
-            <div class="section">
-                <h2>🔍 Анализ плохих сделок</h2>
-                <p>Детальный анализ проблемных сделок для понимания ошибок модели</p>
-                
-                <div class="button-group">
-                    <button id="analyzeBadTradesBtn" class="btn btn-warning" onclick="analyzeBadTrades()">
-                        🔍 Анализировать плохие сделки
-                    </button>
-                </div>
-                
                 <div id="badTradesStatus" class="status" style="display: none;"></div>
                 <div id="badTradesResults" class="results" style="display: none;"></div>
                 <div id="badTradesSummary" class="results" style="display: none;"></div>
@@ -519,6 +504,7 @@
         async function listTrainingResults() {
             const statusDiv = document.getElementById('analysisStatus');
             const filesDiv = document.getElementById('filesList');
+            const selectEl = document.getElementById('resultsFileSelect');
             const listBtn = document.getElementById('listResultsBtn');
             
             // Отключаем кнопку и показываем статус
@@ -549,6 +535,16 @@
                     filesText += `=====================================\n\n`;
                     
                     if (result.files && result.files.length > 0) {
+                        // обновляем select
+                        selectEl.innerHTML = '';
+                        for (const file of result.files) {
+                            const opt = document.createElement('option');
+                            opt.value = file.filename;
+                            const date = new Date(file.created * 1000).toLocaleString();
+                            const sizeKB = (file.size / 1024).toFixed(1);
+                            opt.textContent = `${file.filename} (${sizeKB} KB, ${date})`;
+                            selectEl.appendChild(opt);
+                        }
                         for (const file of result.files) {
                             const date = new Date(file.created * 1000).toLocaleString();
                             const sizeKB = (file.size / 1024).toFixed(1);
@@ -557,6 +553,14 @@
                             filesText += `   📏 Размер: ${sizeKB} KB\n\n`;
                         }
                     } else {
+                        // Обновляем select плейсхолдером
+                        if (selectEl) {
+                            selectEl.innerHTML = '';
+                            const opt = document.createElement('option');
+                            opt.value = '';
+                            opt.textContent = 'Нет файлов результатов';
+                            selectEl.appendChild(opt);
+                        }
                         filesText += `❌ Файлы результатов не найдены\n`;
                         filesText += `💡 Сначала запустите обучение модели\n`;
                     }
@@ -576,6 +580,88 @@
                 listBtn.textContent = '📋 Список результатов';
             }
         }
+
+        async function analyzeTrainingResultsSelected() {
+            const selectEl = document.getElementById('resultsFileSelect');
+            const file = selectEl.value;
+            const analyzeBtn = document.getElementById('analyzeResultsBtn');
+            const statusDiv = document.getElementById('analysisStatus');
+            const resultsDiv = document.getElementById('analysisResults');
+            analyzeBtn.disabled = true;
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'status running';
+            statusDiv.textContent = '📊 Анализ результатов обучения...';
+            try {
+                const response = await fetch('/analyze_training_results', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    statusDiv.className = 'status success';
+                    statusDiv.textContent = '✅ ' + result.message;
+                    resultsDiv.style.display = 'block';
+                    let analysisText = `📊 АНАЛИЗ ФАЙЛА\n===============================\n\n`;
+                    analysisText += `📄 Файл: ${result.file_analyzed}\n`;
+                    analysisText += result.output || '';
+                    resultsDiv.textContent = analysisText;
+                } else {
+                    throw new Error(result.message);
+                }
+            } catch (e) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Ошибка: ' + e.message;
+            } finally {
+                analyzeBtn.disabled = false;
+            }
+        }
+
+        async function analyzeBadTradesSelected() {
+            const selectEl = document.getElementById('resultsFileSelect');
+            const file = selectEl.value;
+            const analyzeBtn = document.getElementById('analyzeBadTradesBtn');
+            const statusDiv = document.getElementById('badTradesStatus');
+            const resultsDiv = document.getElementById('badTradesResults');
+            const summaryDiv = document.getElementById('badTradesSummary');
+            analyzeBtn.disabled = true;
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'status running';
+            statusDiv.textContent = '🔍 Анализ плохих сделок...';
+            resultsDiv.style.display = 'none';
+            summaryDiv.style.display = 'none';
+            try {
+                const response = await fetch('/analyze_bad_trades', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    statusDiv.className = 'status success';
+                    statusDiv.textContent = '✅ ' + result.message;
+                    summaryDiv.style.display = 'block';
+                    let summaryText = `📊 СВОДКА ПЛОХИХ СДЕЛОК\n===============================\n\n`;
+                    summaryText += `📄 Файл: ${result.file_analyzed.split('/').pop()}\n`;
+                    summaryText += `🔢 Плохих сделок: ${result.bad_trades_count} (${result.bad_trades_percentage.toFixed(2)}%)\n`;
+                    summaryDiv.textContent = summaryText;
+                    resultsDiv.style.display = 'block';
+                    resultsDiv.textContent = result.output;
+                } else {
+                    throw new Error(result.message);
+                }
+            } catch (e) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Ошибка: ' + e.message;
+            } finally {
+                analyzeBtn.disabled = false;
+            }
+        }
+
+        // Автозагрузка списка файлов результатов при открытии страницы
+        document.addEventListener('DOMContentLoaded', function() {
+            try { listTrainingResults(); } catch (e) { console.error(e); }
+        });
 
         async function analyzeTrainingResults() {
             const statusDiv = document.getElementById('analysisStatus');
