@@ -53,3 +53,8 @@ celerybeat-schedule.*
  
 # Артефакты обучения
 result/
+
+# Переменные окружения
+.env
+.env.local
+.env.*.local

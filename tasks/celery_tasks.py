@@ -2,6 +2,7 @@ from agents.vdqn.v_train_model import train_model
 from agents.vdqn.v_train_model_optimized import train_model_optimized
 from celery import Celery
 import time
+import os
 
 import pandas as pd
 
@@ -130,7 +131,12 @@ def train_dqn(self):
         print(f"{key}: {json.dumps(records.to_dict(orient='records'), ensure_ascii=False, indent=2)}")
     
     print(f"\n🎯 Запуск обучения на {first_symbol}...")
-    result = train_model_optimized(dfs=df, episodes=10000)
+    
+    # Получаем количество эпизодов из переменной окружения
+    episodes = int(os.getenv('DEFAULT_EPISODES', 10000))
+    print(f"🎯 Количество эпизодов: {episodes}")
+    
+    result = train_model_optimized(dfs=df, episodes=episodes)
     return {"message": result}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
@@ -173,7 +179,11 @@ def train_dqn_symbol(self, symbol: str):
 
         print(f"📈 {symbol}: 5m={len(df_5min)}, 15m={len(df_15min)}, 1h={len(df_1h)}")
 
-        result = train_model_optimized(dfs=dfs, episodes=5)
+        # Получаем количество эпизодов из переменной окружения
+        episodes = int(os.getenv('DEFAULT_EPISODES', 5))
+        print(f"🎯 Количество эпизодов: {episodes}")
+
+        result = train_model_optimized(dfs=dfs, episodes=episodes)
         return {"message": f"✅ Обучение {symbol} завершено: {result}"}
     except Exception as e:
         import traceback
@@ -188,9 +198,14 @@ def train_dqn_multi_crypto(self):
     try:
         # Новый модуль для мульти-обучения
         from agents.multi.v_train_multi import train_multi
+        
+        # Получаем количество эпизодов из переменной окружения
+        episodes = int(os.getenv('DEFAULT_EPISODES', 10001))
+        print(f"🎯 Количество эпизодов для мульти-обучения: {episodes}")
+        
         result = train_multi(symbols=[
             'BTCUSDT','TONUSDT','ETHUSDT','SOLUSDT','ADAUSDT','BNBUSDT'
-        ], episodes=10001)
+        ], episodes=episodes)
         return {"message": f"Мультивалютное обучение завершено: {result}"}
     except Exception as e:
         import traceback
