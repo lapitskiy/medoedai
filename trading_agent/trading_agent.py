@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class TradingAgent:
-    def __init__(self, model_path: str = "/workspace/good_model/dqn_model.pth"):
+    def __init__(self, model_path: str = "/workspace/good_models/dqn_model.pth"):
         """
         Инициализация торгового агента
         
@@ -586,7 +586,7 @@ class TradingAgent:
             
         except Exception as e:
             logger.error(f"Ошибка покупки: {e}")
-    
+            
             # Обновляем запись о сделке с ошибкой
             if 'trade_record' in locals():
                 update_trade_status(
