@@ -70,3 +70,22 @@ class Trade(Base):
     __table_args__ = (
         UniqueConstraint('trade_number', name='uix_trade_number'),
     )
+
+
+class ModelPrediction(Base):
+    __tablename__ = 'model_predictions'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    symbol = Column(String, nullable=False)
+    action = Column(String, nullable=False)  # buy, sell, hold
+    q_values = Column(Text)  # JSON string с Q-values
+    current_price = Column(Float)
+    position_status = Column(String)  # open, closed, none
+    confidence = Column(Float)  # max(q_values) - уверенность модели
+    model_path = Column(String)  # путь к модели
+    market_conditions = Column(Text)  # JSON с условиями рынка (RSI, EMA и т.д.)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    def __repr__(self):
+        return f"<ModelPrediction(symbol='{self.symbol}', action='{self.action}', confidence={self.confidence:.3f}, timestamp='{self.timestamp}')>"

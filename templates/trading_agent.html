@@ -256,6 +256,19 @@
         .stat-value.error {
             color: #dc3545;
         }
+        
+        .stat-value.buy {
+            color: #28a745;
+        }
+        
+        .stat-value.sell {
+            color: #dc3545;
+        }
+        
+        .stat-value.hold {
+            color: #6c757d;
+        }
+        
         .trade-action {
             font-weight: bold;
             padding: 5px 10px;
@@ -278,6 +291,29 @@
             background: #f8d7da;
             color: #721c24;
         }
+        
+        .trade-confidence {
+            font-weight: bold;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        
+        .trade-confidence.success {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .trade-confidence.info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        
+        .trade-confidence.warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
         .trade-details {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -491,6 +527,12 @@
                     <button class="btn btn-warning" onclick="stopMonitoring()">
                         ⏸️ Остановить мониторинг
                     </button>
+                    <button class="btn btn-primary" onclick="getModelPredictions()">
+                        🧠 Предсказания ИИ
+                    </button>
+                    <button class="btn btn-primary" onclick="getPredictionStatistics()">
+                        📊 Статистика предсказаний
+                    </button>
                 </div>
                 
                 <div id="monitoringStatus" class="status info" style="display: none;">
@@ -519,6 +561,18 @@
                 <div id="remainingPositionStrategy" class="trading-history" style="display: none;">
                     <h3>🎯 Стратегия для оставшейся позиции</h3>
                     <div id="remainingStrategyContent"></div>
+                </div>
+                
+                <!-- Предсказания модели -->
+                <div id="modelPredictions" class="trading-history" style="display: none;">
+                    <h3>🧠 Предсказания модели ИИ</h3>
+                    <div id="predictionsContent"></div>
+                </div>
+                
+                <!-- Статистика предсказаний -->
+                <div id="predictionStatistics" class="trading-history" style="display: none;">
+                    <h3>📊 Статистика предсказаний</h3>
+                    <div id="predictionStatsContent"></div>
                 </div>
             </div>
         </div>
@@ -1038,6 +1092,8 @@
             getTradingResults();
             getTradeHistory();
             getTradeStatistics();
+            getModelPredictions();
+            getPredictionStatistics();
             
             monitoringInterval = setInterval(() => {
                 getTradingStatus();
@@ -1045,6 +1101,8 @@
                 getTradingResults();
                 getTradeHistory();
                 getTradeStatistics();
+                getModelPredictions();
+                getPredictionStatistics();
             }, 30000); 
             
             document.getElementById('monitoringStatus').style.display = 'block';
@@ -1073,6 +1131,142 @@
             setTimeout(() => {
                 element.style.display = 'none';
             }, 5000);
+        }
+
+        // Получение предсказаний модели ИИ
+        async function getModelPredictions() {
+            try {
+                const response = await fetch('/api/predictions/recent?limit=50');
+                const result = await response.json();
+                
+                const predictionsDiv = document.getElementById('modelPredictions');
+                const contentDiv = document.getElementById('predictionsContent');
+                
+                if (result.success) {
+                    if (result.predictions && result.predictions.length > 0) {
+                        let predictionsHTML = `<p><strong>Всего предсказаний:</strong> ${result.total_predictions}</p>`;
+                        
+                        result.predictions.forEach(prediction => {
+                            const predictionTime = new Date(prediction.timestamp).toLocaleString('ru-RU');
+                            const actionClass = prediction.action === 'buy' ? 'buy' : prediction.action === 'sell' ? 'sell' : 'hold';
+                            const confidenceClass = prediction.confidence > 0.5 ? 'success' : prediction.confidence > 0.2 ? 'info' : 'warning';
+                            
+                            predictionsHTML += `
+                                <div class="trade-item">
+                                    <div class="trade-header">
+                                        <span class="trade-action ${actionClass}">${prediction.action.toUpperCase()}</span>
+                                        <span class="trade-confidence ${confidenceClass}">Уверенность: ${(prediction.confidence * 100).toFixed(1)}%</span>
+                                        <span>${predictionTime}</span>
+                                    </div>
+                                    <div class="trade-details">
+                                        <div class="trade-detail">
+                                            <div class="label">Символ</div>
+                                            <div class="value">${prediction.symbol}</div>
+                                        </div>
+                                        <div class="trade-detail">
+                                            <div class="label">Цена</div>
+                                            <div class="value">$${prediction.current_price?.toFixed(6) || 'N/A'}</div>
+                                        </div>
+                                        <div class="trade-detail">
+                                            <div class="label">Позиция</div>
+                                            <div class="value">${prediction.position_status}</div>
+                                        </div>
+                                        <div class="trade-detail">
+                                            <div class="label">Q-Values</div>
+                                            <div class="value">[${prediction.q_values.map(v => v.toFixed(3)).join(', ')}]</div>
+                                        </div>
+                                    </div>
+                                    ${prediction.market_conditions && Object.keys(prediction.market_conditions).length > 0 ? `
+                                    <div style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px; font-size: 12px;">
+                                        <strong>Условия рынка:</strong><br>
+                                        ${Object.entries(prediction.market_conditions).map(([key, value]) => 
+                                            `${key}: ${value}`
+                                        ).join(', ')}
+                                    </div>
+                                    ` : ''}
+                                </div>
+                            `;
+                        });
+                        
+                        contentDiv.innerHTML = predictionsHTML;
+                    } else {
+                        contentDiv.innerHTML = '<p>🧠 Предсказания модели пока отсутствуют</p><p><em>Данные появятся после выполнения торговых операций</em></p>';
+                    }
+                    
+                    predictionsDiv.style.display = 'block';
+                } else {
+                    console.error('Ошибка получения предсказаний:', result.error);
+                    contentDiv.innerHTML = '<p>❌ Ошибка получения предсказаний</p><p><em>' + (result.error || 'Неизвестная ошибка') + '</em></p>';
+                    predictionsDiv.style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Ошибка при получении предсказаний:', error);
+                const predictionsDiv = document.getElementById('modelPredictions');
+                const contentDiv = document.getElementById('predictionsContent');
+                contentDiv.innerHTML = '<p>❌ Ошибка сети</p><p><em>' + error.message + '</em></p>';
+                predictionsDiv.style.display = 'block';
+            }
+        }
+
+        // Получение статистики предсказаний
+        async function getPredictionStatistics() {
+            try {
+                const response = await fetch('/api/predictions/statistics');
+                const result = await response.json();
+                
+                const statsDiv = document.getElementById('predictionStatistics');
+                const contentDiv = document.getElementById('predictionStatsContent');
+                
+                if (result.success) {
+                    const stats = result.statistics;
+                    
+                    const statsHTML = `
+                        <div class="statistics-grid">
+                            <div class="stat-item">
+                                <div class="stat-label">Всего предсказаний</div>
+                                <div class="stat-value">${stats.total_predictions}</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">BUY сигналы</div>
+                                <div class="stat-value buy">${stats.buy_predictions}</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">SELL сигналы</div>
+                                <div class="stat-value sell">${stats.sell_predictions}</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">HOLD сигналы</div>
+                                <div class="stat-value hold">${stats.hold_predictions}</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Средняя уверенность BUY</div>
+                                <div class="stat-value">${stats.avg_confidence_buy}</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Средняя уверенность SELL</div>
+                                <div class="stat-value">${stats.avg_confidence_sell}</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Средняя уверенность HOLD</div>
+                                <div class="stat-value">${stats.avg_confidence_hold}</div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    contentDiv.innerHTML = statsHTML;
+                    statsDiv.style.display = 'block';
+                } else {
+                    console.error('Ошибка получения статистики предсказаний:', result.error);
+                    contentDiv.innerHTML = '<p>📊 Статистика предсказаний недоступна</p><p><em>Ошибка: ' + (result.error || 'Неизвестная ошибка') + '</em></p>';
+                    statsDiv.style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Ошибка при получении статистики предсказаний:', error);
+                const statsDiv = document.getElementById('predictionStatistics');
+                const contentDiv = document.getElementById('predictionStatsContent');
+                contentDiv.innerHTML = '<p>❌ Ошибка сети</p><p><em>' + error.message + '</em></p>';
+                statsDiv.style.display = 'block';
+            }
         }
 
         // Функция для отображения стратегии оставшейся позиции

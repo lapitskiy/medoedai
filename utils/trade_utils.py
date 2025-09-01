@@ -1,7 +1,9 @@
 import uuid
+import json
+import logging
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
-from orm.models import Trade, Symbol
+from orm.models import Trade, Symbol, ModelPrediction
 from orm.database import get_db_session
 
 def generate_trade_number():
@@ -216,6 +218,147 @@ def get_trade_statistics(symbol_name: str = None):
             'total_volume': volume_sum,
             'total_value': value_sum,
             'success_rate': round(success_rate, 2)
+        }
+        
+    finally:
+        session.close()
+
+
+def create_model_prediction(
+    symbol: str,
+    action: str,
+    q_values: list,
+    current_price: float,
+    position_status: str,
+    model_path: str,
+    market_conditions: dict = None
+) -> ModelPrediction:
+    """
+    Создает запись о предсказании модели
+    
+    Args:
+        symbol: Торговая пара
+        action: Действие (buy, sell, hold)
+        q_values: Q-values от модели
+        current_price: Текущая цена
+        position_status: Статус позиции (open, closed, none)
+        model_path: Путь к модели
+        market_conditions: Условия рынка (опционально)
+    
+    Returns:
+        ModelPrediction: Созданная запись
+    """
+    session = get_db_session()
+    try:
+        # Рассчитываем уверенность (максимальное значение Q)
+        confidence = max(q_values) if q_values else 0.0
+        
+        # Преобразуем Q-values в JSON строку
+        q_values_json = json.dumps(q_values) if q_values else '[]'
+        
+        # Преобразуем условия рынка в JSON строку
+        market_conditions_json = json.dumps(market_conditions) if market_conditions else '{}'
+        
+        prediction = ModelPrediction(
+            symbol=symbol,
+            action=action,
+            q_values=q_values_json,
+            current_price=current_price,
+            position_status=position_status,
+            confidence=confidence,
+            model_path=model_path,
+            market_conditions=market_conditions_json
+        )
+        
+        session.add(prediction)
+        session.commit()
+        
+        return prediction
+        
+    except Exception as e:
+        session.rollback()
+        logging.error(f"Ошибка создания записи предсказания: {e}")
+        raise
+    finally:
+        session.close()
+
+
+def get_model_predictions(
+    symbol: str = None,
+    action: str = None,
+    limit: int = 100
+) -> list:
+    """
+    Получает предсказания модели
+    
+    Args:
+        symbol: Торговая пара (опционально)
+        action: Действие (опционально)
+        limit: Максимальное количество записей
+    
+    Returns:
+        List[ModelPrediction]: Список предсказаний
+    """
+    session = get_db_session()
+    try:
+        query = session.query(ModelPrediction)
+        
+        if symbol:
+            query = query.filter(ModelPrediction.symbol == symbol)
+        
+        if action:
+            query = query.filter(ModelPrediction.action == action)
+        
+        predictions = query.order_by(ModelPrediction.timestamp.desc()).limit(limit).all()
+        return predictions
+        
+    finally:
+        session.close()
+
+
+def get_prediction_statistics(symbol: str = None) -> dict:
+    """
+    Получает статистику по предсказаниям модели
+    
+    Args:
+        symbol: Торговая пара (опционально)
+    
+    Returns:
+        dict: Статистика предсказаний
+    """
+    session = get_db_session()
+    try:
+        query = session.query(ModelPrediction)
+        
+        if symbol:
+            query = query.filter(ModelPrediction.symbol == symbol)
+        
+        total_predictions = query.count()
+        buy_predictions = query.filter(ModelPrediction.action == 'buy').count()
+        sell_predictions = query.filter(ModelPrediction.action == 'sell').count()
+        hold_predictions = query.filter(ModelPrediction.action == 'hold').count()
+        
+        # Средняя уверенность по действиям
+        avg_confidence_buy = session.query(ModelPrediction.confidence).filter(
+            ModelPrediction.action == 'buy'
+        ).scalar() or 0.0
+        
+        avg_confidence_sell = session.query(ModelPrediction.confidence).filter(
+            ModelPrediction.action == 'sell'
+        ).scalar() or 0.0
+        
+        avg_confidence_hold = session.query(ModelPrediction.confidence).filter(
+            ModelPrediction.action == 'hold'
+        ).scalar() or 0.0
+        
+        return {
+            'total_predictions': total_predictions,
+            'buy_predictions': buy_predictions,
+            'sell_predictions': sell_predictions,
+            'hold_predictions': hold_predictions,
+            'avg_confidence_buy': round(avg_confidence_buy, 3),
+            'avg_confidence_sell': round(avg_confidence_sell, 3),
+            'avg_confidence_hold': round(avg_confidence_hold, 3)
         }
         
     finally:

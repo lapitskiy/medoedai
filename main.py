@@ -1688,6 +1688,74 @@ def trading_history():
             'error': str(e)
         }), 500
 
+
+@app.route('/api/predictions/recent')
+def get_recent_predictions():
+    """API для получения последних предсказаний модели"""
+    try:
+        symbol = request.args.get('symbol')
+        action = request.args.get('action')
+        limit = int(request.args.get('limit', 50))
+        
+        predictions = get_model_predictions(symbol=symbol, action=action, limit=limit)
+        
+        # Преобразуем в JSON-совместимый формат
+        predictions_data = []
+        for prediction in predictions:
+            try:
+                q_values = json.loads(prediction.q_values) if prediction.q_values else []
+                market_conditions = json.loads(prediction.market_conditions) if prediction.market_conditions else {}
+            except:
+                q_values = []
+                market_conditions = {}
+            
+            prediction_data = {
+                'id': prediction.id,
+                'timestamp': prediction.timestamp.isoformat() if prediction.timestamp else None,
+                'symbol': prediction.symbol,
+                'action': prediction.action,
+                'q_values': q_values,
+                'current_price': prediction.current_price,
+                'position_status': prediction.position_status,
+                'confidence': prediction.confidence,
+                'model_path': prediction.model_path,
+                'market_conditions': market_conditions,
+                'created_at': prediction.created_at.isoformat() if prediction.created_at else None
+            }
+            predictions_data.append(prediction_data)
+        
+        return jsonify({
+            'success': True,
+            'predictions': predictions_data,
+            'total_predictions': len(predictions_data)
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/predictions/statistics')
+def get_prediction_statistics():
+    """API для получения статистики предсказаний модели"""
+    try:
+        symbol = request.args.get('symbol')
+        stats = get_prediction_statistics(symbol=symbol)
+        
+        return jsonify({
+            'success': True,
+            'statistics': stats
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 # =============================================================
 
 # Автоматический запуск Flask сервера

@@ -599,6 +599,35 @@ class TradingAgent:
             # Сохраняем последнее предсказание для записи в БД
             self.last_model_prediction = action_str
             
+            # Логируем предсказание в БД
+            try:
+                from utils.trade_utils import create_model_prediction
+                
+                # Определяем статус позиции
+                position_status = 'open' if self.current_position else 'none'
+                
+                # Получаем текущую цену
+                current_price = self._get_current_price()
+                
+                # Получаем условия рынка (технические индикаторы)
+                market_conditions = self._get_market_conditions()
+                
+                # Создаем запись о предсказании
+                create_model_prediction(
+                    symbol=self.base_symbol,
+                    action=action_str,
+                    q_values=q_values[0].tolist(),
+                    current_price=current_price,
+                    position_status=position_status,
+                    model_path=self.model_path,
+                    market_conditions=market_conditions
+                )
+                
+                logger.info(f"Предсказание модели записано в БД: {action_str}")
+                
+            except Exception as e:
+                logger.warning(f"Не удалось записать предсказание в БД: {e}")
+            
             logger.info(f"Предсказание модели: {action_str} (action={action}, q_values={q_values[0].tolist()})")
             return action_str
             
@@ -648,6 +677,75 @@ class TradingAgent:
         except Exception as e:
             logger.error(f"Ошибка подготовки состояния: {e}")
             return None
+    
+    def _get_market_conditions(self) -> dict:
+        """
+        Получает текущие условия рынка (технические индикаторы)
+        
+        Returns:
+            dict: Условия рынка
+        """
+        try:
+            from utils.db_utils import db_get_or_fetch_ohlcv
+            
+            # Получаем последние данные для расчета индикаторов
+            df_5min = db_get_or_fetch_ohlcv(
+                symbol_name=self.base_symbol,
+                timeframe='5m',
+                limit_candles=50,
+                exchange_id='bybit'
+            )
+            
+            if df_5min is None or df_5min.empty:
+                return {}
+            
+            # Рассчитываем простые индикаторы
+            close_prices = df_5min['close'].values
+            
+            # RSI (упрощенный)
+            if len(close_prices) >= 14:
+                delta = np.diff(close_prices)
+                gain = np.where(delta > 0, delta, 0)
+                loss = np.where(delta < 0, -delta, 0)
+                
+                avg_gain = np.mean(gain[-14:])
+                avg_loss = np.mean(loss[-14:])
+                
+                if avg_loss != 0:
+                    rs = avg_gain / avg_loss
+                    rsi = 100 - (100 / (1 + rs))
+                else:
+                    rsi = 100
+            else:
+                rsi = 50
+            
+            # EMA (12 и 26)
+            if len(close_prices) >= 26:
+                ema12 = np.mean(close_prices[-12:])
+                ema26 = np.mean(close_prices[-26:])
+                ema_cross = ema12 - ema26
+            else:
+                ema12 = ema26 = ema_cross = 0
+            
+            # Текущая цена
+            current_price = close_prices[-1] if len(close_prices) > 0 else 0
+            
+            # Изменение цены
+            price_change = ((current_price - close_prices[-2]) / close_prices[-2] * 100) if len(close_prices) >= 2 else 0
+            
+            return {
+                'rsi': round(rsi, 2),
+                'ema12': round(ema12, 6),
+                'ema26': round(ema26, 6),
+                'ema_cross': round(ema_cross, 6),
+                'current_price': round(current_price, 6),
+                'price_change_percent': round(price_change, 2),
+                'candles_count': len(close_prices)
+            }
+            
+        except Exception as e:
+            logger.warning(f"Не удалось получить условия рынка: {e}")
+            return {}
     
     def _create_state_from_ohlcv(self, df_5min: np.ndarray) -> np.ndarray:
         """
