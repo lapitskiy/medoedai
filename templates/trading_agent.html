@@ -712,7 +712,7 @@
                         
                         contentDiv.innerHTML = historyHTML;
                     } else {
-                        contentDiv.innerHTML = '<p>История сделок пуста</p>';
+                        contentDiv.innerHTML = '<p>📈 История сделок пока пуста</p><p><em>Сделки появятся после выполнения торговых операций</em></p>';
                     }
                     
                     historyDiv.style.display = 'block';
@@ -792,15 +792,25 @@
                         
                         contentDiv.innerHTML = resultsHTML;
                     } else {
-                        contentDiv.innerHTML = '<p>Результаты торговли пока отсутствуют</p>';
+                        contentDiv.innerHTML = '<p>📊 Результаты торговли пока отсутствуют</p><p><em>Данные появятся после выполнения торговых операций через Celery</em></p>';
                     }
                     
                     resultsDiv.style.display = 'block';
                 } else {
                     console.error('Ошибка получения результатов:', result.error);
+                    // Показываем блок с ошибкой
+                    const resultsDiv = document.getElementById('tradingResults');
+                    const contentDiv = document.getElementById('tradingResultsContent');
+                    contentDiv.innerHTML = '<p>❌ Ошибка получения результатов</p><p><em>' + (result.error || 'Неизвестная ошибка') + '</em></p>';
+                    resultsDiv.style.display = 'block';
                 }
             } catch (error) {
                 console.error('Ошибка при получении результатов торговли:', error);
+                // Показываем блок с ошибкой
+                const resultsDiv = document.getElementById('tradingResults');
+                const contentDiv = document.getElementById('tradingResultsContent');
+                contentDiv.innerHTML = '<p>❌ Ошибка сети</p><p><em>' + error.message + '</em></p>';
+                resultsDiv.style.display = 'block';
             }
         }
 
@@ -878,9 +888,17 @@
                     historyDiv.style.display = 'block';
                 } else {
                     console.error('Ошибка получения истории сделок:', result.error);
+                    // Показываем блок с ошибкой
+                    contentDiv.innerHTML = '<p>❌ Ошибка получения истории сделок</p><p><em>' + (result.error || 'Неизвестная ошибка') + '</em></p>';
+                    historyDiv.style.display = 'block';
                 }
             } catch (error) {
                 console.error('Ошибка при получении истории сделок:', error);
+                // Показываем блок с ошибкой
+                const historyDiv = document.getElementById('tradeHistory');
+                const contentDiv = document.getElementById('tradeHistoryContent');
+                contentDiv.innerHTML = '<p>❌ Ошибка сети</p><p><em>' + error.message + '</em></p>';
+                historyDiv.style.display = 'block';
             }
         }
 
@@ -931,9 +949,16 @@
                     statsDiv.style.display = 'block';
                 } else {
                     console.error('Ошибка получения статистики:', result.error);
+                    contentDiv.innerHTML = '<p>📊 Статистика недоступна</p><p><em>Ошибка: ' + (result.error || 'Неизвестная ошибка') + '</em></p>';
+                    statsDiv.style.display = 'block';
                 }
             } catch (error) {
                 console.error('Ошибка при получении статистики:', error);
+                // Показываем блок с ошибкой
+                const statsDiv = document.getElementById('tradeStatistics');
+                const contentDiv = document.getElementById('tradeStatisticsContent');
+                contentDiv.innerHTML = '<p>❌ Ошибка сети</p><p><em>' + error.message + '</em></p>';
+                statsDiv.style.display = 'block';
             }
         }
 
@@ -959,7 +984,7 @@
             }, 30000); 
             
             document.getElementById('monitoringStatus').style.display = 'block';
-            showStatus('tradingResult', 'info', 'Мониторинг запущен');
+            showStatus('tradingResult', 'info', 'Мониторинг запущен - данные обновляются каждые 30 секунд');
         }
 
         // Остановка мониторинга
