@@ -371,12 +371,12 @@ def start_trading_task(self, symbols, model_path=None):
 
 # Включаем периодический запуск торговли
 import os
-# Устанавливаем ENABLE_TRADING_BEAT=1 если не задан
+# Устанавливаем ENABLE_TRADING_BEAT=0 для отключения автоматической торговли
 if os.environ.get('ENABLE_TRADING_BEAT') is None:
-    os.environ['ENABLE_TRADING_BEAT'] = '1'
-    print("✅ Автоматически включен ENABLE_TRADING_BEAT=1")
+    os.environ['ENABLE_TRADING_BEAT'] = '0'
+    print("✅ Автоматически отключен ENABLE_TRADING_BEAT=0")
 
-if os.environ.get('ENABLE_TRADING_BEAT', '1') in ('1', 'true', 'True'):
+if os.environ.get('ENABLE_TRADING_BEAT', '0') in ('1', 'true', 'True'):
     celery.conf.beat_schedule = {
         'start-trading-every-5-minutes': {
             'task': 'tasks.celery_tasks.start_trading_task',
