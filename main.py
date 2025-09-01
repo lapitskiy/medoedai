@@ -1509,7 +1509,7 @@ def trading_balance():
 def get_recent_trades():
     """Получение последних сделок из базы данных"""
     try:
-        from utils.trade_utils import get_recent_trades
+        from utils.trade_utils import get_recent_trades, get_model_predictions, get_prediction_statistics
         
         limit = request.args.get('limit', 50, type=int)
         trades = get_recent_trades(limit=limit)
