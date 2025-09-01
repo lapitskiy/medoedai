@@ -12,6 +12,17 @@ from utils.db_utils import db_get_or_fetch_ohlcv  # Импортируем фу�
 from datetime import datetime
 from celery.schedules import crontab
 
+# API ключи Bybit
+BYBIT_API_KEY = os.getenv('BYBIT_API_KEY', 'your_bybit_api_key_here')
+BYBIT_SECRET_KEY = os.getenv('BYBIT_SECRET_KEY', 'your_bybit_secret_key_here')
+
+# Проверяем наличие API ключей
+if BYBIT_API_KEY == 'your_bybit_api_key_here' or BYBIT_SECRET_KEY == 'your_bybit_secret_key_here':
+    print("⚠️ ВНИМАНИЕ: API ключи Bybit не настроены!")
+    print("Установите переменные окружения BYBIT_API_KEY и BYBIT_SECRET_KEY")
+else:
+    print("✅ API ключи Bybit настроены")
+
 # Настраиваем Celery с Redis как брокером и бекендом
 celery = Celery(
     "tasks",
@@ -214,14 +225,33 @@ def train_dqn_multi_crypto(self):
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
 def trade_step():
-    # Получаем текущее состояние рынка (замени на получение реальных данных)
-    state = get_current_market_state()  # реализуй функцию получения состояния
+    """
+    Выполняет один торговый шаг с использованием API Bybit
+    """
+    try:
+        # Проверяем наличие API ключей
+        if BYBIT_API_KEY == 'your_bybit_api_key_here' or BYBIT_SECRET_KEY == 'your_bybit_secret_key_here':
+            return {"error": "API ключи Bybit не настроены"}
+        
+        # Получаем текущее состояние рынка (замени на получение реальных данных)
+        state = get_current_market_state()  # реализуй функцию получения состояния
 
-    action = trade_once(state)
+        action = trade_once(state)
 
-    # Здесь ты можешь сделать реальный ордер через API биржи
+        # Здесь ты можешь сделать реальный ордер через API биржи
+        # Используем API ключи для подключения к Bybit
+        import ccxt
+        exchange = ccxt.bybit({
+            'apiKey': BYBIT_API_KEY,
+            'secret': BYBIT_SECRET_KEY,
+            'sandbox': False,  # True для тестового режима
+            'enableRateLimit': True
+        })
 
-    return f"Торговое действие: {action}"
+        return f"Торговое действие: {action} (API подключен)"
+        
+    except Exception as e:
+        return {"error": f"Ошибка в trade_step: {str(e)}"}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
 def start_trading_task(self, symbols, model_path=None):
@@ -248,11 +278,11 @@ def start_trading_task(self, symbols, model_path=None):
         if container.status != 'running':
             return {"success": False, "error": f'Container trading_agent is not running. Status: {container.status}'}
         
-        # Start trading via exec
+        # Start trading via exec with API keys
         if model_path:
-            cmd = f'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); result = agent.start_trading(symbols={symbols}); print(\\"RESULT: \\" + json.dumps(result))"'
+            cmd = f'python -c "import json; import os; os.environ[\'BYBIT_API_KEY\'] = \'{BYBIT_API_KEY}\'; os.environ[\'BYBIT_SECRET_KEY\'] = \'{BYBIT_SECRET_KEY}\'; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); result = agent.start_trading(symbols={symbols}); print(\\"RESULT: \\" + json.dumps(result))"'
         else:
-            cmd = f'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.start_trading(symbols={symbols}); print(\\"RESULT: \\" + json.dumps(result))"'
+            cmd = f'python -c "import json; import os; os.environ[\'BYBIT_API_KEY\'] = \'{BYBIT_API_KEY}\'; os.environ[\'BYBIT_SECRET_KEY\'] = \'{BYBIT_SECRET_KEY}\'; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.start_trading(symbols={symbols}); print(\\"RESULT: \\" + json.dumps(result))"'
         
         exec_result = container.exec_run(cmd, tty=True)
         

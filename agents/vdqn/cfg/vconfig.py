@@ -91,7 +91,6 @@ class vDqnConfig:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
     
     use_wandb: bool = False
-    csv_metrics_path: str = f"./{datetime.now().strftime('%H-%M')}metrics.csv"
         
     tick_every: int = 1000      # уменьшил для более частого логирования
     tick_slow_ms: float = 10.0  # уменьшил порог для логирования медленных операций

@@ -18,7 +18,7 @@ logs/
 logs/**
 *.py[cod]
 *$py.class
-*metrics.csv
+
 plots/**
 !temp/
 
@@ -58,3 +58,4 @@ result/
 .env
 .env.local
 .env.*.local
+.env.example

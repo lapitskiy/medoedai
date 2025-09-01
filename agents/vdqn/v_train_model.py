@@ -6,7 +6,7 @@ from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOpti
 from envs.dqn_model.gym.crypto_trading_env_multi import MultiCryptoTradingEnv
 import wandb
 from agents.vdqn.cfg.vconfig import vDqnConfig
-from envs.dqn_model.gym.gutils import get_nan_stats, log_csv, setup_logger, setup_wandb
+from envs.dqn_model.gym.gutils import get_nan_stats, setup_logger, setup_wandb
 
 cfg = vDqnConfig()
 
@@ -457,9 +457,6 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 200, mul
             pickle.dump(stats_all, f)
         
         print(f"💾 Результаты сохранены в файл: {filename}")
-        
-        # Логируем в CSV
-        log_csv(cfg.csv_metrics_path, {"scope":"cumulative", "episode": episodes, **stats_all})
         
         if cfg.use_wandb:
             wandb.log({**stats_all, "scope": "cumulative", "episode": episodes})

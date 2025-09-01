@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from agents.vdqn.dqnsolver import DQNSolver
 from agents.vdqn.cfg.vconfig import vDqnConfig
 from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized
-from envs.dqn_model.gym.gutils import log_csv
+
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -533,12 +533,6 @@ def train_model_optimized(
             print(f"  • Средний winrate: {np.mean(episode_winrates):.3f}")
         else:
             print(f"\n⚠️ Нет сделок за все {episodes} эпизодов!")
-        
-        # Проверяем, что у cfg есть необходимые атрибуты
-        if hasattr(cfg, 'csv_metrics_path'):
-            log_csv(cfg.csv_metrics_path, {"scope":"cumulative", "episode": episodes, **stats_all})
-        else:
-            print("⚠️ csv_metrics_path не найден в конфигурации, пропускаю логирование в CSV")
         
         if hasattr(cfg, 'use_wandb') and cfg.use_wandb:
             wandb.log({**stats_all, "scope": "cumulative", "episode": episodes})

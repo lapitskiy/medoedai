@@ -11,7 +11,6 @@ import wandb
 import pandas as pd
 import torch
 import socket
-import csv
 
 from collections import defaultdict
 
@@ -202,14 +201,6 @@ def setup_wandb(cfg, project: str = "medoedai‑medoedai"):
 
     return _DummyWB(), logger
 
-def log_csv(path, metrics: dict):
-    if not metrics: return
-    is_new = not os.path.exists(path)
-    with open(path, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=sorted(metrics.keys()))
-        if is_new: w.writeheader()
-        w.writerow(metrics)
-        
 def setup_logger(name="rl", level=logging.INFO):
     logger = logging.getLogger(name)
     logger.setLevel(level)
