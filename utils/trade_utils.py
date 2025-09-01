@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from orm.models import Trade, Symbol
 from orm.database import get_db_session
 
@@ -137,7 +137,9 @@ def get_trades_by_symbol(symbol_name: str, limit: int = 100):
     try:
         symbol = session.query(Symbol).filter(Symbol.name == symbol_name).first()
         if symbol:
-            trades = session.query(Trade).filter(
+            trades = session.query(Trade).options(
+                joinedload(Trade.symbol)
+            ).filter(
                 Trade.symbol_id == symbol.id
             ).order_by(Trade.created_at.desc()).limit(limit).all()
             return trades
@@ -158,7 +160,9 @@ def get_recent_trades(limit: int = 50):
     """
     session = get_db_session()
     try:
-        trades = session.query(Trade).order_by(Trade.created_at.desc()).limit(limit).all()
+        trades = session.query(Trade).options(
+            joinedload(Trade.symbol)
+        ).order_by(Trade.created_at.desc()).limit(limit).all()
         return trades
     finally:
         session.close()
