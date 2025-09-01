@@ -254,7 +254,8 @@ class TradingAgent:
             df_5min = db_get_or_fetch_ohlcv(
                 symbol_name=self.symbol,
                 timeframe='5m',
-                limit_candles=1  # Только последняя свеча
+                limit_candles=1,  # Только последняя свеча
+                exchange_id='bybit'  # Используем Bybit
             )
             
             if df_5min is not None and not df_5min.empty:
@@ -411,7 +412,8 @@ class TradingAgent:
             df_5min = db_get_or_fetch_ohlcv(
                 symbol_name=self.symbol,
                 timeframe='5m',
-                limit_candles=100  # Нам нужно 100 свечей для индикаторов
+                limit_candles=100,  # Нам нужно 100 свечей для индикаторов
+                exchange_id='bybit'  # Используем Bybit
             )
             
             if df_5min is None or df_5min.empty:

@@ -135,10 +135,28 @@ def db_get_or_fetch_ohlcv(
             symbol_cctx = normalize_symbol(symbol_name)
             
             exchange_class = getattr(ccxt, exchange_id)
-            exchange = exchange_class({
-                'enableRateLimit': True,
-                'timeout': 30000, # Увеличение таймаута
-            })
+            
+            # Для Bybit используем API ключи
+            if exchange_id == 'bybit':
+                api_key = os.getenv('BYBIT_API_KEY')
+                secret_key = os.getenv('BYBIT_SECRET_KEY')
+                
+                if not api_key or not secret_key:
+                    logging.error("API ключи Bybit не настроены")
+                    return pd.DataFrame()
+                
+                exchange = exchange_class({
+                    'apiKey': api_key,
+                    'secret': secret_key,
+                    'enableRateLimit': True,
+                    'timeout': 30000, # Увеличение таймаута
+                })
+            else:
+                exchange = exchange_class({
+                    'enableRateLimit': True,
+                    'timeout': 30000, # Увеличение таймаута
+                })
+            
             exchange.load_markets()
             if symbol_cctx not in exchange.symbols:
                 raise ValueError(f"Символ {symbol_cctx} не найден на бирже {exchange_id}.")

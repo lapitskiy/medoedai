@@ -68,7 +68,8 @@ def train_dqn(self):
             df_5min = db_get_or_fetch_ohlcv(
                 symbol_name=symbol, 
                 timeframe='5m', 
-                limit_candles=100000
+                limit_candles=100000,
+                exchange_id='bybit'
             )
             
             if df_5min is not None and not df_5min.empty:
@@ -163,7 +164,8 @@ def train_dqn_symbol(self, symbol: str):
         df_5min = db_get_or_fetch_ohlcv(
             symbol_name=symbol,
             timeframe='5m',
-            limit_candles=100000
+            limit_candles=100000,
+            exchange_id='bybit'
         )
 
         if df_5min is None or df_5min.empty:
