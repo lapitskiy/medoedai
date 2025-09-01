@@ -46,6 +46,8 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       PYTHONDONTWRITEBYTECODE: "1"
       FLASK_DEBUG: "False"
+    env_file:
+      - .env
     volumes:
       - .:/workspace
       - /var/run/docker.sock:/var/run/docker.sock  # Добавлено для доступа к Docker API
