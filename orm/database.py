@@ -6,7 +6,7 @@ import os
 def get_db_url():
     """Получает URL базы данных из переменных окружения или использует настройки из Docker"""
     # Получаем параметры из переменных окружения (приоритет)
-    db_host = os.getenv('DB_HOST', 'localhost')
+    db_host = os.getenv('DB_HOST', 'postgres')  # Изменено с localhost на postgres для Docker
     db_port = os.getenv('DB_PORT', '5432')
     db_name = os.getenv('DB_NAME', 'medoed_db')
     db_user = os.getenv('DB_USER', 'medoed_user')
