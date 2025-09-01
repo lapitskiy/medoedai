@@ -47,7 +47,7 @@ class TradingAgent:
                 # Попытка восстановить размерности из окружения (по умолчанию)
                 try:
                     from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnv
-                    temp_env = CryptoTradingEnv(symbol='BTC/USDT', timeframe='5m')
+                    temp_env = CryptoTradingEnv(symbol='BTCUSDT', timeframe='5m')
                     obs_dim = getattr(temp_env, 'observation_space_shape', None)
                     if obs_dim is None and hasattr(temp_env, 'observation_space'):
                         obs_dim = temp_env.observation_space.shape[0]
@@ -119,7 +119,7 @@ class TradingAgent:
         
         try:
             self.symbols = symbols
-            self.symbol = symbols[0] if symbols else 'BTC/USDT'  # Устанавливаем первый символ как основной
+            self.symbol = symbols[0] if symbols else 'BTCUSDT'  # Устанавливаем первый символ как основной
             
             # Рассчитываем количество для торговли на основе баланса
             self.trade_amount = self._calculate_trade_amount()
@@ -327,14 +327,14 @@ class TradingAgent:
                 "trade_amount": self.trade_amount,
                 "position": self.current_position
             }
-            
-            # Выполняем торговую операцию
-            if action == 'buy' and not self.current_position:
+                
+                # Выполняем торговую операцию
+                if action == 'buy' and not self.current_position:
                 logger.info(f"🟢 Выполняем покупку {self.trade_amount} BTC по цене ${current_price:.2f}")
                 buy_result = self._execute_buy()
                 result["trade_executed"] = "buy"
                 result["trade_details"] = buy_result
-            elif action == 'sell' and self.current_position:
+                elif action == 'sell' and self.current_position:
                 logger.info(f"🔴 Выполняем продажу {self.current_position['amount']} BTC по цене ${current_price:.2f}")
                 sell_result = self._execute_sell()
                 result["trade_executed"] = "sell"
@@ -351,8 +351,8 @@ class TradingAgent:
                 result["trade_executed"] = "hold"
             
             return result
-            
-        except Exception as e:
+                
+            except Exception as e:
             logger.error(f"Ошибка в торговом шаге: {e}")
             return {
                 "error": str(e),
@@ -586,7 +586,7 @@ class TradingAgent:
             
         except Exception as e:
             logger.error(f"Ошибка покупки: {e}")
-            
+    
             # Обновляем запись о сделке с ошибкой
             if 'trade_record' in locals():
                 update_trade_status(

@@ -314,7 +314,7 @@ def trade():
 @app.route('/clean_data', methods=['POST'])
 def clean_data():
     timeframes_to_clean = ['5m', '15m', '1h']
-    symbol_name ='BTC/USDT'
+    symbol_name ='BTCUSDT'
     
     max_close_change_percent = 15.0
     max_hl_range_percent = 20.0
@@ -339,12 +339,11 @@ def clean_data():
 @app.route('/clean_db', methods=['POST'])
 def clean_db():
     timeframes_to_clean = '5m'
-    symbol_name ='BTC/USDT'            
+    symbol_name ='BTCUSDT'            
 
     results = []
     try:
         # Вызываем функцию очистки напрямую (она больше не Celery-задача)
-        delete_ohlcv_for_symbol_timeframe('BTC/USDT', timeframes_to_clean)
         delete_ohlcv_for_symbol_timeframe('BTCUSDT', timeframes_to_clean)
     except Exception as e:
         results.append({"status": "error", "message": f"Ошибка при очистке для {symbol_name}: {str(e)}"})
@@ -1186,7 +1185,7 @@ def start_trading():
     """
     try:
         data = request.get_json() or {}
-        symbols = data.get('symbols', ['BTC/USDT'])
+        symbols = data.get('symbols', ['BTCUSDT'])
         model_path = data.get('model_path', '/workspace/good_model/dqn_model.pth')
         
         # Сохраняем выбранные параметры в Redis для последующих вызовов (status/stop/balance/history)

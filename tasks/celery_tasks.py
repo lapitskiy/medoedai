@@ -381,7 +381,7 @@ if os.environ.get('ENABLE_TRADING_BEAT', '0') in ('1', 'true', 'True'):
         'start-trading-every-5-minutes': {
             'task': 'tasks.celery_tasks.start_trading_task',
             'schedule': crontab(minute='*/5'),
-            'args': (['BTC/USDT'], '/workspace/good_models/dqn_model_E750.pth')  # Используем правильный путь к модели
+            'args': ([], None)  # Символы и путь к модели будут передаваться из веб-интерфейса
         },
     }
     celery.conf.timezone = 'UTC'

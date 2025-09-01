@@ -367,12 +367,12 @@
                 <div class="form-group">
                     <label>Торговая пара:</label>
                     <div>
-                        <label><input type="checkbox" value="BTC/USDT" class="trading-symbol" checked> BTC/USDT</label><br>
-                        <label><input type="checkbox" value="ETH/USDT" class="trading-symbol"> ETH/USDT</label><br>
-                        <label><input type="checkbox" value="SOL/USDT" class="trading-symbol"> SOL/USDT</label><br>
-                        <label><input type="checkbox" value="TON/USDT" class="trading-symbol"> TON/USDT</label><br>
-                        <label><input type="checkbox" value="ADA/USDT" class="trading-symbol"> ADA/USDT</label><br>
-                        <label><input type="checkbox" value="BNB/USDT" class="trading-symbol"> BNB/USDT</label>
+                        <label><input type="checkbox" value="BTCUSDT" class="trading-symbol" checked> BTCUSDT</label><br>
+                        <label><input type="checkbox" value="ETHUSDT" class="trading-symbol"> ETHUSDT</label><br>
+                        <label><input type="checkbox" value="SOLUSDT" class="trading-symbol"> SOLUSDT</label><br>
+                        <label><input type="checkbox" value="TONUSDT" class="trading-symbol"> TONUSDT</label><br>
+                        <label><input type="checkbox" value="ADAUSDT" class="trading-symbol"> ADAUSDT</label><br>
+                        <label><input type="checkbox" value="BNBUSDT" class="trading-symbol"> BNBUSDT</label>
                     </div>
                 </div>
                 
@@ -956,7 +956,7 @@
                 getTradingResults();
                 getTradeHistory();
                 getTradeStatistics();
-            }, 30000); // 30 секунд
+            }, 300000); 
             
             document.getElementById('monitoringStatus').style.display = 'block';
             showStatus('tradingResult', 'info', 'Мониторинг запущен');

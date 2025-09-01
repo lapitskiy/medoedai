@@ -31,5 +31,5 @@ def fetch_ohlcv(exchange_name, symbol, timeframe, limit=100):
 
 # Пример вызова
 if __name__ == "__main__":
-    df_5min = fetch_ohlcv('bybit', 'BTC/USDT', '5m', limit=12)  # последние 12 свечей по 5 минутам (~1 час)
+    df_5min = fetch_ohlcv('bybit', 'BTCUSDT', '5m', limit=12)  # последние 12 свечей по 5 минутам (~1 час)
     print(df_5min)
