@@ -327,14 +327,14 @@ class TradingAgent:
                 "trade_amount": self.trade_amount,
                 "position": self.current_position
             }
-                
-                # Выполняем торговую операцию
-                if action == 'buy' and not self.current_position:
+            
+            # Выполняем торговую операцию
+            if action == 'buy' and not self.current_position:
                 logger.info(f"🟢 Выполняем покупку {self.trade_amount} BTC по цене ${current_price:.2f}")
                 buy_result = self._execute_buy()
                 result["trade_executed"] = "buy"
                 result["trade_details"] = buy_result
-                elif action == 'sell' and self.current_position:
+            elif action == 'sell' and self.current_position:
                 logger.info(f"🔴 Выполняем продажу {self.current_position['amount']} BTC по цене ${current_price:.2f}")
                 sell_result = self._execute_sell()
                 result["trade_executed"] = "sell"
@@ -351,8 +351,8 @@ class TradingAgent:
                 result["trade_executed"] = "hold"
             
             return result
-                
-            except Exception as e:
+            
+        except Exception as e:
             logger.error(f"Ошибка в торговом шаге: {e}")
             return {
                 "error": str(e),
