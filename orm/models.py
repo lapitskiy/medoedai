@@ -1,9 +1,10 @@
 from sqlalchemy import (
     create_engine, Column, Integer, Float, String, BigInteger,
-    ForeignKey, UniqueConstraint
+    ForeignKey, UniqueConstraint, DateTime, Text, Boolean
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
+from datetime import datetime
 
 Base = declarative_base()
 
@@ -14,6 +15,8 @@ class Symbol(Base):
 
     # Связь "один ко многим" с OHLCV
     ohlcvs = relationship("OHLCV", back_populates="symbol")
+    # Связь "один ко многим" с Trade
+    trades = relationship("Trade", back_populates="symbol")
 
 class OHLCV(Base):
     __tablename__ = 'ohlcv'
@@ -31,4 +34,39 @@ class OHLCV(Base):
 
     __table_args__ = (
         UniqueConstraint('symbol_id', 'timeframe', 'timestamp', name='uix_symbol_timeframe_timestamp'),
+    )
+
+class Trade(Base):
+    __tablename__ = 'trades'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_number = Column(String, unique=True, nullable=False)  # Уникальный номер сделки
+    symbol_id = Column(Integer, ForeignKey('symbols.id'), nullable=False)
+    
+    # Основные данные сделки
+    action = Column(String, nullable=False)  # 'buy', 'sell', 'hold'
+    status = Column(String, nullable=False)  # 'executed', 'pending', 'cancelled', 'failed'
+    quantity = Column(Float, nullable=False)  # Количество торгуемого актива
+    price = Column(Float, nullable=False)  # Цена исполнения
+    total_value = Column(Float, nullable=False)  # Общая стоимость сделки (quantity * price)
+    
+    # Дополнительные данные
+    model_prediction = Column(String, nullable=True)  # Предсказание модели
+    confidence = Column(Float, nullable=True)  # Уверенность модели (если доступна)
+    current_balance = Column(Float, nullable=True)  # Баланс на момент сделки
+    position_pnl = Column(Float, nullable=True)  # P&L позиции
+    
+    # Метаданные
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    executed_at = Column(DateTime, nullable=True)  # Время исполнения
+    exchange_order_id = Column(String, nullable=True)  # ID ордера на бирже
+    error_message = Column(Text, nullable=True)  # Сообщение об ошибке, если есть
+    
+    # Флаги
+    is_successful = Column(Boolean, default=False)  # Успешность сделки
+    
+    # Связи
+    symbol = relationship("Symbol", back_populates="trades")
+    
+    __table_args__ = (
+        UniqueConstraint('trade_number', name='uix_trade_number'),
     )

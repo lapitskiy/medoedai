@@ -198,6 +198,64 @@
             align-items: center;
             margin-bottom: 10px;
         }
+        
+        .trade-item.success {
+            border-left: 4px solid #28a745;
+        }
+        
+        .trade-item.error {
+            border-left: 4px solid #dc3545;
+        }
+        
+        .trade-action.buy {
+            color: #28a745;
+            font-weight: bold;
+        }
+        
+        .trade-action.sell {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        
+        .trade-action.hold {
+            color: #6c757d;
+            font-weight: bold;
+        }
+        
+        .statistics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .stat-item {
+            background: white;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+        }
+        
+        .stat-label {
+            font-size: 14px;
+            color: #6c757d;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .stat-value.success {
+            color: #28a745;
+        }
+        
+        .stat-value.error {
+            color: #dc3545;
+        }
         .trade-action {
             font-weight: bold;
             padding: 5px 10px;
@@ -209,6 +267,14 @@
             color: #155724;
         }
         .trade-action.sell {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .trade-action.success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .trade-action.error {
             background: #f8d7da;
             color: #721c24;
         }
@@ -367,7 +433,7 @@
             <!-- Секция мониторинга -->
             <div class="section">
                 <h2>🔍 Мониторинг</h2>
-                <p>Автоматическое обновление статуса каждые 30 секунд</p>
+                <p>Автоматическое обновление статуса и результатов торговли каждые 30 секунд</p>
                 
                 <div class="button-group">
                     <button class="btn btn-info" onclick="startMonitoring()">
@@ -380,6 +446,24 @@
                 
                 <div id="monitoringStatus" class="status info" style="display: none;">
                     Мониторинг активен - статус обновляется каждые 30 секунд
+                </div>
+                
+                <!-- Результаты торговли из Celery -->
+                <div id="tradingResults" class="trading-history" style="display: none;">
+                    <h3>📊 Последние результаты торговли (Celery)</h3>
+                    <div id="tradingResultsContent"></div>
+                </div>
+                
+                <!-- История сделок из базы данных -->
+                <div id="tradeHistory" class="trading-history" style="display: none;">
+                    <h3>📈 История сделок (База данных)</h3>
+                    <div id="tradeHistoryContent"></div>
+                </div>
+                
+                <!-- Статистика сделок -->
+                <div id="tradeStatistics" class="trading-history" style="display: none;">
+                    <h3>📊 Статистика сделок</h3>
+                    <div id="tradeStatisticsContent"></div>
                 </div>
             </div>
         </div>
@@ -640,15 +724,238 @@
             }
         }
 
+        // Получение последних результатов торговли из Celery
+        async function getTradingResults() {
+            try {
+                const response = await fetch('/api/trading/latest_results');
+                const result = await response.json();
+                
+                if (result.success) {
+                    const resultsDiv = document.getElementById('tradingResults');
+                    const contentDiv = document.getElementById('tradingResultsContent');
+                    
+                    if (result.latest_results && result.latest_results.length > 0) {
+                        let resultsHTML = `<p><strong>Всего результатов:</strong> ${result.total_results}</p>`;
+                        
+                        result.latest_results.forEach((tradeResult, index) => {
+                            const resultTime = new Date(tradeResult.timestamp).toLocaleString('ru-RU');
+                            const successClass = tradeResult.exit_code === 0 ? 'success' : 'error';
+                            
+                            resultsHTML += `
+                                <div class="trade-item">
+                                    <div class="trade-header">
+                                        <span class="trade-action ${successClass}">${tradeResult.exit_code === 0 ? '✅ УСПЕХ' : '❌ ОШИБКА'}</span>
+                                        <span>${resultTime}</span>
+                                    </div>
+                                    <div class="trade-details">
+                                        <div class="trade-detail">
+                                            <div class="label">Символы</div>
+                                            <div class="value">${tradeResult.symbols ? tradeResult.symbols.join(', ') : 'N/A'}</div>
+                                        </div>
+                                        <div class="trade-detail">
+                                            <div class="label">Код выхода</div>
+                                            <div class="value">${tradeResult.exit_code}</div>
+                                        </div>
+                                        ${tradeResult.parsed_result ? `
+                                        <div class="trade-detail">
+                                            <div class="label">Действие</div>
+                                            <div class="value">${tradeResult.parsed_result.action || 'N/A'}</div>
+                                        </div>
+                                        <div class="trade-detail">
+                                            <div class="label">Цена</div>
+                                            <div class="value">$${tradeResult.parsed_result.price || 'N/A'}</div>
+                                        </div>
+                                        ${tradeResult.parsed_result.trade_executed ? `
+                                        <div class="trade-detail">
+                                            <div class="label">Выполнено</div>
+                                            <div class="value">${tradeResult.parsed_result.trade_executed}</div>
+                                        </div>
+                                        ` : ''}
+                                        ${tradeResult.parsed_result.position_pnl ? `
+                                        <div class="trade-detail">
+                                            <div class="label">P&L позиции</div>
+                                            <div class="value" style="color: ${tradeResult.parsed_result.position_pnl >= 0 ? 'green' : 'red'}">
+                                                ${tradeResult.parsed_result.position_pnl >= 0 ? '+' : ''}${tradeResult.parsed_result.position_pnl.toFixed(2)}%
+                                            </div>
+                                        </div>
+                                        ` : ''}
+                                        ` : ''}
+                                    </div>
+                                    ${tradeResult.parse_error ? `
+                                    <div style="margin-top: 10px; padding: 10px; background: #f8d7da; border-radius: 5px; font-size: 12px;">
+                                        <strong>Ошибка парсинга:</strong> ${tradeResult.parse_error}
+                                    </div>
+                                    ` : ''}
+                                </div>
+                            `;
+                        });
+                        
+                        contentDiv.innerHTML = resultsHTML;
+                    } else {
+                        contentDiv.innerHTML = '<p>Результаты торговли пока отсутствуют</p>';
+                    }
+                    
+                    resultsDiv.style.display = 'block';
+                } else {
+                    console.error('Ошибка получения результатов:', result.error);
+                }
+            } catch (error) {
+                console.error('Ошибка при получении результатов торговли:', error);
+            }
+        }
+
+        // Получение истории сделок из базы данных
+        async function getTradeHistory() {
+            try {
+                const response = await fetch('/api/trades/recent?limit=20');
+                const result = await response.json();
+                
+                const historyDiv = document.getElementById('tradeHistory');
+                const contentDiv = document.getElementById('tradeHistoryContent');
+                
+                if (result.success) {
+                    if (result.trades && result.trades.length > 0) {
+                        let historyHTML = '';
+                        result.trades.forEach(trade => {
+                            const statusClass = trade.is_successful ? 'success' : 'error';
+                            const actionClass = trade.action === 'buy' ? 'buy' : trade.action === 'sell' ? 'sell' : 'hold';
+                            
+                            historyHTML += `
+                                <div class="trade-item ${statusClass}">
+                                    <div class="trade-header">
+                                        <div class="trade-number">${trade.trade_number}</div>
+                                        <div class="trade-symbol">${trade.symbol}</div>
+                                        <div class="trade-action ${actionClass}">${trade.action.toUpperCase()}</div>
+                                        <div class="trade-status">${trade.status}</div>
+                                    </div>
+                                    <div class="trade-details">
+                                        <div class="trade-detail">
+                                            <div class="label">Количество</div>
+                                            <div class="value">${trade.quantity}</div>
+                                        </div>
+                                        <div class="trade-detail">
+                                            <div class="label">Цена</div>
+                                            <div class="value">$${trade.price}</div>
+                                        </div>
+                                        <div class="trade-detail">
+                                            <div class="label">Стоимость</div>
+                                            <div class="value">$${trade.total_value}</div>
+                                        </div>
+                                        ${trade.model_prediction ? `
+                                        <div class="trade-detail">
+                                            <div class="label">Предсказание модели</div>
+                                            <div class="value">${trade.model_prediction}</div>
+                                        </div>
+                                        ` : ''}
+                                        ${trade.position_pnl ? `
+                                        <div class="trade-detail">
+                                            <div class="label">P&L</div>
+                                            <div class="value" style="color: ${trade.position_pnl >= 0 ? 'green' : 'red'}">
+                                                ${trade.position_pnl >= 0 ? '+' : ''}${trade.position_pnl.toFixed(2)}
+                                            </div>
+                                        </div>
+                                        ` : ''}
+                                        <div class="trade-detail">
+                                            <div class="label">Время создания</div>
+                                            <div class="value">${new Date(trade.created_at).toLocaleString()}</div>
+                                        </div>
+                                        ${trade.error_message ? `
+                                        <div class="trade-detail">
+                                            <div class="label">Ошибка</div>
+                                            <div class="value error">${trade.error_message}</div>
+                                        </div>
+                                        ` : ''}
+                                    </div>
+                                </div>
+                            `;
+                        });
+                        
+                        contentDiv.innerHTML = historyHTML;
+                    } else {
+                        contentDiv.innerHTML = '<p>История сделок пока отсутствует</p>';
+                    }
+                    
+                    historyDiv.style.display = 'block';
+                } else {
+                    console.error('Ошибка получения истории сделок:', result.error);
+                }
+            } catch (error) {
+                console.error('Ошибка при получении истории сделок:', error);
+            }
+        }
+
+        // Получение статистики сделок
+        async function getTradeStatistics() {
+            try {
+                const response = await fetch('/api/trades/statistics');
+                const result = await response.json();
+                
+                const statsDiv = document.getElementById('tradeStatistics');
+                const contentDiv = document.getElementById('tradeStatisticsContent');
+                
+                if (result.success) {
+                    const stats = result.statistics;
+                    const successRate = stats.success_rate || 0;
+                    const successRateClass = successRate >= 50 ? 'success' : 'error';
+                    
+                    const statsHTML = `
+                        <div class="statistics-grid">
+                            <div class="stat-item">
+                                <div class="stat-label">Всего сделок</div>
+                                <div class="stat-value">${stats.total_trades}</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Успешных сделок</div>
+                                <div class="stat-value success">${stats.successful_trades}</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Неудачных сделок</div>
+                                <div class="stat-value error">${stats.failed_trades}</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Процент успеха</div>
+                                <div class="stat-value ${successRateClass}">${successRate}%</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Общий объем</div>
+                                <div class="stat-value">${stats.total_volume.toFixed(6)}</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Общая стоимость</div>
+                                <div class="stat-value">$${stats.total_value.toFixed(2)}</div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    contentDiv.innerHTML = statsHTML;
+                    statsDiv.style.display = 'block';
+                } else {
+                    console.error('Ошибка получения статистики:', result.error);
+                }
+            } catch (error) {
+                console.error('Ошибка при получении статистики:', error);
+            }
+        }
+
         // Запуск мониторинга
         function startMonitoring() {
             if (monitoringInterval) {
                 clearInterval(monitoringInterval);
             }
             
+            // Сразу получаем данные
+            getTradingStatus();
+            getBalance();
+            getTradingResults();
+            getTradeHistory();
+            getTradeStatistics();
+            
             monitoringInterval = setInterval(() => {
                 getTradingStatus();
                 getBalance();
+                getTradingResults();
+                getTradeHistory();
+                getTradeStatistics();
             }, 30000); // 30 секунд
             
             document.getElementById('monitoringStatus').style.display = 'block';

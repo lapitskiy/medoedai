@@ -261,9 +261,12 @@ def start_trading_task(self, symbols, model_path=None):
     import docker
     import os
 
-    # Защита: если beat не должен работать, выходим сразу (даже если старое расписание осталось)
-    if os.environ.get('ENABLE_TRADING_BEAT', '0') not in ('1', 'true', 'True'):
+    # Проверяем, должна ли работать торговля
+    trading_enabled = os.environ.get('ENABLE_TRADING_BEAT', '1') in ('1', 'true', 'True')
+    if not trading_enabled:
         return {"success": False, "skipped": True, "reason": "ENABLE_TRADING_BEAT=0"}
+    
+    print(f"🚀 Запуск торговой задачи для символов: {symbols}")
     
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
     
@@ -280,18 +283,70 @@ def start_trading_task(self, symbols, model_path=None):
         
         # Start trading via exec with API keys
         if model_path:
-            cmd = f'python -c "import json; import os; os.environ[\'BYBIT_API_KEY\'] = \'{BYBIT_API_KEY}\'; os.environ[\'BYBIT_SECRET_KEY\'] = \'{BYBIT_SECRET_KEY}\'; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); result = agent.start_trading(symbols={symbols}); print(\\"RESULT: \\" + json.dumps(result))"'
+            cmd = f'python -c "import json; import os; os.environ[\'BYBIT_API_KEY\'] = \'{BYBIT_API_KEY}\'; os.environ[\'BYBIT_SECRET_KEY\'] = \'{BYBIT_SECRET_KEY}\'; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); start_result = agent.start_trading(symbols={symbols}); status_result = agent.get_trading_status(); print(\\"RESULT: \\" + json.dumps({{**start_result, **status_result}}))"'
         else:
-            cmd = f'python -c "import json; import os; os.environ[\'BYBIT_API_KEY\'] = \'{BYBIT_API_KEY}\'; os.environ[\'BYBIT_SECRET_KEY\'] = \'{BYBIT_SECRET_KEY}\'; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.start_trading(symbols={symbols}); print(\\"RESULT: \\" + json.dumps(result))"'
+            cmd = f'python -c "import json; import os; os.environ[\'BYBIT_API_KEY\'] = \'{BYBIT_API_KEY}\'; os.environ[\'BYBIT_SECRET_KEY\'] = \'{BYBIT_SECRET_KEY}\'; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); start_result = agent.start_trading(symbols={symbols}); status_result = agent.get_trading_status(); print(\\"RESULT: \\" + json.dumps({{**start_result, **status_result}}))"'
         
         exec_result = container.exec_run(cmd, tty=True)
         
         # Log the execution result
-        print(f"Start trading - Command: {cmd}")
-        print(f"Start trading - Exit code: {exec_result.exit_code}")
+        print(f"🚀 Start trading - Command: {cmd}")
+        print(f"📊 Start trading - Exit code: {exec_result.exit_code}")
         if exec_result.output:
             output_str = exec_result.output.decode('utf-8')
-            print(f"Start trading - Output: {output_str}")
+            print(f"📝 Start trading - Output: {output_str}")
+            
+            # Парсим результат
+            if 'RESULT:' in output_str:
+                try:
+                    result_str = output_str.split('RESULT:')[1].strip()
+                    result = json.loads(result_str)
+                    print(f"✅ Parsed result: {result}")
+                except Exception as parse_error:
+                    print(f"❌ Error parsing result: {parse_error}")
+                    print(f"Raw result string: {result_str}")
+        
+        # Сохраняем результат в Redis для веб-интерфейса
+        try:
+            from redis import Redis
+            
+            # Подключение к Redis
+            redis_client = Redis(host='redis', port=6379, db=0, decode_responses=True)
+            
+            # Создаем результат для сохранения
+            result_data = {
+                'timestamp': datetime.now().isoformat(),
+                'symbols': symbols,
+                'model_path': model_path,
+                'command': cmd,
+                'exit_code': exec_result.exit_code,
+                'output': output_str if exec_result.output else "No output"
+            }
+            
+            # Парсим результат из вывода команды
+            if 'RESULT:' in output_str:
+                try:
+                    result_str = output_str.split('RESULT:')[1].strip()
+                    parsed_result = json.loads(result_str)
+                    result_data['parsed_result'] = parsed_result
+                except Exception as parse_error:
+                    print(f"Ошибка парсинга результата: {parse_error}")
+                    result_data['parse_error'] = str(parse_error)
+            
+            # Сохраняем в Redis (последние 10 результатов)
+            redis_key = f'trading:latest_result_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+            redis_client.setex(redis_key, 3600, json.dumps(result_data))  # Храним 1 час
+            
+            # Очищаем старые результаты (оставляем только последние 10)
+            all_keys = redis_client.keys('trading:latest_result_*')
+            if len(all_keys) > 20:
+                # Сортируем по времени и удаляем старые
+                sorted_keys = sorted(all_keys)
+                for old_key in sorted_keys[:-10]:
+                    redis_client.delete(old_key)
+                    
+        except Exception as redis_error:
+            print(f"Ошибка сохранения в Redis: {redis_error}")
         
         if exec_result.exit_code == 0:
             output = exec_result.output.decode('utf-8')
@@ -314,16 +369,24 @@ def start_trading_task(self, symbols, model_path=None):
     except Exception as e:
         return {"success": False, "error": f'Docker error: {str(e)}'}
 
-# Включаем периодический запуск торговли только если явно задан флаг окружения
+# Включаем периодический запуск торговли
 import os
-if os.environ.get('ENABLE_TRADING_BEAT', '0') in ('1', 'true', 'True'):
+# Устанавливаем ENABLE_TRADING_BEAT=1 если не задан
+if os.environ.get('ENABLE_TRADING_BEAT') is None:
+    os.environ['ENABLE_TRADING_BEAT'] = '1'
+    print("✅ Автоматически включен ENABLE_TRADING_BEAT=1")
+
+if os.environ.get('ENABLE_TRADING_BEAT', '1') in ('1', 'true', 'True'):
     celery.conf.beat_schedule = {
         'start-trading-every-5-minutes': {
             'task': 'tasks.celery_tasks.start_trading_task',
             'schedule': crontab(minute='*/5'),
-            'args': (['BTC/USDT'], '/workspace/good_model/dqn_model.pth')
+            'args': (['BTC/USDT'], '/workspace/good_models/dqn_model_E750.pth')  # Используем правильный путь к модели
         },
     }
     celery.conf.timezone = 'UTC'
+    print("✅ Периодическая торговля включена (каждые 5 минут)")
+else:
+    print("⚠️ Периодическая торговля отключена (ENABLE_TRADING_BEAT=0)")
 
    

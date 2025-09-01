@@ -1393,6 +1393,40 @@ def trading_status():
             'error': str(e)
         }), 500
 
+@app.route('/api/trading/latest_results', methods=['GET'])
+def trading_latest_results():
+    """Получение последних результатов торговли из Celery"""
+    try:
+        # Получаем последние результаты из Redis
+        latest_results = []
+        
+        # Получаем последние 10 результатов торговли
+        for i in range(10):
+            result_key = f'trading:latest_result_{i}'
+            try:
+                result_data = redis_client.get(result_key)
+                if result_data:
+                    result = json.loads(result_data.decode('utf-8'))
+                    latest_results.append(result)
+            except Exception as e:
+                app.logger.warning(f"Ошибка получения результата {i}: {e}")
+        
+        # Сортируем по времени (новые сначала)
+        latest_results.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        
+        return jsonify({
+            'success': True,
+            'latest_results': latest_results,
+            'total_results': len(latest_results)
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Ошибка получения последних результатов: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/api/trading/balance', methods=['GET'])
 def trading_balance():
     """Баланс на бирже из контейнера trading_agent"""
@@ -1454,11 +1488,10 @@ def trading_balance():
                     'success': False,
                     'error': f'Ошибка выполнения команды: {exec_result.output.decode("utf-8")}'
                 }), 500
-                
         except docker.errors.NotFound:
             return jsonify({
                 'success': False, 
-                'error': 'Контейнер trading_agent не найден. Запустите docker-compose up trading_agent'
+                'error': 'Контейнер trading_agent не найден'
             }), 500
         except Exception as e:
             return jsonify({
@@ -1470,6 +1503,109 @@ def trading_balance():
         app.logger.error(f"Ошибка получения баланса: {e}")
         return jsonify({
             'success': False, 
+            'error': str(e)
+        }), 500
+
+@app.route('/api/trades/recent', methods=['GET'])
+def get_recent_trades():
+    """Получение последних сделок из базы данных"""
+    try:
+        from utils.trade_utils import get_recent_trades
+        
+        limit = request.args.get('limit', 50, type=int)
+        trades = get_recent_trades(limit=limit)
+        
+        # Преобразуем в JSON-совместимый формат
+        trades_data = []
+        for trade in trades:
+            trades_data.append({
+                'trade_number': trade.trade_number,
+                'symbol': trade.symbol.name if trade.symbol else 'Unknown',
+                'action': trade.action,
+                'status': trade.status,
+                'quantity': trade.quantity,
+                'price': trade.price,
+                'total_value': trade.total_value,
+                'model_prediction': trade.model_prediction,
+                'current_balance': trade.current_balance,
+                'position_pnl': trade.position_pnl,
+                'created_at': trade.created_at.isoformat() if trade.created_at else None,
+                'executed_at': trade.executed_at.isoformat() if trade.executed_at else None,
+                'is_successful': trade.is_successful,
+                'error_message': trade.error_message
+            })
+        
+        return jsonify({
+            'success': True,
+            'trades': trades_data,
+            'total_trades': len(trades_data)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/trades/statistics', methods=['GET'])
+def get_trade_statistics():
+    """Получение статистики по сделкам"""
+    try:
+        from utils.trade_utils import get_trade_statistics
+        
+        symbol = request.args.get('symbol', None)
+        stats = get_trade_statistics(symbol_name=symbol)
+        
+        return jsonify({
+            'success': True,
+            'statistics': stats
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/trades/by_symbol/<symbol_name>', methods=['GET'])
+def get_trades_by_symbol(symbol_name):
+    """Получение сделок по символу"""
+    try:
+        from utils.trade_utils import get_trades_by_symbol
+        
+        limit = request.args.get('limit', 100, type=int)
+        trades = get_trades_by_symbol(symbol_name, limit=limit)
+        
+        # Преобразуем в JSON-совместимый формат
+        trades_data = []
+        for trade in trades:
+            trades_data.append({
+                'trade_number': trade.trade_number,
+                'symbol': trade.symbol.name if trade.symbol else 'Unknown',
+                'action': trade.action,
+                'status': trade.status,
+                'quantity': trade.quantity,
+                'price': trade.price,
+                'total_value': trade.total_value,
+                'model_prediction': trade.model_prediction,
+                'current_balance': trade.current_balance,
+                'position_pnl': trade.position_pnl,
+                'created_at': trade.created_at.isoformat() if trade.created_at else None,
+                'executed_at': trade.executed_at.isoformat() if trade.executed_at else None,
+                'is_successful': trade.is_successful,
+                'error_message': trade.error_message
+            })
+        
+        return jsonify({
+            'success': True,
+            'trades': trades_data,
+            'total_trades': len(trades_data),
+            'symbol': symbol_name
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
             'error': str(e)
         }), 500
 
