@@ -26,6 +26,7 @@ class TradingAgent:
         self.is_trading = False
         self.current_position = None
         self.trading_history = []
+        self.last_model_prediction = None
         
         # Загружаем модель
         self._load_model()
@@ -80,7 +81,7 @@ class TradingAgent:
             logger.error(f"Ошибка загрузки модели: {e}")
     
     def _init_exchange(self):
-        """Инициализация подключения к бирже"""
+        """Инициализация подключения к бирже Bybit для деривативов"""
         try:
             # API ключи из переменных окружения
             api_key = os.getenv('BYBIT_API_KEY')
@@ -90,14 +91,23 @@ class TradingAgent:
                 logger.error("API ключи не настроены")
                 return
             
+            # Настраиваем для работы с деривативами (фьючерсы)
             self.exchange = ccxt.bybit({
                 'apiKey': api_key,
                 'secret': secret_key,
                 'sandbox': False,  # True для тестового режима
-                'enableRateLimit': True
+                'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'swap',  # Тип по умолчанию - свопы (фьючерсы)
+                    'defaultMarginMode': 'isolated',  # Изолированная маржа
+                    'defaultLeverage': 1,  # Плечо по умолчанию (без плеча)
+                }
             })
             
-            logger.info("Подключение к Bybit установлено")
+            # Загружаем рынки для получения информации о деривативах
+            self.exchange.load_markets()
+            
+            logger.info("Подключение к Bybit Derivatives (фьючерсы) установлено")
         except Exception as e:
             logger.error(f"Ошибка подключения к бирже: {e}")
     
@@ -118,8 +128,12 @@ class TradingAgent:
             return {"success": False, "error": "Модель не загружена"}
         
         try:
-            self.symbols = symbols
-            self.symbol = symbols[0] if symbols else 'BTCUSDT'  # Устанавливаем первый символ как основной
+            # Преобразуем символы для деривативов (добавляем :USDT для фьючерсов)
+            self.symbols = [f"{symbol}:USDT" if not symbol.endswith(':USDT') else symbol for symbol in symbols]
+            self.symbol = self.symbols[0] if self.symbols else 'BTCUSDT:USDT'  # Устанавливаем первый символ как основной
+            
+            # Убираем :USDT для внутренних расчетов (баланс, цена)
+            self.base_symbol = self.symbol.replace(':USDT', '') if ':USDT' in self.symbol else self.symbol
             
             # Рассчитываем количество для торговли на основе баланса
             self.trade_amount = self._calculate_trade_amount()
@@ -197,7 +211,7 @@ class TradingAgent:
         Рассчитывает количество для торговли на основе баланса и риск-менеджмента
         
         Returns:
-            float: количество в BTC для торговли
+            float: количество в базовой валюте (BTC, ETH, SOL и т.д.) для торговли
         """
         try:
             # Получаем баланс
@@ -209,10 +223,13 @@ class TradingAgent:
             usdt_balance = balance_result['balance']['USDT']
             btc_balance = balance_result['balance']['BTC']
             
+            # Получаем ограничения Bybit
+            bybit_limits = self._get_bybit_limits()
+            
             # Настройки риск-менеджмента
             risk_percentage = 0.15  # 15% от баланса на одну сделку
-            min_trade_usdt = 10.0   # Минимальная сделка $10
-            max_trade_usdt = 100.0  # Максимальная сделка $100
+            min_trade_usdt = max(10.0, bybit_limits['min_cost'])  # Минимальная сделка (больше из: $10 или требования Bybit)
+            max_trade_usdt = min(100.0, bybit_limits['max_cost'])  # Максимальная сделка (меньше из: $100 или требования Bybit)
             
             # Рассчитываем количество USDT для торговли
             trade_usdt = usdt_balance * risk_percentage
@@ -220,30 +237,143 @@ class TradingAgent:
             # Ограничиваем минимальным и максимальным значением
             trade_usdt = max(min_trade_usdt, min(trade_usdt, max_trade_usdt))
             
-            # Если USDT недостаточно, используем BTC баланс
+            # Если USDT недостаточно, используем баланс базовой валюты
             if trade_usdt > usdt_balance:
-                if btc_balance > 0.001:  # Минимум 0.001 BTC
-                    trade_btc = btc_balance * risk_percentage
-                    trade_btc = max(0.001, min(trade_btc, 0.01))  # Ограничиваем 0.001-0.01 BTC
-                    logger.info(f"Используем BTC баланс: {trade_btc} BTC (${trade_btc * self._get_current_price():.2f})")
-                    return trade_btc
+                base_currency = self.base_symbol.replace('USDT', '').replace('USD', '')
+                base_balance = balance_result['balance'].get(base_currency, 0.0)
+                
+                if base_balance > bybit_limits['min_amount']:
+                    trade_amount = base_balance * risk_percentage
+                    trade_amount = max(bybit_limits['min_amount'], min(trade_amount, bybit_limits['max_amount']))
+                    logger.info(f"Используем {base_currency} баланс: {trade_amount} {base_currency} (${trade_amount * self._get_current_price():.2f})")
+                    return trade_amount
                 else:
-                    logger.warning("Недостаточно средств для торговли")
-                    return 0.001  # Минимальное количество
+                    logger.warning(f"Недостаточно {base_currency} для торговли")
+                    return bybit_limits['min_amount']  # Минимальное количество для данной валюты
             
-            # Конвертируем USDT в BTC
+            # Конвертируем USDT в базовую валюту
             current_price = self._get_current_price()
             if current_price > 0:
-                trade_btc = trade_usdt / current_price
-                logger.info(f"Рассчитано количество: {trade_btc:.6f} BTC (${trade_usdt:.2f})")
-                return trade_btc
+                base_currency = self.symbol.replace('USDT', '').replace('USD', '')
+                trade_amount = trade_usdt / current_price
+                
+                # Проверяем ограничения Bybit для данной валюты
+                min_amount_bybit = bybit_limits['min_amount']
+                max_amount_bybit = bybit_limits['max_amount']
+                
+                # Ограничиваем по требованиям биржи
+                if trade_amount < min_amount_bybit:
+                    logger.warning(f"Количество {trade_amount:.6f} {base_currency} меньше минимума Bybit {min_amount_bybit}. Увеличиваем до минимума.")
+                    trade_amount = min_amount_bybit
+                    # Пересчитываем USDT для логирования
+                    actual_usdt = trade_amount * current_price
+                    logger.info(f"Скорректировано: {trade_amount} {base_currency} (${actual_usdt:.2f})")
+                elif trade_amount > max_amount_bybit:
+                    logger.warning(f"Количество {trade_amount:.6f} {base_currency} больше максимума Bybit {max_amount_bybit}. Ограничиваем.")
+                    trade_amount = max_amount_bybit
+                    actual_usdt = trade_amount * current_price
+                    logger.info(f"Скорректировано: {trade_amount} {base_currency} (${actual_usdt:.2f})")
+                else:
+                    logger.info(f"Рассчитано количество: {trade_amount:.6f} {base_currency} (${trade_usdt:.2f})")
+                
+                return trade_amount
             else:
                 logger.warning("Не удалось получить текущую цену, используем минимальное количество")
-                return 0.001
+                return bybit_limits['min_amount']
                 
         except Exception as e:
             logger.error(f"Ошибка расчета количества торговли: {e}")
-            return 0.001  # Фолбэк на минимальное количество
+            # Фолбэк на минимальное количество для текущей валюты
+            try:
+                bybit_limits = self._get_bybit_limits()
+                return bybit_limits['min_amount']
+            except:
+                return 0.001  # Абсолютный фолбэк
+    
+    def _determine_sell_amount(self, current_price: float) -> dict:
+        """
+        ИИ уже решил продавать - определяем СКОЛЬКО продавать
+        на основе risk management и текущей ситуации
+        
+        Args:
+            current_price: Текущая цена
+            
+        Returns:
+            dict: Стратегия продажи
+        """
+        try:
+            if not self.current_position:
+                return {
+                    'sell_all': False,
+                    'sell_amount': 0,
+                    'keep_amount': 0,
+                    'reason': 'Нет открытой позиции'
+                }
+            
+            entry_price = self.current_position['entry_price']
+            position_amount = self.current_position['amount']
+            
+            # Рассчитываем P&L
+            pnl = (current_price - entry_price) * position_amount
+            pnl_percentage = ((current_price - entry_price) / entry_price) * 100
+            
+            # Стратегия 1: Экстренная защита (большие убытки)
+            if pnl_percentage <= -20:  # Убыток больше 20%
+                return {
+                    'sell_all': True,
+                    'sell_amount': position_amount,
+                    'keep_amount': 0,
+                    'reason': f'🚨 ЗАЩИТА: убыток {pnl_percentage:.2f}% (${pnl:.2f})'
+                }
+            
+            # Стратегия 2: Частичная защита (средние убытки)
+            elif pnl_percentage <= -10:  # Убыток больше 10%
+                # Продаем 50% для защиты капитала
+                sell_amount = position_amount * 0.5
+                keep_amount = position_amount * 0.5
+                
+                return {
+                    'sell_all': False,
+                    'sell_amount': sell_amount,
+                    'keep_amount': keep_amount,
+                    'reason': f'🛡️ Защита капитала: убыток {pnl_percentage:.2f}%, продаем 50%'
+                }
+            
+            # Стратегия 3: Частичная фиксация прибыли
+            elif pnl_percentage >= 15:  # Прибыль больше 15%
+                # Продаем 40% для фиксации прибыли
+                sell_amount = position_amount * 0.4
+                keep_amount = position_amount * 0.6
+                
+                return {
+                    'sell_all': False,
+                    'sell_amount': sell_amount,
+                    'keep_amount': keep_amount,
+                    'reason': f'💰 Фиксация прибыли: {pnl_percentage:.2f}%, продаем 40%'
+                }
+            
+            # Стратегия 4: Обычная продажа (по сигналу ИИ)
+            else:
+                # ИИ решил продавать - продаем 70% позиции
+                sell_amount = position_amount * 0.7
+                keep_amount = position_amount * 0.3
+                
+                return {
+                    'sell_all': False,
+                    'sell_amount': sell_amount,
+                    'keep_amount': keep_amount,
+                    'reason': f'🤖 ИИ сигнал SELL: продаем 70% (P&L: {pnl_percentage:.2f}%)'
+                }
+                
+        except Exception as e:
+            logger.error(f"Ошибка определения количества продажи: {e}")
+            # Фолбэк: продаем все
+            return {
+                'sell_all': True,
+                'sell_amount': self.current_position['amount'] if self.current_position else 0,
+                'keep_amount': 0,
+                'reason': f'Ошибка стратегии, продаем все: {str(e)}'
+            }
     
     def _get_current_price(self) -> float:
         """Получает текущую цену из базы данных или с биржи"""
@@ -252,7 +382,7 @@ class TradingAgent:
             from utils.db_utils import db_get_or_fetch_ohlcv
             
             df_5min = db_get_or_fetch_ohlcv(
-                symbol_name=self.symbol,
+                symbol_name=self.base_symbol,  # Используем базовый символ без :USDT для БД
                 timeframe='5m',
                 limit_candles=1,  # Только последняя свеча
                 exchange_id='bybit'  # Используем Bybit
@@ -278,12 +408,75 @@ class TradingAgent:
         """Получает текущий баланс USDT"""
         try:
             balance_result = self.get_balance()
-            if balance_result.get('success'):
+            if balance_result['balance'].get('USDT', 0.0):
                 return balance_result['balance'].get('USDT', 0.0)
             return 0.0
         except Exception as e:
             logger.error(f"Ошибка получения баланса: {e}")
             return 0.0
+    
+    def _get_bybit_limits(self) -> dict:
+        """Получает ограничения Bybit для деривативов текущего символа"""
+        try:
+            # Получаем информацию о рынке деривативов
+            market = self.exchange.market(self.symbol)
+            
+            # Определяем базовую валюту (первая часть символа)
+            base_currency = self.base_symbol.replace('USDT', '').replace('USD', '')
+            
+            # Получаем ограничения из API Bybit для деривативов
+            limits = {
+                'min_amount': market.get('limits', {}).get('amount', {}).get('min', 0.001),
+                'max_amount': market.get('limits', {}).get('amount', {}).get('max', 1000.0),
+                'min_cost': market.get('limits', {}).get('cost', {}).get('min', 10.0),
+                'max_cost': market.get('limits', {}).get('cost', {}).get('max', 100000.0),
+                'precision_amount': market.get('precision', {}).get('amount', 3),
+                'precision_price': market.get('precision', {}).get('price', 2)
+            }
+            
+            # Если не удалось получить ограничения из API, используем известные значения для популярных пар
+            if limits['min_amount'] == 0.001:  # Значение по умолчанию
+                known_limits = {
+                    'BTC': {'min_amount': 0.001, 'precision_amount': 3},    # 0.001 BTC
+                    'ETH': {'min_amount': 0.01, 'precision_amount': 2},     # 0.01 ETH
+                    'SOL': {'min_amount': 0.1, 'precision_amount': 1},      # 0.1 SOL
+                    'TON': {'min_amount': 1.0, 'precision_amount': 0},      # 1 TON
+                    'ADA': {'min_amount': 1.0, 'precision_amount': 0},      # 1 ADA
+                    'BNB': {'min_amount': 0.01, 'precision_amount': 2},    # 0.01 BNB
+                }
+                
+                if base_currency in known_limits:
+                    limits['min_amount'] = known_limits[base_currency]['min_amount']
+                    limits['precision_amount'] = known_limits[base_currency]['precision_amount']
+                    logger.info(f"Используем известные ограничения для {base_currency}: {limits['min_amount']}")
+            
+            logger.info(f"Ограничения Bybit Derivatives для {self.symbol}: {limits}")
+            return limits
+            
+        except Exception as e:
+            logger.warning(f"Не удалось получить ограничения Bybit Derivatives для {self.symbol}, используем значения по умолчанию: {e}")
+            # Возвращаем безопасные значения по умолчанию для разных валют
+            base_currency = self.base_symbol.replace('USDT', '').replace('USD', '')
+            
+            default_limits = {
+                'BTC': {'min_amount': 0.001, 'precision_amount': 3},
+                'ETH': {'min_amount': 0.01, 'precision_amount': 2},
+                'SOL': {'min_amount': 0.1, 'precision_amount': 1},
+                'TON': {'min_amount': 1.0, 'precision_amount': 0},
+                'ADA': {'min_amount': 1.0, 'precision_amount': 0},
+                'BNB': {'min_amount': 0.01, 'precision_amount': 2},
+            }
+            
+            limits = default_limits.get(base_currency, {'min_amount': 0.001, 'precision_amount': 3})
+            
+            return {
+                'min_amount': limits['min_amount'],
+                'max_amount': 1000.0,
+                'min_cost': 10.0,
+                'max_cost': 100000.0,
+                'precision_amount': limits['precision_amount'],
+                'precision_price': 2
+            }
     
     def _execute_trading_step(self) -> Dict:
         """
@@ -329,6 +522,12 @@ class TradingAgent:
                 "position": self.current_position
             }
             
+            # Проверяем условия для автоматической продажи остатка
+            if self.current_position and self.current_position.get('partial_sell_strategy'):
+                auto_sell_result = self._check_auto_sell_remaining()
+                if auto_sell_result:
+                    result["auto_sell_executed"] = auto_sell_result
+            
             # Выполняем торговую операцию
             if action == 'buy' and not self.current_position:
                 logger.info(f"🟢 Выполняем покупку {self.trade_amount} BTC по цене ${current_price:.2f}")
@@ -336,10 +535,22 @@ class TradingAgent:
                 result["trade_executed"] = "buy"
                 result["trade_details"] = buy_result
             elif action == 'sell' and self.current_position:
-                logger.info(f"🔴 Выполняем продажу {self.current_position['amount']} BTC по цене ${current_price:.2f}")
-                sell_result = self._execute_sell()
-                result["trade_executed"] = "sell"
-                result["trade_details"] = sell_result
+                # ИИ решил продавать - определяем СКОЛЬКО продавать
+                sell_strategy = self._determine_sell_amount(current_price)
+                logger.info(f"🔴 ИИ сигнал SELL: {sell_strategy['reason']}")
+                
+                if sell_strategy['sell_all']:
+                    logger.info(f"🔴 Продаем ВСЕ {self.current_position['amount']} {self.base_symbol} по цене ${current_price:.2f}")
+                    sell_result = self._execute_sell()
+                    result["trade_executed"] = "sell_all"
+                    result["trade_details"] = sell_result
+                    result["sell_strategy"] = sell_strategy
+                else:
+                    logger.info(f"🟡 Частичная продажа: {sell_strategy['sell_amount']} {self.base_symbol} (оставляем {sell_strategy['keep_amount']})")
+                    partial_sell_result = self._execute_partial_sell(sell_strategy['sell_amount'])
+                    result["trade_executed"] = "sell_partial"
+                    result["trade_details"] = partial_sell_result
+                    result["sell_strategy"] = sell_strategy
             elif action == 'hold':
                 if self.current_position:
                     # Показываем текущий P&L для открытой позиции
@@ -410,7 +621,7 @@ class TradingAgent:
             
             # Получаем данные из БД, докачиваем недостающие
             df_5min = db_get_or_fetch_ohlcv(
-                symbol_name=self.symbol,
+                symbol_name=self.base_symbol,  # Используем базовый символ без :USDT для БД
                 timeframe='5m',
                 limit_candles=100,  # Нам нужно 100 свечей для индикаторов
                 exchange_id='bybit'  # Используем Bybit
@@ -534,9 +745,9 @@ class TradingAgent:
             # Получаем текущий баланс перед покупкой
             balance = self._get_current_balance()
             
-            # Создаем запись о сделке в БД
+            # Создаем запись о сделке в БД (используем базовый символ)
             trade_record = create_trade_record(
-                symbol_name=self.symbol,
+                symbol_name=self.base_symbol,
                 action='buy',
                 status='pending',
                 quantity=self.trade_amount,
@@ -546,10 +757,15 @@ class TradingAgent:
                 is_successful=False
             )
             
-            # Выполняем покупку
+            # Выполняем покупку фьючерса (long позиция)
             order = self.exchange.create_market_buy_order(
-                self.symbol, 
-                self.trade_amount
+                self.symbol,  # Используем полный символ с :USDT для деривативов
+                self.trade_amount,
+                {
+                    'type': 'market',
+                    'side': 'buy',
+                    'position_idx': 0,  # Односторонняя позиция
+                }
             )
             
             # Обновляем запись о сделке
@@ -609,9 +825,9 @@ class TradingAgent:
             # Получаем текущий баланс перед продажей
             balance = self._get_current_balance()
             
-            # Создаем запись о сделке в БД
+            # Создаем запись о сделке в БД (используем базовый символ)
             trade_record = create_trade_record(
-                symbol_name=self.symbol,
+                symbol_name=self.base_symbol,
                 action='sell',
                 status='pending',
                 quantity=self.current_position['amount'],
@@ -621,10 +837,16 @@ class TradingAgent:
                 is_successful=False
             )
             
-            # Выполняем продажу
+            # Выполняем продажу фьючерса (закрытие long позиции)
             order = self.exchange.create_market_sell_order(
-                self.symbol, 
-                self.current_position['amount']
+                self.symbol,  # Используем полный символ с :USDT для деривативов
+                self.current_position['amount'],
+                {
+                    'type': 'market',
+                    'side': 'sell',
+                    'position_idx': 0,  # Односторонняя позиция
+                    'reduce_only': True,  # Только закрытие позиции
+                }
             )
             
             # Расчет P&L
@@ -666,6 +888,190 @@ class TradingAgent:
             
         except Exception as e:
             logger.error(f"Ошибка продажи: {e}")
+            
+            # Обновляем запись о сделке с ошибкой
+            if 'trade_record' in locals():
+                update_trade_status(
+                    trade_record.trade_number,
+                    status='failed',
+                    error_message=str(e),
+                    is_successful=False
+                )
+            
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def _check_auto_sell_remaining(self) -> Optional[Dict]:
+        """
+        Проверяет условия для автоматической продажи оставшейся части позиции
+        
+        Returns:
+            Dict: Результат автоматической продажи или None
+        """
+        try:
+            if not self.current_position or not self.current_position.get('partial_sell_strategy'):
+                return None
+            
+            strategy = self.current_position['partial_sell_strategy']
+            current_price = self._get_current_price()
+            
+            if current_price <= 0:
+                return None
+            
+            # Рассчитываем P&L для оставшейся части
+            entry_price = self.current_position['entry_price']
+            position_amount = self.current_position['amount']
+            pnl_percentage = ((current_price - entry_price) / entry_price) * 100
+            
+            should_sell = False
+            reason = ""
+            
+            # Проверяем условия продажи
+            
+            # 1. Убыток превысил порог
+            if pnl_percentage <= strategy['sell_threshold']:
+                should_sell = True
+                reason = f"🚨 Авто-продажа остатка: убыток {pnl_percentage:.2f}% превысил порог {strategy['sell_threshold']}%"
+            
+            # 2. Прибыль превысила порог
+            elif pnl_percentage >= strategy['profit_threshold']:
+                should_sell = True
+                reason = f"💰 Авто-продажа остатка: прибыль {pnl_percentage:.2f}% превысила порог {strategy['profit_threshold']}%"
+            
+            # 3. Время истекло
+            elif datetime.now() >= strategy['time_threshold']:
+                should_sell = True
+                reason = f"⏰ Авто-продажа остатка: истекло время ожидания (24 часа)"
+            
+            if should_sell:
+                logger.info(f"🔴 {reason}")
+                
+                # Продаем весь остаток
+                sell_result = self._execute_sell()
+                
+                # Очищаем стратегию
+                if 'partial_sell_strategy' in self.current_position:
+                    del self.current_position['partial_sell_strategy']
+                
+                return {
+                    "success": True,
+                    "reason": reason,
+                    "sell_result": sell_result,
+                    "pnl_percentage": pnl_percentage
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Ошибка проверки авто-продажи остатка: {e}")
+            return None
+    
+    def _execute_partial_sell(self, sell_amount: float) -> Dict:
+        """Выполнение частичной продажи"""
+        try:
+            if not self.current_position or sell_amount <= 0:
+                return {
+                    "success": False,
+                    "error": "Нет позиции или неверное количество для продажи"
+                }
+            
+            # Проверяем, что продаем не больше чем есть
+            if sell_amount > self.current_position['amount']:
+                sell_amount = self.current_position['amount']
+            
+            # Получаем текущий баланс перед продажей
+            balance = self._get_current_balance()
+            
+            # Создаем запись о сделке в БД
+            trade_record = create_trade_record(
+                symbol_name=self.base_symbol,
+                action='sell_partial',
+                status='pending',
+                quantity=sell_amount,
+                price=0,  # Будет обновлено после исполнения
+                model_prediction=self.last_model_prediction,
+                current_balance=balance,
+                is_successful=False
+            )
+            
+            # Выполняем частичную продажу фьючерса
+            order = self.exchange.create_market_sell_order(
+                self.symbol,  # Используем полный символ с :USDT для деривативов
+                sell_amount,
+                {
+                    'type': 'market',
+                    'side': 'sell',
+                    'position_idx': 0,  # Односторонняя позиция
+                    'reduce_only': True,  # Только закрытие позиции
+                }
+            )
+            
+            # Расчет P&L для проданной части
+            exit_price = order['price']
+            entry_price = self.current_position['entry_price']
+            pnl = (exit_price - entry_price) * sell_amount
+            
+            # Обновляем запись о сделке
+            update_trade_status(
+                trade_record.trade_number,
+                status='executed',
+                price=order['price'],
+                exchange_order_id=order.get('id'),
+                position_pnl=pnl,
+                is_successful=True
+            )
+            
+            self.trading_history.append({
+                'action': 'sell_partial',
+                'price': exit_price,
+                'amount': sell_amount,
+                'time': datetime.now(),
+                'pnl': pnl,
+                'trade_number': trade_record.trade_number
+            })
+            
+            # Обновляем текущую позицию (уменьшаем количество)
+            remaining_amount = self.current_position['amount'] - sell_amount
+            
+            if remaining_amount <= 0.0001:  # Если осталось очень мало - закрываем позицию
+                logger.info(f"Частичная продажа: закрываем позицию полностью (осталось: {remaining_amount})")
+                self.current_position = None
+            else:
+                # Пересчитываем среднюю цену входа для оставшейся позиции
+                total_cost = self.current_position['entry_price'] * self.current_position['amount']
+                sold_cost = exit_price * sell_amount
+                remaining_cost = total_cost - sold_cost
+                new_entry_price = remaining_cost / remaining_amount
+                
+                # Добавляем стратегию для оставшейся части
+                self.current_position['amount'] = remaining_amount
+                self.current_position['entry_price'] = new_entry_price
+                self.current_position['partial_sell_strategy'] = {
+                    'type': 'remaining_position',
+                    'sell_threshold': -5.0,  # Продаем остаток при убытке > 5%
+                    'profit_threshold': 8.0,  # Продаем остаток при прибыли > 8%
+                    'time_threshold': datetime.now() + timedelta(hours=24),  # Максимум 24 часа
+                    'created_at': datetime.now()
+                }
+                
+                logger.info(f"Частичная продажа: обновлена позиция - количество: {remaining_amount}, цена входа: {new_entry_price:.6f}")
+                logger.info(f"Стратегия для остатка: убыток > {self.current_position['partial_sell_strategy']['sell_threshold']}% или прибыль > {self.current_position['partial_sell_strategy']['profit_threshold']}%")
+            
+            logger.info(f"Частичная продажа выполнена: {sell_amount} по цене {exit_price}, P&L: {pnl}, Trade #: {trade_record.trade_number}")
+            
+            return {
+                "success": True,
+                "order": order,
+                "pnl": pnl,
+                "sold_amount": sell_amount,
+                "remaining_position": self.current_position,
+                "trade_number": trade_record.trade_number
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка частичной продажи: {e}")
             
             # Обновляем запись о сделке с ошибкой
             if 'trade_record' in locals():

@@ -334,6 +334,52 @@
             color: #333;
             font-size: 14px;
         }
+        
+        /* Стили для стратегии оставшейся позиции */
+        .strategy-info {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 15px 0;
+        }
+        
+        .strategy-details {
+            background: white;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        
+        .strategy-details p {
+            margin: 8px 0;
+            font-size: 14px;
+        }
+        
+        .strategy-rules {
+            background: #e7f3ff;
+            border: 1px solid #b3d9ff;
+            border-radius: 6px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        
+        .strategy-rules h5 {
+            margin: 0 0 15px 0;
+            color: #0056b3;
+        }
+        
+        .strategy-rules ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        
+        .strategy-rules li {
+            margin: 8px 0;
+            font-size: 14px;
+            line-height: 1.4;
+        }
     </style>
 </head>
 <body>
@@ -365,15 +411,18 @@
                 </div>
                 
                 <div class="form-group">
-                    <label>Торговая пара:</label>
+                    <label>Торговая пара (Деривативы):</label>
                     <div>
-                        <label><input type="checkbox" value="BTCUSDT" class="trading-symbol" checked> BTCUSDT</label><br>
-                        <label><input type="checkbox" value="ETHUSDT" class="trading-symbol"> ETHUSDT</label><br>
-                        <label><input type="checkbox" value="SOLUSDT" class="trading-symbol"> SOLUSDT</label><br>
-                        <label><input type="checkbox" value="TONUSDT" class="trading-symbol"> TONUSDT</label><br>
-                        <label><input type="checkbox" value="ADAUSDT" class="trading-symbol"> ADAUSDT</label><br>
-                        <label><input type="checkbox" value="BNBUSDT" class="trading-symbol"> BNBUSDT</label>
+                        <label><input type="checkbox" value="BTCUSDT" class="trading-symbol" checked> BTCUSDT (Фьючерсы)</label><br>
+                        <label><input type="checkbox" value="ETHUSDT" class="trading-symbol"> ETHUSDT (Фьючерсы)</label><br>
+                        <label><input type="checkbox" value="SOLUSDT" class="trading-symbol"> SOLUSDT (Фьючерсы)</label><br>
+                        <label><input type="checkbox" value="TONUSDT" class="trading-symbol"> TONUSDT (Фьючерсы)</label><br>
+                        <label><input type="checkbox" value="ADAUSDT" class="trading-symbol"> ADAUSDT (Фьючерсы)</label><br>
+                        <label><input type="checkbox" value="BNBUSDT" class="trading-symbol"> BNBUSDT (Фьючерсы)</label>
                     </div>
+                    <small style="color: #666; font-style: italic;">
+                        ⚠️ Внимание: Торговля ведется на деривативах Bybit (фьючерсы), а не на споте
+                    </small>
                 </div>
                 
                 <div class="button-group">
@@ -464,6 +513,12 @@
                 <div id="tradeStatistics" class="trading-history" style="display: none;">
                     <h3>📊 Статистика сделок</h3>
                     <div id="tradeStatisticsContent"></div>
+                </div>
+                
+                <!-- Стратегия для оставшейся позиции -->
+                <div id="remainingPositionStrategy" class="trading-history" style="display: none;">
+                    <h3>🎯 Стратегия для оставшейся позиции</h3>
+                    <div id="remainingStrategyContent"></div>
                 </div>
             </div>
         </div>
@@ -624,7 +679,7 @@
                     const statusDiv = document.getElementById('tradingStatus');
                     const contentDiv = document.getElementById('statusContent');
                     
-                    contentDiv.innerHTML = `
+                    let statusHTML = `
                         <p><strong>Статус:</strong> ${result.is_trading ? '🟢 Активна' : '🔴 Остановлена'}</p>
                         <p><strong>Пара:</strong> ${result.symbol || 'Не указана'}</p>
                         <p><strong>Количество:</strong> ${result.amount || 'Не указано'}</p>
@@ -632,6 +687,15 @@
                         <p><strong>Сделок:</strong> ${result.trades_count}</p>
                     `;
                     
+                    // Показываем стратегию для оставшейся позиции, если есть
+                    if (result.position && result.position.partial_sell_strategy) {
+                        showRemainingPositionStrategy(result.position.partial_sell_strategy);
+                    } else {
+                        // Скрываем секцию стратегии, если нет
+                        document.getElementById('remainingPositionStrategy').style.display = 'none';
+                    }
+                    
+                    contentDiv.innerHTML = statusHTML;
                     statusDiv.style.display = 'block';
                 } else {
                     showStatus('tradingResult', 'error', result.error);
@@ -1011,6 +1075,44 @@
             }, 5000);
         }
 
+        // Функция для отображения стратегии оставшейся позиции
+        function showRemainingPositionStrategy(strategy) {
+            const contentDiv = document.getElementById('remainingStrategyContent');
+            const strategyDiv = document.getElementById('remainingPositionStrategy');
+            
+            if (strategy && strategy.type === 'remaining_position') {
+                const createdTime = new Date(strategy.created_at).toLocaleString('ru-RU');
+                const timeThreshold = new Date(strategy.time_threshold).toLocaleString('ru-RU');
+                
+                let strategyHTML = `
+                    <div class="strategy-info">
+                        <h4>🎯 Стратегия для оставшейся позиции</h4>
+                        <div class="strategy-details">
+                            <p><strong>Тип:</strong> ${strategy.type}</p>
+                            <p><strong>Создана:</strong> ${createdTime}</p>
+                            <p><strong>Время истечения:</strong> ${timeThreshold}</p>
+                            <p><strong>Порог убытка:</strong> <span class="negative">${strategy.sell_threshold}%</span></p>
+                            <p><strong>Порог прибыли:</strong> <span class="positive">${strategy.profit_threshold}%</span></p>
+                            <p><strong>Максимальное время ожидания:</strong> 24 часа</p>
+                        </div>
+                        <div class="strategy-rules">
+                            <h5>📋 Правила автоматической продажи:</h5>
+                            <ul>
+                                <li>🚨 <strong>Убыток > ${strategy.sell_threshold}%</strong> → Продаем весь остаток</li>
+                                <li>💰 <strong>Прибыль > ${strategy.profit_threshold}%</strong> → Продаем весь остаток</li>
+                                <li>⏰ <strong>Время > 24 часа</strong> → Продаем весь остаток</li>
+                            </ul>
+                        </div>
+                    </div>
+                `;
+                
+                contentDiv.innerHTML = strategyHTML;
+                strategyDiv.style.display = 'block';
+            } else {
+                strategyDiv.style.display = 'none';
+            }
+        }
+        
         // Автоматически получаем статус при загрузке страницы
         window.addEventListener('load', () => {
             loadModels();
