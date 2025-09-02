@@ -638,6 +638,28 @@ class TradingAgent:
                 'precision_amount': market.get('precision', {}).get('amount', 3),
                 'precision_price': market.get('precision', {}).get('price', 2)
             }
+
+            # Коалесценция None/невалидных значений к безопасным дефолтам
+            try:
+                if limits['min_amount'] is None or float(limits['min_amount']) <= 0:
+                    limits['min_amount'] = 0.001
+            except Exception:
+                limits['min_amount'] = 0.001
+            try:
+                if limits['max_amount'] is None or float(limits['max_amount']) <= 0:
+                    limits['max_amount'] = 1000.0
+            except Exception:
+                limits['max_amount'] = 1000.0
+            try:
+                if limits['min_cost'] is None or float(limits['min_cost']) <= 0:
+                    limits['min_cost'] = 10.0
+            except Exception:
+                limits['min_cost'] = 10.0
+            try:
+                if limits['max_cost'] is None or float(limits['max_cost']) <= 0:
+                    limits['max_cost'] = 100000.0
+            except Exception:
+                limits['max_cost'] = 100000.0
             
             # Если не удалось получить ограничения из API, используем известные значения для популярных пар
             if limits['min_amount'] == 0.001:  # Значение по умолчанию
