@@ -276,6 +276,14 @@ def train_multi_crypto():
 def train_dqn_symbol_route():
     data = request.get_json(silent=True) or {}
     symbol = data.get('symbol') or request.form.get('symbol') or 'BTCUSDT'
+    # Эпизоды: из формы/JSON, fallback None (чтоб Celery взял из ENV)
+    episodes_str = data.get('episodes') or request.form.get('episodes')
+    episodes = None
+    try:
+        if episodes_str is not None and str(episodes_str).strip() != '':
+            episodes = int(episodes_str)
+    except Exception:
+        episodes = None
     # Очередь per-symbol
     queue_name = f"train_{symbol.lower()}"
 
@@ -296,7 +304,7 @@ def train_dqn_symbol_route():
         app.logger.error(f"Не удалось проверить активную задачу для {symbol}: {_e}")
 
     # Временно отправляем в общую очередь 'train' (слушается базовым воркером)
-    task = train_dqn_symbol.apply_async(args=[symbol], queue="train")
+    task = train_dqn_symbol.apply_async(args=[symbol, episodes], queue="train")
     app.logger.info(f"/train_dqn_symbol queued symbol={symbol} queue=train task_id={task.id}")
     # Сохраняем task_id для отображения на главной и отметку per-symbol
     try:

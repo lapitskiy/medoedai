@@ -265,10 +265,23 @@
                         <option value="multi">MULTI</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label>Эпизоды обучения</label>
+                    <select id="episodesSelect" class="form-control">
+                        <option value="100">100</option>
+                        <option value="1000">1000</option>
+                        <option value="3000">3000</option>
+                        <option value="6000">6000</option>
+                        <option value="9000">9000</option>
+                        <option value="10000" selected>10000</option>
+                    </select>
+                </div>
                 <div class="button-group">
                     <button class="btn btn-success" onclick="createModelVersion()">
                         🚀 Создать новую версию
                     </button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BTCUSDT')">🎯 Обучить BTC (эпизоды)</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ETHUSDT')">🎯 Обучить ETH (эпизоды)</button>
                 </div>
                 <div id="createStatus"></div>
             </div>
@@ -337,6 +350,23 @@
             } finally {
                 button.disabled = false;
                 button.textContent = '🚀 Создать новую версию';
+            }
+        }
+
+        // Запуск обучения с выбранным количеством эпизодов
+        async function startTrainingForSymbol(symbol) {
+            const episodes = document.getElementById('episodesSelect').value;
+            try {
+                const resp = await fetch('/train_dqn_symbol', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol, episodes })
+                });
+                if (resp.redirected) {
+                    window.location.href = resp.url;
+                }
+            } catch (e) {
+                alert('❌ Ошибка запуска обучения: ' + e.message);
             }
         }
 

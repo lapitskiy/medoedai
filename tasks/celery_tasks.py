@@ -152,7 +152,7 @@ def train_dqn(self):
     return {"message": result}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
-def train_dqn_symbol(self, symbol: str):
+def train_dqn_symbol(self, symbol: str, episodes: int = None):
     """Обучение DQN для одного символа (BTCUSDT/ETHUSDT/...)
 
     Загружает данные из БД, готовит 5m/15m/1h, запускает train_model_optimized.
@@ -192,8 +192,9 @@ def train_dqn_symbol(self, symbol: str):
 
         print(f"📈 {symbol}: 5m={len(df_5min)}, 15m={len(df_15min)}, 1h={len(df_1h)}")
 
-        # Получаем количество эпизодов из переменной окружения
-        episodes = int(os.getenv('DEFAULT_EPISODES', 5))
+        # Получаем количество эпизодов из аргумента или переменной окружения
+        if episodes is None:
+            episodes = int(os.getenv('DEFAULT_EPISODES', 5))
         print(f"🎯 Количество эпизодов: {episodes}")
 
         result = train_model_optimized(dfs=dfs, episodes=episodes)
