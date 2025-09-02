@@ -485,6 +485,12 @@
                     <button class="btn btn-info" onclick="getBalance()">
                         💰 Баланс на бирже
                     </button>
+                    <button class="btn btn-warning" onclick="sendMockSignal('buy')">
+                        🧪 Тестовый BUY
+                    </button>
+                    <button class="btn btn-danger" onclick="sendMockSignal('sell')">
+                        🧪 Тестовый SELL
+                    </button>
                 </div>
                 
                 <div id="tradingStatus" class="trading-status" style="display: none;">
@@ -1285,6 +1291,34 @@
                 const contentDiv = document.getElementById('predictionStatsContent');
                 contentDiv.innerHTML = '<p>❌ Ошибка сети</p><p><em>' + error.message + '</em></p>';
                 statsDiv.style.display = 'block';
+            }
+        }
+
+        // Отправка мок-сигнала BUY/SELL
+        async function sendMockSignal(action) {
+            try {
+                const selectedSymbols = Array.from(document.querySelectorAll('.trading-symbol:checked')).map(checkbox => checkbox.value);
+                const symbol = selectedSymbols[0] || 'BTCUSDT';
+                const body = {
+                    action,
+                    symbol,
+                    quantity: 0.001
+                };
+                const response = await fetch('/api/testing/mock_signal', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const result = await response.json();
+                if (result.success) {
+                    showStatus('tradingResult', 'success', `Мок-сделка ${action.toUpperCase()} создана: ${result.trade.trade_number}`);
+                    getTradeHistory();
+                    getTradeStatistics();
+                } else {
+                    showStatus('tradingResult', 'error', `Ошибка мок-сигнала: ${result.error || 'Неизвестная ошибка'}`);
+                }
+            } catch (error) {
+                showStatus('tradingResult', 'error', 'Ошибка при отправке мок-сигнала: ' + error.message);
             }
         }
 

@@ -26,7 +26,8 @@ from utils.trade_utils import (
     get_trade_statistics, 
     get_trades_by_symbol,
     get_model_predictions, 
-    get_prediction_statistics
+    get_prediction_statistics,
+    create_trade_record
 )
 
 import logging
@@ -1698,6 +1699,77 @@ def trading_history():
             'error': str(e)
         }), 500
 
+
+@app.route('/api/testing/mock_signal', methods=['POST'])
+def mock_signal():
+    """Создает тестовую (фейковую) сделку buy/sell без обращения к бирже.
+
+    Body JSON:
+    - action: 'buy' | 'sell'
+    - symbol: 'BTCUSDT' (по умолчанию)
+    - quantity: float (по умолчанию 0.001)
+    - price: float (опционально; если не задан — подставляется фиктивная цена)
+    - model_prediction: str (опционально)
+    - confidence: float (опционально)
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        action = (data.get('action') or '').lower()
+        if action not in ('buy', 'sell'):
+            return jsonify({'success': False, 'error': "action должен быть 'buy' или 'sell'"}), 400
+
+        symbol = data.get('symbol') or 'BTCUSDT'
+        quantity = float(data.get('quantity') or 0.001)
+        price = data.get('price')
+
+        # Если цена не передана — задаем условную фиктивную
+        if price is None:
+            # Разные базовые цены для разных символов (простая эвристика)
+            base_prices = {
+                'BTCUSDT': 60000.0, 'ETHUSDT': 2500.0, 'SOLUSDT': 150.0,
+                'TONUSDT': 6.0, 'ADAUSDT': 0.5, 'BNBUSDT': 550.0
+            }
+            price = float(base_prices.get(symbol.upper(), 100.0))
+
+        model_prediction = data.get('model_prediction') or action
+        confidence = float(data.get('confidence')) if data.get('confidence') is not None else None
+
+        trade = create_trade_record(
+            symbol_name=symbol,
+            action=action,
+            status='executed',
+            quantity=quantity,
+            price=float(price),
+            model_prediction=model_prediction,
+            confidence=confidence,
+            current_balance=None,
+            position_pnl=None,
+            exchange_order_id=f"MOCK-{action.upper()}",
+            error_message=None,
+            is_successful=True
+        )
+
+        return jsonify({
+            'success': True,
+            'message': 'Мок-сделка создана',
+            'trade': {
+                'trade_number': trade.trade_number,
+                'symbol': symbol,
+                'action': action,
+                'status': trade.status,
+                'quantity': trade.quantity,
+                'price': trade.price,
+                'total_value': trade.total_value,
+                'model_prediction': trade.model_prediction,
+                'confidence': trade.confidence,
+                'created_at': trade.created_at.isoformat() if trade.created_at else None,
+                'executed_at': trade.executed_at.isoformat() if trade.executed_at else None,
+                'is_successful': trade.is_successful
+            }
+        }), 200
+    except Exception as e:
+        app.logger.error(f"Ошибка мок-сигнала: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/predictions/recent')
 def get_recent_predictions():
