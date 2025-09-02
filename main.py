@@ -21,6 +21,13 @@ import os
 from tasks.celery_tasks import search_lstm_task, train_dqn, train_dqn_multi_crypto, trade_step, start_trading_task, train_dqn_symbol
 from utils.db_utils import clean_ohlcv_data, delete_ohlcv_for_symbol_timeframe, load_latest_candles_from_csv_to_db
 from utils.parser import parser_download_and_combine_with_library
+from utils.trade_utils import (
+    get_recent_trades, 
+    get_trade_statistics, 
+    get_trades_by_symbol,
+    get_model_predictions, 
+    get_prediction_statistics
+)
 
 import logging
 from flask import Response
@@ -1509,7 +1516,7 @@ def trading_balance():
 def get_recent_trades():
     """Получение последних сделок из базы данных"""
     try:
-        from utils.trade_utils import get_recent_trades, get_model_predictions, get_prediction_statistics
+
         
         limit = request.args.get('limit', 50, type=int)
         trades = get_recent_trades(limit=limit)
@@ -1550,7 +1557,7 @@ def get_recent_trades():
 def get_trade_statistics():
     """Получение статистики по сделкам"""
     try:
-        from utils.trade_utils import get_trade_statistics, get_model_predictions, get_prediction_statistics
+
         
         symbol = request.args.get('symbol', None)
         stats = get_trade_statistics(symbol_name=symbol)
@@ -1570,7 +1577,7 @@ def get_trade_statistics():
 def get_trades_by_symbol(symbol_name):
     """Получение сделок по символу"""
     try:
-        from utils.trade_utils import get_trades_by_symbol, get_model_predictions, get_prediction_statistics
+
         
         limit = request.args.get('limit', 100, type=int)
         trades = get_trades_by_symbol(symbol_name, limit=limit)
