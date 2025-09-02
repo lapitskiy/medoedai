@@ -3,6 +3,7 @@ import time
 import logging
 from typing import Dict, Optional, Tuple
 import ccxt
+import math
 import numpy as np
 import torch
 from datetime import datetime, timedelta
@@ -270,10 +271,10 @@ class TradingAgent:
                     trade_amount = base_balance * risk_percentage
                     trade_amount = max(bybit_limits['min_amount'], min(trade_amount, bybit_limits['max_amount']))
                     logger.info(f"Используем {base_currency} баланс: {trade_amount} {base_currency} (${trade_amount * self._get_current_price():.2f})")
-                    return trade_amount
+                    return self._normalize_amount(trade_amount)
                 else:
                     logger.warning(f"Недостаточно {base_currency} для торговли")
-                    return bybit_limits['min_amount']  # Минимальное количество для данной валюты
+                    return self._normalize_amount(bybit_limits['min_amount'])  # Минимальное количество для данной валюты
             
             # Конвертируем USDT в базовую валюту
             current_price = self._get_current_price()
@@ -300,19 +301,69 @@ class TradingAgent:
                 else:
                     logger.info(f"Рассчитано количество: {trade_amount:.6f} {base_currency} (${trade_usdt:.2f})")
                 
-                return trade_amount
+                return self._normalize_amount(trade_amount)
             else:
                 logger.warning("Не удалось получить текущую цену, используем минимальное количество")
-                return bybit_limits['min_amount']
+                return self._normalize_amount(bybit_limits['min_amount'])
                 
         except Exception as e:
             logger.error(f"Ошибка расчета количества торговли: {e}")
             # Фолбэк на минимальное количество для текущей валюты
             try:
                 bybit_limits = self._get_bybit_limits()
-                return bybit_limits['min_amount']
+                return self._normalize_amount(bybit_limits['min_amount'])
             except:
                 return 0.001  # Абсолютный фолбэк
+
+    def _normalize_amount(self, amount: float) -> float:
+        """Нормализует количество под шаг qtyStep/precision для текущего символа.
+
+        - Берёт шаг из market.info.lotSizeFilter.qtyStep, иначе из precision.amount
+        - Округляет вниз до кратного шагу
+        - Приводит к границам min/max amount
+        """
+        try:
+            market = self.exchange.market(self.symbol)
+            # Получаем шаг количества
+            step = None
+            try:
+                step_raw = (
+                    market.get('info', {})
+                          .get('lotSizeFilter', {})
+                          .get('qtyStep')
+                )
+                if step_raw is not None:
+                    step = float(step_raw)
+            except Exception:
+                step = None
+
+            if step is None:
+                precision = market.get('precision', {}).get('amount', 3)
+                step = 10 ** (-precision)
+
+            min_amount = market.get('limits', {}).get('amount', {}).get('min', 0.0) or 0.0
+            max_amount = market.get('limits', {}).get('amount', {}).get('max', float('inf')) or float('inf')
+
+            if step <= 0:
+                step = 0.001
+
+            normalized = math.floor(max(amount, 0.0) / step) * step
+
+            if normalized < min_amount:
+                normalized = min_amount
+            if normalized > max_amount:
+                normalized = max_amount
+
+            # Форматируем по количеству знаков шага
+            # Вычисляем precision из шага (например, 0.001 -> 3)
+            precision = max(0, -int(round(math.log10(step)))) if step < 1 else 0
+            normalized = float(f"{normalized:.{precision}f}")
+            return normalized
+        except Exception:
+            try:
+                return float(f"{amount:.3f}")
+            except Exception:
+                return amount
     
     def _determine_sell_amount(self, current_price: float) -> dict:
         """
@@ -879,14 +930,15 @@ class TradingAgent:
                 is_successful=False
             )
             
+            # Нормализуем количество под шаг qtyStep
+            amount = self._normalize_amount(self.trade_amount)
+
             # Выполняем покупку фьючерса (long позиция)
             order = self.exchange.create_market_buy_order(
-                self.symbol,  # Используем символ для деривативов
-                self.trade_amount,
+                self.symbol,
+                amount,
                 {
-                    'type': 'market',
-                    'side': 'buy',
-                    'position_idx': 0,  # Односторонняя позиция
+                    # ccxt сам укажет side/type; дополнительные параметры не требуются
                 }
             )
             
@@ -901,7 +953,7 @@ class TradingAgent:
             
             self.current_position = {
                 'type': 'long',
-                'amount': self.trade_amount,
+                'amount': amount,
                 'entry_price': order['price'],
                 'entry_time': datetime.now(),
                 'trade_number': trade_record.trade_number
@@ -910,7 +962,7 @@ class TradingAgent:
             self.trading_history.append({
                 'action': 'buy',
                 'price': order['price'],
-                'amount': self.trade_amount,
+                'amount': amount,
                 'time': datetime.now(),
                 'trade_number': trade_record.trade_number
             })
@@ -959,22 +1011,22 @@ class TradingAgent:
                 is_successful=False
             )
             
+            # Количество к продаже (нормализуем к шагу)
+            amount = self._normalize_amount(self.current_position['amount'])
+
             # Выполняем продажу фьючерса (закрытие long позиции)
             order = self.exchange.create_market_sell_order(
-                self.symbol,  # Используем символ для деривативов
-                self.current_position['amount'],
+                self.symbol,
+                amount,
                 {
-                    'type': 'market',
-                    'side': 'sell',
-                    'position_idx': 0,  # Односторонняя позиция
-                    'reduce_only': True,  # Только закрытие позиции
+                    'reduceOnly': True,
                 }
             )
             
             # Расчет P&L
             exit_price = order['price']
             entry_price = self.current_position['entry_price']
-            pnl = (exit_price - entry_price) * self.current_position['amount']
+            pnl = (exit_price - entry_price) * amount
             
             # Обновляем запись о сделке
             update_trade_status(
@@ -989,7 +1041,7 @@ class TradingAgent:
             self.trading_history.append({
                 'action': 'sell',
                 'price': exit_price,
-                'amount': self.current_position['amount'],
+                'amount': amount,
                 'time': datetime.now(),
                 'pnl': pnl,
                 'trade_number': trade_record.trade_number
@@ -1103,6 +1155,9 @@ class TradingAgent:
             if sell_amount > self.current_position['amount']:
                 sell_amount = self.current_position['amount']
             
+            # Нормализуем количество к шагу qtyStep
+            sell_amount = self._normalize_amount(sell_amount)
+            
             # Получаем текущий баланс перед продажей
             balance = self._get_current_balance()
             
@@ -1120,13 +1175,10 @@ class TradingAgent:
             
             # Выполняем частичную продажу фьючерса
             order = self.exchange.create_market_sell_order(
-                self.symbol,  # Используем символ для деривативов
+                self.symbol,
                 sell_amount,
                 {
-                    'type': 'market',
-                    'side': 'sell',
-                    'position_idx': 0,  # Односторонняя позиция
-                    'reduce_only': True,  # Только закрытие позиции
+                    'reduceOnly': True,
                 }
             )
             

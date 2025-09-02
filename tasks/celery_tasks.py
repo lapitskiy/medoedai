@@ -359,7 +359,7 @@ def start_trading_task(self, symbols, model_path=None):
                     import json
                     result = json.loads(result_str)
                     return result
-                except:
+                except:                    
                     return {"success": True, "message": f'Trading started for {symbols}', "output": output}
             else:
                 return {"success": True, "message": f'Trading started for {symbols}', "output": output}
