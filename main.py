@@ -1226,14 +1226,14 @@ def stop_trading():
         client = docker.from_env()
         
         try:
-            # Получаем контейнер trading_agent
-            container = client.containers.get('trading_agent')
+            # Получаем контейнер medoedai
+            container = client.containers.get('medoedai')
             
             # Проверяем что контейнер запущен
             if container.status != 'running':
                 return jsonify({
                     'success': False, 
-                    'error': f'Контейнер trading_agent не запущен. Статус: {container.status}'
+                    'error': f'Контейнер medoedai не запущен. Статус: {container.status}'
                 }), 500
             
             # Получаем ранее выбранный путь к модели (если есть)
@@ -1292,7 +1292,7 @@ def stop_trading():
         except docker.errors.NotFound:
             return jsonify({
                 'success': False, 
-                'error': 'Контейнер trading_agent не найден. Запустите docker-compose up trading_agent'
+                'error': 'Контейнер medoedai не найден. Запустите docker-compose up medoedai'
             }), 500
         except Exception as e:
             return jsonify({
@@ -1315,14 +1315,14 @@ def trading_status():
         client = docker.from_env()
         
         try:
-            # Получаем контейнер trading_agent
-            container = client.containers.get('trading_agent')
+            # Получаем контейнер medoedai
+            container = client.containers.get('medoedai')
             
             # Проверяем что контейнер запущен
             if container.status != 'running':
                 return jsonify({
                     'success': False, 
-                    'error': f'Контейнер trading_agent не запущен. Статус: {container.status}'
+                    'error': f'Контейнер medoedai не запущен. Статус: {container.status}'
                 }), 500
             
             # Получаем ранее выбранный путь к модели (если есть)
@@ -1359,20 +1359,23 @@ def trading_status():
                     try:
                         import json
                         result = json.loads(result_str)
-                        return jsonify(result), 200
+                        return jsonify({
+                            'success': True,
+                            'agent_status': result
+                        }), 200
                     except Exception as parse_error:
                         app.logger.error(f"Ошибка парсинга статуса: {parse_error}")
                         return jsonify({
-                            'success': True,
-                            'message': 'Статус получен',
-                            'output': output
-                        }), 200
+                            'success': False,
+                            'error': f'Ошибка парсинга JSON: {parse_error}',
+                            'raw_output': output
+                        }), 500
                 else:
                     return jsonify({
-                        'success': True,
-                        'message': 'Статус получен',
-                        'output': output
-                    }), 200
+                        'success': False,
+                        'error': 'Не найден RESULT в выводе команды',
+                        'raw_output': output
+                    }), 500
             else:
                 error_output = exec_result.output.decode('utf-8') if exec_result.output else "No error output"
                 app.logger.error(f"Ошибка получения статуса: {error_output}")
@@ -1384,7 +1387,7 @@ def trading_status():
         except docker.errors.NotFound:
             return jsonify({
                 'success': False, 
-                'error': 'Контейнер trading_agent не найден. Запустите docker-compose up trading_agent'
+                'error': 'Контейнер medoedai не найден. Запустите docker-compose up medoedai'
             }), 500
         except Exception as e:
             return jsonify({
@@ -1441,14 +1444,14 @@ def trading_balance():
         client = docker.from_env()
         
         try:
-            # Получаем контейнер trading_agent
-            container = client.containers.get('trading_agent')
+            # Получаем контейнер medoedai
+            container = client.containers.get('medoedai')
             
             # Проверяем что контейнер запущен
             if container.status != 'running':
                 return jsonify({
                     'success': False, 
-                    'error': f'Контейнер trading_agent не запущен. Статус: {container.status}'
+                    'error': f'Контейнер medoedai не запущен. Статус: {container.status}'
                 }), 500
             
             # Получаем ранее выбранный путь к модели (если есть)
@@ -1497,7 +1500,7 @@ def trading_balance():
         except docker.errors.NotFound:
             return jsonify({
                 'success': False, 
-                'error': 'Контейнер trading_agent не найден'
+                'error': 'Контейнер medoedai не найден'
             }), 500
         except Exception as e:
             return jsonify({
@@ -1623,14 +1626,14 @@ def trading_history():
         client = docker.from_env()
         
         try:
-            # Получаем контейнер trading_agent
-            container = client.containers.get('trading_agent')
+            # Получаем контейнер medoedai
+            container = client.containers.get('medoedai')
             
             # Проверяем что контейнер запущен
             if container.status != 'running':
                 return jsonify({
                     'success': False, 
-                    'error': f'Контейнер trading_agent не запущен. Статус: {container.status}'
+                    'error': f'Контейнер medoedai не запущен. Статус: {container.status}'
                 }), 500
             
             # Получаем ранее выбранный путь к модели (если есть)
@@ -1680,7 +1683,7 @@ def trading_history():
         except docker.errors.NotFound:
             return jsonify({
                 'success': False, 
-                'error': 'Контейнер trading_agent не найден. Запустите docker-compose up trading_agent'
+                'error': 'Контейнер medoedai не найден. Запустите docker-compose up medoedai'
             }), 500
         except Exception as e:
             return jsonify({

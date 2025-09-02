@@ -276,12 +276,12 @@ def start_trading_task(self, symbols, model_path=None):
     client = docker.from_env()
     
     try:
-        # Get the trading_agent container
-        container = client.containers.get('trading_agent')
+        # Get the medoedai container
+        container = client.containers.get('medoedai')
         
         # Check if the container is running
         if container.status != 'running':
-            return {"success": False, "error": f'Container trading_agent is not running. Status: {container.status}'}
+            return {"success": False, "error": f'Container medoedai is not running. Status: {container.status}'}
         
         # Start trading via exec with API keys
         if model_path:
@@ -367,7 +367,7 @@ def start_trading_task(self, symbols, model_path=None):
             return {"success": False, "error": f'Command execution error: {exec_result.output.decode("utf-8")}'}
         
     except docker.errors.NotFound:
-        return {"success": False, "error": 'Container trading_agent not found. Start it with docker-compose up trading_agent'}
+        return {"success": False, "error": 'Container medoedai not found. Start it with docker-compose up medoedai'}
     except Exception as e:
         return {"success": False, "error": f'Docker error: {str(e)}'}
 

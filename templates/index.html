@@ -241,6 +241,42 @@
             outline: none;
             border-color: #667eea;
         }
+        
+        /* Стили для мониторинга агента */
+        .agent-monitoring {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+        
+        .agent-status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+        }
+        
+        .status-item {
+            background: white;
+            padding: 10px;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .status-item label {
+            font-weight: 600;
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 5px;
+            display: block;
+        }
+        
+        .status-item .value {
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #333;
+        }
     </style>
 </head>
 <body>
@@ -296,6 +332,45 @@
                     <a href="/trading_agent" class="btn btn-primary">
                         🚀 Торговый агент
                     </a>
+                </div>
+                
+                <!-- Мониторинг статуса агента -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5>📊 Статус торгового агента</h5>
+                    </div>
+                    <div id="agentStatus" class="status info">
+                        🔄 Загрузка статуса...
+                    </div>
+                    <div id="agentDetails" style="display: none;">
+                        <div class="form-group">
+                            <label>🎯 Текущая пара:</label>
+                            <div id="currentSymbol" class="status info">-</div>
+                        </div>
+                        <div class="form-group">
+                            <label>💰 Баланс USDT:</label>
+                            <div id="currentBalance" class="status info">-</div>
+                        </div>
+                        <div class="form-group">
+                            <label>📈 Последнее предсказание:</label>
+                            <div id="lastPrediction" class="status info">-</div>
+                        </div>
+                        <div class="form-group">
+                            <label>🕒 Время последнего обновления:</label>
+                            <div id="lastUpdate" class="status info">-</div>
+                        </div>
+                    </div>
+                    <div class="button-group">
+                        <button id="refreshAgentStatus" class="btn btn-info" onclick="refreshAgentStatus()">
+                            🔄 Обновить статус
+                        </button>
+                        <button id="startAgentMonitoring" class="btn btn-success" onclick="startAgentMonitoring()">
+                            📡 Запустить мониторинг
+                        </button>
+                        <button id="stopAgentMonitoring" class="btn btn-warning" onclick="stopAgentMonitoring()" style="display: none;">
+                            ⏹️ Остановить мониторинг
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -658,9 +733,141 @@
             }
         }
 
+        // Функции для мониторинга торгового агента
+        let agentMonitoringInterval = null;
+
+        async function refreshAgentStatus() {
+            const statusDiv = document.getElementById('agentStatus');
+            const detailsDiv = document.getElementById('agentDetails');
+            const refreshBtn = document.getElementById('refreshAgentStatus');
+            
+            // Отключаем кнопку и показываем загрузку
+            refreshBtn.disabled = true;
+            refreshBtn.textContent = '⏳ Обновление...';
+            statusDiv.className = 'status running';
+            statusDiv.textContent = '🔄 Получение статуса агента...';
+            
+            try {
+                const response = await fetch('/api/trading/status', {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    const agentData = result.agent_status;
+                    
+                    // Обновляем основной статус
+                    if (agentData.is_trading) {
+                        statusDiv.className = 'status success';
+                        statusDiv.textContent = '✅ Агент активен и торгует';
+                    } else {
+                        statusDiv.className = 'status info';
+                        statusDiv.textContent = '⏸️ Агент неактивен';
+                    }
+                    
+                    // Показываем детали
+                    detailsDiv.style.display = 'block';
+                    
+                    // Текущая пара
+                    const symbolDiv = document.getElementById('currentSymbol');
+                    if (agentData.symbol) {
+                        symbolDiv.className = 'status success';
+                        symbolDiv.textContent = agentData.symbol;
+                    } else {
+                        symbolDiv.className = 'status info';
+                        symbolDiv.textContent = 'Не выбрана';
+                    }
+                    
+                    // Баланс USDT
+                    const balanceDiv = document.getElementById('currentBalance');
+                    if (agentData.balance && agentData.balance.USDT) {
+                        balanceDiv.className = 'status success';
+                        balanceDiv.textContent = `${parseFloat(agentData.balance.USDT).toFixed(2)} USDT`;
+                    } else {
+                        balanceDiv.className = 'status info';
+                        balanceDiv.textContent = 'Недоступно';
+                    }
+                    
+                    // Последнее предсказание
+                    const predictionDiv = document.getElementById('lastPrediction');
+                    if (agentData.last_model_prediction) {
+                        predictionDiv.className = 'status success';
+                        predictionDiv.textContent = agentData.last_model_prediction;
+                    } else {
+                        predictionDiv.className = 'status info';
+                        predictionDiv.textContent = 'Нет данных';
+                    }
+                    
+                    // Время последнего обновления
+                    const updateDiv = document.getElementById('lastUpdate');
+                    updateDiv.className = 'status info';
+                    updateDiv.textContent = new Date().toLocaleString();
+                    
+                } else {
+                    throw new Error(result.message || 'Не удалось получить статус');
+                }
+                
+            } catch (error) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Ошибка получения статуса: ' + error.message;
+                detailsDiv.style.display = 'none';
+            } finally {
+                // Восстанавливаем кнопку
+                refreshBtn.disabled = false;
+                refreshBtn.textContent = '🔄 Обновить статус';
+            }
+        }
+
+        function startAgentMonitoring() {
+            const startBtn = document.getElementById('startAgentMonitoring');
+            const stopBtn = document.getElementById('stopAgentMonitoring');
+            const statusDiv = document.getElementById('agentStatus');
+            
+            // Запускаем мониторинг
+            agentMonitoringInterval = setInterval(refreshAgentStatus, 30000); // каждые 30 секунд
+            
+            // Обновляем UI
+            startBtn.style.display = 'none';
+            stopBtn.style.display = 'inline-block';
+            statusDiv.className = 'status running';
+            statusDiv.textContent = '📡 Мониторинг активен - статус обновляется каждые 30 секунд';
+            
+            // Сразу получаем первый статус
+            refreshAgentStatus();
+        }
+
+        function stopAgentMonitoring() {
+            const startBtn = document.getElementById('startAgentMonitoring');
+            const stopBtn = document.getElementById('stopAgentMonitoring');
+            const statusDiv = document.getElementById('agentStatus');
+            
+            // Останавливаем мониторинг
+            if (agentMonitoringInterval) {
+                clearInterval(agentMonitoringInterval);
+                agentMonitoringInterval = null;
+            }
+            
+            // Обновляем UI
+            startBtn.style.display = 'inline-block';
+            stopBtn.style.display = 'none';
+            statusDiv.className = 'status info';
+            statusDiv.textContent = '⏸️ Мониторинг остановлен';
+            document.getElementById('agentDetails').style.display = 'none';
+        }
+
         // Автозагрузка списка файлов результатов при открытии страницы
         document.addEventListener('DOMContentLoaded', function() {
-            try { listTrainingResults(); } catch (e) { console.error(e); }
+            try { 
+                listTrainingResults(); 
+                // Автоматически запускаем мониторинг агента
+                startAgentMonitoring();
+            } catch (e) { 
+                console.error(e); 
+            }
         });
 
         async function analyzeTrainingResults() {
