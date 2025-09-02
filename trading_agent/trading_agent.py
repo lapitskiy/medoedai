@@ -366,6 +366,34 @@ class TradingAgent:
             # Гарантируем отсутствие плеча
             self._ensure_no_leverage(order_symbol)
 
+            # Дополнительная проверка на достаточность средств при покупке
+            if side == 'buy':
+                try:
+                    current_price = current_price if 'current_price' in locals() else self._get_current_price()
+                    balance_result = self.get_balance()
+                    available_usdt = 0.0
+                    if balance_result.get('success'):
+                        available_usdt = float(balance_result['balance'].get('USDT', 0.0) or 0.0)
+                    # Учитываем комиссии и возможный слиппедж – берём 95% от доступного
+                    max_affordable_qty = 0.0
+                    if current_price and current_price > 0:
+                        max_affordable_qty = max(0.0, (available_usdt * 0.95) / current_price)
+                    # Границы по бирже
+                    limits = limits if 'limits' in locals() else self._get_bybit_limits()
+                    min_amount = float(limits.get('min_amount', 0.001) or 0.001)
+                    # Если доступная величина меньше минимально допустимой – откажемся заранее
+                    if max_affordable_qty < min_amount:
+                        required_usdt = current_price * min_amount
+                        return {
+                            "success": False,
+                            "error": f"Недостаточно USDT для минимального ордера: нужно ≈ ${required_usdt:.2f}, доступно ${available_usdt:.2f}"
+                        }
+                    # Иначе уменьшим количество до доступного
+                    order_qty = min(order_qty, max_affordable_qty)
+                    order_qty = self._normalize_amount(order_qty)
+                except Exception:
+                    pass
+
             if side == 'buy':
                 order = self.exchange.create_market_buy_order(order_symbol, order_qty)
             else:
