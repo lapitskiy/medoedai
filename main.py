@@ -1513,7 +1513,7 @@ def trading_balance():
         }), 500
 
 @app.route('/api/trades/recent', methods=['GET'])
-def get_recent_trades():
+def get_recent_trades_api():
     """Получение последних сделок из базы данных"""
     try:
 
@@ -1554,7 +1554,7 @@ def get_recent_trades():
         }), 500
 
 @app.route('/api/trades/statistics', methods=['GET'])
-def get_trade_statistics():
+def get_trade_statistics_api():
     """Получение статистики по сделкам"""
     try:
 
@@ -1574,7 +1574,7 @@ def get_trade_statistics():
         }), 500
 
 @app.route('/api/trades/by_symbol/<symbol_name>', methods=['GET'])
-def get_trades_by_symbol(symbol_name):
+def get_trades_by_symbol_api(symbol_name):
     """Получение сделок по символу"""
     try:
 
