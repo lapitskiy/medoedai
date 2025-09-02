@@ -241,6 +241,26 @@ class TradingAgent:
             logger.error(f"Ошибка получения баланса: {e}")
             return {"success": False, "error": str(e)}
 
+    def _ensure_no_leverage(self, symbol: str) -> None:
+        """Гарантирует торговлю без плеча (1x) и изолированную маржу для символа."""
+        try:
+            # Установка плеча 1x
+            if hasattr(self.exchange, 'set_leverage'):
+                try:
+                    self.exchange.set_leverage(1, symbol)
+                    logger.info(f"Установлено плечо 1x для {symbol}")
+                except Exception as e:
+                    logger.warning(f"Не удалось установить плечо 1x для {symbol}: {e}")
+            # Установка режима маржи isolated
+            if hasattr(self.exchange, 'set_margin_mode'):
+                try:
+                    self.exchange.set_margin_mode('isolated', symbol)
+                    logger.info(f"Установлен режим маржи isolated для {symbol}")
+                except Exception as e:
+                    logger.warning(f"Не удалось установить режим isolated для {symbol}: {e}")
+        except Exception as e:
+            logger.warning(f"Ошибка при попытке выставить параметры без плеча для {symbol}: {e}")
+
     def _extract_order_price(self, order: dict) -> float:
         """Достаёт цену исполнения из ответа биржи с надёжными фолбэками.
 
@@ -342,6 +362,9 @@ class TradingAgent:
             side = action.lower()
             if side not in ('buy', 'sell'):
                 return {"success": False, "error": "action должен быть 'buy' или 'sell'"}
+
+            # Гарантируем отсутствие плеча
+            self._ensure_no_leverage(order_symbol)
 
             if side == 'buy':
                 order = self.exchange.create_market_buy_order(order_symbol, order_qty)
@@ -1132,6 +1155,8 @@ class TradingAgent:
             amount = self._normalize_amount(self.trade_amount)
 
             # Выполняем покупку фьючерса (long позиция)
+            # Гарантируем отсутствие плеча
+            self._ensure_no_leverage(self.symbol)
             order = self.exchange.create_market_buy_order(
                 self.symbol,
                 amount,
