@@ -240,6 +240,58 @@ class TradingAgent:
         except Exception as e:
             logger.error(f"Ошибка получения баланса: {e}")
             return {"success": False, "error": str(e)}
+
+    def execute_direct_order(self, action: str, symbol: Optional[str] = None, quantity: Optional[float] = None) -> Dict:
+        """
+        Выполняет РЕАЛЬНЫЙ рыночный ордер BUY/SELL в обход предсказаний и без записи в БД/мониторинг.
+        - Не сохраняет запись в историю внутри агента
+        - Не трогает self.current_position
+        - Возвращает краткий результат с данными биржи
+        """
+        try:
+            if not self.exchange:
+                return {"success": False, "error": "Биржа не инициализирована"}
+
+            order_symbol = symbol or getattr(self, 'symbol', 'BTCUSDT')
+            if order_symbol is None:
+                order_symbol = 'BTCUSDT'
+
+            # Если количество не задано — рассчитать минимально допустимое по бирже (~$10)
+            order_qty = quantity
+            if order_qty is None or order_qty <= 0:
+                # Рассчитываем минимальный возможный размер через ограничения и текущую цену
+                self.symbol = order_symbol
+                current_price = self._get_current_price()
+                limits = self._get_bybit_limits()
+                # Минимальная стоимость сделки и минимальный объем
+                min_cost = max(10.0, limits.get('min_cost', 10.0))
+                min_amount = limits.get('min_amount', 0.001)
+                if current_price and current_price > 0:
+                    calc_amount = min_cost / current_price
+                    order_qty = max(min_amount, calc_amount)
+                else:
+                    order_qty = min_amount
+                order_qty = self._normalize_amount(order_qty)
+
+            side = action.lower()
+            if side not in ('buy', 'sell'):
+                return {"success": False, "error": "action должен быть 'buy' или 'sell'"}
+
+            if side == 'buy':
+                order = self.exchange.create_market_buy_order(order_symbol, order_qty)
+            else:
+                order = self.exchange.create_market_sell_order(order_symbol, order_qty)
+
+            return {
+                "success": True,
+                "symbol": order_symbol,
+                "action": side,
+                "quantity": order_qty,
+                "order": order
+            }
+        except Exception as e:
+            logger.error(f"Ошибка прямого ордера ({action}) для {symbol}: {e}")
+            return {"success": False, "error": str(e)}
     
     def _calculate_trade_amount(self) -> float:
         """

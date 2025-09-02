@@ -26,8 +26,7 @@ from utils.trade_utils import (
     get_trade_statistics, 
     get_trades_by_symbol,
     get_model_predictions, 
-    get_prediction_statistics,
-    create_trade_record
+    get_prediction_statistics
 )
 
 import logging
@@ -1516,6 +1515,88 @@ def trading_balance():
             'error': str(e)
         }), 500
 
+
+@app.route('/api/trading/test_order', methods=['POST'])
+def trading_test_order():
+    """Мгновенное размещение РЕАЛЬНОГО рыночного ордера BUY/SELL в обход предсказаний.
+    Ничего не пишет в БД/мониторинг. Выполняется внутри контейнера medoedai через TradingAgent.execute_direct_order.
+    Body: { action: 'buy'|'sell', symbol?: 'BTCUSDT', quantity?: float }
+    """
+    try:
+        data = request.get_json() or {}
+        action = (data.get('action') or '').lower()
+        symbol = data.get('symbol')
+        quantity = data.get('quantity')
+
+        if action not in ('buy', 'sell'):
+            return jsonify({'success': False, 'error': "action должен быть 'buy' или 'sell'"}), 400
+
+        # Подключаемся к Docker
+        client = docker.from_env()
+        try:
+            container = client.containers.get('medoedai')
+            if container.status != 'running':
+                return jsonify({'success': False, 'error': f'Контейнер medoedai не запущен. Статус: {container.status}'}), 500
+
+            # Получаем ранее выбранный путь к модели (если есть), чтобы TradingAgent корректно инициализировал биржу
+            model_path = None
+            try:
+                mp = redis_client.get('trading:model_path')
+                if mp:
+                    model_path = mp.decode('utf-8')
+            except Exception:
+                pass
+
+            # Формируем python-команду для исполнения внутри контейнера
+            import json as _json
+            payload = {
+                'action': action,
+                'symbol': symbol,
+                'quantity': quantity,
+            }
+            payload_str = _json.dumps(payload).replace('"', '\\"')
+
+            if model_path:
+                cmd = (
+                    f'python -c "import json; from trading_agent.trading_agent import TradingAgent; '
+                    f'agent = TradingAgent(model_path=\"{model_path}\"); '
+                    f'payload = json.loads(\"{payload_str}\"); '
+                    f'result = agent.execute_direct_order(payload.get(\"action\"), payload.get(\"symbol\"), payload.get(\"quantity\")); '
+                    f'print(\"RESULT: \" + json.dumps(result))"'
+                )
+            else:
+                cmd = (
+                    'python -c "import json; from trading_agent.trading_agent import TradingAgent; '
+                    'agent = TradingAgent(); '
+                    f'payload = json.loads(\"{payload_str}\"); '
+                    'result = agent.execute_direct_order(payload.get(\"action\"), payload.get(\"symbol\"), payload.get(\"quantity\")); '
+                    'print(\"RESULT: \" + json.dumps(result))"'
+                )
+
+            exec_result = container.exec_run(cmd, tty=True)
+            output = exec_result.output.decode('utf-8') if exec_result.output else ''
+            app.logger.info(f"test_order exit={exec_result.exit_code} output={output}")
+
+            if exec_result.exit_code == 0 and 'RESULT:' in output:
+                result_str = output.split('RESULT:')[1].strip()
+                try:
+                    import json
+                    result = json.loads(result_str)
+                except Exception as parse_err:
+                    return jsonify({'success': False, 'error': f'Ошибка парсинга результата: {parse_err}', 'raw_output': output}), 500
+                return jsonify(result), 200
+            else:
+                return jsonify({'success': False, 'error': 'Команда завершилась с ошибкой', 'raw_output': output}), 500
+
+        except docker.errors.NotFound:
+            return jsonify({'success': False, 'error': 'Контейнер medoedai не найден'}), 500
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Ошибка Docker: {str(e)}'}), 500
+
+    except Exception as e:
+        app.logger.error(f"Ошибка test_order: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/trades/recent', methods=['GET'])
 def get_recent_trades_api():
     """Получение последних сделок из базы данных"""
@@ -1699,77 +1780,6 @@ def trading_history():
             'error': str(e)
         }), 500
 
-
-@app.route('/api/testing/mock_signal', methods=['POST'])
-def mock_signal():
-    """Создает тестовую (фейковую) сделку buy/sell без обращения к бирже.
-
-    Body JSON:
-    - action: 'buy' | 'sell'
-    - symbol: 'BTCUSDT' (по умолчанию)
-    - quantity: float (по умолчанию 0.001)
-    - price: float (опционально; если не задан — подставляется фиктивная цена)
-    - model_prediction: str (опционально)
-    - confidence: float (опционально)
-    """
-    try:
-        data = request.get_json(silent=True) or {}
-        action = (data.get('action') or '').lower()
-        if action not in ('buy', 'sell'):
-            return jsonify({'success': False, 'error': "action должен быть 'buy' или 'sell'"}), 400
-
-        symbol = data.get('symbol') or 'BTCUSDT'
-        quantity = float(data.get('quantity') or 0.001)
-        price = data.get('price')
-
-        # Если цена не передана — задаем условную фиктивную
-        if price is None:
-            # Разные базовые цены для разных символов (простая эвристика)
-            base_prices = {
-                'BTCUSDT': 60000.0, 'ETHUSDT': 2500.0, 'SOLUSDT': 150.0,
-                'TONUSDT': 6.0, 'ADAUSDT': 0.5, 'BNBUSDT': 550.0
-            }
-            price = float(base_prices.get(symbol.upper(), 100.0))
-
-        model_prediction = data.get('model_prediction') or action
-        confidence = float(data.get('confidence')) if data.get('confidence') is not None else None
-
-        trade = create_trade_record(
-            symbol_name=symbol,
-            action=action,
-            status='executed',
-            quantity=quantity,
-            price=float(price),
-            model_prediction=model_prediction,
-            confidence=confidence,
-            current_balance=None,
-            position_pnl=None,
-            exchange_order_id=f"MOCK-{action.upper()}",
-            error_message=None,
-            is_successful=True
-        )
-
-        return jsonify({
-            'success': True,
-            'message': 'Мок-сделка создана',
-            'trade': {
-                'trade_number': trade.trade_number,
-                'symbol': symbol,
-                'action': action,
-                'status': trade.status,
-                'quantity': trade.quantity,
-                'price': trade.price,
-                'total_value': trade.total_value,
-                'model_prediction': trade.model_prediction,
-                'confidence': trade.confidence,
-                'created_at': trade.created_at.isoformat() if trade.created_at else None,
-                'executed_at': trade.executed_at.isoformat() if trade.executed_at else None,
-                'is_successful': trade.is_successful
-            }
-        }), 200
-    except Exception as e:
-        app.logger.error(f"Ошибка мок-сигнала: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/predictions/recent')
 def get_recent_predictions():
