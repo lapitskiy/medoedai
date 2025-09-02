@@ -830,6 +830,69 @@
                     const historyDiv = document.getElementById('tradingHistory');
                     const contentDiv = document.getElementById('historyContent');
                     
+                    // 1) Подтянем текущую позицию для отображения рядом с историей
+                    let positionHTML = '';
+                    try {
+                        const statusResp = await fetch('/api/trading/status');
+                        const statusJson = await statusResp.json();
+                        if (statusJson && (statusJson.success || statusJson.agent_status)) {
+                            const agent = statusJson.agent_status || statusJson;
+                            const position = agent.position;
+                            const currentPrice = agent.current_price;
+                            if (position && position.amount && position.amount > 0) {
+                                const entryPrice = position.entry_price || 0;
+                                const pnlAbs = currentPrice && entryPrice ? (currentPrice - entryPrice) * position.amount : 0;
+                                const pnlPct = currentPrice && entryPrice ? ((currentPrice - entryPrice) / entryPrice) * 100 : 0;
+                                const entryTime = position.entry_time ? formatMoscowDateTime(position.entry_time) : '';
+                                positionHTML = `
+                                    <div class="trade-item" style="border-left:4px solid #28a745;">
+                                        <div class="trade-header">
+                                            <span class="trade-action buy">ТЕКУЩАЯ ПОЗИЦИЯ (${position.type?.toUpperCase() || 'LONG'})</span>
+                                            ${entryTime ? `<span>Открыта: ${entryTime}</span>` : ''}
+                                        </div>
+                                        <div class="trade-details">
+                                            <div class="trade-detail">
+                                                <div class="label">Количество</div>
+                                                <div class="value">${position.amount}</div>
+                                            </div>
+                                            <div class="trade-detail">
+                                                <div class="label">Цена входа</div>
+                                                <div class="value">$${entryPrice ? entryPrice.toFixed(2) : 'N/A'}</div>
+                                            </div>
+                                            <div class="trade-detail">
+                                                <div class="label">Текущая цена</div>
+                                                <div class="value">$${currentPrice ? currentPrice.toFixed(2) : 'N/A'}</div>
+                                            </div>
+                                            <div class="trade-detail">
+                                                <div class="label">P&L</div>
+                                                <div class="value" style="color:${pnlAbs >= 0 ? 'green' : 'red'}">
+                                                    ${pnlAbs >= 0 ? '+' : ''}$${pnlAbs.toFixed(4)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)
+                                                </div>
+                                            </div>
+                                            ${position.trade_number ? `
+                                            <div class="trade-detail">
+                                                <div class="label">Trade #</div>
+                                                <div class="value">${position.trade_number}</div>
+                                            </div>` : ''}
+                                        </div>
+                                    </div>
+                                `;
+                            } else {
+                                positionHTML = `
+                                    <div class="trade-item" style="border-left:4px solid #6c757d;">
+                                        <div class="trade-header">
+                                            <span class="trade-action hold">ТЕКУЩАЯ ПОЗИЦИЯ</span>
+                                            <span>нет открытой позиции</span>
+                                        </div>
+                                    </div>
+                                `;
+                            }
+                        }
+                    } catch (e) {
+                        // игнорируем ошибки статуса, показываем лишь историю
+                    }
+
+                    // 2) История сделок
                     if (result.trades && result.trades.length > 0) {
                         let historyHTML = `<p><strong>Всего сделок:</strong> ${result.total_trades}</p>`;
                         
@@ -865,9 +928,10 @@
                             `;
                         });
                         
-                        contentDiv.innerHTML = historyHTML;
+                        contentDiv.innerHTML = positionHTML + historyHTML;
                     } else {
-                        contentDiv.innerHTML = '<p>📈 История сделок пока пуста</p><p><em>Сделки появятся после выполнения торговых операций</em></p>';
+                        const emptyHTML = '<p>📈 История сделок пока пуста</p><p><em>Сделки появятся после выполнения торговых операций</em></p>';
+                        contentDiv.innerHTML = positionHTML + emptyHTML;
                     }
                     
                     historyDiv.style.display = 'block';
