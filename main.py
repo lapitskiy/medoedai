@@ -1550,7 +1550,7 @@ def get_recent_trades():
 def get_trade_statistics():
     """Получение статистики по сделкам"""
     try:
-        from utils.trade_utils import get_trade_statistics
+        from utils.trade_utils import get_trade_statistics, get_model_predictions, get_prediction_statistics
         
         symbol = request.args.get('symbol', None)
         stats = get_trade_statistics(symbol_name=symbol)
@@ -1570,7 +1570,7 @@ def get_trade_statistics():
 def get_trades_by_symbol(symbol_name):
     """Получение сделок по символу"""
     try:
-        from utils.trade_utils import get_trades_by_symbol
+        from utils.trade_utils import get_trades_by_symbol, get_model_predictions, get_prediction_statistics
         
         limit = request.args.get('limit', 100, type=int)
         trades = get_trades_by_symbol(symbol_name, limit=limit)
@@ -1738,7 +1738,7 @@ def get_recent_predictions():
 
 
 @app.route('/api/predictions/statistics')
-def get_prediction_statistics():
+def get_prediction_statistics_api():
     """API для получения статистики предсказаний модели"""
     try:
         symbol = request.args.get('symbol')

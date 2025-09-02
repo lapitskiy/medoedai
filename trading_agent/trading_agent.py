@@ -128,12 +128,12 @@ class TradingAgent:
             return {"success": False, "error": "Модель не загружена"}
         
         try:
-            # Преобразуем символы для деривативов (добавляем :USDT для фьючерсов)
-            self.symbols = [f"{symbol}:USDT" if not symbol.endswith(':USDT') else symbol for symbol in symbols]
-            self.symbol = self.symbols[0] if self.symbols else 'BTCUSDT:USDT'  # Устанавливаем первый символ как основной
+            # Для Bybit деривативов используем символы без :USDT
+            self.symbols = symbols
+            self.symbol = self.symbols[0] if self.symbols else 'BTCUSDT'  # Устанавливаем первый символ как основной
             
-            # Убираем :USDT для внутренних расчетов (баланс, цена)
-            self.base_symbol = self.symbol.replace(':USDT', '') if ':USDT' in self.symbol else self.symbol
+            # Базовый символ для внутренних расчетов
+            self.base_symbol = self.symbol
             
             # Рассчитываем количество для торговли на основе баланса
             self.trade_amount = self._calculate_trade_amount()
@@ -857,7 +857,7 @@ class TradingAgent:
             
             # Выполняем покупку фьючерса (long позиция)
             order = self.exchange.create_market_buy_order(
-                self.symbol,  # Используем полный символ с :USDT для деривативов
+                self.symbol,  # Используем символ для деривативов
                 self.trade_amount,
                 {
                     'type': 'market',
@@ -937,7 +937,7 @@ class TradingAgent:
             
             # Выполняем продажу фьючерса (закрытие long позиции)
             order = self.exchange.create_market_sell_order(
-                self.symbol,  # Используем полный символ с :USDT для деривативов
+                self.symbol,  # Используем символ для деривативов
                 self.current_position['amount'],
                 {
                     'type': 'market',
@@ -1096,7 +1096,7 @@ class TradingAgent:
             
             # Выполняем частичную продажу фьючерса
             order = self.exchange.create_market_sell_order(
-                self.symbol,  # Используем полный символ с :USDT для деривативов
+                self.symbol,  # Используем символ для деривативов
                 sell_amount,
                 {
                     'type': 'market',
