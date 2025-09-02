@@ -26,6 +26,7 @@ plots/**
 good_models/
 models/
 *.pkl
+*.pkl.bak
 *.pth
 *.h5
 *.hdf5
@@ -34,6 +35,10 @@ models/
 *.weights
 *.ckpt
 *.safetensors
+
+# Специально исключаем большие файлы
+replay_buffer*.pkl
+replay_buffer*.pkl.bak
 
 # Временные файлы
 temp/
