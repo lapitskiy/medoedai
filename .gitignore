@@ -64,3 +64,4 @@ result/
 .env.local
 .env.*.local
 .env.example
+plots/

@@ -277,12 +277,36 @@
                     </select>
                 </div>
                 <div class="button-group">
-                    <button class="btn btn-success" onclick="createModelVersion()">
-                        🚀 Создать новую версию
-                    </button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BTCUSDT')">🎯 Обучить BTC (эпизоды)</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ETHUSDT')">🎯 Обучить ETH (эпизоды)</button>
+                    <button class="btn btn-success" onclick="createModelVersion()">🚀 Создать новую версию</button>
                 </div>
+            </div>
+
+            <!-- Секция запуска обучения DQN -->
+            <div class="section">
+                <h2>🎯 Обучение DQN модели</h2>
+                <p>Запустите обучение Deep Q-Network модели для торговли криптовалютами</p>
+                <div class="form-group">
+                    <label>Эпизоды обучения</label>
+                    <select id="episodesSelect" class="form-control">
+                        <option value="100">100</option>
+                        <option value="1000">1000</option>
+                        <option value="3000">3000</option>
+                        <option value="6000">6000</option>
+                        <option value="9000">9000</option>
+                        <option value="10000" selected>10000</option>
+                    </select>
+                </div>
+                <div class="button-group">
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BTCUSDT')">🚀 Обучить BTC</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('TONUSDT')">🚀 Обучить TON</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ETHUSDT')">🚀 Обучить ETH</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('SOLUSDT')">🚀 Обучить SOL</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ADAUSDT')">🚀 Обучить ADA</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BNBUSDT')">🚀 Обучить BNB</button>
+                    <button class="btn btn-success" onclick="startTrainingMulti()">🌟 Обучить мультивалютную</button>
+                </div>
+                <div id="trainStatus"></div>
+            </div>
                 <div id="createStatus"></div>
             </div>
 
@@ -367,6 +391,18 @@
                 }
             } catch (e) {
                 alert('❌ Ошибка запуска обучения: ' + e.message);
+            }
+        }
+
+        async function startTrainingMulti() {
+            try {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '/train_dqn_multi_crypto';
+                document.body.appendChild(form);
+                form.submit();
+            } catch (e) {
+                alert('❌ Ошибка запуска мультивалютного обучения: ' + e.message);
             }
         }
 
