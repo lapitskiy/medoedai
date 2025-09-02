@@ -241,6 +241,72 @@ class TradingAgent:
             logger.error(f"Ошибка получения баланса: {e}")
             return {"success": False, "error": str(e)}
 
+    def _extract_order_price(self, order: dict) -> float:
+        """Достаёт цену исполнения из ответа биржи с надёжными фолбэками.
+
+        Порядок приоритетов:
+        - order['price'] (если есть и >0)
+        - order['average'] (средняя цена)
+        - order['info'].avgPrice
+        - order['cost']/order['filled'] (если доступны)
+        - order['info'].cumExecValue / cumExecQty (Bybit v5)
+        - текущая цена с _get_current_price()
+        """
+        try:
+            # 1) Прямые поля ccxt
+            for key in ("price", "average"):
+                v = order.get(key)
+                if v is not None:
+                    try:
+                        f = float(v)
+                        if f > 0:
+                            return f
+                    except Exception:
+                        pass
+
+            # 2) Вложенные поля info
+            info = order.get("info") or {}
+            for key in ("avgPrice", "lastPrice", "orderPrice"):
+                v = info.get(key)
+                if v is not None:
+                    try:
+                        f = float(v)
+                        if f > 0:
+                            return f
+                    except Exception:
+                        pass
+
+            # 3) Стоимость / объём
+            cost = order.get("cost")
+            filled = order.get("filled")
+            try:
+                if cost is not None and filled:
+                    c = float(cost)
+                    q = float(filled)
+                    if q > 0 and c > 0:
+                        return c / q
+            except Exception:
+                pass
+
+            # 4) Bybit v5 cumExecValue/cumExecQty
+            cev = info.get("cumExecValue")
+            ceq = info.get("cumExecQty")
+            try:
+                if cev is not None and ceq:
+                    c = float(cev)
+                    q = float(ceq)
+                    if q > 0 and c > 0:
+                        return c / q
+            except Exception:
+                pass
+
+            # 5) Фолбэк - текущая цена
+            fallback = self._get_current_price()
+            return float(fallback) if fallback else 0.0
+        except Exception:
+            fallback = self._get_current_price()
+            return float(fallback) if fallback else 0.0
+
     def execute_direct_order(self, action: str, symbol: Optional[str] = None, quantity: Optional[float] = None) -> Dict:
         """
         Выполняет РЕАЛЬНЫЙ рыночный ордер BUY/SELL в обход предсказаний и без записи в БД/мониторинг.
@@ -1052,11 +1118,14 @@ class TradingAgent:
                 }
             )
             
+            executed_price = self._extract_order_price(order)
+            if not executed_price or executed_price <= 0:
+                executed_price = self._get_current_price()
             # Обновляем запись о сделке
             update_trade_status(
                 trade_record.trade_number,
                 status='executed',
-                price=order['price'],
+                price=executed_price,
                 exchange_order_id=order.get('id'),
                 is_successful=True
             )
@@ -1064,14 +1133,14 @@ class TradingAgent:
             self.current_position = {
                 'type': 'long',
                 'amount': amount,
-                'entry_price': order['price'],
+                'entry_price': executed_price,
                 'entry_time': datetime.now(),
                 'trade_number': trade_record.trade_number
             }
             
             self.trading_history.append({
                 'action': 'buy',
-                'price': order['price'],
+                'price': executed_price,
                 'amount': amount,
                 'time': datetime.now(),
                 'trade_number': trade_record.trade_number
@@ -1134,7 +1203,9 @@ class TradingAgent:
             )
             
             # Расчет P&L
-            exit_price = order['price']
+            exit_price = self._extract_order_price(order)
+            if not exit_price or exit_price <= 0:
+                exit_price = self._get_current_price()
             entry_price = self.current_position['entry_price']
             pnl = (exit_price - entry_price) * amount
             
@@ -1142,7 +1213,7 @@ class TradingAgent:
             update_trade_status(
                 trade_record.trade_number,
                 status='executed',
-                price=order['price'],
+                price=exit_price,
                 exchange_order_id=order.get('id'),
                 position_pnl=pnl,
                 is_successful=True
@@ -1293,7 +1364,9 @@ class TradingAgent:
             )
             
             # Расчет P&L для проданной части
-            exit_price = order['price']
+            exit_price = self._extract_order_price(order)
+            if not exit_price or exit_price <= 0:
+                exit_price = self._get_current_price()
             entry_price = self.current_position['entry_price']
             pnl = (exit_price - entry_price) * sell_amount
             
@@ -1301,7 +1374,7 @@ class TradingAgent:
             update_trade_status(
                 trade_record.trade_number,
                 status='executed',
-                price=order['price'],
+                price=exit_price,
                 exchange_order_id=order.get('id'),
                 position_pnl=pnl,
                 is_successful=True
