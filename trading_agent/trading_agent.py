@@ -241,25 +241,54 @@ class TradingAgent:
             logger.error(f"Ошибка получения баланса: {e}")
             return {"success": False, "error": str(e)}
 
-    def _ensure_no_leverage(self, symbol: str) -> None:
-        """Гарантирует торговлю без плеча (1x) и изолированную маржу для символа."""
+    def _ensure_no_leverage(self, symbol: str) -> bool:
+        """Пытается выставить 1x и isolated для символа. Возвращает True, если условия соблюдены.
+        Если не удаётся (например, retCode 110012 или активное плечо >1), возвращает False.
+        """
+        ok = True
         try:
             # Установка плеча 1x
             if hasattr(self.exchange, 'set_leverage'):
                 try:
-                    self.exchange.set_leverage(1, symbol)
-                    logger.info(f"Установлено плечо 1x для {symbol}")
+                    # Пытаемся разными сигнатурами ccxt/bybit
+                    try:
+                        self.exchange.set_leverage(1, symbol)
+                        logger.info(f"Установлено плечо 1x для {symbol}")
+                    except Exception:
+                        # Вариант с параметрами buy/sell
+                        self.exchange.set_leverage('1', symbol, {'buyLeverage': '1', 'sellLeverage': '1'})
+                        logger.info(f"Установлено плечо (buy/sell) 1x для {symbol}")
                 except Exception as e:
                     logger.warning(f"Не удалось установить плечо 1x для {symbol}: {e}")
-            # Установка режима маржи isolated
+                    ok = False
+            # Установка режима маржи isolated (не критично для ok)
             if hasattr(self.exchange, 'set_margin_mode'):
                 try:
                     self.exchange.set_margin_mode('isolated', symbol)
                     logger.info(f"Установлен режим маржи isolated для {symbol}")
                 except Exception as e:
                     logger.warning(f"Не удалось установить режим isolated для {symbol}: {e}")
+            # Дополнительно проверим текущую позицию и леверидж
+            try:
+                positions = None
+                if hasattr(self.exchange, 'fetch_positions'):
+                    positions = self.exchange.fetch_positions([symbol])
+                if positions:
+                    for p in positions:
+                        lev = p.get('leverage') or p.get('info', {}).get('leverage')
+                        if lev is not None:
+                            try:
+                                if float(lev) > 1:
+                                    logger.warning(f"У символа {symbol} активное плечо {lev} (>1).")
+                                    ok = False
+                            except Exception:
+                                pass
+            except Exception:
+                pass
         except Exception as e:
             logger.warning(f"Ошибка при попытке выставить параметры без плеча для {symbol}: {e}")
+            ok = False
+        return ok
 
     def _extract_order_price(self, order: dict) -> float:
         """Достаёт цену исполнения из ответа биржи с надёжными фолбэками.
@@ -363,8 +392,13 @@ class TradingAgent:
             if side not in ('buy', 'sell'):
                 return {"success": False, "error": "action должен быть 'buy' или 'sell'"}
 
-            # Гарантируем отсутствие плеча
-            self._ensure_no_leverage(order_symbol)
+            # Гарантируем отсутствие плеча — если не удаётся (нет свободной маржи, активное плечо и т.д.), отменяем покупку
+            no_lev_ok = self._ensure_no_leverage(order_symbol)
+            if side == 'buy' and not no_lev_ok:
+                return {
+                    "success": False,
+                    "error": "Невозможно купить с 1x: активна позиция с плечом или недостаточно свободной маржи. Покупка отменена."
+                }
 
             # Дополнительная проверка на достаточность средств при покупке
             if side == 'buy':
@@ -395,9 +429,23 @@ class TradingAgent:
                     pass
 
             if side == 'buy':
-                order = self.exchange.create_market_buy_order(order_symbol, order_qty)
+                order = self.exchange.create_market_buy_order(
+                    order_symbol,
+                    order_qty,
+                    {
+                        'leverage': '1',
+                        'marginMode': 'isolated',
+                    }
+                )
             else:
-                order = self.exchange.create_market_sell_order(order_symbol, order_qty)
+                order = self.exchange.create_market_sell_order(
+                    order_symbol,
+                    order_qty,
+                    {
+                        'leverage': '1',
+                        'marginMode': 'isolated',
+                    }
+                )
 
             return {
                 "success": True,
@@ -1183,13 +1231,18 @@ class TradingAgent:
             amount = self._normalize_amount(self.trade_amount)
 
             # Выполняем покупку фьючерса (long позиция)
-            # Гарантируем отсутствие плеча
-            self._ensure_no_leverage(self.symbol)
+            # Гарантируем отсутствие плеча — если не удаётся, отменяем покупку
+            if not self._ensure_no_leverage(self.symbol):
+                return {
+                    "success": False,
+                    "error": "Невозможно купить с 1x: активна позиция с плечом или недостаточно свободной маржи. Покупка отменена."
+                }
             order = self.exchange.create_market_buy_order(
                 self.symbol,
                 amount,
                 {
-                    # ccxt сам укажет side/type; дополнительные параметры не требуются
+                    'leverage': '1',
+                    'marginMode': 'isolated',
                 }
             )
             
@@ -1274,6 +1327,8 @@ class TradingAgent:
                 amount,
                 {
                     'reduceOnly': True,
+                    'leverage': '1',
+                    'marginMode': 'isolated',
                 }
             )
             
@@ -1435,6 +1490,8 @@ class TradingAgent:
                 sell_amount,
                 {
                     'reduceOnly': True,
+                    'leverage': '1',
+                    'marginMode': 'isolated',
                 }
             )
             
