@@ -582,6 +582,22 @@
         let monitoringInterval = null;
 
         let modelsData = [];
+        
+        // Форматирование даты/времени в московском часовом поясе
+        function formatMoscowDateTime(value) {
+            const date = (typeof value === 'number' || typeof value === 'string') ? new Date(value) : value;
+            if (!date || isNaN(date.getTime())) return 'N/A';
+            return date.toLocaleString('ru-RU', {
+                timeZone: 'Europe/Moscow',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            });
+        }
 
         // Загрузка списка моделей при загрузке страницы
         async function loadModels() {
@@ -800,7 +816,7 @@
                         let historyHTML = `<p><strong>Всего сделок:</strong> ${result.total_trades}</p>`;
                         
                         result.trades.forEach((trade, index) => {
-                            const tradeTime = new Date(trade.time).toLocaleString('ru-RU');
+                            const tradeTime = formatMoscowDateTime(trade.time);
                             const actionClass = trade.action === 'buy' ? 'buy' : 'sell';
                             
                             historyHTML += `
@@ -859,7 +875,7 @@
                         let resultsHTML = `<p><strong>Всего результатов:</strong> ${result.total_results}</p>`;
                         
                         result.latest_results.forEach((tradeResult, index) => {
-                            const resultTime = new Date(tradeResult.timestamp).toLocaleString('ru-RU');
+                            const resultTime = formatMoscowDateTime(tradeResult.timestamp);
                             const successClass = tradeResult.exit_code === 0 ? 'success' : 'error';
                             
                             resultsHTML += `
@@ -988,7 +1004,7 @@
                                         ` : ''}
                                         <div class="trade-detail">
                                             <div class="label">Время создания</div>
-                                            <div class="value">${new Date(trade.created_at).toLocaleString()}</div>
+                                            <div class="value">${formatMoscowDateTime(trade.created_at)}</div>
                                         </div>
                                         ${trade.error_message ? `
                                         <div class="trade-detail">
@@ -1150,7 +1166,7 @@
                         let predictionsHTML = `<p><strong>Всего предсказаний:</strong> ${result.total_predictions}</p>`;
                         
                         result.predictions.forEach(prediction => {
-                            const predictionTime = new Date(prediction.timestamp).toLocaleString('ru-RU');
+                            const predictionTime = formatMoscowDateTime(prediction.timestamp);
                             const actionClass = prediction.action === 'buy' ? 'buy' : prediction.action === 'sell' ? 'sell' : 'hold';
                             const confidenceClass = prediction.confidence > 0.5 ? 'success' : prediction.confidence > 0.2 ? 'info' : 'warning';
                             
@@ -1278,8 +1294,8 @@
             const strategyDiv = document.getElementById('remainingPositionStrategy');
             
             if (strategy && strategy.type === 'remaining_position') {
-                const createdTime = new Date(strategy.created_at).toLocaleString('ru-RU');
-                const timeThreshold = new Date(strategy.time_threshold).toLocaleString('ru-RU');
+                const createdTime = formatMoscowDateTime(strategy.created_at);
+                const timeThreshold = formatMoscowDateTime(strategy.time_threshold);
                 
                 let strategyHTML = `
                     <div class="strategy-info">
