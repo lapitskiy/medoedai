@@ -183,8 +183,9 @@ class TradingAgent:
         balance_info = self.get_balance()
         current_price = self._get_current_price()
         
-        # Определяем статус торговли
-        trading_status = "🟢 Активна" if self.is_trading else "🔴 Остановлена"
+        # Определяем статус торговли (используем простые символы для избежания проблем с кодировкой)
+        trading_status = "Активна" if self.is_trading else "Остановлена"
+        trading_status_emoji = "🟢" if self.is_trading else "🔴"
         
         # Получаем информацию о символе
         symbol_info = getattr(self, 'symbol', None)
@@ -203,6 +204,8 @@ class TradingAgent:
         return {
             "is_trading": self.is_trading,
             "trading_status": trading_status,
+            "trading_status_emoji": trading_status_emoji,
+            "trading_status_full": f"{trading_status_emoji} {trading_status}",
             "symbol": symbol_info,
             "symbol_display": symbol_display,
             "amount": amount_info,

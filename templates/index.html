@@ -765,8 +765,13 @@
                     const agentData = result.agent_status;
                     
                     // Обновляем основной статус
-                    if (agentData.trading_status) {
-                        statusDiv.className = 'status success';
+                    if (agentData.trading_status_full) {
+                        // Используем готовый статус с эмодзи
+                        statusDiv.className = agentData.is_trading ? 'status success' : 'status info';
+                        statusDiv.textContent = agentData.trading_status_full;
+                    } else if (agentData.trading_status) {
+                        // Фолбэк на простой статус
+                        statusDiv.className = agentData.is_trading ? 'status success' : 'status info';
                         statusDiv.textContent = agentData.trading_status;
                     } else if (agentData.is_trading) {
                         statusDiv.className = 'status success';

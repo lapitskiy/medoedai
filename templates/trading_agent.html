@@ -734,7 +734,7 @@
                     const contentDiv = document.getElementById('statusContent');
                     
                     let statusHTML = `
-                        <p><strong>Статус:</strong> ${result.trading_status || (result.is_trading ? '🟢 Активна ' : '🔴 Остановлена')}</p>
+                        <p><strong>Статус:</strong> ${result.trading_status_full || result.trading_status || (result.is_trading ? '🟢 Активна' : '🔴 Остановлена')}</p>
                         <p><strong>Пара:</strong> ${result.symbol_display || result.symbol || 'Не указана'}</p>
                         <p><strong>Количество:</strong> ${result.amount_display || result.amount || 'Не указано'}</p>
                         <p><strong>Количество USDT:</strong> ${result.amount_usdt ? '$' + result.amount_usdt.toFixed(2) : 'Не указано'}</p>
