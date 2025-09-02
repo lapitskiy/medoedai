@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 from orm.models import Trade, Symbol, ModelPrediction
 from orm.database import get_db_session
 
@@ -200,14 +201,19 @@ def get_trade_statistics(symbol_name: str = None):
         total_trades = query.count()
         successful_trades = query.filter(Trade.is_successful == True).count()
         failed_trades = query.filter(Trade.is_successful == False).count()
-        
-        # Суммы по объему и стоимости
-        volume_sum = session.query(Trade.quantity).filter(
-            Trade.is_successful == True
-        ).scalar() or 0
-        value_sum = session.query(Trade.total_value).filter(
-            Trade.is_successful == True
-        ).scalar() or 0
+
+        # Суммы по объему и стоимости (агрегаты с учетом возможного фильтра по символу)
+        agg_query = session.query(
+            func.coalesce(func.sum(Trade.quantity), 0.0),
+            func.coalesce(func.sum(Trade.total_value), 0.0)
+        ).filter(Trade.is_successful == True)
+
+        if symbol_name:
+            symbol = session.query(Symbol).filter(Symbol.name == symbol_name).first()
+            if symbol:
+                agg_query = agg_query.filter(Trade.symbol_id == symbol.id)
+
+        volume_sum, value_sum = agg_query.one()
         
         success_rate = (successful_trades / total_trades * 100) if total_trades > 0 else 0
         
@@ -328,28 +334,28 @@ def get_prediction_statistics(symbol: str = None) -> dict:
     """
     session = get_db_session()
     try:
-        query = session.query(ModelPrediction)
-        
+        base_query = session.query(ModelPrediction)
         if symbol:
-            query = query.filter(ModelPrediction.symbol == symbol)
-        
-        total_predictions = query.count()
-        buy_predictions = query.filter(ModelPrediction.action == 'buy').count()
-        sell_predictions = query.filter(ModelPrediction.action == 'sell').count()
-        hold_predictions = query.filter(ModelPrediction.action == 'hold').count()
-        
-        # Средняя уверенность по действиям
-        avg_confidence_buy = session.query(ModelPrediction.confidence).filter(
-            ModelPrediction.action == 'buy'
-        ).scalar() or 0.0
-        
-        avg_confidence_sell = session.query(ModelPrediction.confidence).filter(
-            ModelPrediction.action == 'sell'
-        ).scalar() or 0.0
-        
-        avg_confidence_hold = session.query(ModelPrediction.confidence).filter(
-            ModelPrediction.action == 'hold'
-        ).scalar() or 0.0
+            base_query = base_query.filter(ModelPrediction.symbol == symbol)
+
+        total_predictions = base_query.count()
+        buy_predictions = base_query.filter(ModelPrediction.action == 'buy').count()
+        sell_predictions = base_query.filter(ModelPrediction.action == 'sell').count()
+        hold_predictions = base_query.filter(ModelPrediction.action == 'hold').count()
+
+        # Средняя уверенность по действиям (корректные агрегаты)
+        def avg_conf(action: str) -> float:
+            q = session.query(func.avg(ModelPrediction.confidence))
+            if symbol:
+                q = q.filter(ModelPrediction.symbol == symbol)
+            if action:
+                q = q.filter(ModelPrediction.action == action)
+            val = q.scalar()
+            return float(val) if val is not None else 0.0
+
+        avg_confidence_buy = avg_conf('buy')
+        avg_confidence_sell = avg_conf('sell')
+        avg_confidence_hold = avg_conf('hold')
         
         return {
             'total_predictions': total_predictions,

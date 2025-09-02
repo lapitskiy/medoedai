@@ -352,6 +352,10 @@
                             <div id="currentBalance" class="status info">-</div>
                         </div>
                         <div class="form-group">
+                            <label>📊 Количество для торговли:</label>
+                            <div id="currentAmount" class="status info">-</div>
+                        </div>
+                        <div class="form-group">
                             <label>📈 Последнее предсказание:</label>
                             <div id="lastPrediction" class="status info">-</div>
                         </div>
@@ -761,7 +765,10 @@
                     const agentData = result.agent_status;
                     
                     // Обновляем основной статус
-                    if (agentData.is_trading) {
+                    if (agentData.trading_status) {
+                        statusDiv.className = 'status success';
+                        statusDiv.textContent = agentData.trading_status;
+                    } else if (agentData.is_trading) {
                         statusDiv.className = 'status success';
                         statusDiv.textContent = '✅ Агент активен и торгует';
                     } else {
@@ -774,9 +781,9 @@
                     
                     // Текущая пара
                     const symbolDiv = document.getElementById('currentSymbol');
-                    if (agentData.symbol) {
+                    if (agentData.symbol_display || agentData.symbol) {
                         symbolDiv.className = 'status success';
-                        symbolDiv.textContent = agentData.symbol;
+                        symbolDiv.textContent = agentData.symbol_display || agentData.symbol;
                     } else {
                         symbolDiv.className = 'status info';
                         symbolDiv.textContent = 'Не выбрана';
@@ -790,6 +797,19 @@
                     } else {
                         balanceDiv.className = 'status info';
                         balanceDiv.textContent = 'Недоступно';
+                    }
+                    
+                    // Количество для торговли
+                    const amountDiv = document.getElementById('currentAmount');
+                    if (agentData.amount_display || agentData.amount) {
+                        amountDiv.className = 'status success';
+                        amountDiv.textContent = agentData.amount_display || agentData.amount;
+                        if (agentData.amount_usdt) {
+                            amountDiv.textContent += ` ($${agentData.amount_usdt.toFixed(2)})`;
+                        }
+                    } else {
+                        amountDiv.className = 'status info';
+                        amountDiv.textContent = 'Не указано';
                     }
                     
                     // Последнее предсказание

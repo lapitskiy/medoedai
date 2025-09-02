@@ -138,6 +138,9 @@ class TradingAgent:
             # Рассчитываем количество для торговли на основе баланса
             self.trade_amount = self._calculate_trade_amount()
             
+            # Устанавливаем статус торговли как активный
+            self.is_trading = True
+            
             logger.info(f"Торговля запущена для {symbols}, основной символ: {self.symbol}, количество: {self.trade_amount}")
             
             # Выполняем один торговый шаг
@@ -172,15 +175,36 @@ class TradingAgent:
         balance_info = self.get_balance()
         current_price = self._get_current_price()
         
+        # Определяем статус торговли
+        trading_status = "🟢 Активна" if self.is_trading else "🔴 Остановлена"
+        
+        # Получаем информацию о символе
+        symbol_info = getattr(self, 'symbol', None)
+        if symbol_info:
+            symbol_display = symbol_info
+        else:
+            symbol_display = "Не указана"
+        
+        # Получаем информацию о количестве
+        amount_info = getattr(self, 'trade_amount', None)
+        if amount_info and amount_info > 0:
+            amount_display = f"{amount_info:.6f}"
+        else:
+            amount_display = "Не указано"
+        
         return {
             "is_trading": self.is_trading,
-            "symbol": getattr(self, 'symbol', None),
-            "amount": getattr(self, 'trade_amount', None),
+            "trading_status": trading_status,
+            "symbol": symbol_info,
+            "symbol_display": symbol_display,
+            "amount": amount_info,
+            "amount_display": amount_display,
             "amount_usdt": getattr(self, 'trade_amount', 0) * current_price if current_price > 0 else 0,
             "position": self.current_position,
             "trades_count": len(self.trading_history),
             "balance": balance_info.get('balance', {}) if balance_info.get('success') else {},
             "current_price": current_price,
+            "last_model_prediction": getattr(self, 'last_model_prediction', None),
             "risk_management": {
                 "risk_percentage": 0.15,  # 15% от баланса
                 "min_trade_usdt": 10.0,
