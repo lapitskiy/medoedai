@@ -33,6 +33,9 @@ class TradingAgent:
         self.symbol = 'BTCUSDT'
         self.base_symbol = 'BTCUSDT'
         
+        # Для отслеживания Q-Values
+        self._last_q_values = None
+        
         # Загружаем модель
         self._load_model()
         
@@ -591,6 +594,26 @@ class TradingAgent:
             # Получаем предсказание от модели на основе свежих данных
             action = self._get_model_prediction()
             
+            # Дополнительная проверка: если действие 'hold' из-за отрицательных Q-Values, не торгуем
+            if hasattr(self, 'last_model_prediction') and self.last_model_prediction == 'hold':
+                # Проверяем, было ли это решение из-за отрицательных Q-Values
+                if hasattr(self, '_last_q_values') and self._last_q_values:
+                    max_q_value = max(self._last_q_values)
+                    if max_q_value < 0:
+                        logger.warning(f"🚫 Торговля отменена: все Q-Values отрицательные ({self._last_q_values})")
+                        result = {
+                            "timestamp": datetime.now().isoformat(),
+                            "symbol": self.symbol,
+                            "price": current_price,
+                            "action": "hold",
+                            "trade_amount": self.trade_amount,
+                            "position": self.current_position,
+                            "trade_executed": "hold",
+                            "reason": "negative_q_values",
+                            "q_values": self._last_q_values
+                        }
+                        return result
+            
             # Логируем текущую цену и действие
             logger.info(f"Цена {self.symbol}: ${current_price:.2f}, Действие: {action}")
             
@@ -673,12 +696,34 @@ class TradingAgent:
                 q_values = self.model(state_tensor)
                 action = torch.argmax(q_values, dim=1).item()
             
-            # Преобразуем действие в строку
-            action_map = {0: 'hold', 1: 'buy', 2: 'sell'}
-            action_str = action_map.get(action, 'hold')
+            # Проверяем Q-Values для принятия решения о торговле
+            q_values_list = q_values[0].tolist()
+            max_q_value = max(q_values_list)
+            
+            # Если все Q-Values отрицательные - не торгуем, возвращаем 'hold'
+            if max_q_value < 0:
+                logger.warning(f"Все Q-Values отрицательные: {q_values_list}. Не торгуем, возвращаем 'hold'")
+                action_str = 'hold'
+                # Переопределяем action для логирования
+                action = 0  # hold
+            else:
+                # Преобразуем действие в строку только если есть положительные Q-Values
+                action_map = {0: 'hold', 1: 'buy', 2: 'sell'}
+                action_str = action_map.get(action, 'hold')
             
             # Сохраняем последнее предсказание для записи в БД
             self.last_model_prediction = action_str
+            
+            # Сохраняем Q-Values для дополнительной проверки в _execute_trading_step
+            self._last_q_values = q_values_list
+            
+            # Рассчитываем уверенность модели
+            q_values_list = q_values[0].tolist()
+            max_q_value = max(q_values_list)
+            min_q_value = min(q_values_list)
+            
+            # Уверенность = разница между лучшим и худшим действием
+            confidence = ((max_q_value - min_q_value) / (abs(max_q_value) + abs(min_q_value) + 1e-8)) * 100
             
             # Логируем предсказание в БД
             try:
@@ -697,7 +742,7 @@ class TradingAgent:
                 create_model_prediction(
                     symbol=self.base_symbol,
                     action=action_str,
-                    q_values=q_values[0].tolist(),
+                    q_values=q_values_list,
                     current_price=current_price,
                     position_status=position_status,
                     model_path=self.model_path,
@@ -709,7 +754,11 @@ class TradingAgent:
             except Exception as e:
                 logger.warning(f"Не удалось записать предсказание в БД: {e}")
             
-            logger.info(f"Предсказание модели: {action_str} (action={action}, q_values={q_values[0].tolist()})")
+            # Улучшенное логирование с информацией об уверенности
+            if max_q_value < 0:
+                logger.warning(f"Предсказание модели: {action_str} (action={action}, q_values={q_values_list}) - ВНИМАНИЕ: Все Q-Values отрицательные! Не торгуем.")
+            else:
+                logger.info(f"Предсказание модели: {action_str} (action={action}, q_values={q_values_list}, уверенность: {confidence:.1f}%)")
             return action_str
             
         except Exception as e:

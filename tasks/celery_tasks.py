@@ -294,6 +294,9 @@ def start_trading_task(self, symbols, model_path=None):
         # Log the execution result
         print(f"🚀 Start trading - Command: {cmd}")
         print(f"📊 Start trading - Exit code: {exec_result.exit_code}")
+        
+        # Инициализируем output_str
+        output_str = ""
         if exec_result.output:
             output_str = exec_result.output.decode('utf-8')
             print(f"📝 Start trading - Output: {output_str}")
@@ -322,7 +325,7 @@ def start_trading_task(self, symbols, model_path=None):
                 'model_path': model_path,
                 'command': cmd,
                 'exit_code': exec_result.exit_code,
-                'output': output_str if exec_result.output else "No output"
+                'output': output_str
             }
             
             # Парсим результат из вывода команды
@@ -351,20 +354,23 @@ def start_trading_task(self, symbols, model_path=None):
             print(f"Ошибка сохранения в Redis: {redis_error}")
         
         if exec_result.exit_code == 0:
-            output = exec_result.output.decode('utf-8')
-            # Log the result
-            if 'RESULT:' in output:
-                result_str = output.split('RESULT:')[1].strip()
-                try:
-                    import json
-                    result = json.loads(result_str)
-                    return result
-                except:                    
+            if exec_result.output:
+                output = exec_result.output.decode('utf-8')
+                # Log the result
+                if 'RESULT:' in output:
+                    result_str = output.split('RESULT:')[1].strip()
+                    try:
+                        result = json.loads(result_str)
+                        return result
+                    except:                    
+                        return {"success": True, "message": f'Trading started for {symbols}', "output": output}
+                else:
                     return {"success": True, "message": f'Trading started for {symbols}', "output": output}
             else:
-                return {"success": True, "message": f'Trading started for {symbols}', "output": output}
+                return {"success": True, "message": f'Trading started for {symbols}', "output": "No output"}
         else:
-            return {"success": False, "error": f'Command execution error: {exec_result.output.decode("utf-8")}'}
+            error_output = exec_result.output.decode("utf-8") if exec_result.output else "No output"
+            return {"success": False, "error": f'Command execution error: {error_output}'}
         
     except docker.errors.NotFound:
         return {"success": False, "error": 'Container medoedai not found. Start it with docker-compose up medoedai'}
