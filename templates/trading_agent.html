@@ -591,7 +591,19 @@
         
         // Форматирование даты/времени в московском часовом поясе
         function formatMoscowDateTime(value) {
-            const date = (typeof value === 'number' || typeof value === 'string') ? new Date(value) : value;
+            let date;
+            if (typeof value === 'string') {
+                // Если строка без явной временной зоны — считаем, что это UTC и добавляем 'Z'
+                const hasTimezone = /[zZ]|[\+\-]\d{2}:?\d{2}$/.test(value);
+                const isoBasic = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+                const src = (!hasTimezone && isoBasic.test(value)) ? (value + 'Z') : value;
+                date = new Date(src);
+            } else if (typeof value === 'number') {
+                // Ожидаем миллисекунды
+                date = new Date(value);
+            } else {
+                date = value;
+            }
             if (!date || isNaN(date.getTime())) return 'N/A';
             return date.toLocaleString('ru-RU', {
                 timeZone: 'Europe/Moscow',
