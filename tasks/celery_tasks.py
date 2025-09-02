@@ -285,9 +285,9 @@ def start_trading_task(self, symbols, model_path=None):
         
         # Start trading via exec with API keys
         if model_path:
-            cmd = f'python -c "import json; import os; os.environ[\'BYBIT_API_KEY\'] = \'{BYBIT_API_KEY}\'; os.environ[\'BYBIT_SECRET_KEY\'] = \'{BYBIT_SECRET_KEY}\'; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); start_result = agent.start_trading(symbols={symbols}); status_result = agent.get_trading_status(); print(\\"RESULT: \\" + json.dumps({{**start_result, **status_result}}))"'
+            cmd = f'python -c "import json; import os; os.environ[\'BYBIT_API_KEY\'] = \'{BYBIT_API_KEY}\'; os.environ[\'BYBIT_SECRET_KEY\'] = \'{BYBIT_SECRET_KEY}\'; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); start_result = agent.start_trading(symbols={symbols}); status_result = agent.get_trading_status(); print(\\"RESULT: \\" + json.dumps({{**start_result, **status_result}}, default=str))"'
         else:
-            cmd = f'python -c "import json; import os; os.environ[\'BYBIT_API_KEY\'] = \'{BYBIT_API_KEY}\'; os.environ[\'BYBIT_SECRET_KEY\'] = \'{BYBIT_SECRET_KEY}\'; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); start_result = agent.start_trading(symbols={symbols}); status_result = agent.get_trading_status(); print(\\"RESULT: \\" + json.dumps({{**start_result, **status_result}}))"'
+            cmd = f'python -c "import json; import os; os.environ[\'BYBIT_API_KEY\'] = \'{BYBIT_API_KEY}\'; os.environ[\'BYBIT_SECRET_KEY\'] = \'{BYBIT_SECRET_KEY}\'; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); start_result = agent.start_trading(symbols={symbols}); status_result = agent.get_trading_status(); print(\\"RESULT: \\" + json.dumps({{**start_result, **status_result}}, default=str))"'
         
         exec_result = container.exec_run(cmd, tty=True)
         
@@ -340,7 +340,7 @@ def start_trading_task(self, symbols, model_path=None):
             
             # Сохраняем в Redis (последние 10 результатов)
             redis_key = f'trading:latest_result_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
-            redis_client.setex(redis_key, 3600, json.dumps(result_data))  # Храним 1 час
+            redis_client.setex(redis_key, 3600, json.dumps(result_data, default=str))  # Храним 1 час
             
             # Очищаем старые результаты (оставляем только последние 10)
             all_keys = redis_client.keys('trading:latest_result_*')

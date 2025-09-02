@@ -241,6 +241,26 @@ class TradingAgent:
             logger.error(f"Ошибка получения баланса: {e}")
             return {"success": False, "error": str(e)}
 
+    def _get_last_closed_ts_ms(self, timeframe: str = '5m') -> int:
+        """Возвращает timestamp (ms) последней ЗАКРЫТОЙ свечи для заданного таймфрейма.
+        Для 5m: floor(UTC now, 5m) - 5m.
+        """
+        try:
+            now_utc = datetime.utcnow()
+            epoch_sec = int(now_utc.timestamp())
+            if timeframe == '5m':
+                step = 300
+            elif timeframe == '15m':
+                step = 900
+            elif timeframe in ('1h', '60m'):
+                step = 3600
+            else:
+                step = 300
+            last_closed = (epoch_sec // step) * step - step
+            return last_closed * 1000
+        except Exception:
+            return 0
+
     def _ensure_no_leverage(self, symbol: str) -> bool:
         """Пытается выставить 1x и isolated для символа. Возвращает True, если условия соблюдены.
         Если не удаётся (например, retCode 110012 или активное плечо >1), возвращает False.
@@ -691,18 +711,20 @@ class TradingAgent:
                 exchange_id='bybit'  # Используем Bybit
             )
             
+            # Жестко используем ТОЛЬКО последнюю ЗАКРЫТУЮ свечу
+            last_closed_ts = self._get_last_closed_ts_ms('5m')
             if df_5min is not None and not df_5min.empty:
-                # Берем цену закрытия последней свечи
-                current_price = df_5min['close'].iloc[-1]
+                df_closed = df_5min[df_5min['timestamp'] <= last_closed_ts]
+                if df_closed is None or df_closed.empty:
+                    logger.warning("Нет закрытых свечей для расчета цены")
+                    return 0.0
+                current_price = df_closed['close'].iloc[-1]
                 logger.debug(f"Цена из БД: ${current_price:.2f}")
                 return current_price
             else:
-                # Фолбэк на биржу
-                symbol_for_exchange = getattr(self, 'symbol', None) or 'BTCUSDT'
-                ticker = self.exchange.fetch_ticker(symbol_for_exchange)
-                current_price = ticker['last']
-                logger.debug(f"Цена с биржи: ${current_price:.2f}")
-                return current_price
+                # Не используем last price с биржи, если нет закрытой свечи — пропускаем шаг
+                logger.warning("Свечи из БД недоступны, пропускаем шаг (ждем закрытую свечу)")
+                return 0.0
                 
         except Exception as e:
             logger.error(f"Ошибка получения цены: {e}")
@@ -1032,6 +1054,13 @@ class TradingAgent:
                 logger.warning(f"Не удалось получить данные для {self.symbol}")
                 return None
             
+            # Используем только ЗАКРЫТЫЕ свечи (срез по последней закрытой метке времени)
+            last_closed_ts = self._get_last_closed_ts_ms('5m')
+            df_5min = df_5min[df_5min['timestamp'] <= last_closed_ts]
+            if df_5min is None or df_5min.empty:
+                logger.warning("Нет закрытых 5m свечей для подготовки состояния")
+                return None
+            
             if len(df_5min) < 50:  # Минимум 50 свечей для расчета индикаторов
                 logger.warning(f"Недостаточно исторических данных: {len(df_5min)} свечей")
                 return None
@@ -1170,11 +1199,19 @@ class TradingAgent:
                 window_indicators.flatten()
             ], axis=0)
             
-            # Добавляем информацию о позиции (как в окружении)
-            position_info = np.array([
-                0.0,  # Нормализованный баланс (пока 0)
-                0.0   # Нормализованная криптовалюта (пока 0)
-            ], dtype=np.float32)
+            # Добавляем информацию о позиции (фактическое состояние)
+            try:
+                if self.current_position:
+                    position_is_open = 1.0
+                    position_amount = float(self.current_position.get('amount', 0.0) or 0.0)
+                    limits = self._get_bybit_limits()
+                    max_amount = float(limits.get('max_amount', 1000.0) or 1000.0)
+                    amount_norm = max(0.0, min(1.0, position_amount / max_amount)) if max_amount > 0 else 0.0
+                    position_info = np.array([position_is_open, amount_norm], dtype=np.float32)
+                else:
+                    position_info = np.array([0.0, 0.0], dtype=np.float32)
+            except Exception:
+                position_info = np.array([0.0, 0.0], dtype=np.float32)
             
             # Объединяем все в финальное состояние
             final_state = np.concatenate([state_features, position_info])
