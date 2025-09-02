@@ -28,6 +28,10 @@ class TradingAgent:
         self.current_position = None
         self.trading_history = []
         self.last_model_prediction = None
+        # Значения по умолчанию для символов (чтобы статус и цена работали до start_trading)
+        self.symbols = []
+        self.symbol = 'BTCUSDT'
+        self.base_symbol = 'BTCUSDT'
         
         # Загружаем модель
         self._load_model()
@@ -456,8 +460,9 @@ class TradingAgent:
             # Сначала пробуем получить из БД
             from utils.db_utils import db_get_or_fetch_ohlcv
             
+            symbol_for_db = getattr(self, 'base_symbol', None) or getattr(self, 'symbol', None) or 'BTCUSDT'
             df_5min = db_get_or_fetch_ohlcv(
-                symbol_name=self.base_symbol,  # Используем базовый символ без :USDT для БД
+                symbol_name=symbol_for_db,  # Используем базовый символ без :USDT для БД
                 timeframe='5m',
                 limit_candles=1,  # Только последняя свеча
                 exchange_id='bybit'  # Используем Bybit
@@ -470,7 +475,8 @@ class TradingAgent:
                 return current_price
             else:
                 # Фолбэк на биржу
-                ticker = self.exchange.fetch_ticker(self.symbol)
+                symbol_for_exchange = getattr(self, 'symbol', None) or 'BTCUSDT'
+                ticker = self.exchange.fetch_ticker(symbol_for_exchange)
                 current_price = ticker['last']
                 logger.debug(f"Цена с биржи: ${current_price:.2f}")
                 return current_price
