@@ -1547,29 +1547,30 @@ def trading_test_order():
             except Exception:
                 pass
 
-            # Формируем python-команду для исполнения внутри контейнера
-            import json as _json
-            payload = {
-                'action': action,
-                'symbol': symbol,
-                'quantity': quantity,
-            }
-            payload_str = _json.dumps(payload).replace('"', '\\"')
+            # Формируем python-команду без вложенного JSON, чтобы избежать проблем с кавычками
+            def _py_str_literal(s):
+                if s is None:
+                    return 'None'
+                return "'" + str(s).replace("'", "\\'") + "'"
+
+            py_action = _py_str_literal(action)
+            py_symbol = _py_str_literal(symbol)
+            py_quantity = 'None' if quantity is None else str(float(quantity))
 
             if model_path:
                 cmd = (
                     f'python -c "import json; from trading_agent.trading_agent import TradingAgent; '
                     f'agent = TradingAgent(model_path=\\\"{model_path}\\\"); '
-                    f'payload = json.loads(\\\"{payload_str}\\\"); '
-                    f'result = agent.execute_direct_order(payload.get(\\\"action\\\"), payload.get(\\\"symbol\\\"), payload.get(\\\"quantity\\\")); '
+                    f'action = {py_action}; symbol = {py_symbol}; quantity = {py_quantity}; '
+                    f'result = agent.execute_direct_order(action, symbol, quantity); '
                     f'print(\\\"RESULT: \\\" + json.dumps(result))"'
                 )
             else:
                 cmd = (
                     'python -c "import json; from trading_agent.trading_agent import TradingAgent; '
                     'agent = TradingAgent(); '
-                    f'payload = json.loads(\\\"{payload_str}\\\"); '
-                    'result = agent.execute_direct_order(payload.get(\\\"action\\\"), payload.get(\\\"symbol\\\"), payload.get(\\\"quantity\\\")); '
+                    f'action = {py_action}; symbol = {py_symbol}; quantity = {py_quantity}; '
+                    'result = agent.execute_direct_order(action, symbol, quantity); '
                     'print(\\\"RESULT: \\\" + json.dumps(result))"'
                 )
 
