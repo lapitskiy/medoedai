@@ -1559,18 +1559,18 @@ def trading_test_order():
             if model_path:
                 cmd = (
                     f'python -c "import json; from trading_agent.trading_agent import TradingAgent; '
-                    f'agent = TradingAgent(model_path=\"{model_path}\"); '
-                    f'payload = json.loads(\"{payload_str}\"); '
-                    f'result = agent.execute_direct_order(payload.get(\"action\"), payload.get(\"symbol\"), payload.get(\"quantity\")); '
-                    f'print(\"RESULT: \" + json.dumps(result))"'
+                    f'agent = TradingAgent(model_path=\\\"{model_path}\\\"); '
+                    f'payload = json.loads(\\\"{payload_str}\\\"); '
+                    f'result = agent.execute_direct_order(payload.get(\\\"action\\\"), payload.get(\\\"symbol\\\"), payload.get(\\\"quantity\\\")); '
+                    f'print(\\\"RESULT: \\\" + json.dumps(result))"'
                 )
             else:
                 cmd = (
                     'python -c "import json; from trading_agent.trading_agent import TradingAgent; '
                     'agent = TradingAgent(); '
-                    f'payload = json.loads(\"{payload_str}\"); '
-                    'result = agent.execute_direct_order(payload.get(\"action\"), payload.get(\"symbol\"), payload.get(\"quantity\")); '
-                    'print(\"RESULT: \" + json.dumps(result))"'
+                    f'payload = json.loads(\\\"{payload_str}\\\"); '
+                    'result = agent.execute_direct_order(payload.get(\\\"action\\\"), payload.get(\\\"symbol\\\"), payload.get(\\\"quantity\\\")); '
+                    'print(\\\"RESULT: \\\" + json.dumps(result))"'
                 )
 
             exec_result = container.exec_run(cmd, tty=True)
