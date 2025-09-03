@@ -559,7 +559,7 @@ class TradingAgent:
                 
                 # Ограничиваем по требованиям биржи
                 if trade_amount < min_amount_bybit:
-                    logger.warning(f"Количество {trade_amount:.6f} {base_currency} меньше минимума Bybit {min_amount_bybit}. Увеличиваем до минимума.")
+                    #logger.warning(f"Количество {trade_amount:.6f} {base_currency} меньше минимума Bybit {min_amount_bybit}. Увеличиваем до минимума.")
                     trade_amount = min_amount_bybit
                     # Пересчитываем USDT для логирования
                     actual_usdt = trade_amount * current_price
