@@ -197,6 +197,15 @@ def train_model_optimized(
         
         # Загружаем МОДЕЛЬ если есть (либо из указанных путей, либо по дефолту)
         dqn_solver.load_model()
+        # Загружаем replay buffer, если был передан путь и файл существует
+        try:
+            if load_buffer_path and isinstance(load_buffer_path, str) and os.path.exists(load_buffer_path):
+                print(f"🧠 Загружаю replay buffer из {load_buffer_path}")
+                dqn_solver.load_state()
+            else:
+                print("ℹ️ Replay buffer не передан или файл отсутствует — начнем с пустой памяти")
+        except Exception as _e:
+            print(f"⚠️ Не удалось загрузить replay buffer: {_e}")
 
         # После загрузки переназначаем пути сохранения на НОВЫЕ в result/<symbol>_<id>
         try:
@@ -422,9 +431,14 @@ def train_model_optimized(
                     best_winrate = episode_winrate
                     patience_counter = 0
                     
-                    # Сохраняем лучшую модель только при улучшении
-                    dqn_solver.save_model()
-                    logger.info("[INFO] New best winrate: %.3f, saving model", best_winrate)
+                    # Сохраняем модель, а по настройке — и replay buffer при улучшении
+                    save_replay_on_improvement = getattr(cfg, 'save_replay_on_improvement', True)
+                    if save_replay_on_improvement:
+                        dqn_solver.save()
+                        logger.info("[INFO] New best winrate: %.3f, saving model + replay buffer", best_winrate)
+                    else:
+                        dqn_solver.save_model()
+                        logger.info("[INFO] New best winrate: %.3f, saving model", best_winrate)
                 else:
                     # Мягкая логика patience - увеличиваем только при явном ухудшении
                     if episode >= min_episodes_before_stopping:
@@ -468,12 +482,18 @@ def train_model_optimized(
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             
-            # Периодическое сохранение модели
+            # Периодическое сохранение модели и буфера
             save_frequency = getattr(cfg, 'save_frequency', 50)  # По умолчанию каждые 50 эпизодов
             save_only_on_improvement = getattr(cfg, 'save_only_on_improvement', False)
+            buffer_save_frequency = getattr(cfg, 'buffer_save_frequency', max(200, save_frequency * 4))
             
             if not save_only_on_improvement and episode > 0 and episode % save_frequency == 0:
                 dqn_solver.save_model()
+                logger.info("[INFO] Periodic save model at episode %d", episode)
+            
+            if episode > 0 and episode % buffer_save_frequency == 0:
+                dqn_solver.save()
+                logger.info("[INFO] Periodic save model + replay buffer at episode %d", episode)
             
             # Улучшенный Early stopping с множественными критериями
             if episode >= min_episodes_before_stopping:

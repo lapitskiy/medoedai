@@ -629,9 +629,27 @@ class DQNSolver:
                     
                     if first_layer_key:
                         saved_input_size = model_state[first_layer_key].shape[1]
-                        current_input_size = self.model.net.feature_layers[0].weight.shape[1]
-                        
-                        if saved_input_size != current_input_size:
+
+                        # Надёжно определяем размерность входа первого линейного слоя текущей модели
+                        def _infer_first_linear_input_size(model) -> int | None:
+                            try:
+                                # Попытка №1: у моделей вида *Dueling* есть feature_layers (ModuleList)
+                                if hasattr(model, 'feature_layers') and model.feature_layers:
+                                    for layer in model.feature_layers:
+                                        if isinstance(layer, nn.Linear):
+                                            return layer.weight.shape[1]
+                                # Попытка №2: у классической DQNN хранится в model.net (Sequential)
+                                if hasattr(model, 'net') and hasattr(model.net, 'modules'):
+                                    for layer in model.net.modules():
+                                        if isinstance(layer, nn.Linear):
+                                            return layer.weight.shape[1]
+                            except Exception:
+                                return None
+                            return None
+
+                        current_input_size = _infer_first_linear_input_size(self.model)
+
+                        if current_input_size is not None and saved_input_size != current_input_size:
                             print(f"⚠️ Архитектура несовместима: сохраненная {saved_input_size}, текущая {current_input_size}")
                             print("🔄 Создаем новую модель с текущей архитектурой")
                             return

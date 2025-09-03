@@ -11,19 +11,24 @@ import json
 from utils.db_utils import db_get_or_fetch_ohlcv  # Импортируем функцию загрузки данных
 from utils.db_utils import load_latest_candles_from_csv_to_db
 from utils.parser import parser_download_and_combine_with_library
+# Загружаем переменные окружения из .env (если есть), чтобы Celery видел ключи
+try:
+    from dotenv import load_dotenv, find_dotenv
+    load_dotenv(find_dotenv(), override=False)
+except Exception:
+    pass
 from datetime import datetime
 from celery.schedules import crontab
 
-# API ключи Bybit
-BYBIT_API_KEY = os.getenv('BYBIT_API_KEY', 'your_bybit_api_key_here')
-BYBIT_SECRET_KEY = os.getenv('BYBIT_SECRET_KEY', 'your_bybit_secret_key_here')
+# API ключи Bybit (без шумного вывода при импорте)
+BYBIT_API_KEY = os.getenv('BYBIT_API_KEY')
+BYBIT_SECRET_KEY = os.getenv('BYBIT_SECRET_KEY')
 
-# Проверяем наличие API ключей
-if BYBIT_API_KEY == 'your_bybit_api_key_here' or BYBIT_SECRET_KEY == 'your_bybit_secret_key_here':
-    print("⚠️ ВНИМАНИЕ: API ключи Bybit не настроены!")
-    print("Установите переменные окружения BYBIT_API_KEY и BYBIT_SECRET_KEY")
-else:
-    print("✅ API ключи Bybit настроены")
+def are_bybit_keys_configured() -> bool:
+    try:
+        return bool(BYBIT_API_KEY) and bool(BYBIT_SECRET_KEY)
+    except Exception:
+        return False
 
 # Настраиваем Celery с Redis как брокером и бекендом
 celery = Celery(
@@ -436,21 +441,17 @@ def start_trading_task(self, symbols, model_path=None):
 
 # Включаем периодический запуск торговли
 import os
-# Устанавливаем ENABLE_TRADING_BEAT=0 для отключения автоматической торговли
-if os.environ.get('ENABLE_TRADING_BEAT') is None:
-    os.environ['ENABLE_TRADING_BEAT'] = '0'
-    print("✅ Автоматически отключен ENABLE_TRADING_BEAT=0")
-
-if os.environ.get('ENABLE_TRADING_BEAT', '0') in ('1', 'true', 'True'):
+# Настройка расписания Celery Beat по флагу окружения (не перетираем значение)
+if os.environ.get('ENABLE_TRADING_BEAT', '0').lower() in ('1', 'true', 'yes', 'on'):
     celery.conf.beat_schedule = {
-        'start-trading-every-5-minutes': {
+        'start-trading-every-1-minute': {
             'task': 'tasks.celery_tasks.start_trading_task',
-            'schedule': crontab(minute='*/5'),
+            'schedule': crontab(minute='*'),
             'args': ([], None)  # Символы и путь к модели будут передаваться из веб-интерфейса
         },
     }
     celery.conf.timezone = 'UTC'
-    print("✅ Периодическая торговля включена (каждые 5 минут)")
+    print("✅ Периодическая торговля включена (каждую минуту)")
 else:
     print("⚠️ Периодическая торговля отключена (ENABLE_TRADING_BEAT=0)")
 

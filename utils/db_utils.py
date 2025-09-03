@@ -136,21 +136,23 @@ def db_get_or_fetch_ohlcv(
             
             exchange_class = getattr(ccxt, exchange_id)
             
-            # Для Bybit используем API ключи
+            # Для Bybit: используем API ключи, если заданы, иначе публичные эндпоинты (они достаточны для OHLCV)
             if exchange_id == 'bybit':
                 api_key = os.getenv('BYBIT_API_KEY')
                 secret_key = os.getenv('BYBIT_SECRET_KEY')
-                
-                if not api_key or not secret_key:
-                    logging.error("API ключи Bybit не настроены")
-                    return pd.DataFrame()
-                
-                exchange = exchange_class({
-                    'apiKey': api_key,
-                    'secret': secret_key,
-                    'enableRateLimit': True,
-                    'timeout': 30000, # Увеличение таймаута
-                })
+                if api_key and secret_key:
+                    exchange = exchange_class({
+                        'apiKey': api_key,
+                        'secret': secret_key,
+                        'enableRateLimit': True,
+                        'timeout': 30000, # Увеличение таймаута
+                    })
+                else:
+                    logging.warning("API ключи Bybit не настроены — использую публичные эндпоинты для OHLCV")
+                    exchange = exchange_class({
+                        'enableRateLimit': True,
+                        'timeout': 30000,
+                    })
             else:
                 exchange = exchange_class({
                     'enableRateLimit': True,
