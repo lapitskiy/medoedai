@@ -297,10 +297,12 @@
 
                 <div class="form-group">
                     <label>Выберите веса модели (например, dqn_model_ton_ed10.pth)</label>
-                    <select id="continueModelSelect" class="form-control">
+                    <select id="continueModelSelect" class="form-control" onchange="showSelectedContinueModelInfo()">
                         <option value="">Загрузка списка...</option>
                     </select>
                 </div>
+
+                <div id="continueModelInfo" class="status info" style="display:none; white-space: pre-line;"></div>
 
                 <div class="form-group">
                     <label>Эпизоды дообучения</label>
@@ -453,8 +455,62 @@
                     return `<option value="${f.filename}">${filename}</option>`;
                 }).join('');
                 select.innerHTML = opts;
+                // Авто-показ информации для первого значения
+                try { showSelectedContinueModelInfo(); } catch(e){}
             } catch (e) {
                 select.innerHTML = '<option value="">Ошибка загрузки списка</option>';
+            }
+        }
+
+        // Показать краткую информацию о выбранных весах для дообучения
+        async function showSelectedContinueModelInfo() {
+            const select = document.getElementById('continueModelSelect');
+            const infoDiv = document.getElementById('continueModelInfo');
+            if (!select || !infoDiv) return;
+            const filename = select.value;
+            if (!filename) { infoDiv.style.display = 'none'; return; }
+            try {
+                const resp = await fetch('/get_result_model_info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename })
+                });
+                const result = await resp.json();
+                if (!result.success) {
+                    infoDiv.className = 'status error';
+                    infoDiv.textContent = '❌ ' + (result.error || 'Ошибка получения информации');
+                    infoDiv.style.display = 'block';
+                    return;
+                }
+                const stats = result.stats || {};
+                const winrate = typeof stats.winrate === 'number' ? (stats.winrate * 100).toFixed(1) + '%' : 'N/A';
+                const plr = typeof stats.pl_ratio === 'number' ? stats.pl_ratio.toFixed(2) : 'N/A';
+                const trades = (stats.trades_count != null) ? stats.trades_count : 'N/A';
+                const episodes = (result.episodes != null) ? result.episodes : 'N/A';
+                // Код может включать символ, попытаемся извлечь
+                const code = (result.code || '').toUpperCase();
+                let symbolGuess = '';
+                if (code) {
+                    // Часто код вида btc_xxxx -> добавим USDT
+                    const base = code.split('_')[0];
+                    if (base && base.length <= 6) symbolGuess = base + 'USDT';
+                }
+                infoDiv.className = 'status info';
+                infoDiv.innerHTML = `
+Выбрано: ${filename.split('/').pop().split('\\').pop()}
+Код/символ: ${symbolGuess || code || 'N/A'}
+Winrate: ${winrate}
+P/L Ratio: ${plr}
+Сделок: ${trades}
+Эпизодов: ${episodes}
+Буфер: ${result.replay_exists ? '✅ есть' : '❌ нет'}
+Результаты обучения: ${result.train_result_exists ? '✅ есть' : '❌ нет'}
+`;
+                infoDiv.style.display = 'block';
+            } catch (e) {
+                infoDiv.className = 'status error';
+                infoDiv.textContent = '❌ Ошибка сети: ' + e.message;
+                infoDiv.style.display = 'block';
             }
         }
 

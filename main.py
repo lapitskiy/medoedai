@@ -706,6 +706,74 @@ def list_result_models():
             'success': False
         }), 500
 
+@app.route('/get_result_model_info', methods=['POST'])
+def get_result_model_info():
+    """Возвращает краткую информацию по выбранному файлу весов из result/ (dqn_model_*.pth):
+    символ/код, наличие replay/train_result, базовая статистика (winrate, trades_count, episodes).
+    Body: { filename: 'result/dqn_model_XXXX.pth' }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        filename = (data.get('filename') or '').strip()
+        if not filename:
+            return jsonify({'success': False, 'error': 'Не указан filename'}), 400
+
+        from pathlib import Path as _Path
+        results_dir = _Path('result')
+        # Нормализация пути
+        req_norm = filename.replace('\\', '/')
+        p = _Path(req_norm)
+        if not p.is_absolute():
+            if not (p.parts and p.parts[0].lower() == results_dir.name.lower()):
+                p = results_dir / p.name
+        try:
+            p = p.resolve()
+        except Exception:
+            pass
+        # Безопасность: только внутри result/
+        if not str(p).lower().startswith(str(results_dir.resolve()).lower()):
+            return jsonify({'success': False, 'error': 'Файл вне папки result'}), 400
+        if not p.exists() or not p.is_file() or not p.name.startswith('dqn_model_') or p.suffix != '.pth':
+            return jsonify({'success': False, 'error': 'Ожидается существующий файл dqn_model_*.pth'}), 400
+
+        # Извлекаем код
+        code = p.stem.replace('dqn_model_', '')
+        replay_file = results_dir / f'replay_buffer_{code}.pkl'
+        train_file = results_dir / f'train_result_{code}.pkl'
+
+        info = {
+            'success': True,
+            'model_file': str(p),
+            'model_size_bytes': p.stat().st_size if p.exists() else 0,
+            'code': code,
+            'replay_exists': replay_file.exists(),
+            'train_result_exists': train_file.exists(),
+            'replay_file': str(replay_file) if replay_file.exists() else None,
+            'train_result_file': str(train_file) if train_file.exists() else None,
+            'stats': {},
+            'episodes': None
+        }
+
+        # Загружаем статистику из train_result_*.pkl если есть
+        if train_file.exists():
+            try:
+                import pickle
+                with open(train_file, 'rb') as f:
+                    results = pickle.load(f)
+                stats = results.get('final_stats', {}) or {}
+                info['stats'] = {
+                    'winrate': stats.get('winrate'),
+                    'pl_ratio': stats.get('pl_ratio'),
+                    'trades_count': stats.get('trades_count')
+                }
+                info['episodes'] = results.get('actual_episodes', results.get('episodes'))
+            except Exception as _e:
+                info['stats_error'] = str(_e)
+
+        return jsonify(info)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/analyze_bad_trades', methods=['POST'])
 def analyze_bad_trades():
     """Анализирует плохие сделки из результатов обучения DQN модели"""
