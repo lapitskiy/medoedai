@@ -698,7 +698,14 @@ class TradingAgent:
             }
     
     def _get_current_price(self) -> float:
-        """Получает текущую цену из базы данных или с биржи"""
+        """Получает текущую цену из базы данных.
+
+        Логика:
+        - Пытаемся взять последнюю закрытую свечу по вычисленному last_closed_ts.
+        - Если закрытой свечи нет (например, данные в БД ещё не подтянулись),
+          берём предпоследнюю свечу из полученных данных.
+        - Если доступна только одна свеча — используем её close как фолбэк.
+        """
         try:
             # Сначала пробуем получить из БД
             from utils.db_utils import db_get_or_fetch_ohlcv
@@ -707,23 +714,31 @@ class TradingAgent:
             df_5min = db_get_or_fetch_ohlcv(
                 symbol_name=symbol_for_db,  # Используем базовый символ без :USDT для БД
                 timeframe='5m',
-                limit_candles=1,  # Только последняя свеча
+                limit_candles=5,  # Берём несколько свечей, чтобы был фолбэк на предпоследнюю
                 exchange_id='bybit'  # Используем Bybit
             )
             
-            # Жестко используем ТОЛЬКО последнюю ЗАКРЫТУЮ свечу
+            # Предпочитаем ТОЛЬКО последнюю ЗАКРЫТУЮ свечу
             last_closed_ts = self._get_last_closed_ts_ms('5m')
             if df_5min is not None and not df_5min.empty:
-                df_closed = df_5min[df_5min['timestamp'] <= last_closed_ts]
-                if df_closed is None or df_closed.empty:
-                    logger.warning("Нет закрытых свечей для расчета цены")
-                    return 0.0
-                current_price = df_closed['close'].iloc[-1]
+                df_sorted = df_5min.sort_values('timestamp')
+                df_closed = df_sorted[df_sorted['timestamp'] <= last_closed_ts]
+                if df_closed is not None and not df_closed.empty:
+                    # Берём последнюю закрытую
+                    current_price = float(df_closed['close'].iloc[-1])
+                else:
+                    # Фолбэк: берём предпоследнюю свечу из доступных данных
+                    if len(df_sorted) >= 2:
+                        current_price = float(df_sorted['close'].iloc[-2])
+                        logger.warning("Нет обновлённой закрытой свечи, используем предпоследнюю для цены")
+                    else:
+                        # Если есть только одна свеча — используем её
+                        current_price = float(df_sorted['close'].iloc[-1])
+                        logger.warning("Недостаточно данных для закрытой свечи, используем последнюю доступную цену")
                 logger.debug(f"Цена из БД: ${current_price:.2f}")
                 return current_price
             else:
-                # Не используем last price с биржи, если нет закрытой свечи — пропускаем шаг
-                logger.warning("Свечи из БД недоступны, пропускаем шаг (ждем закрытую свечу)")
+                logger.warning("Свечи из БД недоступны — цена недоступна")
                 return 0.0
                 
         except Exception as e:

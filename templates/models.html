@@ -253,27 +253,9 @@
                 <h2>📦 Создать новую версию модели</h2>
                 <p>Скопирует веса/буфер/результаты из <code>result/</code> в <code>good_models/</code> с уникальным ID</p>
                 <div class="form-group">
-                    <label>Символ</label>
-                    <select id="symbolSelect" class="form-control" onchange="refreshModels()">
-                        <option value="">Все</option>
-                        <option value="btc">BTC</option>
-                        <option value="eth">ETH</option>
-                        <option value="sol">SOL</option>
-                        <option value="ton">TON</option>
-                        <option value="ada">ADA</option>
-                        <option value="bnb">BNB</option>
-                        <option value="multi">MULTI</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Эпизоды обучения</label>
-                    <select id="episodesSelect" class="form-control">
-                        <option value="100">100</option>
-                        <option value="1000">1000</option>
-                        <option value="3000">3000</option>
-                        <option value="6000">6000</option>
-                        <option value="9000">9000</option>
-                        <option value="10000" selected>10000</option>
+                    <label>Выберите модель из папки result</label>
+                    <select id="resultFileSelect" class="form-control">
+                        <option value="">Загрузка списка...</option>
                     </select>
                 </div>
                 <div class="button-group">
@@ -307,6 +289,37 @@
                 </div>
                 <div id="trainStatus"></div>
             </div>
+
+            <!-- Секция дообучения существующей модели -->
+            <div class="section">
+                <h2>🔁 Дообучить существующую модель</h2>
+                <p>Выберите файл весов из <code>result/</code> (формат <code>dqn_model_*.pth</code>). Если найдется соответствующий <code>replay_buffer_*.pkl</code>, он также будет загружен. Дообучение сохранит результат как новую версию.</p>
+
+                <div class="form-group">
+                    <label>Выберите веса модели (например, dqn_model_ton_ed10.pth)</label>
+                    <select id="continueModelSelect" class="form-control">
+                        <option value="">Загрузка списка...</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Эпизоды дообучения</label>
+                    <select id="continueEpisodesSelect" class="form-control">
+                        <option value="100">100</option>
+                        <option value="1000">1000</option>
+                        <option value="3000">3000</option>
+                        <option value="6000">6000</option>
+                        <option value="9000">9000</option>
+                        <option value="10000" selected>10000</option>
+                    </select>
+                </div>
+
+                <div class="button-group">
+                    <button class="btn btn-success" onclick="continueTraining()">🔁 Запустить дообучение</button>
+                </div>
+
+                <div id="continueStatus"></div>
+            </div>
                 <div id="createStatus"></div>
             </div>
 
@@ -331,6 +344,8 @@
     <script>
         // Загрузить список моделей при загрузке страницы
         document.addEventListener('DOMContentLoaded', function() {
+            loadResultFiles();
+            loadContinueModels();
             refreshModels();
         });
 
@@ -338,7 +353,13 @@
         async function createModelVersion() {
             const statusDiv = document.getElementById('createStatus');
             const button = event.target;
-            const symbolValue = document.getElementById('symbolSelect').value;
+            const fileSelect = document.getElementById('resultFileSelect');
+            const selectedFile = fileSelect ? fileSelect.value : '';
+            
+            if (!selectedFile) {
+                statusDiv.innerHTML = '<div class="status error">❌ Сначала выберите модель из result</div>';
+                return;
+            }
             
             button.disabled = true;
             button.textContent = '⏳ Создание...';
@@ -350,7 +371,7 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ symbol: symbolValue })
+                    body: JSON.stringify({ file: selectedFile })
                 });
                 
                 const result = await response.json();
@@ -374,6 +395,96 @@
             } finally {
                 button.disabled = false;
                 button.textContent = '🚀 Создать новую версию';
+            }
+        }
+
+        // Загрузка списка доступных результатов обучения из result/
+        async function loadResultFiles() {
+            const select = document.getElementById('resultFileSelect');
+            if (!select) return;
+            
+            try {
+                const resp = await fetch('/list_training_results');
+                const data = await resp.json();
+                
+                if (!data.success) {
+                    select.innerHTML = '<option value="">Файлы не найдены</option>';
+                    return;
+                }
+                
+                if (!data.files || data.files.length === 0) {
+                    select.innerHTML = '<option value="">Нет доступных файлов</option>';
+                    return;
+                }
+                
+                // Показываем только train_result_btc_*
+                const onlyBtc = (data.files || []).filter(f => {
+                    const fn = (f.filename || '').toLowerCase();
+                    return fn.includes('train_result_btc_');
+                });
+                if (onlyBtc.length === 0) {
+                    select.innerHTML = '<option value="">Нет файлов train_result_btc_*</option>';
+                    return;
+                }
+                // Генерируем опции: показываем только имя файла без пути
+                select.innerHTML = onlyBtc.map(f => {
+                    const filename = (f.filename || '').split('/').pop().split('\\').pop();
+                    return `<option value="${f.filename}">${filename}</option>`;
+                }).join('');
+            } catch (e) {
+                select.innerHTML = '<option value="">Ошибка загрузки списка</option>';
+            }
+        }
+
+        // Загрузка списка весов для дообучения (все dqn_model_*.pth)
+        async function loadContinueModels() {
+            const select = document.getElementById('continueModelSelect');
+            if (!select) return;
+            try {
+                const resp = await fetch('/list_result_models');
+                const data = await resp.json();
+                if (!data.success || !data.files || data.files.length === 0) {
+                    select.innerHTML = '<option value="">Нет доступных файлов</option>';
+                    return;
+                }
+                // Все dqn_model_* (без фильтра по символу)
+                const opts = data.files.map(f => {
+                    const filename = (f.filename || '').split('/').pop().split('\\').pop();
+                    return `<option value="${f.filename}">${filename}</option>`;
+                }).join('');
+                select.innerHTML = opts;
+            } catch (e) {
+                select.innerHTML = '<option value="">Ошибка загрузки списка</option>';
+            }
+        }
+
+        // Запуск дообучения
+        async function continueTraining() {
+            const statusDiv = document.getElementById('continueStatus');
+            const fileSelect = document.getElementById('continueModelSelect');
+            const episodes = document.getElementById('continueEpisodesSelect').value;
+            const selectedFile = fileSelect ? fileSelect.value : '';
+
+            if (!selectedFile) {
+                statusDiv.innerHTML = '<div class="status error">❌ Сначала выберите веса dqn_model_*.pth</div>';
+                return;
+            }
+
+            statusDiv.innerHTML = '<div class="status info">⏳ Запуск дообучения...</div>';
+            try {
+                const resp = await fetch('/continue_training', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: selectedFile, episodes })
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    statusDiv.innerHTML = `<div class=\"status success\">✅ Дообучение запущено (task: ${result.task_id}). Результат появится в разделе моделей.</div>`;
+                } else {
+                    statusDiv.innerHTML = `<div class=\"status error\">❌ Ошибка: ${result.error}</div>`;
+                }
+            } catch (e) {
+                statusDiv.innerHTML = `<div class=\"status error\">❌ Ошибка сети: ${e.message}</div>`;
             }
         }
 

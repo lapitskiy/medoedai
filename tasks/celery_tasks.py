@@ -9,6 +9,8 @@ import pandas as pd
 import json
 
 from utils.db_utils import db_get_or_fetch_ohlcv  # Импортируем функцию загрузки данных
+from utils.db_utils import load_latest_candles_from_csv_to_db
+from utils.parser import parser_download_and_combine_with_library
 from datetime import datetime
 from celery.schedules import crontab
 
@@ -169,6 +171,34 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None):
         )
 
         if df_5min is None or df_5min.empty:
+            # Пытаемся автоматически скачать и загрузить свечи в БД
+            try:
+                print(f"📥 Данные не найдены для {symbol}. Пытаюсь скачать и загрузить в БД...")
+                csv_file_path = parser_download_and_combine_with_library(
+                    symbol=symbol,
+                    interval='5m',
+                    months_to_fetch=12,
+                    desired_candles=100000
+                )
+                if csv_file_path:
+                    loaded_count = load_latest_candles_from_csv_to_db(
+                        file_path=csv_file_path,
+                        symbol_name=symbol,
+                        timeframe='5m'
+                    )
+                    print(f"✅ Загрузка в БД завершена: {loaded_count} свечей")
+                # Повторно пробуем получить из БД
+                df_5min = db_get_or_fetch_ohlcv(
+                    symbol_name=symbol,
+                    timeframe='5m',
+                    limit_candles=100000,
+                    exchange_id='bybit'
+                )
+            except Exception as fetch_err:
+                print(f"❌ Не удалось автоматически загрузить данные для {symbol}: {fetch_err}")
+                df_5min = None
+        
+        if df_5min is None or df_5min.empty:
             return {"message": f"❌ Данные для {symbol} не найдены"}
 
         import pandas as pd
@@ -197,7 +227,33 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None):
             episodes = int(os.getenv('DEFAULT_EPISODES', 5))
         print(f"🎯 Количество эпизодов: {episodes}")
 
-        result = train_model_optimized(dfs=dfs, episodes=episodes)
+        # Прокидываем пути для продолжения обучения из ENV/Redis если заданы
+        load_model_path = os.environ.get('CONTINUE_MODEL_PATH')
+        load_buffer_path = os.environ.get('CONTINUE_BUFFER_PATH')
+        try:
+            # Попробуем Redis как приоритетный источник
+            from redis import Redis
+            r = Redis(host='redis', port=6379, db=0, decode_responses=True)
+            v_model = r.get('continue:model_path')
+            v_buffer = r.get('continue:buffer_path')
+            if v_model:
+                load_model_path = v_model
+            if v_buffer:
+                load_buffer_path = v_buffer
+            # Чистим ключи, чтобы не повлиять на другие задачи
+            if v_model:
+                r.delete('continue:model_path')
+            if v_buffer:
+                r.delete('continue:buffer_path')
+        except Exception:
+            pass
+
+        result = train_model_optimized(
+            dfs=dfs,
+            episodes=episodes,
+            load_model_path=load_model_path,
+            load_buffer_path=load_buffer_path
+        )
         return {"message": f"✅ Обучение {symbol} завершено: {result}"}
     except Exception as e:
         import traceback

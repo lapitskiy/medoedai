@@ -50,7 +50,9 @@ def train_model_optimized(
     cfg: Optional[vDqnConfig] = None,
     episodes: int = 10,
     patience_limit: int = 3000,  # Увеличено с 2000 до 3000 для более длительного обучения
-    use_wandb: bool = False
+    use_wandb: bool = False,
+    load_model_path: Optional[str] = None,
+    load_buffer_path: Optional[str] = None
 ) -> str:
     """
     Оптимизированная функция тренировки модели без pandas в hot-path
@@ -156,10 +158,10 @@ def train_model_optimized(
         # Короткий UUID для версионирования
         import uuid
         short_id = str(uuid.uuid4())[:4].lower()
-        # Обновляем пути сохранения в конфиге, чтобы все сохранения шли в result/ с суффиксом id
-        cfg.model_path = os.path.join(result_dir, f"dqn_model_{symbol_code}_{short_id}.pth")
-        cfg.buffer_path = os.path.join(result_dir, f"replay_buffer_{symbol_code}_{short_id}.pkl")
-        
+        # Подготавливаем НОВЫЕ пути сохранения (после загрузки чекпойнта)
+        new_model_path = os.path.join(result_dir, f"dqn_model_{symbol_code}_{short_id}.pth")
+        new_buffer_path = os.path.join(result_dir, f"replay_buffer_{symbol_code}_{short_id}.pkl")
+
         # Создаем DQN solver
         print(f"🚀 Создаю DQN solver")
         
@@ -167,12 +169,17 @@ def train_model_optimized(
             observation_space=env.observation_space_shape,
             action_space=env.action_space.n
         )
-        # ВАЖНО: переназначаем пути сохранения под result/<symbol>_<id>
-        try:
-            dqn_solver.cfg.model_path = cfg.model_path
-            dqn_solver.cfg.buffer_path = cfg.buffer_path
-        except Exception:
-            pass
+        # Если указан путь загрузки существующей модели/буфера — загружаем сначала
+        if load_model_path and isinstance(load_model_path, str):
+            try:
+                dqn_solver.cfg.model_path = load_model_path
+            except Exception:
+                pass
+        if load_buffer_path and isinstance(load_buffer_path, str):
+            try:
+                dqn_solver.cfg.buffer_path = load_buffer_path
+            except Exception:
+                pass
         
         # 🚀 Дополнительная оптимизация PyTorch 2.x
         if torch.cuda.is_available():
@@ -188,8 +195,17 @@ def train_model_optimized(
                 
             print("🚀 CUDA оптимизации включены: cudnn.benchmark, TF32")
         
-        # Загружаем модель если есть
+        # Загружаем МОДЕЛЬ если есть (либо из указанных путей, либо по дефолту)
         dqn_solver.load_model()
+
+        # После загрузки переназначаем пути сохранения на НОВЫЕ в result/<symbol>_<id>
+        try:
+            cfg.model_path = new_model_path
+            cfg.buffer_path = new_buffer_path
+            dqn_solver.cfg.model_path = cfg.model_path
+            dqn_solver.cfg.buffer_path = cfg.buffer_path
+        except Exception:
+            pass
         
         # Переменные для отслеживания прогресса
         all_trades = []

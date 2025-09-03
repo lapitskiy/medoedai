@@ -317,6 +317,112 @@ def train_dqn_symbol_route():
     return redirect(url_for("index"))
 
 
+@app.route('/continue_training', methods=['POST'])
+def continue_training_route():
+    """Продолжает обучение из существующих файлов в result (dqn_model_*.pth, replay_buffer_*.pkl).
+
+    Body: { file: 'result/train_result_<code>.pkl', episodes?: int }
+    По имени train_result_* извлекается <code>, затем берутся dqn_model_<code>.pth и replay_buffer_<code>.pkl.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        requested_file = (data.get('file') or data.get('model') or '').strip()
+        episodes_str = data.get('episodes') or request.form.get('episodes')
+        episodes = None
+        try:
+            if episodes_str is not None and str(episodes_str).strip() != '':
+                episodes = int(episodes_str)
+        except Exception:
+            episodes = None
+
+        from pathlib import Path as _Path
+        result_dir = _Path('result')
+        if not result_dir.exists():
+            return jsonify({"success": False, "error": "Папка result не найдена"}), 400
+
+        if not requested_file:
+            return jsonify({"success": False, "error": "Не указан путь к файлу весов dqn_model_*.pth"}), 400
+
+        # Нормализуем и проверяем путь
+        req_norm = requested_file.replace('\\', '/')
+        safe_path = _Path(req_norm)
+        if not safe_path.is_absolute():
+            if not (safe_path.parts and safe_path.parts[0].lower() == result_dir.name.lower()):
+                safe_path = result_dir / safe_path.name
+        try:
+            cand_resolved = safe_path.resolve()
+        except Exception:
+            cand_resolved = safe_path
+        inside_result = str(cand_resolved).lower().startswith(str(result_dir.resolve()).lower())
+
+        if not (inside_result and cand_resolved.exists() and cand_resolved.is_file()):
+            return jsonify({"success": False, "error": "Неверный путь к файлу или файл не существует"}), 400
+
+        model_file = None
+        replay_file = None
+        code = None
+
+        # Поддержка двух форматов: train_result_* и dqn_model_*
+        if cand_resolved.name.startswith('train_result_') and cand_resolved.suffix == '.pkl':
+            fname = cand_resolved.stem  # train_result_<code>
+            parts = fname.split('_', 2)
+            if len(parts) < 3:
+                return jsonify({"success": False, "error": "Не удалось извлечь код модели из имени файла"}), 400
+            code = parts[2]
+            model_file = result_dir / f'dqn_model_{code}.pth'
+            replay_file = result_dir / f'replay_buffer_{code}.pkl'
+            if not model_file.exists():
+                return jsonify({"success": False, "error": f"Файл {model_file.name} не найден"}), 400
+            # replay_file может отсутствовать – это допустимо
+        elif cand_resolved.name.startswith('dqn_model_') and cand_resolved.suffix == '.pth':
+            fname = cand_resolved.stem  # dqn_model_<code>
+            parts = fname.split('_', 2)
+            if len(parts) < 3:
+                return jsonify({"success": False, "error": "Не удалось извлечь код модели из имени весов"}), 400
+            code = parts[2]
+            model_file = cand_resolved
+            replay_file = result_dir / f'replay_buffer_{code}.pkl'  # может не существовать
+        else:
+            return jsonify({"success": False, "error": "Ожидался файл dqn_model_*.pth или train_result_*.pkl"}), 400
+
+        # Запускаем фоновой таск обучения, передав пути в ENV (упрощение без изменения сигнатуры Celery)
+        # Используем общую очередь 'train'
+        from celery import group
+        # Сохраним параметры в Redis на час
+        try:
+            redis_client.setex('continue:model_path', 3600, str(model_file))
+            if replay_file and os.path.exists(str(replay_file)):
+                redis_client.setex('continue:buffer_path', 3600, str(replay_file))
+        except Exception:
+            pass
+
+        # Таск train_dqn_symbol не принимает пути, поэтому временно применим символ из code для данных,
+        # а загрузка модели произойдет в v_train_model_optimized по этим путям через ENV.
+        symbol_guess = (code.split('_', 1)[0] + 'USDT').upper()
+        task = train_dqn_symbol.apply_async(args=[symbol_guess, episodes], queue='train')
+
+        # Прокинем пути через ENV переменные для этого процесса воркера (если он читает их)
+        # Если воркер в другом процессе, используем Redis как источник — уже сохранено выше.
+        try:
+            os.environ['CONTINUE_MODEL_PATH'] = str(model_file)
+            if replay_file and os.path.exists(str(replay_file)):
+                os.environ['CONTINUE_BUFFER_PATH'] = str(replay_file)
+        except Exception:
+            pass
+
+        # Добавим задачу в UI список
+        try:
+            redis_client.lrem("ui:tasks", 0, task.id)
+            redis_client.lpush("ui:tasks", task.id)
+            redis_client.ltrim("ui:tasks", 0, 49)
+        except Exception:
+            pass
+
+        return jsonify({"success": True, "task_id": task.id})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 
 
 
@@ -551,6 +657,52 @@ def list_training_results():
         return jsonify({
             'status': 'error',
             'message': f'Ошибка при получении списка файлов: {str(e)}',
+            'success': False
+        }), 500
+@app.route('/list_result_models', methods=['GET'])
+def list_result_models():
+    """Возвращает список доступных весов моделей из result (dqn_model_*.pth)."""
+    try:
+        results_dir = "result"
+        if not os.path.exists(results_dir):
+            return jsonify({
+                'status': 'error',
+                'message': f'Папка {results_dir} не найдена',
+                'success': False,
+                'files': []
+            }), 404
+
+        model_files = glob.glob(os.path.join(results_dir, 'dqn_model_*.pth'))
+        if not model_files:
+            return jsonify({
+                'status': 'error',
+                'message': 'Файлы весов не найдены',
+                'success': False,
+                'files': []
+            }), 404
+
+        files_info = []
+        for file in model_files:
+            stat = os.stat(file)
+            files_info.append({
+                'filename': file,
+                'size': stat.st_size,
+                'created': stat.st_ctime,
+                'modified': stat.st_mtime
+            })
+
+        files_info.sort(key=lambda x: x['modified'], reverse=True)
+
+        return jsonify({
+            'status': 'success',
+            'message': f'Найдено {len(files_info)} файлов весов',
+            'success': True,
+            'files': files_info
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Ошибка при получении списка весов: {str(e)}',
             'success': False
         }), 500
 
@@ -888,6 +1040,7 @@ def create_model_version():
         except Exception:
             data = {}
         requested_symbol = (data.get('symbol') or '').strip()
+        requested_file = (data.get('file') or '').strip()
         
         # Создаем папку good_models если её нет
         good_models_dir = Path('good_models')
@@ -921,7 +1074,52 @@ def create_model_version():
         base_code = normalize_symbol(requested_symbol)
         
         selected_result_file = None
-        if base_code:
+        # 1) Если фронт прислал явный файл — используем его
+        if requested_file:
+            from pathlib import Path as _Path
+            # Нормализуем слеши (Windows/Unix)
+            req_norm = requested_file.replace('\\', '/')
+            safe_path = _Path(req_norm)
+            result_dir_abs = result_dir.resolve()
+
+            # Определяем кандидат с учётом разных вариантов формата пути
+            if safe_path.is_absolute():
+                candidate = safe_path
+            else:
+                # Если путь уже начинается с 'result/'
+                if safe_path.parts and safe_path.parts[0].lower() == result_dir.name.lower():
+                    candidate = _Path(req_norm)
+                else:
+                    # Используем имя файла внутри result/
+                    candidate = result_dir / safe_path.name
+
+            try:
+                cand_resolved = candidate.resolve()
+            except Exception:
+                cand_resolved = candidate
+
+            # Безопасность: файл должен быть внутри result/
+            try:
+                inside_result = str(cand_resolved).lower().startswith(str(result_dir_abs).lower())
+            except Exception:
+                inside_result = False
+
+            if inside_result and cand_resolved.exists() and cand_resolved.is_file() and cand_resolved.suffix == '.pkl' and cand_resolved.name.startswith('train_result_'):
+                selected_result_file = cand_resolved
+                # Пытаемся извлечь base_code из имени файла
+                try:
+                    fname = cand_resolved.stem  # train_result_<code>
+                    parts = fname.split('_', 2)
+                    if len(parts) >= 3:
+                        base_code = parts[2].lower()
+                except Exception:
+                    pass
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": "Неверный путь к файлу результата или файл не существует"
+                })
+        elif base_code:
             # Ищем точный train_result_<base_code>.pkl
             candidate = result_dir / f"train_result_{base_code}.pkl"
             if candidate.exists():
