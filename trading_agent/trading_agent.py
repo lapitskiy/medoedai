@@ -285,15 +285,28 @@ class TradingAgent:
                     try:
                         self.exchange.set_leverage(1, symbol)
                         logger.info(f"Установлено плечо 1x для {symbol}")
-                    except Exception:
+                    except Exception as inner_e:
                         # Вариант с параметрами buy/sell
-                        self.exchange.set_leverage('1', symbol, {'buyLeverage': '1', 'sellLeverage': '1'})
-                        logger.info(f"Установлено плечо (buy/sell) 1x для {symbol}")
+                        try:
+                            self.exchange.set_leverage('1', symbol, {'buyLeverage': '1', 'sellLeverage': '1'})
+                            logger.info(f"Установлено плечо (buy/sell) 1x для {symbol}")
+                        except Exception as inner_e2:
+                            msg = f"{inner_e} | {inner_e2}"
+                            # Bybit 110043: leverage not modified — это не ошибка, уже 1x
+                            if '110043' in msg or 'leverage not modified' in msg.lower():
+                                logger.info(f"Плечо уже 1x для {symbol} (Bybit 110043)")
+                            else:
+                                logger.warning(f"Не удалось установить плечо 1x для {symbol}: {msg}")
+                                ok = False
                 except Exception as e:
-                    logger.warning(f"Не удалось установить плечо 1x для {symbol}: {e}")
-                    ok = False
+                    msg = str(e)
+                    if '110043' in msg or 'leverage not modified' in msg.lower():
+                        logger.info(f"Плечо уже 1x для {symbol} (Bybit 110043)")
+                    else:
+                        logger.warning(f"Не удалось установить плечо 1x для {symbol}: {e}")
+                        ok = False
             # Установка режима маржи isolated (не критично для ok)
-            if hasattr(self.exchange, 'set_margin_mode'):
+            if hasattr(self, 'exchange') and hasattr(self.exchange, 'set_margin_mode'):
                 try:
                     self.exchange.set_margin_mode('isolated', symbol)
                     logger.info(f"Установлен режим маржи isolated для {symbol}")
