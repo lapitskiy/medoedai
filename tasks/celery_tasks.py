@@ -444,14 +444,14 @@ import os
 # Настройка расписания Celery Beat по флагу окружения (не перетираем значение)
 if os.environ.get('ENABLE_TRADING_BEAT', '0').lower() in ('1', 'true', 'yes', 'on'):
     celery.conf.beat_schedule = {
-        'start-trading-every-1-minute': {
+        'start-trading-every-5-minutes': {
             'task': 'tasks.celery_tasks.start_trading_task',
-            'schedule': crontab(minute='*'),
+            'schedule': crontab(minute='*/5'),
             'args': ([], None)  # Символы и путь к модели будут передаваться из веб-интерфейса
         },
     }
     celery.conf.timezone = 'UTC'
-    print("✅ Периодическая торговля включена (каждую минуту)")
+    print("✅ Периодическая торговля включена (каждые 5 минут)")
 else:
     print("⚠️ Периодическая торговля отключена (ENABLE_TRADING_BEAT=0)")
 

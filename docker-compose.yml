@@ -163,6 +163,9 @@ services:
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENABLE_TRADING_BEAT: "1"
+    env_file:
+      - .env      
     volumes:
       - .:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
