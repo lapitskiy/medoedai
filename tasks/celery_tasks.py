@@ -397,6 +397,7 @@ def start_trading_task(self, symbols, model_path=None):
                 try:
                     result_str = output_str.split('RESULT:')[1].strip()
                     result = json.loads(result_str)
+                    print(f"✅ Parsed result: {result}")
                 except Exception as parse_error:
                     print(f"❌ Error parsing result: {parse_error}")
                     print(f"Raw result string: {result_str}")
