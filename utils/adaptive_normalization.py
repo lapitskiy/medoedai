@@ -23,6 +23,15 @@ class AdaptiveNormalizer:
                 'stop_loss': -0.05,                # Stop Loss
                 'take_profit': 0.08,               # Take Profit
             },
+            'BNBUSDT': {
+                'volatility_multiplier': 0.95,     # Чуть ниже волатильность, чем у BTC
+                'volume_threshold': 0.0018,        # Мягче порог объема для входа
+                'price_sensitivity': 1.0,          # Стандартная чувствительность
+                'trend_strength': 0.95,            # Чуть слабее требования к тренду
+                'min_hold_time': 20,               # Держим меньше по BNB
+                'stop_loss': -0.045,               # Чуть более тесный стоп
+                'take_profit': 0.07,               # Чуть ниже целевая прибыль
+            },
             'ETHUSDT': {
                 'volatility_multiplier': 1.2,      # ETH более волатилен
                 'volume_threshold': 0.0015,        # Меньший порог объема
@@ -169,6 +178,10 @@ class AdaptiveNormalizer:
         elif 'TON' in symbol:
             # TON: стабильная монета, меньше адаптации
             adapted_params['volatility_multiplier'] *= 0.9
+        elif 'BNB' in symbol:
+            # BNB: чуть мягче фильтры и быстрее реакции
+            adapted_params['volume_threshold'] *= 0.9
+            adapted_params['min_hold_time'] = max(16, adapted_params['min_hold_time'] - 2)
         
         # Ограничиваем значения
         adapted_params['min_hold_time'] = max(12, min(48, adapted_params['min_hold_time']))

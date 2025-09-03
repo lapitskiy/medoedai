@@ -146,12 +146,27 @@ def db_get_or_fetch_ohlcv(
                         'secret': secret_key,
                         'enableRateLimit': True,
                         'timeout': 30000, # Увеличение таймаута
+                        'options': {
+                            'recv_window': 20000,
+                            'recvWindow': 20000,
+                            'adjustForTimeDifference': True,
+                            'timeDifference': True,
+                            # для унификации (не критично для OHLCV)
+                            'defaultType': 'swap',
+                        }
                     })
                 else:
                     logging.warning("API ключи Bybit не настроены — использую публичные эндпоинты для OHLCV")
                     exchange = exchange_class({
                         'enableRateLimit': True,
                         'timeout': 30000,
+                        'options': {
+                            'recv_window': 20000,
+                            'recvWindow': 20000,
+                            'adjustForTimeDifference': True,
+                            'timeDifference': True,
+                            'defaultType': 'swap',
+                        }
                     })
             else:
                 exchange = exchange_class({
@@ -160,6 +175,12 @@ def db_get_or_fetch_ohlcv(
                 })
             
             exchange.load_markets()
+            # Синхронизация времени для избежания retCode 10002 (recv_window)
+            try:
+                if hasattr(exchange, 'load_time_difference'):
+                    exchange.load_time_difference()
+            except Exception as _te:
+                logging.warning(f"Не удалось синхронизировать время с биржей {exchange_id}: {_te}")
             if symbol_cctx not in exchange.symbols:
                 raise ValueError(f"Символ {symbol_cctx} не найден на бирже {exchange_id}.")
             logging.info(f"Биржа {exchange_id} успешно инициализирована.")

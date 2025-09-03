@@ -105,15 +105,26 @@ class TradingAgent:
                 'secret': secret_key,
                 'sandbox': False,  # True для тестового режима
                 'enableRateLimit': True,
+                'timeout': 30000,
                 'options': {
                     'defaultType': 'swap',  # Тип по умолчанию - свопы (фьючерсы)
                     'defaultMarginMode': 'isolated',  # Изолированная маржа
                     'defaultLeverage': 1,  # Плечо по умолчанию (без плеча)
+                    'recv_window': 20000,
+                    'recvWindow': 20000,
+                    'adjustForTimeDifference': True,
+                    'timeDifference': True,
                 }
             })
             
             # Загружаем рынки для получения информации о деривативах
             self.exchange.load_markets()
+            # Синхронизируем время, чтобы избежать retCode 10002 (recv_window)
+            try:
+                if hasattr(self.exchange, 'load_time_difference'):
+                    self.exchange.load_time_difference()
+            except Exception as te:
+                logger.warning(f"Не удалось синхронизировать время с Bybit: {te}")
             
             logger.info("Подключение к Bybit Derivatives (фьючерсы) установлено")
         except Exception as e:
@@ -229,7 +240,7 @@ class TradingAgent:
             if not self.exchange:
                 return {"success": False, "error": "Биржа не инициализирована"}
             
-            balance = self.exchange.fetch_balance()
+            balance = self.exchange.fetch_balance({'recv_window': 20000, 'recvWindow': 20000})
             return {
                 "success": True,
                 "balance": {
@@ -1295,6 +1306,8 @@ class TradingAgent:
                 {
                     'leverage': '1',
                     'marginMode': 'isolated',
+                    'recv_window': 20000,
+                    'recvWindow': 20000,
                 }
             )
             
@@ -1381,6 +1394,8 @@ class TradingAgent:
                     'reduceOnly': True,
                     'leverage': '1',
                     'marginMode': 'isolated',
+                    'recv_window': 20000,
+                    'recvWindow': 20000,
                 }
             )
             
@@ -1544,6 +1559,8 @@ class TradingAgent:
                     'reduceOnly': True,
                     'leverage': '1',
                     'marginMode': 'isolated',
+                    'recv_window': 20000,
+                    'recvWindow': 20000,
                 }
             )
             

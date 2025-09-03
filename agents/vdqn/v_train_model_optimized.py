@@ -162,6 +162,28 @@ def train_model_optimized(
         new_model_path = os.path.join(result_dir, f"dqn_model_{symbol_code}_{short_id}.pth")
         new_buffer_path = os.path.join(result_dir, f"replay_buffer_{symbol_code}_{short_id}.pkl")
 
+        # Если символ BNB — мягкие оверрайды обучения для стабильности
+        try:
+            if not is_multi_crypto and isinstance(crypto_symbol, str) and 'BNB' in crypto_symbol.upper():
+                # Снижаем exploration и lr, увеличиваем batch
+                cfg.eps_start = min(getattr(cfg, 'eps_start', 1.0), 0.20)
+                cfg.eps_final = max(getattr(cfg, 'eps_final', 0.01), 0.02)
+                cfg.eps_decay_steps = int(getattr(cfg, 'eps_decay_steps', 1_000_000) * 0.75)
+                cfg.batch_size = max(192, getattr(cfg, 'batch_size', 128))
+                cfg.lr = min(getattr(cfg, 'lr', 1e-3), 2e-4)
+                # Чуть реже сохраняем буфер, чтобы не тормозить I/O
+                cfg.buffer_save_frequency = max(
+                    400,
+                    int(getattr(cfg, 'buffer_save_frequency', 800))
+                )
+                print(
+                    f"🔧 BNB overrides: eps_start={cfg.eps_start}, eps_final={cfg.eps_final}, "
+                    f"eps_decay_steps={cfg.eps_decay_steps}, batch_size={cfg.batch_size}, lr={cfg.lr}, "
+                    f"buffer_save_frequency={getattr(cfg, 'buffer_save_frequency', 'n/a')}"
+                )
+        except Exception as _e:
+            print(f"⚠️ Не удалось применить BNB-оверрайды: {_e}")
+
         # Создаем DQN solver
         print(f"🚀 Создаю DQN solver")
         
@@ -234,6 +256,14 @@ def train_model_optimized(
         min_episodes_before_stopping = getattr(cfg, 'min_episodes_before_stopping', max(4000, episodes // 3))  # Увеличил с 3000 до 4000 и с 1/4 до 1/3
         winrate_history = []  # История winrate для анализа трендов
         recent_improvement_threshold = 0.002  # Увеличил с 0.001 до 0.002 для более стабильного обучения
+        
+        # --- Расширенные агрегаты для анализа поведения ---
+        action_counts_total = {0: 0, 1: 0, 2: 0}
+        buy_attempts_total = 0
+        buy_rejected_vol_total = 0
+        buy_rejected_roi_total = 0
+        episodes_with_trade_count = 0
+        total_steps_processed = 0
         
         # Адаптивный patience_limit в зависимости от количества эпизодов
         if episodes >= 10000:
@@ -331,6 +361,7 @@ def train_model_optimized(
                 
                 episode_reward += reward
                 global_step += 1
+                total_steps_processed += 1
                 
                 # Обучаем модель чаще для лучшего обучения (УЛУЧШЕНО)
                 soft_update_every = getattr(cfg, 'soft_update_every', 50)   # Уменьшил с 100 до 50 для более частого обучения
@@ -461,7 +492,24 @@ def train_model_optimized(
                         # В начале обучения не увеличиваем patience
                         patience_counter = 0
 
-            
+            # --- Агрегируем поведенческие метрики эпизода ---
+            try:
+                # Суммарные действия
+                if hasattr(env, 'action_counts') and isinstance(env.action_counts, dict):
+                    action_counts_total[0] = action_counts_total.get(0, 0) + int(env.action_counts.get(0, 0) or 0)
+                    action_counts_total[1] = action_counts_total.get(1, 0) + int(env.action_counts.get(1, 0) or 0)
+                    action_counts_total[2] = action_counts_total.get(2, 0) + int(env.action_counts.get(2, 0) or 0)
+                # Попытки покупок и причины отказов
+                buy_attempts_total += int(getattr(env, 'buy_attempts', 0) or 0)
+                buy_rejected_vol_total += int(getattr(env, 'buy_rejected_vol', 0) or 0)
+                buy_rejected_roi_total += int(getattr(env, 'buy_rejected_roi', 0) or 0)
+                # Была ли сделка в эпизоде
+                new_trades_added = len(all_trades) - trades_before
+                if new_trades_added > 0:
+                    episodes_with_trade_count += 1
+            except Exception:
+                pass
+
             # Логируем прогресс и периодически сохраняем модель
             if episode % 10 == 0:
                 avg_winrate = np.mean(episode_winrates[-10:]) if episode_winrates else 0
@@ -606,7 +654,17 @@ def train_model_optimized(
             'buffer_path': cfg.buffer_path,
             'symbol': training_name,
             'model_id': short_id,
-            'early_stopping_triggered': episode < episodes  # True если early stopping сработал
+            'early_stopping_triggered': episode < episodes,  # True если early stopping сработал
+            # --- Новые агрегаты для анализа поведения ---
+            'action_counts_total': action_counts_total,
+            'buy_attempts_total': buy_attempts_total,
+            'buy_rejected_vol_total': buy_rejected_vol_total,
+            'buy_rejected_roi_total': buy_rejected_roi_total,
+            'buy_accept_rate': ( (action_counts_total.get(1, 0) or 0) / float(buy_attempts_total) ) if buy_attempts_total > 0 else 0.0,
+            'episodes_with_trade_count': episodes_with_trade_count,
+            'episodes_with_trade_ratio': (episodes_with_trade_count / float(episodes)) if episodes > 0 else 0.0,
+            'avg_minutes_between_buys': ( (total_steps_processed * 5.0) / float(action_counts_total.get(1, 0) or 1) ) if (action_counts_total.get(1, 0) or 0) > 0 else None,
+            'total_steps_processed': total_steps_processed,
         }
         
         # Создаем папку если не существует (используем result/)
