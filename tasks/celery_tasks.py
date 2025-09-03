@@ -330,7 +330,36 @@ def start_trading_task(self, symbols, model_path=None):
     if not trading_enabled:
         return {"success": False, "skipped": True, "reason": "ENABLE_TRADING_BEAT=0"}
     
-    print(f"🚀 Запуск торговой задачи для символов: {symbols}")
+    # Если параметры не передали в расписании — пробуем взять их из Redis (последние заданные из веб‑интерфейса)
+    try:
+        if (not symbols) or model_path is None:
+            from redis import Redis
+            _r = Redis(host='redis', port=6379, db=0, decode_responses=True)
+            if (not symbols):
+                try:
+                    _sym_raw = _r.get('trading:symbols')
+                    if _sym_raw:
+                        import json as _json
+                        _sym = _json.loads(_sym_raw)
+                        if isinstance(_sym, list) and _sym:
+                            symbols = _sym
+                except Exception:
+                    pass
+            if model_path is None:
+                try:
+                    _mp = _r.get('trading:model_path')
+                    if _mp:
+                        model_path = _mp
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Дефолты на всякий случай
+    if not symbols:
+        symbols = ['BTCUSDT']
+
+    print(f"🚀 Запуск торговой задачи для символов: {symbols} | model_path={model_path if model_path else 'default'}")
     
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
     
@@ -368,7 +397,6 @@ def start_trading_task(self, symbols, model_path=None):
                 try:
                     result_str = output_str.split('RESULT:')[1].strip()
                     result = json.loads(result_str)
-                    print(f"✅ Parsed result: {result}")
                 except Exception as parse_error:
                     print(f"❌ Error parsing result: {parse_error}")
                     print(f"Raw result string: {result_str}")
