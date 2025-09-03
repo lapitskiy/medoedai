@@ -741,12 +741,11 @@ class TradingAgent:
                     # Фолбэк: берём предпоследнюю свечу из доступных данных
                     if len(df_sorted) >= 2:
                         current_price = float(df_sorted['close'].iloc[-2])
-                        logger.warning("Нет обновлённой закрытой свечи, используем предпоследнюю для цены")
+                        logger.debug("Нет обновлённой закрытой свечи, используем предпоследнюю для цены")
                     else:
                         # Если есть только одна свеча — используем её
                         current_price = float(df_sorted['close'].iloc[-1])
-                        logger.warning("Недостаточно данных для закрытой свечи, используем последнюю доступную цену")
-                logger.debug(f"Цена из БД: ${current_price:.2f}")
+                        logger.debug("Недостаточно данных для закрытой свечи, используем последнюю доступную цену")
                 return current_price
             else:
                 logger.warning("Свечи из БД недоступны — цена недоступна")

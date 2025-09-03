@@ -104,6 +104,9 @@ def db_get_or_fetch_ohlcv(
     df = pd.DataFrame()
     exchange = None # Инициализируем exchange вне try-блока
 
+    # Управление подробностью логов внутри этой функции
+    detailed_logs = False
+
     try:
         # Получаем или создаем запись символа
         
@@ -115,7 +118,8 @@ def db_get_or_fetch_ohlcv(
             timeframe=timeframe
         ).count()
 
-        print(f"Всего свечей в БД: {total_count}")
+        if detailed_logs:
+            print(f"Всего свечей в БД: {total_count}")
 
         last_db_candle = session.query(OHLCV).filter_by(
             symbol_id=symbol_obj.id,
@@ -124,10 +128,12 @@ def db_get_or_fetch_ohlcv(
 
         if last_db_candle:
             last_db_timestamp = last_db_candle.timestamp
-            logging.info(f"Последняя свеча в БД по {symbol_name}, {timeframe} имеет timestamp {last_db_timestamp} ({datetime.fromtimestamp(last_db_timestamp/1000)})")
+            if detailed_logs:
+                logging.info(f"Последняя свеча в БД по {symbol_name}, {timeframe} имеет timestamp {last_db_timestamp} ({datetime.fromtimestamp(last_db_timestamp/1000)})")
         else:
             last_db_timestamp = None
-            logging.info(f"Свечей в базе для {symbol_name}, {timeframe} нет. Начинаем загрузку с нуля (30 дней назад).")
+            if detailed_logs:
+                logging.info(f"Свечей в базе для {symbol_name}, {timeframe} нет. Начинаем загрузку с нуля (30 дней назад).")
 
         # Инициализация биржи
         try:            
@@ -180,10 +186,12 @@ def db_get_or_fetch_ohlcv(
                 if hasattr(exchange, 'load_time_difference'):
                     exchange.load_time_difference()
             except Exception as _te:
-                logging.warning(f"Не удалось синхронизировать время с биржей {exchange_id}: {_te}")
+                if detailed_logs:
+                    logging.warning(f"Не удалось синхронизировать время с биржей {exchange_id}: {_te}")
             if symbol_cctx not in exchange.symbols:
                 raise ValueError(f"Символ {symbol_cctx} не найден на бирже {exchange_id}.")
-            logging.info(f"Биржа {exchange_id} успешно инициализирована.")
+            if detailed_logs:
+                logging.info(f"Биржа {exchange_id} успешно инициализирована.")
         except Exception as e:
             logging.error(f"Не удалось инициализировать биржу {exchange_id}: {e}")
             return pd.DataFrame()
@@ -200,7 +208,8 @@ def db_get_or_fetch_ohlcv(
         # Если since_ms в будущем — корректируем
         now_ms = exchange.milliseconds()
         if since_ms > now_ms:
-            logging.warning("Начальная дата больше текущей. Сбрасываем на текущий момент.")
+            if detailed_logs:
+                logging.warning("Начальная дата больше текущей. Сбрасываем на текущий момент.")
             since_ms = now_ms - tf_ms
 
         all_new_data = []
@@ -212,7 +221,8 @@ def db_get_or_fetch_ohlcv(
                 ohlcv = exchange.fetch_ohlcv(symbol_cctx, timeframe, since=since_ms, limit=limit_fetch)
 
                 if not ohlcv:
-                    logging.info("Новых данных с биржи нет. Докачка завершена.")
+                    if detailed_logs:
+                        logging.info("Новых данных с биржи нет. Докачка завершена.")
                     break
 
                 new_df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -222,7 +232,8 @@ def db_get_or_fetch_ohlcv(
                     new_df = new_df[new_df['timestamp'] > last_db_timestamp]
 
                 if new_df.empty:
-                    logging.info("Все загруженные свечи уже есть в БД.")
+                    if detailed_logs:
+                        logging.info("Все загруженные свечи уже есть в БД.")
                     break
 
                 all_new_data.extend(new_df.to_dict('records'))
@@ -232,7 +243,8 @@ def db_get_or_fetch_ohlcv(
 
                 # Если докачали достаточно (по времени или по объёму), прекращаем
                 if since_ms > now_ms:
-                    logging.info("Достигнуто текущее время. Докачка завершена.")
+                    if detailed_logs:
+                        logging.info("Достигнуто текущее время. Докачка завершена.")
                     break
 
                 # Ждём, чтобы не превысить лимиты API
@@ -280,11 +292,14 @@ def db_get_or_fetch_ohlcv(
                 if new_records:
                     session.bulk_insert_mappings(OHLCV, new_records)
                     session.commit()
-                    logging.info(f"Добавлено {len(new_records)} новых свечей {timeframe} для {symbol_name}.")
+                    if detailed_logs:
+                        logging.info(f"Добавлено {len(new_records)} новых свечей {timeframe} для {symbol_name}.")
                 else:
-                    logging.info("Новых свечей для добавления не найдено.")
+                    if detailed_logs:
+                        logging.info("Новых свечей для добавления не найдено.")
             else:
-                logging.info(f"Dry run: {len(new_data_df)} свечей не сохранены в БД.")
+                if detailed_logs:
+                    logging.info(f"Dry run: {len(new_data_df)} свечей не сохранены в БД.")
 
         # В итоге загружаем из БД последние limit_candles свечей
         db_candles = session.query(OHLCV).filter_by(
@@ -301,7 +316,8 @@ def db_get_or_fetch_ohlcv(
             'volume': c.volume
         } for c in reversed(db_candles)])
 
-        logging.info(f"Итоговое количество свечей для {symbol_name} {timeframe}: {len(df)}")
+        if detailed_logs:
+            logging.info(f"Итоговое количество свечей для {symbol_name} {timeframe}: {len(df)}")
 
         # --- Финальная проверка на разрывы во всем загруженном DataFrame ---
         if not df.empty:
@@ -333,11 +349,17 @@ def db_get_or_fetch_ohlcv(
                     logging.warning(f"  Предыдущая: {datetime.fromtimestamp(prev_row['timestamp']/1000)} (Close: {prev_row['close']:.2f})")
                     logging.warning(f"  Текущая: {datetime.fromtimestamp(curr_row['timestamp']/1000)} (Open: {curr_row['open']:.2f})")
                     
-                logging.info(f"Проверка целостности данных {symbol_name}, {timeframe} завершена: обнаружены разрывы.")
+                if detailed_logs:
+                    logging.info(f"Проверка целостности данных {symbol_name}, {timeframe} завершена: обнаружены разрывы.")
             else:
-                logging.info(f"Проверка целостности данных {symbol_name}, {timeframe} завершена: разрывы не обнаружены.")
+                if detailed_logs:
+                    logging.info(f"Проверка целостности данных {symbol_name}, {timeframe} завершена: разрывы не обнаружены.")
+
+        # Единый финальный лог
+        logging.info(f"✅ Все необходимые свечи для {symbol_name} {timeframe} загружены (доступно {len(df)}).")
 
         return df
+
     except Exception as e:
         logging.error(f"Критическая ошибка в db_get_or_fetch_ohlcv: {e}", exc_info=True)
         return pd.DataFrame()
