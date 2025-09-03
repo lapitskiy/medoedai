@@ -356,7 +356,7 @@ def db_get_or_fetch_ohlcv(
                     logging.info(f"Проверка целостности данных {symbol_name}, {timeframe} завершена: разрывы не обнаружены.")
 
         # Единый финальный лог
-        logging.info(f"✅ Все необходимые свечи для {symbol_name} {timeframe} загружены (доступно {len(df)}).")
+        #logging.info(f"✅ Все необходимые свечи для {symbol_name} {timeframe} загружены (доступно {len(df)}).")
 
         return df
 

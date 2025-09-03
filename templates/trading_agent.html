@@ -448,14 +448,15 @@
                 
                 <div class="form-group">
                     <label>Торговая пара (Деривативы):</label>
-                    <div>
-                        <label><input type="checkbox" value="BTCUSDT" class="trading-symbol" checked> BTCUSDT (Фьючерсы)</label><br>
-                        <label><input type="checkbox" value="ETHUSDT" class="trading-symbol"> ETHUSDT (Фьючерсы)</label><br>
-                        <label><input type="checkbox" value="SOLUSDT" class="trading-symbol"> SOLUSDT (Фьючерсы)</label><br>
-                        <label><input type="checkbox" value="TONUSDT" class="trading-symbol"> TONUSDT (Фьючерсы)</label><br>
-                        <label><input type="checkbox" value="ADAUSDT" class="trading-symbol"> ADAUSDT (Фьючерсы)</label><br>
-                        <label><input type="checkbox" value="BNBUSDT" class="trading-symbol"> BNBUSDT (Фьючерсы)</label>
-                    </div>
+                    <select id="symbolSelect" class="form-control">
+                        <option value="">Выберите пару...</option>
+                        <option value="BTCUSDT" selected>BTCUSDT (Фьючерсы)</option>
+                        <option value="ETHUSDT">ETHUSDT (Фьючерсы)</option>
+                        <option value="SOLUSDT">SOLUSDT (Фьючерсы)</option>
+                        <option value="TONUSDT">TONUSDT (Фьючерсы)</option>
+                        <option value="ADAUSDT">ADAUSDT (Фьючерсы)</option>
+                        <option value="BNBUSDT">BNBUSDT (Фьючерсы)</option>
+                    </select>
                     <small style="color: #666; font-style: italic;">
                         ⚠️ Внимание: Торговля ведется на деривативах Bybit (фьючерсы), а не на споте
                     </small>
@@ -696,7 +697,8 @@
 
         // Запуск торговли
         async function startTrading() {
-            const selectedSymbols = Array.from(document.querySelectorAll('.trading-symbol:checked')).map(checkbox => checkbox.value);
+            const symbol = document.getElementById('symbolSelect').value;
+            const selectedSymbols = symbol ? [symbol] : [];
             const selectedModel = document.getElementById('modelSelect').value;
             
             if (!selectedModel) {
@@ -704,7 +706,7 @@
                 return;
             }
             
-            if (selectedSymbols.length === 0) {
+            if (selectedSymbols.length === 0 || !selectedSymbols[0]) {
                 showStatus('tradingResult', 'error', 'Пожалуйста, выберите хотя бы одну торговую пару');
                 return;
             }
@@ -1237,8 +1239,7 @@
         // Мгновенный реальный ордер BUY/SELL в обход предсказаний
         async function sendInstantOrder(action) {
             try {
-                const selectedSymbols = Array.from(document.querySelectorAll('.trading-symbol:checked')).map(checkbox => checkbox.value);
-                const symbol = selectedSymbols[0] || 'BTCUSDT';
+                const symbol = document.getElementById('symbolSelect').value || 'BTCUSDT';
                 const body = {
                     action,
                     symbol

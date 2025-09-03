@@ -1406,6 +1406,26 @@ def start_trading():
             redis_client.set('trading:model_path', model_path)
             import json as _json
             redis_client.set('trading:symbols', _json.dumps(symbols, ensure_ascii=False))
+            # Пишем мгновенный «активный» статус, чтобы UI сразу показывал Активна до первого RESULT
+            initial_status = {
+                'success': True,
+                'is_trading': True,
+                'trading_status': 'Активна',
+                'trading_status_emoji': '🟢',
+                'trading_status_full': '🟢 Активна',
+                'symbol': symbols[0] if symbols else None,
+                'symbol_display': symbols[0] if symbols else 'Не указана',
+                'amount': None,
+                'amount_display': 'Не указано',
+                'amount_usdt': 0.0,
+                'position': None,
+                'trades_count': 0,
+                'balance': {},
+                'current_price': 0.0,
+                'last_model_prediction': None,
+            }
+            redis_client.set('trading:current_status', _json.dumps(initial_status, ensure_ascii=False))
+            redis_client.set('trading:current_status_ts', datetime.utcnow().isoformat())
         except Exception as _e:
             app.logger.error(f"Не удалось сохранить параметры торговли в Redis: {_e}")
 
