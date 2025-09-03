@@ -126,7 +126,7 @@ class TradingAgent:
             except Exception as te:
                 logger.warning(f"Не удалось синхронизировать время с Bybit: {te}")
             
-            logger.info("Подключение к Bybit Derivatives (фьючерсы) установлено")
+            #logger.info("Подключение к Bybit Derivatives (фьючерсы) установлено")
         except Exception as e:
             logger.error(f"Ошибка подключения к бирже: {e}")
     
@@ -821,7 +821,7 @@ class TradingAgent:
                 if base_currency in known_limits:
                     limits['min_amount'] = known_limits[base_currency]['min_amount']
                     limits['precision_amount'] = known_limits[base_currency]['precision_amount']
-                    logger.info(f"Используем известные ограничения для {base_currency}: {limits['min_amount']}")
+                    #logger.info(f"Используем известные ограничения для {base_currency}: {limits['min_amount']}")
             
             logger.info(f"Ограничения Bybit Derivatives для {self.symbol}: {limits}")
             return limits
@@ -1038,7 +1038,7 @@ class TradingAgent:
                     market_conditions=market_conditions
                 )
                 
-                logger.info(f"Предсказание модели записано в БД: {action_str}")
+                #logger.info(f"Предсказание модели записано в БД: {action_str}")
                 
             except Exception as e:
                 logger.warning(f"Не удалось записать предсказание в БД: {e}")

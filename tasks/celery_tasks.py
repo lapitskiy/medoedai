@@ -402,47 +402,53 @@ def start_trading_task(self, symbols, model_path=None):
                     print(f"❌ Error parsing result: {parse_error}")
                     print(f"Raw result string: {result_str}")
         
-        # Сохраняем результат в Redis для веб-интерфейса
-        try:
-            from redis import Redis
-            
-            # Подключение к Redis
-            redis_client = Redis(host='redis', port=6379, db=0, decode_responses=True)
-            
-            # Создаем результат для сохранения
-            result_data = {
-                'timestamp': datetime.now().isoformat(),
-                'symbols': symbols,
-                'model_path': model_path,
-                'command': cmd,
-                'exit_code': exec_result.exit_code,
-                'output': output_str
-            }
-            
-            # Парсим результат из вывода команды
-            if 'RESULT:' in output_str:
-                try:
-                    result_str = output_str.split('RESULT:')[1].strip()
-                    parsed_result = json.loads(result_str)
-                    result_data['parsed_result'] = parsed_result
-                except Exception as parse_error:
-                    print(f"Ошибка парсинга результата: {parse_error}")
-                    result_data['parse_error'] = str(parse_error)
-            
-            # Сохраняем в Redis (последние 10 результатов)
-            redis_key = f'trading:latest_result_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
-            redis_client.setex(redis_key, 3600, json.dumps(result_data, default=str))  # Храним 1 час
-            
-            # Очищаем старые результаты (оставляем только последние 10)
-            all_keys = redis_client.keys('trading:latest_result_*')
-            if len(all_keys) > 20:
-                # Сортируем по времени и удаляем старые
-                sorted_keys = sorted(all_keys)
-                for old_key in sorted_keys[:-10]:
-                    redis_client.delete(old_key)
-                    
-        except Exception as redis_error:
-            print(f"Ошибка сохранения в Redis: {redis_error}")
+            # Сохраняем результат в Redis для веб-интерфейса
+            try:
+                from redis import Redis
+                
+                # Подключение к Redis
+                redis_client = Redis(host='redis', port=6379, db=0, decode_responses=True)
+                
+                # Создаем результат для сохранения
+                result_data = {
+                    'timestamp': datetime.now().isoformat(),
+                    'symbols': symbols,
+                    'model_path': model_path,
+                    'command': cmd,
+                    'exit_code': exec_result.exit_code,
+                    'output': output_str
+                }
+                
+                # Парсим результат из вывода команды
+                parsed_result = None
+                if 'RESULT:' in output_str:
+                    try:
+                        result_str = output_str.split('RESULT:')[1].strip()
+                        parsed_result = json.loads(result_str)
+                        result_data['parsed_result'] = parsed_result
+                    except Exception as parse_error:
+                        print(f"Ошибка парсинга результата: {parse_error}")
+                        result_data['parse_error'] = str(parse_error)
+                
+                # Сохраняем в Redis (последние 10 результатов)
+                redis_key = f'trading:latest_result_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+                redis_client.setex(redis_key, 3600, json.dumps(result_data, default=str))  # Храним 1 час
+                
+                # Единый текущий статус для быстрого чтения UI
+                if parsed_result:
+                    redis_client.set('trading:current_status', json.dumps(parsed_result, default=str))
+                    redis_client.set('trading:current_status_ts', datetime.now().isoformat())
+                
+                # Очищаем старые результаты (оставляем только последние 10)
+                all_keys = redis_client.keys('trading:latest_result_*')
+                if len(all_keys) > 20:
+                    # Сортируем по времени и удаляем старые
+                    sorted_keys = sorted(all_keys)
+                    for old_key in sorted_keys[:-10]:
+                        redis_client.delete(old_key)
+                        
+            except Exception as redis_error:
+                print(f"Ошибка сохранения в Redis: {redis_error}")
         
         if exec_result.exit_code == 0:
             if exec_result.output:
