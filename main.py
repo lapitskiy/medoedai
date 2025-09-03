@@ -1540,6 +1540,35 @@ def stop_trading():
 def trading_status():
     """Статус торговли из контейнера trading_agent"""
     try:
+        # Сначала пробуем быстрый статус из Redis (обновляется периодическим таском)
+        try:
+            from redis import Redis as _Redis
+            _rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+            cached = _rc.get('trading:current_status')
+            cached_ts = _rc.get('trading:current_status_ts')
+            if cached:
+                import json as _json
+                status_obj = _json.loads(cached)
+                # Проверим свежесть (не старее 2 минут)
+                from datetime import datetime, timedelta
+                is_fresh = True
+                try:
+                    if cached_ts:
+                        from datetime import datetime as _dt
+                        ts = _dt.fromisoformat(cached_ts)
+                        is_fresh = _dt.utcnow() <= (ts + timedelta(minutes=2))
+                except Exception:
+                    is_fresh = True
+                if is_fresh:
+                    # Возвращаем плоскую структуру для совместимости с фронтендом
+                    flat = {'success': True, 'agent_status': status_obj}
+                    if isinstance(status_obj, dict):
+                        flat.update(status_obj)
+                    return jsonify(flat), 200
+        except Exception:
+            pass
+
+        # Fallback: получаем статус через Docker exec
         # Подключаемся к Docker
         client = docker.from_env()
         
