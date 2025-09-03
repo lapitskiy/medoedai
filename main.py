@@ -1549,8 +1549,8 @@ def trading_status():
             exec_result = container.exec_run(cmd, tty=True)
             
             # Логируем результат выполнения команды
-            app.logger.info(f"Get status - Command: {cmd}")
-            app.logger.info(f"Get status - Exit code: {exec_result.exit_code}")
+            #app.logger.info(f"Get status - Command: {cmd}")
+            #app.logger.info(f"Get status - Exit code: {exec_result.exit_code}")
             if exec_result.output:
                 output_str = exec_result.output.decode('utf-8')
                 app.logger.info(f"Get status - Output: {output_str}")
