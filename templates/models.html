@@ -336,14 +336,25 @@ P/L Ratio: ${plr}
         }
 
         async function startTrainingMulti() {
+            const statusDiv = document.getElementById('trainStatus');
+            if (statusDiv) statusDiv.innerHTML = '<div class="status info">⏳ Запуск мультивалютного обучения...</div>';
             try {
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.action = '/train_dqn_multi_crypto';
-                document.body.appendChild(form);
-                form.submit();
+                const resp = await fetch('/train_dqn_multi_crypto', {
+                    method: 'POST',
+                    headers: { 'Accept': 'application/json' }
+                });
+                const data = await resp.json().catch(() => null);
+                if (data && data.success) {
+                    if (statusDiv) statusDiv.innerHTML = '<div class="status success">✅ Обучение (multi) запущено (task: ' + data.task_id + ')</div>';
+                } else if (data && data.error) {
+                    if (statusDiv) statusDiv.innerHTML = '<div class="status error">❌ ' + data.error + '</div>';
+                } else if (resp.redirected) {
+                    if (statusDiv) statusDiv.innerHTML = '<div class="status info">ℹ️ Обучение запущено, оставайтесь на странице.</div>';
+                } else {
+                    if (statusDiv) statusDiv.innerHTML = '<div class="status error">❌ Неизвестный ответ сервера</div>';
+                }
             } catch (e) {
-                alert('❌ Ошибка запуска мультивалютного обучения: ' + e.message);
+                if (statusDiv) statusDiv.innerHTML = '<div class="status error">❌ Ошибка запуска мультивалютного обучения: ' + e.message + '</div>';
             }
         }
 
