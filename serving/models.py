@@ -5,6 +5,7 @@ from typing import List, Optional, Dict, Any
 class ConsensusSettings(BaseModel):
     flat: int = Field(80, ge=0, le=100)
     trend: int = Field(65, ge=0, le=100)
+    model_config = {"protected_namespaces": ()}
 
 
 class PredictRequest(BaseModel):
@@ -12,6 +13,7 @@ class PredictRequest(BaseModel):
     model_paths: List[str]
     consensus: Optional[ConsensusSettings] = None
     symbol: Optional[str] = None
+    model_config = {"protected_namespaces": ()}
 
 
 class SinglePrediction(BaseModel):
@@ -19,6 +21,7 @@ class SinglePrediction(BaseModel):
     action: str
     confidence: float
     q_values: Optional[List[float]] = None
+    model_config = {"protected_namespaces": ()}
 
 
 class PredictResponse(BaseModel):
@@ -28,3 +31,4 @@ class PredictResponse(BaseModel):
     threshold_used: int
     predictions: List[SinglePrediction]
     error: Optional[str] = None
+    model_config = {"protected_namespaces": ()}

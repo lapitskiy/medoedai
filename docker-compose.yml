@@ -220,9 +220,11 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      - ./serving:/app
       - .:/workspace
       - ./models:/workspace/models
     working_dir: /app
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
     deploy:
       resources:
         reservations:
