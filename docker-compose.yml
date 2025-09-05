@@ -146,7 +146,7 @@ services:
     ports:
       - "8090:8090"
     volumes:
-      - ./workspace:/workspace
+      - .:/workspace
       - ./models:/models
     working_dir: /workspace
     command: ["bash","-lc","python train.py && sleep 2"]
