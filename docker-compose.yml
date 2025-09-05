@@ -84,7 +84,7 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       DISABLE_TORCH_COMPILE: "true"   # Отключить torch.compile для Tesla P100
       FORCE_DISABLE_TORCH_COMPILE: "true"  # Дополнительная защита
-      # Параллелизм Celery
+      # Параллелизм Celery (обычные очереди)
       CELERY_POOL: prefork
       CELERY_CONCURRENCY: "6"
       # Ограничение потоков внутри NumPy/MKL/Torch
@@ -99,7 +99,8 @@ services:
       - .:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /workspace
-    command: ["sh","-lc","celery -A tasks.celery_tasks worker -Q train,celery -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-6} --loglevel=info"]
+    # Исключаем очередь train из общего воркера, чтобы не конкурировать за CPU
+    command: ["sh","-lc","celery -A tasks.celery_tasks worker -Q celery -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-6} --loglevel=info"]
     deploy:
       resources:
         reservations:
@@ -108,20 +109,48 @@ services:
               count: all
               capabilities: [gpu]
 
+  # Специализированный воркер для обучения, использует все CPU ядра
+  celery-train:
+    build: .
+    container_name: celery-train
+    depends_on:
+      medoedai:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      PYTHONDONTWRITEBYTECODE: "1"
+      DISABLE_TORCH_COMPILE: "true"
+      FORCE_DISABLE_TORCH_COMPILE: "true"
+      CELERY_POOL: prefork
+      CELERY_CONCURRENCY: "1"  # один процесс, но максимум потоков внутри BLAS/Torch
+      CUDA_VISIBLE_DEVICES: ""
+      TRAIN_CPU_FRACTION: "0.8"  # доля CPU ядер, используемых обучением (по умолчанию 80%)
+    env_file:
+      - .env
+    volumes:
+      - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: /workspace
+    command: ['sh','-lc','NPROC=$(nproc); THREADS=$(python -c "import os,math; n=os.cpu_count() or 1; f=float(os.environ.get(\"TRAIN_CPU_FRACTION\", \"0.8\")); print(max(1,int(n*f)))"); export OMP_NUM_THREADS=$THREADS MKL_NUM_THREADS=$THREADS TORCH_NUM_THREADS=$THREADS; echo Using $THREADS/$NPROC CPU threads for training; exec celery -A tasks.celery_tasks worker -Q train -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-1} --loglevel=info']
+
   pytorch-gpu:
     image: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
     container_name: pytorch-gpu
     depends_on:
       celery-worker:
         condition: service_started
-    restart: unless-stopped
     ports:
       - "8090:8090"
     volumes:
       - ./workspace:/workspace
       - ./models:/models
     working_dir: /workspace
-    command: ["sleep", "infinity"]
+    command: ["bash","-lc","python train.py && sleep 2"]
+    restart: "no"
     deploy:
       resources:
         reservations:
@@ -143,6 +172,8 @@ services:
       - BYBIT_API_KEY=${BYBIT_API_KEY:-}
       - BYBIT_SECRET_KEY=${BYBIT_SECRET_KEY:-}
       - TRADING_MODE=${TRADING_MODE:-sandbox}
+    env_file:
+      - .env       
     volumes:
       - .:/workspace
       - /var/run/docker.sock:/var/run/docker.sock  # Добавлено для доступа к Docker API

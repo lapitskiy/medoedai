@@ -89,3 +89,17 @@ class ModelPrediction(Base):
     
     def __repr__(self):
         return f"<ModelPrediction(symbol='{self.symbol}', action='{self.action}', confidence={self.confidence:.3f}, timestamp='{self.timestamp}')>"
+
+
+class FundingRate(Base):
+    __tablename__ = 'funding_rates'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String, nullable=False)  # Например, 'BTCUSDT' или 'BTC/USDT'
+    timestamp = Column(BigInteger, nullable=False)  # UNIX время в мс времени применения ставки
+    rate = Column(Float, nullable=False)  # В долях (0.0001 == 1 bp)
+    source = Column(String, nullable=True)  # bybit_v5/ccxt/etc
+
+    __table_args__ = (
+        UniqueConstraint('symbol', 'timestamp', name='uix_funding_symbol_timestamp'),
+    )

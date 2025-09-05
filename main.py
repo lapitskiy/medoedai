@@ -932,10 +932,109 @@ def parser():
             months_to_fetch=12, # Это параметр для parser_download_and_combine_with_library
             desired_candles=desired_candles
         )
+        # Если файл не создан — не пытаемся читать/загружать
+        try:
+            import os as _os
+            if not csv_file_path or not _os.path.exists(csv_file_path):
+                results.append({"status": "warning", "message": "Не найдено CSV-файлов (библиотека не дала данных)."})
+                response = {'status': 'Парсинг завершен', 'results': results}
+                return Response(json.dumps(response, ensure_ascii=False), mimetype='application/json')
+        except Exception:
+            pass
         results.append({"status": "success", "message": f"CSV файл создан: {csv_file_path}"})
 
         # 2. Загружаем эти 100 000 свечей из CSV в базу данных
         # Эта функция теперь отвечает за перезапись/обновление данных в БД
+        loaded_count = load_latest_candles_from_csv_to_db(
+            file_path=csv_file_path,
+            symbol_name=symbol,
+            timeframe=interval
+        )
+        if loaded_count > 0:
+            results.append({"status": "success", "message": f"Загружено {loaded_count} свечей из CSV в БД."})
+        else:
+            results.append({"status": "warning", "message": "Не удалось загрузить свечи из CSV в БД."})
+
+    except Exception as e:
+        results.append({"status": "error", "message": f"Ошибка в процессе парсинга: {str(e)}"})
+
+    response = {'status': 'Парсинг завершен', 'results': results}
+    return Response(json.dumps(response, ensure_ascii=False), mimetype='application/json')
+
+# Новая страница управления данными
+@app.route('/data', methods=['GET'])
+def data_page():
+    return render_template('data.html')
+
+# Отдельный маршрут для XMRUSDT
+@app.route('/parser_xmr', methods=['POST'])
+def parser_xmr():
+    results = []
+    symbol = 'XMRUSDT'
+    interval = '5m'
+    desired_candles = 100000
+    csv_file_path = None
+
+    try:
+        csv_file_path = parser_download_and_combine_with_library(
+            symbol=symbol,
+            interval=interval,
+            months_to_fetch=12,
+            desired_candles=desired_candles
+        )
+        # Проверяем наличие файла; если нет — возвращаем понятное предупреждение
+        try:
+            import os as _os
+            if not csv_file_path or not _os.path.exists(csv_file_path):
+                results.append({"status": "warning", "message": "Не найдено CSV-файлов для XMRUSDT (в библиотеке нет данных)."})
+                response = {'status': 'Парсинг завершен', 'results': results}
+                return Response(json.dumps(response, ensure_ascii=False), mimetype='application/json')
+        except Exception:
+            pass
+        results.append({"status": "success", "message": f"CSV файл создан: {csv_file_path}"})
+
+        loaded_count = load_latest_candles_from_csv_to_db(
+            file_path=csv_file_path,
+            symbol_name=symbol,
+            timeframe=interval
+        )
+        if loaded_count > 0:
+            results.append({"status": "success", "message": f"Загружено {loaded_count} свечей из CSV в БД."})
+        else:
+            results.append({"status": "warning", "message": "Не удалось загрузить свечи из CSV в БД."})
+
+    except Exception as e:
+        results.append({"status": "error", "message": f"Ошибка в процессе парсинга: {str(e)}"})
+
+    response = {'status': 'Парсинг завершен', 'results': results}
+    return Response(json.dumps(response, ensure_ascii=False), mimetype='application/json')
+
+@app.route('/parser_xrp', methods=['POST'])
+def parser_xrp():
+    results = []
+    symbol = 'XRPUSDT'
+    interval = '5m'
+    desired_candles = 100000
+    csv_file_path = None
+
+    try:
+        csv_file_path = parser_download_and_combine_with_library(
+            symbol=symbol,
+            interval=interval,
+            months_to_fetch=12,
+            desired_candles=desired_candles
+        )
+        # Проверяем наличие файла; если нет — возвращаем понятное предупреждение
+        try:
+            import os as _os
+            if not csv_file_path or not _os.path.exists(csv_file_path):
+                results.append({"status": "warning", "message": "Не найдено CSV-файлов для XRPUSDT (в библиотеке нет данных)."})
+                response = {'status': 'Парсинг завершен', 'results': results}
+                return Response(json.dumps(response, ensure_ascii=False), mimetype='application/json')
+        except Exception:
+            pass
+        results.append({"status": "success", "message": f"CSV файл создан: {csv_file_path}"})
+
         loaded_count = load_latest_candles_from_csv_to_db(
             file_path=csv_file_path,
             symbol_name=symbol,
@@ -1110,10 +1209,6 @@ def create_model_version():
         requested_symbol = (data.get('symbol') or '').strip()
         requested_file = (data.get('file') or '').strip()
         
-        # Создаем папку good_models если её нет
-        good_models_dir = Path('good_models')
-        good_models_dir.mkdir(exist_ok=True)
-        
         # Генерируем уникальный ID (4 символа)
         model_id = str(uuid.uuid4())[:4].upper()
         
@@ -1234,15 +1329,102 @@ def create_model_version():
                 "error": f"Файл {replay_file.name} не найден в result/"
             })
         
-        # Копируем файлы с новыми именами с включением символа
+        # Сохраняем в структуру models/<symbol>/<ensemble>/vN
         named_id = f"{base_code}_{model_id}"
-        new_model_file = good_models_dir / f'dqn_model_{named_id}.pth'
-        new_replay_file = good_models_dir / f'replay_buffer_{named_id}.pkl'
-        new_result_file = good_models_dir / f'train_result_{named_id}.pkl'
-        
-        shutil.copy2(model_file, new_model_file)
-        shutil.copy2(replay_file, new_replay_file)
-        shutil.copy2(selected_result_file, new_result_file)
+        try:
+            from datetime import datetime as _dt
+            from pathlib import Path as _Path
+            import json as _json
+
+            models_root = _Path('models')
+            models_root.mkdir(exist_ok=True)
+
+            # Символ папки как в примере (btc, bnb, ton)
+            symbol_dir = models_root / base_code.lower()
+            symbol_dir.mkdir(exist_ok=True)
+
+            # Ensemble можно передать в payload, иначе по умолчанию 'ensemble-a'
+            ensemble_name = (data.get('ensemble') or 'ensemble-a').strip() or 'ensemble-a'
+            ensemble_dir = symbol_dir / ensemble_name
+            ensemble_dir.mkdir(exist_ok=True)
+
+            # Определяем следующий номер версии vN
+            existing_versions = []
+            for p in ensemble_dir.iterdir():
+                try:
+                    if p.is_dir() and p.name.startswith('v'):
+                        n = int(p.name[1:])
+                        existing_versions.append(n)
+                except Exception:
+                    pass
+            next_num = (max(existing_versions) + 1) if existing_versions else 1
+            version_name = f'v{next_num}'
+            version_dir = ensemble_dir / version_name
+            version_dir.mkdir(exist_ok=False)
+
+            # Копируем артефакты версии
+            ver_model = version_dir / f'dqn_model_{named_id}.pth'
+            ver_replay = version_dir / f'replay_buffer_{named_id}.pkl'
+            ver_result = version_dir / f'train_result_{named_id}.pkl'
+            shutil.copy2(model_file, ver_model)
+            shutil.copy2(replay_file, ver_replay)
+            shutil.copy2(selected_result_file, ver_result)
+
+            # Пишем manifest.yaml (без зависимости от PyYAML)
+            manifest_path = version_dir / 'manifest.yaml'
+            try:
+                # Попытаемся извлечь краткую статистику
+                stats_brief = {}
+                try:
+                    import pickle as _pickle
+                    with open(new_result_file, 'rb') as _f:
+                        _res = _pickle.load(_f)
+                        if isinstance(_res, dict) and 'final_stats' in _res:
+                            stats_brief = _res['final_stats'] or {}
+                except Exception:
+                    pass
+                created_ts = _dt.utcnow().isoformat()
+                yaml_text = (
+                    'id: "' + named_id + '"\n'
+                    'symbol: "' + base_code.lower() + '"\n'
+                    'ensemble: "' + ensemble_name + '"\n'
+                    'version: "' + version_name + '"\n'
+                    'created_at: "' + created_ts + '"\n'
+                    'files:\n'
+                    '  model: "' + ver_model.name + '"\n'
+                    '  replay: "' + ver_replay.name + '"\n'
+                    '  results: "' + ver_result.name + '"\n'
+                    'stats:\n' + ''.join([
+                        f"  {k}: {v}\n" for k, v in (stats_brief.items() if isinstance(stats_brief, dict) else [])
+                    ])
+                )
+                with open(manifest_path, 'w', encoding='utf-8') as mf:
+                    mf.write(yaml_text)
+            except Exception:
+                pass
+
+            # Обновляем симлинк current -> vN (если не удаётся — создаём файл-указатель)
+            current_link = ensemble_dir / 'current'
+            try:
+                if current_link.exists() or current_link.is_symlink():
+                    try:
+                        if current_link.is_symlink() or current_link.is_file():
+                            current_link.unlink()
+                        elif current_link.is_dir():
+                            shutil.rmtree(current_link)
+                    except Exception:
+                        pass
+                os.symlink(version_name, current_link)
+            except Exception:
+                # Фоллбек: записываем имя версии в файл
+                try:
+                    with open(current_link, 'w', encoding='utf-8') as fcur:
+                        fcur.write(version_name)
+                except Exception:
+                    pass
+        except Exception:
+            # Не валим основной сценарий, если models/ недоступна
+            pass
         
         return jsonify({
             "success": True,
@@ -1268,65 +1450,62 @@ def get_models_list():
     from datetime import datetime
     
     try:
-        good_models_dir = Path('good_models')
-        if not good_models_dir.exists():
-            return jsonify({
-                "success": True,
-                "models": []
-            })
-        
-        models = []
-        
-        # Ищем все файлы моделей
-        model_files = list(good_models_dir.glob('dqn_model_*.pth'))
-        
-        for model_file in model_files:
-            # Извлекаем ID модели из имени файла (может включать символ)
-            model_id = model_file.stem.replace('dqn_model_', '')
-            
-            # Проверяем наличие связанных файлов
-            replay_file = good_models_dir / f'replay_buffer_{model_id}.pkl'
-            result_file = good_models_dir / f'train_result_{model_id}.pkl'
-            
-            if not replay_file.exists() or not result_file.exists():
-                continue  # Пропускаем неполные модели
-            
-            # Получаем размеры файлов
-            model_size = f"{model_file.stat().st_size / 1024 / 1024:.1f} MB"
-            replay_size = f"{replay_file.stat().st_size / 1024 / 1024:.1f} MB"
-            result_size = f"{result_file.stat().st_size / 1024:.1f} KB"
-            
-            # Получаем дату создания
-            creation_time = datetime.fromtimestamp(model_file.stat().st_ctime)
-            date_str = creation_time.strftime('%d.%m.%Y %H:%M')
-            
-            # Пытаемся загрузить статистику из файла результатов
-            stats = {}
-            try:
-                with open(result_file, 'rb') as f:
-                    results = pickle.load(f)
-                    if 'final_stats' in results:
-                        stats = results['final_stats']
-            except:
-                pass  # Если не удалось загрузить статистику, оставляем пустую
-            
-            models.append({
-                "id": model_id,
-                "date": date_str,
-                "files": {
-                    "model": f'dqn_model_{model_id}.pth',
-                    "model_size": model_size,
-                    "replay": f'replay_buffer_{model_id}.pkl',
-                    "replay_size": replay_size,
-                    "results": f'train_result_{model_id}.pkl',
-                    "results_size": result_size
-                },
-                "stats": stats
-            })
-        
+        models: list = []
+
+        # Читаем только новую структуру models/
+
+        # 2) Новая структура: models/<symbol>/<ensemble>/vN
+        models_root = Path('models')
+        if models_root.exists():
+            for symbol_dir in models_root.iterdir():
+                if not symbol_dir.is_dir():
+                    continue
+                for ensemble_dir in symbol_dir.iterdir():
+                    if not ensemble_dir.is_dir():
+                        continue
+                    for version_dir in ensemble_dir.iterdir():
+                        if not version_dir.is_dir() or not version_dir.name.startswith('v'):
+                            continue
+                        # Пытаемся найти артефакты
+                        model_files = list(version_dir.glob('dqn_model_*.pth'))
+                        replay_files = list(version_dir.glob('replay_buffer_*.pkl'))
+                        result_files = list(version_dir.glob('train_result_*.pkl'))
+                        if not model_files or not replay_files or not result_files:
+                            continue
+                        model_file = model_files[0]
+                        replay_file = replay_files[0]
+                        result_file = result_files[0]
+                        model_id = model_file.stem.replace('dqn_model_', '')
+                        model_size = f"{model_file.stat().st_size / 1024 / 1024:.1f} MB"
+                        replay_size = f"{replay_file.stat().st_size / 1024 / 1024:.1f} MB"
+                        result_size = f"{result_file.stat().st_size / 1024:.1f} KB"
+                        creation_time = datetime.fromtimestamp(model_file.stat().st_ctime)
+                        date_str = creation_time.strftime('%d.%m.%Y %H:%M')
+                        stats = {}
+                        try:
+                            with open(result_file, 'rb') as f:
+                                results = pickle.load(f)
+                                if isinstance(results, dict) and 'final_stats' in results:
+                                    stats = results['final_stats']
+                        except Exception:
+                            pass
+                        models.append({
+                            "id": model_id,
+                            "date": date_str,
+                            "files": {
+                                "model": model_file.name,
+                                "model_size": model_size,
+                                "replay": replay_file.name,
+                                "replay_size": replay_size,
+                                "results": result_file.name,
+                                "results_size": result_size
+                            },
+                            "stats": stats
+                        })
+
         # Сортируем по дате создания (новые сначала)
         models.sort(key=lambda x: x['date'], reverse=True)
-        
+
         return jsonify({
             "success": True,
             "models": models
@@ -1354,7 +1533,32 @@ def analyze_model():
                 "error": "ID модели не указан"
             })
         
-        result_file = Path(f'good_models/train_result_{model_id}.pkl')
+        # Ищем файл результатов в новой структуре models/
+        result_file = None
+        try:
+            models_root = Path('models')
+            for symbol_dir in models_root.iterdir():
+                if not symbol_dir.is_dir():
+                    continue
+                for ensemble_dir in symbol_dir.iterdir():
+                    if not ensemble_dir.is_dir():
+                        continue
+                    for version_dir in ensemble_dir.iterdir():
+                        if not version_dir.is_dir():
+                            continue
+                        cand = version_dir / f'train_result_{model_id}.pkl'
+                        if cand.exists():
+                            result_file = cand
+                            raise StopIteration
+        except StopIteration:
+            pass
+        except Exception:
+            pass
+        if result_file is None:
+            return jsonify({
+                "success": False,
+                "error": f"Файл результатов для модели {model_id} не найден"
+            })
         if not result_file.exists():
             return jsonify({
                 "success": False,
@@ -1424,27 +1628,42 @@ def delete_model():
                 "error": "ID модели не указан"
             })
         
-        good_models_dir = Path('good_models')
-        
-        # Удаляем все файлы модели
-        files_to_delete = [
-            good_models_dir / f'dqn_model_{model_id}.pth',
-            good_models_dir / f'replay_buffer_{model_id}.pkl',
-            good_models_dir / f'train_result_{model_id}.pkl'
-        ]
-        
+        # Удаляем модель из новой структуры models/
+        models_root = Path('models')
         deleted_files = []
-        for file_path in files_to_delete:
-            if file_path.exists():
-                os.remove(file_path)
-                deleted_files.append(file_path.name)
-        
+        if models_root.exists():
+            for symbol_dir in models_root.iterdir():
+                if not symbol_dir.is_dir():
+                    continue
+                for ensemble_dir in symbol_dir.iterdir():
+                    if not ensemble_dir.is_dir():
+                        continue
+                    for version_dir in list(ensemble_dir.iterdir()):
+                        if not version_dir.is_dir():
+                            continue
+                        # Проверяем совпадение по файлам модели
+                        for name in [f'dqn_model_{model_id}.pth', f'replay_buffer_{model_id}.pkl', f'train_result_{model_id}.pkl']:
+                            fp = version_dir / name
+                            if fp.exists():
+                                try:
+                                    os.remove(fp)
+                                    deleted_files.append(str(fp))
+                                except Exception:
+                                    pass
+                        # Удаляем пустую версию
+                        try:
+                            if version_dir.is_dir() and not any(version_dir.iterdir()):
+                                import shutil as _sh
+                                _sh.rmtree(version_dir, ignore_errors=True)
+                        except Exception:
+                            pass
+
         if not deleted_files:
             return jsonify({
                 "success": False,
                 "error": f"Файлы модели {model_id} не найдены"
             })
-        
+
         return jsonify({
             "success": True,
             "message": f"Модель {model_id} удалена",
@@ -1617,14 +1836,14 @@ def trading_status():
             if cached:
                 import json as _json
                 status_obj = _json.loads(cached)
-                # Проверим свежесть (не старее 2 минут)
+                # Проверим свежесть (не старее 6 минут, > интервала beat)
                 from datetime import datetime, timedelta
                 is_fresh = True
                 try:
                     if cached_ts:
                         from datetime import datetime as _dt
                         ts = _dt.fromisoformat(cached_ts)
-                        is_fresh = _dt.utcnow() <= (ts + timedelta(minutes=2))
+                        is_fresh = _dt.utcnow() <= (ts + timedelta(minutes=6))
                 except Exception:
                     is_fresh = True
                 if is_fresh:
@@ -1660,17 +1879,29 @@ def trading_status():
             except Exception:
                 pass
 
-            # Получаем статус через exec
+            # Получаем статус через exec (прокидываем API ключи в окружение процесса)
+            api_key = os.environ.get('BYBIT_API_KEY', '') or ''
+            secret_key = os.environ.get('BYBIT_SECRET_KEY', '') or ''
+            api_key_esc = api_key.replace("'", "\\'")
+            secret_key_esc = secret_key.replace("'", "\\'")
             if model_path:
-                cmd = f'python -c "import sys, json; print(sys.version); from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); result = agent.get_trading_status(); print(\\\"RESULT: \\\" + json.dumps(result))"'
+                cmd = (
+                    f"python -c \"import sys, json, os; print(sys.version); "
+                    f"os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
+                    f"from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\\"{model_path}\\\"); "
+                    f"result = agent.get_trading_status(); print(\\\"RESULT: \\\" + json.dumps(result))\""
+                )
             else:
-                cmd = 'python -c "import sys, json; print(sys.version); from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.get_trading_status(); print(\\\"RESULT: \\\" + json.dumps(result))"'
+                cmd = (
+                    "python -c \"import sys, json, os; print(sys.version); "
+                    f"os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
+                    "from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.get_trading_status(); print(\\\"RESULT: \\\" + json.dumps(result))\""
+                )
             
             exec_result = container.exec_run(cmd, tty=True)
             
             # Логируем результат выполнения команды
-            #app.logger.info(f"Get status - Command: {cmd}")
-            #app.logger.info(f"Get status - Exit code: {exec_result.exit_code}")
+            app.logger.info(f"Get status - Exit code: {exec_result.exit_code}")
             if exec_result.output:
                 output_str = exec_result.output.decode('utf-8')
                 app.logger.info(f"Get status - Output: {output_str}")
@@ -1685,10 +1916,11 @@ def trading_status():
                     try:
                         import json
                         result = json.loads(result_str)
-                        return jsonify({
-                            'success': True,
-                            'agent_status': result
-                        }), 200
+                        # Возвращаем плоскую структуру для фронтенда (как и при кэше)
+                        flat = {'success': True, 'agent_status': result}
+                        if isinstance(result, dict):
+                            flat.update(result)
+                        return jsonify(flat), 200
                     except Exception as parse_error:
                         app.logger.error(f"Ошибка парсинга статуса: {parse_error}")
                         return jsonify({
@@ -1732,22 +1964,31 @@ def trading_status():
 def trading_latest_results():
     """Получение последних результатов торговли из Celery"""
     try:
-        # Получаем последние результаты из Redis
+        # Получаем последние результаты из Redis (ключи с таймстампом)
         latest_results = []
-        
-        # Получаем последние 10 результатов торговли
-        for i in range(10):
-            result_key = f'trading:latest_result_{i}'
-            try:
-                result_data = redis_client.get(result_key)
-                if result_data:
-                    result = json.loads(result_data.decode('utf-8'))
+        try:
+            keys = redis_client.keys('trading:latest_result_*') or []
+            # Загружаем все и сортируем по времени
+            for k in keys:
+                try:
+                    raw = redis_client.get(k)
+                    if not raw:
+                        continue
+                    try:
+                        result = json.loads(raw.decode('utf-8'))
+                    except Exception:
+                        result = json.loads(raw)
                     latest_results.append(result)
-            except Exception as e:
-                app.logger.warning(f"Ошибка получения результата {i}: {e}")
-        
+                except Exception as e:
+                    app.logger.warning(f"Ошибка чтения {k}: {e}")
+        except Exception as e:
+            app.logger.warning(f"Ошибка получения ключей trading:latest_result_*: {e}")
+
         # Сортируем по времени (новые сначала)
-        latest_results.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        try:
+            latest_results.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        except Exception:
+            pass
         
         return jsonify({
             'success': True,
@@ -1789,11 +2030,21 @@ def trading_balance():
             except Exception:
                 pass
 
-            # Получаем баланс через exec
+            # Получаем баланс через exec (прокидываем API ключи)
+            api_key = os.environ.get('BYBIT_API_KEY', '') or ''
+            secret_key = os.environ.get('BYBIT_SECRET_KEY', '') or ''
+            api_key_esc = api_key.replace("'", "\\'")
+            secret_key_esc = secret_key.replace("'", "\\'")
             if model_path:
-                cmd = f'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); result = agent.get_balance(); print(\\"RESULT: \\" + json.dumps(result))"'
+                cmd = (
+                    f"python -c \"import json, os; os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
+                    f"from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\\"{model_path}\\\"); result = agent.get_balance(); print(\\\"RESULT: \\\" + json.dumps(result))\""
+                )
             else:
-                cmd = 'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.get_balance(); print(\\"RESULT: \\" + json.dumps(result))"'
+                cmd = (
+                    "python -c \"import json, os; os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
+                    "from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.get_balance(); print(\\\"RESULT: \\\" + json.dumps(result))\""
+                )
             
             exec_result = container.exec_run(cmd, tty=True)
             
@@ -1883,21 +2134,23 @@ def trading_test_order():
             py_symbol = _py_str_literal(symbol)
             py_quantity = 'None' if quantity is None else str(float(quantity))
 
+            api_key = os.environ.get('BYBIT_API_KEY', '') or ''
+            secret_key = os.environ.get('BYBIT_SECRET_KEY', '') or ''
+            api_key_esc = api_key.replace("'", "\\'")
+            secret_key_esc = secret_key.replace("'", "\\'")
             if model_path:
                 cmd = (
-                    f'python -c "import json; from trading_agent.trading_agent import TradingAgent; '
-                    f'agent = TradingAgent(model_path=\\\"{model_path}\\\"); '
-                    f'action = {py_action}; symbol = {py_symbol}; quantity = {py_quantity}; '
-                    f'result = agent.execute_direct_order(action, symbol, quantity); '
-                    f'print(\\\"RESULT: \\\" + json.dumps(result))"'
+                    f"python -c \"import json, os; os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
+                    f"from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\\"{model_path}\\\"); "
+                    f"action = {py_action}; symbol = {py_symbol}; quantity = {py_quantity}; "
+                    f"result = agent.execute_direct_order(action, symbol, quantity); print(\\\"RESULT: \\\" + json.dumps(result))\""
                 )
             else:
                 cmd = (
-                    'python -c "import json; from trading_agent.trading_agent import TradingAgent; '
-                    'agent = TradingAgent(); '
-                    f'action = {py_action}; symbol = {py_symbol}; quantity = {py_quantity}; '
-                    'result = agent.execute_direct_order(action, symbol, quantity); '
-                    'print(\\\"RESULT: \\\" + json.dumps(result))"'
+                    "python -c \"import json, os; os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
+                    "from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); "
+                    f"action = {py_action}; symbol = {py_symbol}; quantity = {py_quantity}; "
+                    "result = agent.execute_direct_order(action, symbol, quantity); print(\\\"RESULT: \\\" + json.dumps(result))\""
                 )
 
             exec_result = container.exec_run(cmd, tty=True)
@@ -2054,11 +2307,21 @@ def trading_history():
             except Exception:
                 pass
 
-            # Получаем историю через exec
+            # Получаем историю через exec (прокидываем API ключи)
+            api_key = os.environ.get('BYBIT_API_KEY', '') or ''
+            secret_key = os.environ.get('BYBIT_SECRET_KEY', '') or ''
+            api_key_esc = api_key.replace("'", "\\'")
+            secret_key_esc = secret_key.replace("'", "\\'")
             if model_path:
-                cmd = f'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); result = agent.get_trading_history(); print(\\"RESULT: \\" + json.dumps(result))"'
+                cmd = (
+                    f"python -c \"import json, os; os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
+                    f"from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\\"{model_path}\\\"); result = agent.get_trading_history(); print(\\\"RESULT: \\\" + json.dumps(result))\""
+                )
             else:
-                cmd = 'python -c "import json; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.get_trading_history(); print(\\"RESULT: \\" + json.dumps(result))"'
+                cmd = (
+                    "python -c \"import json, os; os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
+                    "from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.get_trading_history(); print(\\\"RESULT: \\\" + json.dumps(result))\""
+                )
             
             exec_result = container.exec_run(cmd, tty=True)
             

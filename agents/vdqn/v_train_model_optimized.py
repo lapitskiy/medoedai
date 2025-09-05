@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import wandb
 import time
+import psutil
 from typing import Dict, List, Optional
 import pickle
 from pickle import HIGHEST_PROTOCOL
@@ -20,6 +21,47 @@ from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOpti
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _format_bytes(num_bytes: int) -> str:
+    try:
+        gb = num_bytes / (1024 ** 3)
+        if gb >= 1:
+            return f"{gb:.1f} GB"
+        mb = num_bytes / (1024 ** 2)
+        return f"{mb:.0f} MB"
+    except Exception:
+        return str(num_bytes)
+
+
+def log_resource_usage(tag: str = "train", extra: str = "") -> None:
+    try:
+        process = psutil.Process(os.getpid())
+        total_cpus = os.cpu_count() or 1
+        cpu_total_pct = psutil.cpu_percent(interval=0.0)
+        cpu_proc_pct = process.cpu_percent(interval=0.0)
+        mem = psutil.virtual_memory()
+        mem_total_pct = mem.percent
+        mem_proc = process.memory_info().rss
+        try:
+            load1, _load5, _load15 = os.getloadavg()
+            load_str = f"{load1:.1f}/{total_cpus}"
+        except Exception:
+            load_str = "n/a"
+        omp = os.environ.get('OMP_NUM_THREADS')
+        mkl = os.environ.get('MKL_NUM_THREADS')
+        tor = os.environ.get('TORCH_NUM_THREADS')
+        frac = os.environ.get('TRAIN_CPU_FRACTION')
+        line = (
+            f"[RES-{tag}] CPU {cpu_total_pct:.0f}% (proc {cpu_proc_pct:.0f}%), load {load_str}, "
+            f"mem {mem_total_pct:.0f}% (proc {_format_bytes(mem_proc)}), "
+            f"OMP/MKL/TORCH={omp}/{mkl}/{tor}"
+            + (f", FRACTION={frac}" if frac else "")
+            + (f" | {extra}" if extra else "")
+        )
+        print(line, flush=True)
+    except Exception:
+        pass
 
 def prepare_data_for_training(dfs: Dict) -> Dict:
     """
@@ -292,8 +334,18 @@ def train_model_optimized(
         save_frequency = getattr(cfg, 'save_frequency', 50)
         save_only_on_improvement = getattr(cfg, 'save_only_on_improvement', False)
 
+        # Частота логирования ресурсов (каждые N эпизодов)
+        try:
+            resource_log_every = int(os.getenv('TRAIN_LOG_EVERY_EPISODES', '100'))
+        except Exception:
+            resource_log_every = 100
+
         # Основной цикл тренировки
-        for episode in range(episodes):         
+        for episode in range(episodes):
+            # Логируем загрузку ресурсов по частоте
+            if resource_log_every > 0 and (episode % resource_log_every == 0):
+                log_resource_usage(tag="episode", extra=f"episode={episode}/{episodes}")
+
             state = env.reset()            
             # Убеждаемся, что state является numpy массивом
             if isinstance(state, (list, tuple)):

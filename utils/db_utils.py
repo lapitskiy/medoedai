@@ -11,7 +11,7 @@ from sqlalchemy import Numeric # Import Numeric for casting
 from sqlalchemy.dialects.postgresql import insert
 
 # Import your models from model.py
-from orm.models import Base, Symbol, OHLCV
+from orm.models import Base, Symbol, OHLCV, FundingRate
 
 import logging
 
@@ -315,6 +315,60 @@ def db_get_or_fetch_ohlcv(
             'close': c.close,
             'volume': c.volume
         } for c in reversed(db_candles)])
+
+        if detailed_logs:
+            logging.info(f"Итоговое количество свечей для {symbol_name} {timeframe}: {len(df)}")
+
+        # --- Funding Join (forward-fill) ---
+        try:
+            if not df.empty:
+                sym_norm = normalize_symbol(symbol_name)
+                # Приведём к формату без слешей для хранения funding
+                sym_key = sym_norm.replace('/', '')
+                # Получаем funding за диапазон по времени выборки OHLCV с запасом 2 суток
+                ts_min = int(df['timestamp'].min()) - 2 * 24 * 3600 * 1000
+                ts_max = int(df['timestamp'].max()) + 2 * 24 * 3600 * 1000
+                q = session.query(FundingRate).filter(
+                    FundingRate.symbol.in_([sym_key, sym_norm]),
+                    FundingRate.timestamp >= ts_min,
+                    FundingRate.timestamp <= ts_max
+                ).order_by(FundingRate.timestamp.asc())
+                fr_rows = q.all()
+                fr_df = pd.DataFrame([
+                    {'timestamp': r.timestamp, 'funding_rate': float(r.rate)} for r in fr_rows
+                ])
+                if fr_df.empty:
+                    # Пытаемся догрузить funding и повторить
+                    try:
+                        _download_and_store_funding_rates(session, sym_key, ts_min, ts_max)
+                        fr_rows = session.query(FundingRate).filter(
+                            FundingRate.symbol == sym_key,
+                            FundingRate.timestamp >= ts_min,
+                            FundingRate.timestamp <= ts_max
+                        ).order_by(FundingRate.timestamp.asc()).all()
+                        fr_df = pd.DataFrame([
+                            {'timestamp': r.timestamp, 'funding_rate': float(r.rate)} for r in fr_rows
+                        ])
+                    except Exception as _e:
+                        logging.warning(f"Не удалось догрузить funding rates: {_e}")
+                if not fr_df.empty:
+                    fr_df = fr_df.sort_values('timestamp')
+                    # Forward-fill funding по 5m барам
+                    df_ff = df[['timestamp']].merge(fr_df, on='timestamp', how='left').sort_values('timestamp')
+                    df_ff['funding_rate'] = df_ff['funding_rate'].ffill()
+                    df = df.merge(df_ff, on='timestamp', how='left')
+                    # Добавляем бипсы и индикаторы
+                    df['funding_rate_bp'] = (df['funding_rate'] * 10000).clip(-50, 50)
+                    # EMA по funding (окно ~24 часа для 5m: 288 баров)
+                    window = 288 if timeframe == '5m' else max(1, int((60*24) / int(timeframe.replace('m','')))) if timeframe.endswith('m') else 24
+                    df['funding_rate_ema'] = df['funding_rate'].ewm(span=window, adjust=False).mean()
+                    # Дельта за сутки: разница между текущим и значением 24 часа назад
+                    shift_bars = 288 if timeframe == '5m' else window
+                    df['funding_rate_change'] = df['funding_rate'].diff(shift_bars)
+                    # Знак funding
+                    df['funding_sign'] = df['funding_rate'].apply(lambda x: 1 if x and x > 0 else (-1 if x and x < 0 else 0))
+        except Exception as fe:
+            logging.warning(f"Funding join warning: {fe}")
 
         if detailed_logs:
             logging.info(f"Итоговое количество свечей для {symbol_name} {timeframe}: {len(df)}")
@@ -709,3 +763,68 @@ def _get_or_create_symbol(session, symbol_name: str) -> Symbol:
         session.refresh(symbol_obj)
         logging.info(f"Добавлен новый символ в БД: {symbol_name}")
     return symbol_obj
+
+
+def _download_and_store_funding_rates(session, symbol_no_slash: str, ts_from_ms: int, ts_to_ms: int) -> int:
+    """Скачивает funding rates Bybit v5 через ccxt и сохраняет в БД.
+    symbol_no_slash: 'BTCUSDT'
+    Возвращает количество вставленных записей.
+    """
+    try:
+        ex = ccxt.bybit({'enableRateLimit': True, 'timeout': 30000})
+        ex.load_markets()
+        inserted = 0
+        # Bybit funding раз в 8 часов: шаг 8h
+        cursor = ts_from_ms
+        while cursor <= ts_to_ms:
+            params = {'category': 'linear', 'symbol': symbol_no_slash}
+            # ccxt не всегда имеет унифицированный метод; используем raw v5, если доступен
+            resp = None
+            if hasattr(ex, 'v5PublicGetMarketFundingHistory'):
+                resp = ex.v5PublicGetMarketFundingHistory(params)
+            elif hasattr(ex, 'publicGetV5MarketFundingHistory'):
+                resp = ex.publicGetV5MarketFundingHistory(params)
+            else:
+                # fallback: попытаться fetchFundingRate/ fetchFundingRates
+                try:
+                    fr = ex.fetchFundingRate(symbol_no_slash)
+                    resp = {'result': {'list': [{'symbol': symbol_no_slash, 'fundingRate': fr.get('fundingRate'), 'fundingRateTimestamp': fr.get('timestamp')} ]}}
+                except Exception:
+                    resp = None
+            if not resp:
+                break
+            data = resp.get('result') or resp
+            items = data.get('list') if isinstance(data, dict) else None
+            if not (items and isinstance(items, list)):
+                break
+            recs = []
+            for it in items:
+                try:
+                    rate = it.get('fundingRate') or it.get('rate')
+                    t = it.get('fundingRateTimestamp') or it.get('timestamp') or it.get('time')
+                    if rate is None or t is None:
+                        continue
+                    t_ms = int(t)
+                    if t_ms < ts_from_ms or t_ms > ts_to_ms:
+                        continue
+                    recs.append({'symbol': symbol_no_slash, 'timestamp': t_ms, 'rate': float(rate), 'source': 'bybit_v5'})
+                except Exception:
+                    continue
+            if recs:
+                _upsert_funding_records(session, recs)
+                inserted += len(recs)
+            # Выходим — Bybit отдаёт последние события; для простоты одной порции достаточно
+            break
+        return inserted
+    except Exception as e:
+        logging.warning(f"download funding error: {e}")
+        return 0
+
+
+def _upsert_funding_records(session, records: list) -> None:
+    if not records:
+        return
+    stmt = insert(FundingRate).values(records)
+    stmt = stmt.on_conflict_do_nothing(index_elements=['symbol', 'timestamp'])
+    session.execute(stmt)
+    session.commit()

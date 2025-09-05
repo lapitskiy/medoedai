@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class TradingAgent:
-    def __init__(self, model_path: str = "/workspace/good_models/dqn_model.pth"):
+    def __init__(self, model_path: str = "/workspace/models/btc/ensemble-a/current/dqn_model.pth"):
         """
         Инициализация торгового агента
         
@@ -41,6 +41,16 @@ class TradingAgent:
         
         # Инициализируем биржу
         self._init_exchange()
+        
+        # Попытка восстановить выбранные символы из Redis и открытую позицию с биржи
+        try:
+            self._load_last_symbols_from_redis()
+        except Exception:
+            pass
+        try:
+            self._restore_position_from_exchange()
+        except Exception:
+            pass
     
     def _load_model(self):
         """Загрузка обученной модели (поддержка torch.save(obj) и torch.save(state_dict))"""
@@ -129,6 +139,249 @@ class TradingAgent:
             #logger.info("Подключение к Bybit Derivatives (фьючерсы) установлено")
         except Exception as e:
             logger.error(f"Ошибка подключения к бирже: {e}")
+
+    def _load_last_symbols_from_redis(self) -> None:
+        """Загружает последний выбор символов из Redis (trading:symbols) и обновляет self.symbol/base_symbol.
+
+        Ничего не делает при ошибках доступа к Redis.
+        """
+        try:
+            import redis as _redis
+            import json as _json
+            r = _redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
+            raw = r.get('trading:symbols')
+            if not raw:
+                return
+            symbols = None
+            try:
+                symbols = _json.loads(raw)
+            except Exception:
+                # Если по каким-то причинам строка не JSON, пробуем как одиночный символ
+                symbols = [raw] if isinstance(raw, str) and raw else None
+            if isinstance(symbols, list) and symbols:
+                # Берём первый символ как основной
+                self.symbols = symbols
+                self.symbol = symbols[0]
+                self.base_symbol = self.symbol
+        except Exception as e:
+            logger.debug(f"_load_last_symbols_from_redis: {e}")
+
+    def _restore_position_from_exchange(self) -> None:
+        """Пытается восстановить открытую позицию с биржи (Bybit derivatives) после перезапуска.
+
+        Если обнаружена открытая LONG/SHORT позиция по self.symbol, заполняет self.current_position
+        (type, amount, entry_price, entry_time=None, trade_number=None).
+        """
+        try:
+            if not self.exchange:
+                return
+            symbol = getattr(self, 'symbol', 'BTCUSDT') or 'BTCUSDT'
+            # Загружаем позиции по символу (если API поддерживает фильтр массивом)
+            positions = None
+            try:
+                if hasattr(self.exchange, 'fetch_positions'):
+                    positions = self.exchange.fetch_positions([symbol])
+                    if positions:
+                        try:
+                            logger.info(f"[fetch_positions unified [symbol]] found={len(positions)} sample={str(positions[0])[:500]}")
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug(f"fetch_positions([symbol]) не удался: {e}")
+                positions = None
+            # Пробуем без фильтра
+            if positions is None and hasattr(self.exchange, 'fetch_positions'):
+                try:
+                    positions = self.exchange.fetch_positions()
+                    if positions:
+                        try:
+                            logger.info(f"[fetch_positions unified no-filter] found={len(positions)} sample={str(positions[0])[:500]}")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.debug(f"fetch_positions() не удался: {e}")
+                    positions = []
+            # Пробуем с параметрами Bybit v5 (linear/inverse и разные settleCoin)
+            if (not positions) and hasattr(self.exchange, 'fetch_positions'):
+                categories = ['linear', 'inverse']
+                settle_coins = [None, 'USDT', 'USDC', 'BTC', 'ETH']
+                for cat in categories:
+                    for sc in settle_coins:
+                        params = {'category': cat}
+                        if sc:
+                            params['settleCoin'] = sc
+                        try:
+                            positions = self.exchange.fetch_positions([symbol], params)
+                            if positions:
+                                try:
+                                    logger.info(f"[fetch_positions unified params] params={params} found={len(positions)} sample={str(positions[0])[:500]}")
+                                except Exception:
+                                    pass
+                                break
+                        except Exception as e:
+                            logger.debug(f"fetch_positions([symbol], {params}) не удался: {e}")
+                            positions = None
+                        if (not positions):
+                            try:
+                                positions = self.exchange.fetch_positions(params)
+                                if positions:
+                                    try:
+                                        logger.info(f"[fetch_positions unified params no-symbol] params={params} found={len(positions)} sample={str(positions[0])[:500]}")
+                                    except Exception:
+                                        pass
+                                    break
+                            except Exception as e:
+                                logger.debug(f"fetch_positions({params}) не удался: {e}")
+                                positions = None
+                    if positions:
+                        break
+            if not positions:
+                logger.info("[positions] not found in unified fetch, trying raw v5 position/list fallback")
+                positions = []
+            # Ищем позицию по нужному символу (нормализуем представления типа BTC/USDT:USDT)
+            pos = None
+            def _norm_sym(s: str) -> str:
+                try:
+                    return ''.join(ch for ch in s.upper() if ch.isalnum())
+                except Exception:
+                    return s.upper()
+            target_norm = _norm_sym(symbol)
+            for p in positions:
+                try:
+                    psym = p.get('symbol') or p.get('info', {}).get('symbol') or ''
+                    if psym and _norm_sym(psym).endswith(target_norm):
+                        pos = p
+                        break
+                except Exception:
+                    continue
+            if not pos:
+                # Fallback: прямой вызов Bybit v5 position/list через методы ccxt
+                try:
+                    categories = ['linear', 'inverse']
+                    settle_coins = [None, 'USDT', 'USDC', 'BTC', 'ETH']
+                    for cat in categories:
+                        for sc in settle_coins:
+                            params = {'category': cat, 'symbol': symbol}
+                            if sc:
+                                params['settleCoin'] = sc
+                            resp = None
+                            try:
+                                if hasattr(self.exchange, 'v5PrivateGetPositionList'):
+                                    resp = self.exchange.v5PrivateGetPositionList(params)
+                                elif hasattr(self.exchange, 'privateGetV5PositionList'):
+                                    resp = self.exchange.privateGetV5PositionList(params)
+                            except Exception as e:
+                                logger.debug(f"bybit v5 position list {params} failed: {e}")
+                                resp = None
+                            if not resp:
+                                continue
+                            data = resp.get('result') or resp
+                            items = data.get('list') if isinstance(data, dict) else None
+                            try:
+                                logger.info(f"[bybit v5 position/list] params={params} items={len(items) if isinstance(items, list) else 'N/A'} sample={str(items[0])[:500] if (isinstance(items, list) and items) else 'N/A'}")
+                            except Exception:
+                                pass
+                            if not (items and isinstance(items, list)):
+                                continue
+                            found = False
+                            for it in items:
+                                try:
+                                    isym = it.get('symbol') or ''
+                                    if _norm_sym(isym).endswith(target_norm):
+                                        sz = it.get('size')
+                                        side = (it.get('side') or '').lower()
+                                        avg = it.get('avgPrice') or it.get('entryPrice')
+                                        if sz is None:
+                                            continue
+                                        fsz = float(sz)
+                                        if abs(fsz) <= 0:
+                                            continue
+                                        position_type = 'long' if side == 'buy' else ('short' if side == 'sell' else ('long' if fsz > 0 else 'short'))
+                                        try:
+                                            entry_price = float(avg) if avg is not None else self._get_current_price()
+                                        except Exception:
+                                            entry_price = self._get_current_price()
+                                        amount = self._normalize_amount(abs(fsz))
+                                        self.current_position = {
+                                            'type': position_type,
+                                            'amount': amount,
+                                            'entry_price': entry_price,
+                                            'entry_time': None,
+                                            'trade_number': None
+                                        }
+                                        self.trade_amount = amount
+                                        self.is_trading = True
+                                        found = True
+                                        break
+                                except Exception:
+                                    continue
+                            if found:
+                                try:
+                                    logger.info(f"[position restored v5] type={self.current_position['type']} amount={self.current_position['amount']} entry_price={self.current_position['entry_price']}")
+                                except Exception:
+                                    pass
+                                return
+                except Exception as e:
+                    logger.debug(f"bybit v5 position list fallback failed: {e}")
+                return
+            # Определяем размер позиции (в базовой валюте)
+            size = None
+            try:
+                # ccxt unified
+                size = pos.get('contracts')
+            except Exception:
+                size = None
+            if size in (None, 0):
+                try:
+                    info = pos.get('info', {})
+                    # Bybit v5: size бывает строкой
+                    s = info.get('size') or info.get('positionQty') or info.get('positionAmt')
+                    if s is not None:
+                        size = float(s)
+                except Exception:
+                    size = None
+            if not size or abs(float(size)) <= 0:
+                return
+            size = float(size)
+            # Определяем направление
+            position_type = 'long' if size > 0 else 'short'
+            # Цена входа
+            entry = None
+            try:
+                entry = pos.get('entryPrice')
+            except Exception:
+                entry = None
+            if not entry:
+                try:
+                    entry = pos.get('average')
+                except Exception:
+                    entry = None
+            if not entry:
+                try:
+                    info = pos.get('info', {})
+                    entry = info.get('avgPrice') or info.get('entryPrice') or info.get('averagePrice')
+                except Exception:
+                    entry = None
+            try:
+                entry_price = float(entry) if entry is not None else self._get_current_price()
+            except Exception:
+                entry_price = self._get_current_price()
+            # Нормализуем количество под шаг (на стороне биржи уже точное значение, но выровняем для логики)
+            amount = self._normalize_amount(abs(size))
+            # Фиксируем текущую позицию
+            self.current_position = {
+                'type': position_type,
+                'amount': amount,
+                'entry_price': entry_price,
+                'entry_time': None,
+                'trade_number': None
+            }
+            # Позиция восстановлена — выставим торговую величину для статуса
+            self.trade_amount = amount
+            # Если позиция существует — считаем торговлю активной логически
+            self.is_trading = True
+        except Exception as e:
+            logger.debug(f"_restore_position_from_exchange: {e}")
     
     def start_trading(self, symbols: list) -> Dict:
         """
@@ -1172,6 +1425,23 @@ class TradingAgent:
             # Изменение цены
             price_change = ((current_price - close_prices[-2]) / close_prices[-2] * 100) if len(close_prices) >= 2 else 0
             
+            # Funding данные (если доступны в df)
+            def _last_safe(col):
+                try:
+                    if col in df_5min.columns and len(df_5min[col].dropna()) > 0:
+                        return float(df_5min[col].dropna().iloc[-1])
+                except Exception:
+                    pass
+                return None
+            fr = _last_safe('funding_rate')
+            fr_bp = _last_safe('funding_rate_bp')
+            fr_ema = _last_safe('funding_rate_ema')
+            fr_change = _last_safe('funding_rate_change')
+            fr_sign = _last_safe('funding_sign')
+            # Приведение EMA/change к бипсам для единообразного вывода
+            fr_ema_bp = (fr_ema * 10000.0) if (fr_ema is not None) else None
+            fr_change_bp = (fr_change * 10000.0) if (fr_change is not None) else None
+            
             return {
                 'rsi': round(rsi, 2),
                 'ema12': round(ema12, 6),
@@ -1179,7 +1449,12 @@ class TradingAgent:
                 'ema_cross': round(ema_cross, 6),
                 'current_price': round(current_price, 6),
                 'price_change_percent': round(price_change, 2),
-                'candles_count': len(close_prices)
+                'candles_count': len(close_prices),
+                'funding_rate_bp': round(fr_bp, 3) if fr_bp is not None else None,
+                'funding_rate_ema_bp': round(fr_ema_bp, 3) if fr_ema_bp is not None else None,
+                'funding_rate_change_bp': round(fr_change_bp, 3) if fr_change_bp is not None else None,
+                'funding_sign': int(fr_sign) if fr_sign is not None else None,
+                'funding_included': True
             }
             
         except Exception as e:
@@ -1231,10 +1506,42 @@ class TradingAgent:
             # Нормализуем OHLCV данные
             normalized_ohlcv = self._normalize_ohlcv(window_ohlcv)
             
-            # Объединяем OHLCV и индикаторы
+            # Добавляем funding-фичи при наличии в исходном DataFrame (через повторный fetch как pandas)
+            funding_features_flat = np.array([], dtype=np.float32)
+            try:
+                from utils.db_utils import db_get_or_fetch_ohlcv as _db_ohlcv
+                df_src = _db_ohlcv(self.base_symbol, '5m', limit_candles=max(100, lookback_window), exchange_id='bybit')
+                if df_src is not None and not df_src.empty:
+                    # Срез на то же окно
+                    df_src = df_src.sort_values('timestamp')
+                    if len(df_src) >= lookback_window:
+                        df_src = df_src.iloc[-lookback_window:]
+                        cols = [
+                            ('funding_rate_bp', 50.0),   # нормируем на 50 bp в [-1,1]
+                            ('funding_rate_ema', 50.0/10000.0),  # EMA в долях -> bp/50
+                            ('funding_rate_change', 50.0/10000.0),
+                            ('funding_sign', 1.0)
+                        ]
+                        feats = []
+                        for col, scale in cols:
+                            if col in df_src.columns:
+                                v = df_src[col].astype(float).values
+                                if col in ('funding_rate_ema', 'funding_rate_change'):
+                                    v = v * 10000.0  # в bp
+                                v = np.clip(v / 50.0, -1.0, 1.0) if col != 'funding_sign' else np.clip(v, -1.0, 1.0)
+                            else:
+                                v = np.zeros(lookback_window, dtype=np.float32)
+                            feats.append(v.astype(np.float32))
+                        if feats:
+                            funding_features_flat = np.column_stack(feats).astype(np.float32).flatten()
+            except Exception:
+                pass
+            
+            # Объединяем OHLCV, индикаторы и funding-фичи
             state_features = np.concatenate([
                 normalized_ohlcv.flatten(),
-                window_indicators.flatten()
+                window_indicators.flatten(),
+                funding_features_flat
             ], axis=0)
             
             # Добавляем информацию о позиции (фактическое состояние)

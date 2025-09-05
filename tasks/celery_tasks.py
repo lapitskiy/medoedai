@@ -1,6 +1,7 @@
 from agents.vdqn.v_train_model import train_model
 from agents.vdqn.v_train_model_optimized import train_model_optimized
 from celery import Celery
+from kombu import Queue
 import time
 import os
 
@@ -37,6 +38,20 @@ celery = Celery(
     backend="redis://redis:6379/0"
 )
 
+# Определяем очереди и маршрутизацию задач:
+# По умолчанию все задачи идут в очередь 'celery',
+# а тренировочные задачи направляем в отдельную очередь 'train'.
+celery.conf.task_queues = (
+    Queue('celery'),
+    Queue('train'),
+)
+celery.conf.task_default_queue = 'celery'
+celery.conf.task_routes = {
+    'tasks.celery_tasks.train_dqn': {'queue': 'train'},
+    'tasks.celery_tasks.train_dqn_symbol': {'queue': 'train'},
+    'tasks.celery_tasks.train_dqn_multi_crypto': {'queue': 'train'},
+}
+
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
 def search_lstm_task(self, query):
     """Фоновая задача, которая выполняется долго"""
@@ -48,7 +63,7 @@ def search_lstm_task(self, query):
 
     return {"message": "Task completed!", "query": query}
 
-@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
 def train_dqn(self):
     
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
@@ -62,7 +77,9 @@ def train_dqn(self):
         'ETHUSDT',  # Эфириум
         'SOLUSDT',  # Solana
         'ADAUSDT',  # Cardano
-        'BNBUSDT'   # Binance Coin
+        'BNBUSDT',  # Binance Coin
+        'XMRUSDT',  # Monero
+        'XRPUSDT'   # Ripple
     ]
     
     all_dfs = {}
@@ -158,7 +175,7 @@ def train_dqn(self):
     result = train_model_optimized(dfs=df, episodes=episodes)
     return {"message": result}
 
-@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
 def train_dqn_symbol(self, symbol: str, episodes: int = None):
     """Обучение DQN для одного символа (BTCUSDT/ETHUSDT/...)
 
@@ -265,7 +282,7 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None):
         traceback.print_exc()
         return {"message": f"❌ Ошибка обучения {symbol}: {str(e)}"}
 
-@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
 def train_dqn_multi_crypto(self):
     """Задача для мультивалютного обучения DQN"""
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
@@ -363,6 +380,35 @@ def start_trading_task(self, symbols, model_path=None):
     
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
     
+    # Перед запуском зафиксируем предварительный статус в Redis,
+    # чтобы UI мгновенно видел "Активна" даже до первых RESULT
+    try:
+        from redis import Redis as _Redis
+        import json as _json
+        provisional = {
+            'success': True,
+            'is_trading': True,
+            'trading_status': 'Активна',
+            'trading_status_emoji': '🟢',
+            'trading_status_full': '🟢 Активна',
+            'symbol': (symbols[0] if symbols else None),
+            'symbol_display': (symbols[0] if symbols else 'Не указана'),
+            'amount': None,
+            'amount_display': 'Не указано',
+            'amount_usdt': 0.0,
+            'position': None,
+            'trades_count': 0,
+            'balance': {},
+            'current_price': 0.0,
+            'last_model_prediction': None,
+        }
+        _rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+        _rc.set('trading:current_status', _json.dumps(provisional, ensure_ascii=False))
+        from datetime import datetime as _dt
+        _rc.set('trading:current_status_ts', _dt.utcnow().isoformat())
+    except Exception:
+        pass
+
     # Connect to Docker
     client = docker.from_env()
     
@@ -391,16 +437,7 @@ def start_trading_task(self, symbols, model_path=None):
         if exec_result.output:
             output_str = exec_result.output.decode('utf-8')
             print(f"📝 Start trading - Output: {output_str}")
-            
-            # Парсим результат
-            if 'RESULT:' in output_str:
-                try:
-                    result_str = output_str.split('RESULT:')[1].strip()
-                    result = json.loads(result_str)
-                    print(f"✅ Parsed result: {result}")
-                except Exception as parse_error:
-                    print(f"❌ Error parsing result: {parse_error}")
-                    print(f"Raw result string: {result_str}")
+    
         
             # Сохраняем результат в Redis для веб-интерфейса
             try:

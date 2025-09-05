@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+    <link rel="stylesheet" href="/static/css/styles.css">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MedoedAI - Торговый агент</title>
@@ -456,6 +457,7 @@
                         <option value="TONUSDT">TONUSDT (Фьючерсы)</option>
                         <option value="ADAUSDT">ADAUSDT (Фьючерсы)</option>
                         <option value="BNBUSDT">BNBUSDT (Фьючерсы)</option>
+                        <option value="XMRUSDT">XMRUSDT (Фьючерсы)</option>
                     </select>
                     <small style="color: #666; font-style: italic;">
                         ⚠️ Внимание: Торговля ведется на деривативах Bybit (фьючерсы), а не на споте
@@ -525,7 +527,7 @@
             <!-- Секция мониторинга -->
             <div class="section">
                 <h2>🔍 Мониторинг</h2>
-                <p>Автоматическое обновление статуса и результатов торговли каждые 30 секунд</p>
+                <p>Автоматическое обновление статуса и результатов торговли каждые 5 минут</p>
                 
                 <div class="button-group">
                     <button class="btn btn-info" onclick="startMonitoring()">
@@ -618,6 +620,27 @@
             });
         }
 
+        // Определение символа по ID модели (эвристика)
+        function guessSymbolFromModelId(modelId) {
+            try {
+                if (!modelId || typeof modelId !== 'string') return '';
+                const base = modelId.split('_')[0] || '';
+                if (!base) return '';
+                const low = base.toLowerCase();
+                if (['multi', 'multicrypto', 'мультивалюта'].includes(low)) return 'MULTI';
+                // Если уже заканчивается на USDT
+                if (/usdt$/i.test(base)) return base.toUpperCase();
+                // Базовые тикеры
+                const known = ['btc','eth','sol','ton','ada','bnb'];
+                if (known.includes(low)) return low.toUpperCase() + 'USDT';
+                // Общая эвристика: короткий буквенный префикс → добавить USDT
+                if (/^[a-z]{2,6}$/i.test(base)) return base.toUpperCase() + 'USDT';
+                return base.toUpperCase();
+            } catch (_) {
+                return '';
+            }
+        }
+
         // Загрузка списка моделей при загрузке страницы
         async function loadModels() {
             try {
@@ -632,7 +655,9 @@
                     result.models.forEach(model => {
                         const option = document.createElement('option');
                         // Полный путь для контейнера trading_agent
-                        option.value = `/workspace/good_models/${model.files.model}`;
+                        // Новая структура хранения моделей: models/<symbol>/ensemble-a/current/
+                        const guessed = (guessSymbolFromModelId(model.id) || '').replace('USDT','').toLowerCase();
+                        option.value = `/workspace/models/${guessed}/ensemble-a/current/${model.files.model}`;
                         option.textContent = `${model.id} (${model.date})`;
                         option.dataset.modelId = model.id;
                         modelSelect.appendChild(option);
@@ -656,11 +681,16 @@
                 
                 if (model) {
                     const stats = model.stats || {};
+                    const guessedSymbol = guessSymbolFromModelId(model.id);
                     modelInfoContent.innerHTML = `
                         <div class="model-details">
                             <div class="model-detail-item">
                                 <div class="model-detail-label">ID модели</div>
                                 <div class="model-detail-value">${model.id}</div>
+                            </div>
+                            <div class="model-detail-item">
+                                <div class="model-detail-label">Рекомендуемая пара</div>
+                                <div class="model-detail-value">${guessedSymbol || 'N/A'}</div>
                             </div>
                             <div class="model-detail-item">
                                 <div class="model-detail-label">Дата создания</div>
@@ -1209,7 +1239,7 @@
             }, 300000); 
             
             document.getElementById('monitoringStatus').style.display = 'block';
-            showStatus('tradingResult', 'info', 'Мониторинг запущен - данные обновляются каждые 30 секунд');
+            showStatus('tradingResult', 'info', 'Мониторинг запущен - данные обновляются каждые 5 минут');
         }
 
         // Остановка мониторинга

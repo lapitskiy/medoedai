@@ -123,6 +123,31 @@ class CryptoTradingEnvOptimized(gym.Env):
             df_5min_raw, df_15min_raw, df_1h_raw, self.indicators_config
         )
         
+        # Добавляем funding-фичи как дополнительные индикаторы, если есть в DataFrame
+        try:
+            df5_src = dfs['df_5min'] if isinstance(dfs, dict) else None
+            funding_cols = ['funding_rate_bp', 'funding_rate_ema', 'funding_rate_change', 'funding_sign']
+            present_cols = [c for c in funding_cols if (df5_src is not None and hasattr(df5_src, 'columns') and c in df5_src.columns)]
+            if present_cols and len(self.df_5min) == len(df5_src):
+                F = []
+                for c in present_cols:
+                    v = df5_src[c].astype(float).values
+                    # Приводим к безопасному диапазону и типу
+                    if c in ('funding_rate_ema', 'funding_rate_change'):
+                        v = v * 10000.0  # в бипсы
+                    # клип и нормализация в [-1,1] на 50 bp
+                    v = np.clip(v / 50.0, -1.0, 1.0).astype(np.float32)
+                    F.append(v.reshape(-1, 1))
+                if F:
+                    F_arr = np.concatenate(F, axis=1).astype(np.float32)
+                    if self.indicators.size > 0:
+                        self.indicators = np.concatenate([self.indicators, F_arr], axis=1).astype(np.float32)
+                    else:
+                        self.indicators = F_arr
+                    print(f"🧠 Funding признаки добавлены: {present_cols} (нормализованы)")
+        except Exception as e:
+            print(f"⚠️ Не удалось добавить funding признаки: {e}")
+        
         # ИСПРАВЛЕНИЕ: Создаем datetime информацию для фильтра времени
         try:
             if hasattr(dfs, 'df_5min') and hasattr(dfs['df_5min'], 'index'):
@@ -241,6 +266,8 @@ class CryptoTradingEnvOptimized(gym.Env):
         print(f"📊 Размер данных: 5min={len(self.df_5min)}, 15min={len(self.df_15min)}, 1h={len(self.df_1h)}")
         print(f"📈 Количество индикаторов: {num_indicator_features}")
         print(f"🔄 Размер окна: {window_size}")
+        if hasattr(self, 'indicators') and self.indicators.size > 0:
+            print(f"🧠 Итоговая матрица индикаторов: {self.indicators.shape}")
 
     def _calculate_normalization_stats(self):
         """
@@ -749,7 +776,7 @@ class CryptoTradingEnvOptimized(gym.Env):
                 # --- Награды за удержание позиции (УЛУЧШЕНО) ---
                 if unrealized_pnl_percent > 0:
                     # Чем выше нереализованная прибыль, тем больше награда за удержание
-                    reward += unrealized_pnl_percent * 3  # Увеличил с 2 до 3 для лучшего удержения прибыли
+                    reward += unrealized_pnl_percent * 3  # Увеличил с 2 до 3 для лучшего удержания прибыли
                 else:
                     # Чем больше нереализованный убыток, тем больше штраф за удержание
                     reward += unrealized_pnl_percent * 2  # Уменьшил с 3 до 2 для меньшего давления
