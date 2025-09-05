@@ -264,12 +264,25 @@ def start_parameter_search():
 @app.route('/train_dqn', methods=['POST'])
 def train():
     task = train_dqn.apply_async(queue="train")
+    # Если запрос из fetch/XHR — отвечаем JSON, иначе редиректим на главную
+    try:
+        wants_json = request.is_json or 'application/json' in (request.headers.get('Accept') or '')
+    except Exception:
+        wants_json = False
+    if wants_json:
+        return jsonify({"success": True, "task_id": task.id})
     return redirect(url_for("index"))
 
 @app.route('/train_dqn_multi_crypto', methods=['POST'])
 def train_multi_crypto():
     """Запускает мультивалютное обучение DQN"""
     task = train_dqn_multi_crypto.apply_async(queue="train")
+    try:
+        wants_json = request.is_json or 'application/json' in (request.headers.get('Accept') or '')
+    except Exception:
+        wants_json = False
+    if wants_json:
+        return jsonify({"success": True, "task_id": task.id})
     return redirect(url_for("index"))
 
 @app.route('/train_dqn_symbol', methods=['POST'])
@@ -299,6 +312,15 @@ def train_dqn_symbol_route():
             ar = AsyncResult(existing_task_id, app=celery)
             if ar.state in ("PENDING", "STARTED", "RETRY", "IN_PROGRESS"):
                 app.logger.info(f"train for {symbol} already running: {existing_task_id} state={ar.state}")
+                # Если это fetch — вернём JSON без редиректа
+                wants_json = request.is_json or 'application/json' in (request.headers.get('Accept') or '')
+                if wants_json:
+                    return jsonify({
+                        "success": False,
+                        "error": f"training for {symbol} already running",
+                        "task_id": existing_task_id,
+                        "state": ar.state
+                    })
                 return redirect(url_for("index"))
     except Exception as _e:
         app.logger.error(f"Не удалось проверить активную задачу для {symbol}: {_e}")
@@ -314,6 +336,15 @@ def train_dqn_symbol_route():
         redis_client.setex(running_key, 24 * 3600, task.id)
     except Exception as _e:
         app.logger.error(f"/train_dqn_symbol: не удалось записать ui:tasks: {_e}")
+    # Ответ для fetch/XHR — JSON; для форм — редирект
+    wants_json = request.is_json or 'application/json' in (request.headers.get('Accept') or '')
+    if wants_json:
+        return jsonify({
+            "success": True,
+            "task_id": task.id,
+            "symbol": symbol,
+            "episodes": episodes
+        })
     return redirect(url_for("index"))
 
 
@@ -1510,12 +1541,87 @@ def get_models_list():
             "success": True,
             "models": models
         })
-        
     except Exception as e:
         return jsonify({
             "success": False,
             "error": str(e)
         }), 500
+        
+@app.route('/list_ensembles')
+def list_ensembles():
+    """Возвращает структуру ансамблей и версий для указанного символа.
+    Query params: symbol=BTCUSDT (или btc)
+    """
+    try:
+        symbol = (request.args.get('symbol') or '').strip()
+        if not symbol:
+            return jsonify({"success": False, "error": "symbol обязателен"}), 400
+        s = symbol.upper().replace('/', '')
+        if s.endswith('USDT'):
+            s = s[:-4]
+        base_code = s.lower()
+
+        from pathlib import Path
+        import pickle as _pickle
+        root = Path('models') / base_code
+        if not root.exists():
+            return jsonify({"success": True, "ensembles": {}})
+
+        ensembles = {}
+        for ens_dir in root.iterdir():
+            if not ens_dir.is_dir():
+                continue
+            versions = []
+            current = None
+            canary = None
+            # Собираем vN
+            for vdir in ens_dir.iterdir():
+                if vdir.is_dir() and vdir.name.startswith('v'):
+                    # Ищем файлы и manifest
+                    files = { 'model': None, 'replay': None, 'results': None }
+                    manifest = None
+                    stats = {}
+                    for f in vdir.iterdir():
+                        if f.name.startswith('dqn_model_') and f.suffix == '.pth':
+                            files['model'] = f.name
+                        elif f.name.startswith('replay_buffer_') and f.suffix == '.pkl':
+                            files['replay'] = f.name
+                        elif f.name.startswith('train_result_') and f.suffix == '.pkl':
+                            files['results'] = f.name
+                        elif f.name == 'manifest.yaml':
+                            manifest = f.name
+                    # Пытаемся вытащить краткую статистику из train_result_*.pkl
+                    try:
+                        if files.get('results'):
+                            _res_path = vdir / files['results']
+                            if _res_path.exists():
+                                with open(_res_path, 'rb') as _f:
+                                    _res = _pickle.load(_f)
+                                    if isinstance(_res, dict) and 'final_stats' in _res:
+                                        stats = _res['final_stats'] or {}
+                    except Exception:
+                        stats = {}
+                    versions.append({
+                        'version': vdir.name,
+                        'files': files,
+                        'manifest': manifest,
+                        'stats': stats,
+                        'path': str(vdir).replace('\\','/')
+                    })
+                elif vdir.name == 'current':
+                    current = str(vdir).replace('\\','/')
+                elif vdir.name == 'canary':
+                    canary = str(vdir).replace('\\','/')
+            ensembles[ens_dir.name] = {
+                'versions': sorted(versions, key=lambda x: int(x['version'][1:]) if x['version'].startswith('v') and x['version'][1:].isdigit() else 0),
+                'current': current,
+                'canary': canary,
+                'path': str(ens_dir).replace('\\','/')
+            }
+
+        return jsonify({"success": True, "ensembles": ensembles})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/analyze_model', methods=['POST'])
 def analyze_model():
@@ -1686,7 +1792,13 @@ def start_trading():
     try:
         data = request.get_json() or {}
         symbols = data.get('symbols', ['BTCUSDT'])
-        model_path = data.get('model_path', '/workspace/good_model/dqn_model.pth')
+        # Поддержка многомодельного запуска: model_paths (список) + совместимость с model_path
+        model_paths = data.get('model_paths') or []
+        model_path = data.get('model_path')
+        if (not model_path) and isinstance(model_paths, list) and len(model_paths) > 0:
+            model_path = model_paths[0]
+        if not model_path:
+            model_path = '/workspace/models/btc/ensemble-a/current/dqn_model.pth'
         
         # Сохраняем выбранные параметры в Redis для последующих вызовов (status/stop/balance/history)
         try:
@@ -1694,6 +1806,11 @@ def start_trading():
             import json as _json
             _rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
             _rc.set('trading:model_path', model_path)
+            try:
+                if isinstance(model_paths, list):
+                    _rc.set('trading:model_paths', _json.dumps(model_paths, ensure_ascii=False))
+            except Exception:
+                pass
             _rc.set('trading:symbols', _json.dumps(symbols, ensure_ascii=False))
             # Пишем мгновенный «активный» статус, чтобы UI сразу показывал Активна до первого RESULT
             initial_status = {

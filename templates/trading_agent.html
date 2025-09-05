@@ -6,417 +6,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MedoedAI - Торговый агент</title>
     <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-        }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            overflow: hidden;
-        }
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
-        .header h1 {
-            margin: 0;
-            font-size: 2.5em;
-            font-weight: 300;
-        }
-        .content {
-            padding: 30px;
-        }
-        .section {
-            margin-bottom: 40px;
-            padding: 25px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            background: #fafafa;
-        }
-        .section h2 {
-            color: #333;
-            margin-top: 0;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 10px;
-        }
-        .button-group {
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
-            margin: 20px 0;
-        }
-        .btn {
-            padding: 12px 24px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: 600;
-            transition: all 0.3s ease;
-            text-decoration: none;
-            display: inline-block;
-            text-align: center;
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
-        .btn-success {
-            background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
-            color: white;
-        }
-        .btn-success:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(86, 171, 47, 0.4);
-        }
-        .btn-danger {
-            background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
-            color: white;
-        }
-        .btn-danger:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(255, 65, 108, 0.4);
-        }
-        .btn-info {
-            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-            color: white;
-        }
-        .btn-info:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(79, 172, 254, 0.4);
-        }
-        .btn-warning {
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-            color: white;
-        }
-        .btn-warning:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(240, 147, 251, 0.4);
-        }
-        .status {
-            margin-top: 15px;
-            padding: 15px;
-            border-radius: 8px;
-            font-weight: 600;
-        }
-        .status.success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-        .status.error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-        .status.info {
-            background: #d1ecf1;
-            color: #0c5460;
-            border: 1px solid #bee5eb;
-        }
-        .form-group {
-            margin-bottom: 20px;
-        }
-        .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 600;
-            color: #333;
-        }
-        .form-group input, .form-group select {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 16px;
-            transition: border-color 0.3s ease;
-        }
-        .form-group input:focus, .form-group select:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        .back-btn {
-            background: linear-gradient(135deg, #6c757d 0%, #495057 100%);
-            color: white;
-            margin-bottom: 20px;
-        }
-        .back-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(108, 117, 125, 0.4);
-        }
-        .trading-status {
-            background: #e8f5e8;
-            border: 2px solid #28a745;
-            border-radius: 10px;
-            padding: 20px;
-            margin: 20px 0;
-        }
-        .trading-status h3 {
-            color: #28a745;
-            margin-top: 0;
-        }
-        .trading-status p {
-            margin: 10px 0;
-            font-weight: 600;
-        }
-        .trading-history {
-            background: #f8f9fa;
-            border: 2px solid #dee2e6;
-            border-radius: 10px;
-            padding: 20px;
-            margin: 20px 0;
-            max-height: 400px;
-            overflow-y: auto;
-        }
-        .trading-history h3 {
-            color: #495057;
-            margin-top: 0;
-        }
-        .trade-item {
-            background: white;
-            border: 1px solid #dee2e6;
-            border-radius: 8px;
-            padding: 15px;
-            margin: 10px 0;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .trade-item .trade-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-        
-        .trade-item.success {
-            border-left: 4px solid #28a745;
-        }
-        
-        .trade-item.error {
-            border-left: 4px solid #dc3545;
-        }
-        
-        .trade-action.buy {
-            color: #28a745;
-            font-weight: bold;
-        }
-        
-        .trade-action.sell {
-            color: #dc3545;
-            font-weight: bold;
-        }
-        
-        .trade-action.hold {
-            color: #6c757d;
-            font-weight: bold;
-        }
-        
-        .statistics-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-top: 15px;
-        }
-        
-        .stat-item {
-            background: white;
-            border: 1px solid #dee2e6;
-            border-radius: 8px;
-            padding: 15px;
-            text-align: center;
-        }
-        
-        .stat-label {
-            font-size: 14px;
-            color: #6c757d;
-            margin-bottom: 5px;
-        }
-        
-        .stat-value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #333;
-        }
-        
-        .stat-value.success {
-            color: #28a745;
-        }
-        
-        .stat-value.error {
-            color: #dc3545;
-        }
-        
-        .stat-value.buy {
-            color: #28a745;
-        }
-        
-        .stat-value.sell {
-            color: #dc3545;
-        }
-        
-        .stat-value.hold {
-            color: #6c757d;
-        }
-        
-        .trade-action {
-            font-weight: bold;
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 14px;
-        }
-        .trade-action.buy {
-            background: #d4edda;
-            color: #155724;
-        }
-        .trade-action.sell {
-            background: #f8d7da;
-            color: #721c24;
-        }
-        .trade-action.success {
-            background: #d4edda;
-            color: #155724;
-        }
-        .trade-action.error {
-            background: #f8d7da;
-            color: #721c24;
-        }
-        
-        .trade-confidence {
-            font-weight: bold;
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 14px;
-        }
-        
-        .trade-confidence.success {
-            background: #d4edda;
-            color: #155724;
-        }
-        
-        .trade-confidence.info {
-            background: #d1ecf1;
-            color: #0c5460;
-        }
-        
-        .trade-confidence.warning {
-            background: #fff3cd;
-            color: #856404;
-        }
-        
-        .trade-details {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 10px;
-            font-size: 14px;
-        }
-        .trade-detail {
-            background: #f8f9fa;
-            padding: 8px;
-            border-radius: 5px;
-            text-align: center;
-        }
-        .trade-detail .label {
-            font-weight: 600;
-            color: #495057;
-            font-size: 12px;
-            text-transform: uppercase;
-        }
-        .trade-detail .value {
-            color: #333;
-            margin-top: 5px;
-        }
-        .model-info {
-            background: #e8f5e8;
-            border: 2px solid #28a745;
-            border-radius: 10px;
-            padding: 15px;
-            margin: 15px 0;
-        }
-        .model-info h4 {
-            color: #28a745;
-            margin-top: 0;
-            margin-bottom: 10px;
-        }
-        .model-details {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 10px;
-        }
-        .model-detail-item {
-            background: white;
-            padding: 10px;
-            border-radius: 5px;
-            border: 1px solid #c3e6cb;
-        }
-        .model-detail-label {
-            font-weight: 600;
-            color: #495057;
-            font-size: 12px;
-            text-transform: uppercase;
-            margin-bottom: 5px;
-        }
-        .model-detail-value {
-            color: #333;
-            font-size: 14px;
-        }
-        
-        /* Стили для стратегии оставшейся позиции */
-        .strategy-info {
-            background: #f8f9fa;
-            border: 1px solid #dee2e6;
-            border-radius: 8px;
-            padding: 20px;
-            margin: 15px 0;
-        }
-        
-        .strategy-details {
-            background: white;
-            border: 1px solid #e9ecef;
-            border-radius: 6px;
-            padding: 15px;
-            margin: 15px 0;
-        }
-        
-        .strategy-details p {
-            margin: 8px 0;
-            font-size: 14px;
-        }
-        
-        .strategy-rules {
-            background: #e7f3ff;
-            border: 1px solid #b3d9ff;
-            border-radius: 6px;
-            padding: 15px;
-            margin: 15px 0;
-        }
-        
-        .strategy-rules h5 {
-            margin: 0 0 15px 0;
-            color: #0056b3;
-        }
-        
-        .strategy-rules ul {
-            margin: 0;
-            padding-left: 20px;
-        }
-        
-        .strategy-rules li {
-            margin: 8px 0;
-            font-size: 14px;
-            line-height: 1.4;
-        }
     </style>
 </head>
 <body>
@@ -436,10 +25,79 @@
                 <p>Запуск и остановка торгового бота</p>
                 
                 <div class="form-group">
-                    <label>Модель для торговли:</label>
-                    <select id="modelSelect" class="form-control" onchange="showModelInfo()">
-                        <option value="">Выберите модель...</option>
-                    </select>
+                    <label>Ансамбль и версии:</label>
+                    <div style="display:grid; grid-template-columns: 1fr; gap: 12px; align-items:start;">
+                        <div>
+                            <label style="font-weight:600;">Символ</label>
+                            <select id="ensembleSymbolSelect" class="form-control" onchange="onEnsembleSymbolChange()">
+                                <option value="BTCUSDT" selected>BTCUSDT</option>
+                                <option value="ETHUSDT">ETHUSDT</option>
+                                <option value="SOLUSDT">SOLUSDT</option>
+                                <option value="TONUSDT">TONUSDT</option>
+                                <option value="ADAUSDT">ADAUSDT</option>
+                                <option value="BNBUSDT">BNBUSDT</option>
+                                <option value="XMRUSDT">XMRUSDT</option>
+                                <option value="XRPUSDT">XRPUSDT</option>
+                            </select>
+                            <label style="font-weight:600; margin-top:10px;">Ансамбль</label>
+                            <select id="ensembleSelect" class="form-control" onchange="renderEnsembleVersions()">
+                                <option value="ensemble-a" selected>ensemble-a</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group" style="margin-top:10px;">
+                    <div id="ensembleVersions" style="max-height:320px; overflow:auto; border:1px solid #e0e0e0; border-radius:6px; padding:0;">
+                        <div class="versions-table">
+                            <div class="vt-row vt-head">
+                                <div class="c-check">Выб.</div>
+                                <div>Версия</div>
+                                <div>Модель</div>
+                                <div>Статистика</div>
+                            </div>
+                            <div class="vt-row">
+                                <div class="c-check"><input type="checkbox" disabled></div>
+                                <div>—</div>
+                                <div><em>Выберите символ и ансамбль</em></div>
+                                <div>—</div>
+                            </div>
+                        </div>
+                    </div>
+                    <small style="color:#666; display:block; margin-top:6px;">Отметьте галочками версии, которые участвуют в голосовании. Ниже — краткая статистика.</small>
+                    <div id="ensembleVersionsStats" style="margin-top:8px;"></div>
+                </div>
+                
+                <!-- Настройки консенсуса -->
+                <div class="form-group" style="margin-top:20px; padding:15px; background:#f8f9fa; border-radius:8px; border:1px solid #e0e0e0;">
+                    <label style="font-weight:600; margin-bottom:10px; display:block;">🎯 Настройки консенсуса</label>
+                    
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px; margin-bottom:15px;">
+                        <div>
+                            <label style="font-weight:500; margin-bottom:5px; display:block;">Боковик (flat/range)</label>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <input type="range" id="flatConsensus" min="50" max="100" value="80" style="flex:1;">
+                                <span id="flatConsensusValue" style="font-weight:600; color:#667eea; min-width:40px;">80%</span>
+                            </div>
+                            <small style="color:#666;">Стандартное: 80-90% из 100% моделей</small>
+                        </div>
+                        
+                        <div>
+                            <label style="font-weight:500; margin-bottom:5px; display:block;">Тренд (сильный ап/даун)</label>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <input type="range" id="trendConsensus" min="50" max="100" value="65" style="flex:1;">
+                                <span id="trendConsensusValue" style="font-weight:600; color:#667eea; min-width:40px;">65%</span>
+                            </div>
+                            <small style="color:#666;">Рекомендуется: ≥60-70% из 100</small>
+                        </div>
+                    </div>
+                    
+                    <div style="background:white; padding:10px; border-radius:6px; border:1px solid #dee2e6;">
+                        <div style="font-size:14px; color:#495057;">
+                            <strong>Текущие настройки:</strong><br>
+                            • Боковик: <span id="flatConsensusDisplay">80%</span> моделей должны согласиться<br>
+                            • Тренд: <span id="trendConsensusDisplay">65%</span> моделей должны согласиться
+                        </div>
+                    </div>
                 </div>
                 
                 <div id="modelInfo" class="model-info" style="display: none;">
@@ -447,22 +105,7 @@
                     <div id="modelInfoContent"></div>
                 </div>
                 
-                <div class="form-group">
-                    <label>Торговая пара (Деривативы):</label>
-                    <select id="symbolSelect" class="form-control">
-                        <option value="">Выберите пару...</option>
-                        <option value="BTCUSDT" selected>BTCUSDT (Фьючерсы)</option>
-                        <option value="ETHUSDT">ETHUSDT (Фьючерсы)</option>
-                        <option value="SOLUSDT">SOLUSDT (Фьючерсы)</option>
-                        <option value="TONUSDT">TONUSDT (Фьючерсы)</option>
-                        <option value="ADAUSDT">ADAUSDT (Фьючерсы)</option>
-                        <option value="BNBUSDT">BNBUSDT (Фьючерсы)</option>
-                        <option value="XMRUSDT">XMRUSDT (Фьючерсы)</option>
-                    </select>
-                    <small style="color: #666; font-style: italic;">
-                        ⚠️ Внимание: Торговля ведется на деривативах Bybit (фьючерсы), а не на споте
-                    </small>
-                </div>
+                
                 
                 <div class="button-group">
                     <button class="btn btn-success" onclick="startTrading()">
@@ -641,98 +284,81 @@
             }
         }
 
-        // Загрузка списка моделей при загрузке страницы
-        async function loadModels() {
+        // Загрузка ансамблей и версий
+        async function onEnsembleSymbolChange() {
+            const symSel = document.getElementById('ensembleSymbolSelect');
+            const symbol = symSel ? (symSel.value || 'BTCUSDT') : 'BTCUSDT';
             try {
-                const response = await fetch('/get_models_list');
-                const result = await response.json();
-                
-                if (result.success) {
-                    modelsData = result.models;
-                    const modelSelect = document.getElementById('modelSelect');
-                    modelSelect.innerHTML = '<option value="">Выберите модель...</option>';
-                    
-                    result.models.forEach(model => {
-                        const option = document.createElement('option');
-                        // Полный путь для контейнера trading_agent
-                        // Новая структура хранения моделей: models/<symbol>/ensemble-a/current/
-                        const guessed = (guessSymbolFromModelId(model.id) || '').replace('USDT','').toLowerCase();
-                        option.value = `/workspace/models/${guessed}/ensemble-a/current/${model.files.model}`;
-                        option.textContent = `${model.id} (${model.date})`;
-                        option.dataset.modelId = model.id;
-                        modelSelect.appendChild(option);
-                    });
+                const resp = await fetch('/list_ensembles?symbol=' + encodeURIComponent(symbol));
+                const data = await resp.json();
+                const ensSel = document.getElementById('ensembleSelect');
+                const box = document.getElementById('ensembleVersions');
+                if (!ensSel || !box) return;
+                if (!data.success) {
+                    ensSel.innerHTML = '<option value="">Нет ансамблей</option>';
+                    box.innerHTML = '<em>Ансамбли не найдены</em>';
+                    return;
                 }
-            } catch (error) {
-                console.error('Ошибка загрузки моделей:', error);
+                const names = Object.keys(data.ensembles || {});
+                ensSel.innerHTML = names.length ? names.map(n => `<option value="${n}">${n}</option>`).join('') : '<option value="">Нет ансамблей</option>';
+                ensSel.value = names[0] || 'ensemble-a';
+                ensSel.dataset.payload = JSON.stringify(data.ensembles || {});
+                renderEnsembleVersions();
+            } catch (e) {
+                console.error('Ошибка списка ансамблей', e);
             }
         }
 
-        // Показать информацию о выбранной модели
-        function showModelInfo() {
-            const modelSelect = document.getElementById('modelSelect');
-            const modelInfo = document.getElementById('modelInfo');
-            const modelInfoContent = document.getElementById('modelInfoContent');
-            
-            if (modelSelect.value) {
-                const selectedOption = modelSelect.selectedOptions[0];
-                const modelId = selectedOption.dataset.modelId;
-                const model = modelsData.find(m => m.id === modelId);
-                
-                if (model) {
-                    const stats = model.stats || {};
-                    const guessedSymbol = guessSymbolFromModelId(model.id);
-                    modelInfoContent.innerHTML = `
-                        <div class="model-details">
-                            <div class="model-detail-item">
-                                <div class="model-detail-label">ID модели</div>
-                                <div class="model-detail-value">${model.id}</div>
-                            </div>
-                            <div class="model-detail-item">
-                                <div class="model-detail-label">Рекомендуемая пара</div>
-                                <div class="model-detail-value">${guessedSymbol || 'N/A'}</div>
-                            </div>
-                            <div class="model-detail-item">
-                                <div class="model-detail-label">Дата создания</div>
-                                <div class="model-detail-value">${model.date}</div>
-                            </div>
-                            <div class="model-detail-item">
-                                <div class="model-detail-label">Размер модели</div>
-                                <div class="model-detail-value">${model.files.model_size}</div>
-                            </div>
-                            ${stats.winrate ? `
-                            <div class="model-detail-item">
-                                <div class="model-detail-label">Winrate</div>
-                                <div class="model-detail-value">${(stats.winrate * 100).toFixed(1)}%</div>
-                            </div>
-                            <div class="model-detail-item">
-                                <div class="model-detail-label">P/L Ratio</div>
-                                <div class="model-detail-value">${stats.pl_ratio?.toFixed(2) || 'N/A'}</div>
-                            </div>
-                            <div class="model-detail-item">
-                                <div class="model-detail-label">Сделок</div>
-                                <div class="model-detail-value">${stats.trades_count || 'N/A'}</div>
-                            </div>
-                            ` : '<div class="model-detail-item"><div class="model-detail-value">Статистика недоступна</div></div>'}
-                        </div>
-                    `;
-                    modelInfo.style.display = 'block';
-                } else {
-                    modelInfo.style.display = 'none';
+        function renderEnsembleVersions() {
+            const ensSel = document.getElementById('ensembleSelect');
+            const box = document.getElementById('ensembleVersions');
+            if (!ensSel || !box) return;
+            try {
+                const ensembles = JSON.parse(ensSel.dataset.payload || '{}');
+                const name = ensSel.value;
+                const ens = ensembles[name] || { versions: [] };
+                if (!ens.versions || ens.versions.length === 0) {
+                    box.innerHTML = '<em>Версий не найдено</em>';
+                    return;
                 }
-            } else {
-                modelInfo.style.display = 'none';
+                // Рисуем чекбоксы версий
+                const header = `
+                    <div class=\"vt-row vt-head\">
+                        <div class=\"c-check\">Выб.</div>
+                        <div>Версия</div>
+                        <div>Модель</div>
+                        <div>Статистика</div>
+                    </div>`;
+                const rows = ens.versions.map(v => {
+                    const modelFile = v.files && v.files.model ? v.files.model : '';
+                    const path = `${v.path}/${modelFile}`;
+                    const id = `ver_${name}_${v.version}`;
+                    const stats = v.stats || {};
+                    const winrate = (typeof stats.winrate === 'number') ? (stats.winrate * 100).toFixed(1) + '%' : '—';
+                    const plr = (typeof stats.pl_ratio === 'number') ? stats.pl_ratio.toFixed(2) : '—';
+                    const trades = (typeof stats.trades_count === 'number') ? stats.trades_count : '—';
+                    return `
+                        <div class=\"vt-row\">
+                            <div class=\"c-check\"><input type=\"checkbox\" class=\"verCheck\" value=\"${path}\" data-version=\"${v.version}\"></div>
+                            <div><span style=\"font-weight:600;\">${v.version}</span></div>
+                            <div><code>${modelFile || '—'}</code></div>
+                            <div style=\"font-size:12px;color:#555;\">Winrate: ${winrate} · P/L: ${plr} · Trades: ${trades}</div>
+                        </div>`;
+                }).join('');
+                box.innerHTML = `<div class=\"versions-table\">${header}${rows}</div>`;
+            } catch (e) {
+                box.innerHTML = '<em>Ошибка отображения версий</em>';
             }
         }
 
         // Запуск торговли
         async function startTrading() {
-            const symbol = document.getElementById('symbolSelect').value;
-            const selectedSymbols = symbol ? [symbol] : [];
-            const selectedModel = document.getElementById('modelSelect').value;
-            
-            if (!selectedModel) {
-                showStatus('tradingResult', 'error', 'Пожалуйста, выберите модель для торговли');
+            const symbol = (document.getElementById('ensembleSymbolSelect')?.value) || 'BTCUSDT';
+            const selectedSymbols = [symbol];
+            // Собираем выбранные версии из чекбоксов
+            const selectedPaths = Array.from(document.querySelectorAll('.verCheck:checked')).map(i => i.value).filter(Boolean);
+            if (selectedPaths.length === 0) {
+                showStatus('tradingResult', 'error', 'Выберите хотя бы одну версию для голосования');
                 return;
             }
             
@@ -740,6 +366,9 @@
                 showStatus('tradingResult', 'error', 'Пожалуйста, выберите хотя бы одну торговую пару');
                 return;
             }
+            
+            // Получаем настройки консенсуса
+            const consensusSettings = getConsensusSettings();
             
             try {
                 const response = await fetch('/api/trading/start', {
@@ -749,7 +378,8 @@
                     },
                     body: JSON.stringify({ 
                         symbols: selectedSymbols,
-                        model_path: selectedModel
+                        model_paths: selectedPaths,
+                        consensus: consensusSettings
                     })
                 });
                 
@@ -1466,11 +1096,47 @@
             }
         }
         
+        // Обработчики для слайдеров консенсуса
+        function updateConsensusDisplay() {
+            const flatValue = document.getElementById('flatConsensus').value;
+            const trendValue = document.getElementById('trendConsensus').value;
+            
+            document.getElementById('flatConsensusValue').textContent = flatValue + '%';
+            document.getElementById('trendConsensusValue').textContent = trendValue + '%';
+            document.getElementById('flatConsensusDisplay').textContent = flatValue + '%';
+            document.getElementById('trendConsensusDisplay').textContent = trendValue + '%';
+        }
+
+        // Инициализация слайдеров консенсуса
+        function initConsensusSliders() {
+            const flatSlider = document.getElementById('flatConsensus');
+            const trendSlider = document.getElementById('trendConsensus');
+            
+            if (flatSlider) {
+                flatSlider.addEventListener('input', updateConsensusDisplay);
+            }
+            if (trendSlider) {
+                trendSlider.addEventListener('input', updateConsensusDisplay);
+            }
+            
+            // Инициализация значений
+            updateConsensusDisplay();
+        }
+
+        // Получение настроек консенсуса
+        function getConsensusSettings() {
+            return {
+                flat: parseInt(document.getElementById('flatConsensus').value),
+                trend: parseInt(document.getElementById('trendConsensus').value)
+            };
+        }
+
         // Автоматически получаем статус при загрузке страницы
         window.addEventListener('load', () => {
-            loadModels();
+            onEnsembleSymbolChange();
             getTradingStatus();
             getBalance();
+            initConsensusSliders();
         });
     </script>
 </body>

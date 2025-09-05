@@ -311,17 +311,27 @@ P/L Ratio: ${plr}
         // Запуск обучения с выбранным количеством эпизодов
         async function startTrainingForSymbol(symbol) {
             const episodes = document.getElementById('episodesInput').value || 1000;
+            const statusDiv = document.getElementById('trainStatus');
+            statusDiv.innerHTML = '<div class="status info">⏳ Запуск обучения ' + symbol + '...</div>';
             try {
                 const resp = await fetch('/train_dqn_symbol', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                     body: JSON.stringify({ symbol, episodes })
                 });
-                if (resp.redirected) {
+                const data = await resp.json().catch(() => null);
+                if (data && data.success) {
+                    statusDiv.innerHTML = '<div class="status success">✅ Обучение запущено (task: ' + data.task_id + ')</div>';
+                } else if (data && data.error) {
+                    statusDiv.innerHTML = '<div class="status error">❌ ' + data.error + '</div>';
+                } else if (resp.redirected) {
+                    // Фоллбек на случай старого поведения
                     window.location.href = resp.url;
+                } else {
+                    statusDiv.innerHTML = '<div class="status error">❌ Неизвестный ответ сервера</div>';
                 }
             } catch (e) {
-                alert('❌ Ошибка запуска обучения: ' + e.message);
+                statusDiv.innerHTML = '<div class="status error">❌ Ошибка запуска обучения: ' + e.message + '</div>';
             }
         }
 

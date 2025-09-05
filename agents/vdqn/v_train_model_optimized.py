@@ -9,6 +9,11 @@ import psutil
 from typing import Dict, List, Optional
 import pickle
 from pickle import HIGHEST_PROTOCOL
+import hashlib
+import platform
+from datetime import datetime
+import subprocess
+from utils.adaptive_normalization import adaptive_normalizer
 
 # Добавляем путь к проекту
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -62,6 +67,58 @@ def log_resource_usage(tag: str = "train", extra: str = "") -> None:
         print(line, flush=True)
     except Exception:
         pass
+
+
+def _sha256_of_file(path: str) -> Optional[str]:
+    try:
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def _safe_cfg_snapshot(cfg_obj) -> Dict:
+    try:
+        snap = {}
+        for k, v in (cfg_obj.__dict__.items() if hasattr(cfg_obj, '__dict__') else []):
+            try:
+                if str(type(v)).endswith("torch.device'>"):
+                    snap[k] = str(v)
+                elif hasattr(v, 'tolist'):
+                    snap[k] = v.tolist()
+                else:
+                    snap[k] = v
+            except Exception:
+                snap[k] = str(v)
+        return snap
+    except Exception:
+        return {}
+
+
+def _architecture_summary(model: torch.nn.Module) -> Dict:
+    try:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        sample_keys = []
+        try:
+            sd = model.state_dict()
+            for i, k in enumerate(sd.keys()):
+                if i >= 10:
+                    break
+                sample_keys.append(k)
+        except Exception:
+            pass
+        return {
+            'model_class': model.__class__.__name__,
+            'total_params': int(total_params),
+            'trainable_params': int(trainable_params),
+            'state_dict_keys_sample': sample_keys,
+        }
+    except Exception:
+        return {}
 
 def prepare_data_for_training(dfs: Dict) -> Dict:
     """
@@ -162,6 +219,84 @@ def train_model_optimized(
         
         # Начинаем отсчет времени тренировки
         training_start_time = time.time()
+
+        # --- Снимок параметров окружения и данных (для воспроизводимости) ---
+        gym_snapshot = {}
+        try:
+            df5 = dfs.get('df_5min') if isinstance(dfs, dict) else None
+            funding_cols = ['funding_rate_bp', 'funding_rate_ema', 'funding_rate_change', 'funding_sign']
+            funding_present = []
+            try:
+                if df5 is not None and hasattr(df5, 'columns'):
+                    funding_present = [c for c in funding_cols if c in df5.columns]
+            except Exception:
+                funding_present = []
+
+            # Базовые параметры окружения и риск-менеджмента
+            gym_snapshot = {
+                'symbol': getattr(env, 'symbol', None),
+                'lookback_window': lookback_window if 'lookback_window' in locals() else getattr(env, 'lookback_window', None),
+                'indicators_config': getattr(env, 'indicators_config', None),
+                'funding_features': {
+                    'present_in_input_df': funding_present,
+                    'included': bool(funding_present),
+                },
+                'risk_management': {
+                    'STOP_LOSS_PCT': getattr(env, 'STOP_LOSS_PCT', None),
+                    'TAKE_PROFIT_PCT': getattr(env, 'TAKE_PROFIT_PCT', None),
+                    'min_hold_steps': getattr(env, 'min_hold_steps', None),
+                    'volume_threshold': getattr(env, 'volume_threshold', None),
+                    'base_stop_loss': getattr(env, 'base_stop_loss', None),
+                    'base_take_profit': getattr(env, 'base_take_profit', None),
+                    'base_min_hold': getattr(env, 'base_min_hold', None),
+                },
+                'position_sizing': {
+                    'base_position_fraction': getattr(env, 'base_position_fraction', None),
+                    'position_fraction': getattr(env, 'position_fraction', None),
+                    'position_confidence_threshold': getattr(env, 'position_confidence_threshold', None),
+                },
+                'observation_space_shape': getattr(env, 'observation_space_shape', None),
+                'step_minutes': getattr(env.cfg, 'step_minutes', 5) if hasattr(env, 'cfg') else 5,
+            }
+        except Exception:
+            gym_snapshot = {}
+
+        # --- Снимок адаптивной нормализации (по символам) ---
+        adaptive_snapshot = {}
+        try:
+            if is_multi_crypto:
+                per_symbol = {}
+                for sym, data in dfs.items():
+                    try:
+                        df5s = data.get('df_5min') if isinstance(data, dict) else None
+                        if df5s is None:
+                            continue
+                        base_profile = adaptive_normalizer.get_crypto_profile(sym)
+                        market = adaptive_normalizer.analyze_market_conditions(df5s)
+                        adapted = adaptive_normalizer.adapt_parameters(sym, df5s)
+                        per_symbol[sym] = {
+                            'base_profile': base_profile,
+                            'market_conditions': market,
+                            'adapted_params': adapted,
+                        }
+                    except Exception:
+                        continue
+                adaptive_snapshot = {'per_symbol': per_symbol}
+            else:
+                df5s = dfs.get('df_5min') if isinstance(dfs, dict) else None
+                sym = crypto_symbol
+                if df5s is not None and isinstance(sym, str):
+                    base_profile = adaptive_normalizer.get_crypto_profile(sym)
+                    market = adaptive_normalizer.analyze_market_conditions(df5s)
+                    adapted = adaptive_normalizer.adapt_parameters(sym, df5s)
+                    adaptive_snapshot = {
+                        'symbol': sym,
+                        'base_profile': base_profile,
+                        'market_conditions': market,
+                        'adapted_params': adapted,
+                    }
+        except Exception:
+            adaptive_snapshot = {}
         
         # Проверяем, что окружение правильно инициализировано
         if not hasattr(env, 'observation_space_shape'):
@@ -723,10 +858,69 @@ def train_model_optimized(
         results_dir = os.path.join("result")
         os.makedirs(results_dir, exist_ok=True)
         
-        # Сохраняем результаты в файле c символом и id
+        # Сохраняем результаты в файле c символом и id + добавляем подробные метаданные
         results_file = os.path.join(results_dir, f'train_result_{symbol_code}_{short_id}.pkl')
+
+        # Метаданные окружения и запуска
+        try:
+            git_commit = None
+            try:
+                git_commit = subprocess.check_output(['git','rev-parse','--short','HEAD'], stderr=subprocess.DEVNULL).decode().strip()
+            except Exception:
+                pass
+            train_metadata = {
+                'created_at_utc': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'hostname': platform.node(),
+                'platform': platform.platform(),
+                'python_version': platform.python_version(),
+                'pytorch_version': torch.__version__,
+                'cuda_available': torch.cuda.is_available(),
+                'gpu_name': (torch.cuda.get_device_name(0) if torch.cuda.is_available() else None),
+                'omp_threads': os.environ.get('OMP_NUM_THREADS'),
+                'mkl_threads': os.environ.get('MKL_NUM_THREADS'),
+                'torch_threads': os.environ.get('TORCH_NUM_THREADS'),
+                'train_cpu_fraction': os.environ.get('TRAIN_CPU_FRACTION'),
+                'git_commit': git_commit,
+                'script': os.path.basename(__file__),
+            }
+        except Exception:
+            train_metadata = {}
+
+        # Снимок конфигурации и архитектуры
+        try:
+            cfg_snapshot = _safe_cfg_snapshot(cfg)
+        except Exception:
+            cfg_snapshot = {}
+        try:
+            arch_main = _architecture_summary(dqn_solver.model)
+            arch_target = _architecture_summary(dqn_solver.target_model)
+        except Exception:
+            arch_main, arch_target = {}, {}
+
+        # Информация о весах (пути и хэши)
+        weights_info = {
+            'model_path': cfg.model_path,
+            'buffer_path': cfg.buffer_path,
+            'model_sha256': _sha256_of_file(cfg.model_path) if cfg and getattr(cfg, 'model_path', None) and os.path.exists(cfg.model_path) else None,
+            'buffer_sha256': _sha256_of_file(cfg.buffer_path) if cfg and getattr(cfg, 'buffer_path', None) and os.path.exists(cfg.buffer_path) else None,
+        }
+
+        # Объединяем
+        enriched_results = {
+            **training_results,
+            'train_metadata': train_metadata,
+            'cfg_snapshot': cfg_snapshot,
+            'gym_snapshot': gym_snapshot,
+            'adaptive_normalization': adaptive_snapshot,
+            'architecture': {
+                'main': arch_main,
+                'target': arch_target,
+            },
+            'weights': weights_info,
+        }
+
         with open(results_file, 'wb') as f:
-            pickle.dump(training_results, f, protocol=HIGHEST_PROTOCOL)
+            pickle.dump(enriched_results, f, protocol=HIGHEST_PROTOCOL)
         
         print(f"📊 Детальные результаты сохранены в: {results_file}")
         

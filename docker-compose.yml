@@ -206,6 +206,31 @@ services:
       - celery-worker
     restart: unless-stopped
 
+  serving:
+    build:
+      context: ./serving
+    container_name: serving
+    restart: unless-stopped
+    depends_on:
+      medoedai:
+        condition: service_started
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MODEL_BASE_DIR=/workspace/models
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/workspace
+      - ./models:/workspace/models
+    working_dir: /app
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
 volumes:
   pgdata:
 
