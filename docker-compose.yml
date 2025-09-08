@@ -46,6 +46,14 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       PYTHONDONTWRITEBYTECODE: "1"
       FLASK_DEBUG: "False"
+      # Оптимизация для многопоточности
+      OMP_NUM_THREADS: "4"  # OpenMP потоки для веб-сервера
+      MKL_NUM_THREADS: "4"  # Intel MKL потоки
+      TORCH_NUM_THREADS: "4"  # PyTorch потоки
+      # Дополнительные настройки производительности
+      OMP_SCHEDULE: "dynamic"
+      MKL_DYNAMIC: "true"
+      MKL_INTERFACE_LAYER: "LP64"
     env_file:
       - .env
     volumes:
@@ -129,13 +137,21 @@ services:
       CELERY_CONCURRENCY: "1"  # один процесс, но максимум потоков внутри BLAS/Torch
       CUDA_VISIBLE_DEVICES: ""
       TRAIN_CPU_FRACTION: "0.8"  # доля CPU ядер, используемых обучением (по умолчанию 80%)
+      # Оптимизация для многопоточности
+      OMP_NUM_THREADS: "8"  # OpenMP потоки
+      MKL_NUM_THREADS: "8"  # Intel MKL потоки
+      TORCH_NUM_THREADS: "8"  # PyTorch потоки
+      # Дополнительные настройки производительности
+      OMP_SCHEDULE: "dynamic"
+      MKL_DYNAMIC: "true"
+      MKL_INTERFACE_LAYER: "LP64"
     env_file:
       - .env
     volumes:
       - .:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /workspace
-    command: ['sh','-lc','NPROC=$(nproc); THREADS=$(python -c "import os,math; n=os.cpu_count() or 1; f=float(os.environ.get(\"TRAIN_CPU_FRACTION\", \"0.8\")); print(max(1,int(n*f)))"); export OMP_NUM_THREADS=$THREADS MKL_NUM_THREADS=$THREADS TORCH_NUM_THREADS=$THREADS; echo Using $THREADS/$NPROC CPU threads for training; exec celery -A tasks.celery_tasks worker -Q train -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-1} --loglevel=info']
+    command: ['sh','-lc','NPROC=$$(nproc); THREADS=$$(python -c "import os,math; n=os.cpu_count() or 1; f=float(os.environ.get(\"TRAIN_CPU_FRACTION\", \"0.8\")); print(max(1,int(n*f)))"); export OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$THREADS} MKL_NUM_THREADS=$${MKL_NUM_THREADS:-$$THREADS} TORCH_NUM_THREADS=$${TORCH_NUM_THREADS:-$$THREADS} OMP_SCHEDULE=$${OMP_SCHEDULE:-dynamic} MKL_DYNAMIC=$${MKL_DYNAMIC:-true} MKL_INTERFACE_LAYER=$${MKL_INTERFACE_LAYER:-LP64}; echo "🚀 CPU Optimization: Using $$THREADS/$$NPROC threads (OMP=$$OMP_NUM_THREADS, MKL=$$MKL_NUM_THREADS, TORCH=$$TORCH_NUM_THREADS)"; exec celery -A tasks.celery_tasks worker -Q train -P $${CELERY_POOL:-prefork} -c $${CELERY_CONCURRENCY:-1} --loglevel=info']
 
   pytorch-gpu:
     image: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
