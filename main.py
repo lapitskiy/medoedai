@@ -13,8 +13,19 @@ from flask import Flask, request, jsonify, render_template
 from flask import redirect, url_for
 
 import redis
+from redis import Redis as _Redis
 
 from tasks.celery_tasks import celery
+
+# Глобальный Redis-клиент для переиспользования
+_redis_client = None
+
+def get_redis_client():
+    """Получить глобальный Redis-клиент"""
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+    return _redis_client
 from celery.result import AsyncResult
 
 import os
@@ -1802,9 +1813,8 @@ def start_trading():
         
         # Сохраняем выбранные параметры в Redis для последующих вызовов (status/stop/balance/history)
         try:
-            from redis import Redis as _Redis
             import json as _json
-            _rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+            _rc = get_redis_client()
             _rc.set('trading:model_path', model_path)
             try:
                 if isinstance(model_paths, list):
@@ -1835,6 +1845,17 @@ def start_trading():
             _rc.set('trading:current_status_ts', _dt.utcnow().isoformat())
         except Exception as _e:
             app.logger.error(f"Не удалось сохранить параметры торговли в Redis: {_e}")
+
+        # Redis-лок: если уже идёт торговый шаг, не стартуем второй параллельно
+        try:
+            _rc_lock = get_redis_client()
+            if _rc_lock.get('trading:agent_lock'):
+                return jsonify({
+                    'success': False,
+                    'error': 'Торговый шаг уже выполняется (agent_lock_active)'
+                }), 429
+        except Exception:
+            pass
 
         # Запускаем Celery задачу для старта торговли в очереди 'celery'
         task = start_trading_task.apply_async(args=[symbols, model_path], countdown=0, expires=300, queue='celery')
@@ -1946,8 +1967,7 @@ def trading_status():
     try:
         # Сначала пробуем быстрый статус из Redis (обновляется периодическим таском)
         try:
-            from redis import Redis as _Redis
-            _rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+            _rc = get_redis_client()
             cached = _rc.get('trading:current_status')
             cached_ts = _rc.get('trading:current_status_ts')
             if cached:
@@ -2396,6 +2416,467 @@ def get_trades_by_symbol_api(symbol_name):
             'success': False,
             'error': str(e)
         }), 500
+
+@app.route('/api/trades/matched_full', methods=['GET'])
+def get_matched_full_trades():
+    """Сопоставляет BUY→SELL сделки с предсказаниями в той же 5м свече (допуск ±1 свеча)."""
+    try:
+        symbol = request.args.get('symbol')
+        limit_trades = request.args.get('limit_trades', 200, type=int)
+        limit_predictions = request.args.get('limit_predictions', 1000, type=int)
+        tolerance_buckets = request.args.get('tolerance_buckets', 1, type=int)
+
+        # Загружаем сделки
+        if symbol:
+            trades = get_trades_by_symbol(symbol_name=symbol, limit=limit_trades)
+        else:
+            trades = get_recent_trades(limit=limit_trades)
+
+        # Загружаем предсказания
+        preds = get_model_predictions(symbol=symbol, action=None, limit=limit_predictions)
+
+        # Хелперы
+        def unify_symbol(s: str) -> str:
+            try:
+                return (s or '').upper().replace('/', '')
+            except Exception:
+                return ''
+
+        def to_ms(v):
+            if not v:
+                return None
+            try:
+                if isinstance(v, (int, float)):
+                    return int(v)
+                s = str(v)
+                # ISO без TZ трактуем как UTC
+                has_tz = ('Z' in s) or ('z' in s) or ('+' in s) or ('-' in s and 'T' in s and s.rfind('-') > s.find('T'))
+                if not has_tz and len(s) >= 19 and s[10] == 'T':
+                    s = s + 'Z'
+                from datetime import datetime
+                dt = datetime.fromisoformat(s.replace('Z', '+00:00'))
+                return int(dt.timestamp() * 1000)
+            except Exception:
+                return None
+
+        def bucket_5m(ms: int):
+            return None if ms is None else (ms // 300000)
+
+        # Индексация предсказаний: bucket → symbol → {buy, sell, hold}
+        preds_by_bucket = {}
+        for p in preds:
+            ts = to_ms(p.timestamp.isoformat() if getattr(p, 'timestamp', None) else None)
+            b = bucket_5m(ts)
+            if b is None:
+                continue
+            act = (p.action or '').lower()
+            sym = unify_symbol(getattr(p, 'symbol', ''))
+            if b not in preds_by_bucket:
+                preds_by_bucket[b] = {}
+            if sym not in preds_by_bucket[b]:
+                preds_by_bucket[b][sym] = { 'buy': [], 'sell': [], 'hold': [] }
+            if act in preds_by_bucket[b][sym]:
+                try:
+                    q_vals = json.loads(p.q_values) if p.q_values else []
+                except Exception:
+                    q_vals = []
+                preds_by_bucket[b][sym][act].append({
+                    'timestamp': getattr(p.timestamp, 'isoformat', lambda: None)(),
+                    'symbol': getattr(p, 'symbol', None),
+                    'action': p.action,
+                    'q_values': q_vals,
+                    'current_price': getattr(p, 'current_price', None),
+                    'position_status': getattr(p, 'position_status', None),
+                    'confidence': getattr(p, 'confidence', None),
+                    'model_path': getattr(p, 'model_path', None),
+                })
+
+        def pick_pred(bkt: int, sym_u: str, typ: str):
+            for delta in [0] + [d for d in range(-tolerance_buckets, tolerance_buckets+1) if d != 0]:
+                bb = bkt + delta
+                bucket = preds_by_bucket.get(bb)
+                if not bucket:
+                    continue
+                by_sym = bucket.get(sym_u)
+                if not by_sym:
+                    continue
+                arr = by_sym.get(typ) or []
+                if arr:
+                    return arr[0]
+            return None
+
+        # Нормализуем сделки и собираем пары BUY→SELL
+        norm_trades = []
+        for t in trades:
+            ms = to_ms((t.executed_at or t.created_at or None).isoformat() if getattr(t, 'executed_at', None) or getattr(t, 'created_at', None) else None)
+            act_raw = (t.action or '').lower()
+            act = 'sell' if act_raw == 'sell_partial' else act_raw
+            sym = unify_symbol(t.symbol.name if getattr(t, 'symbol', None) else getattr(t, 'symbol', '') or '')
+            price = float(getattr(t, 'price', 0.0) or 0.0)
+            qty = float(getattr(t, 'quantity', None) or getattr(t, 'total_value', 0.0) / price if price else (getattr(t, 'quantity', 0.0) or 0.0))
+            if ms is None or act not in ('buy', 'sell'):
+                continue
+            norm_trades.append({ 'ms': ms, 'action': act, 'symbol': sym, 'price': price, 'qty': qty })
+
+        norm_trades.sort(key=lambda x: x['ms'])
+
+        used_sell_idx = set()
+        pairs = []
+        for i, tb in enumerate(norm_trades):
+            if tb['action'] != 'buy':
+                continue
+            b_buy = bucket_5m(tb['ms'])
+            pred_buy = pick_pred(b_buy, tb['symbol'], 'buy')
+            if not pred_buy:
+                continue
+            # Найти следующий sell
+            sell_j = None
+            for j in range(i+1, len(norm_trades)):
+                if j in used_sell_idx:
+                    continue
+                ts = norm_trades[j]
+                if ts['action'] == 'sell' and ts['symbol'] == tb['symbol']:
+                    sell_j = j
+                    break
+            if sell_j is None:
+                continue
+            ts = norm_trades[sell_j]
+            b_sell = bucket_5m(ts['ms'])
+            pred_sell = pick_pred(b_sell, ts['symbol'], 'sell')
+            if not pred_sell:
+                continue
+
+            used_sell_idx.add(sell_j)
+            qty = tb['qty'] or ts['qty'] or 0.0
+            pnl_abs = (ts['price'] - tb['price']) * qty
+            pnl_pct = ((ts['price'] - tb['price']) / tb['price'] * 100.0) if tb['price'] else None
+
+            from datetime import datetime, timezone
+            entry_iso = datetime.fromtimestamp(tb['ms']/1000.0, tz=timezone.utc).isoformat()
+            exit_iso = datetime.fromtimestamp(ts['ms']/1000.0, tz=timezone.utc).isoformat()
+
+            pairs.append({
+                'symbol': tb['symbol'],
+                'entry_time': entry_iso,
+                'exit_time': exit_iso,
+                'entry_price': tb['price'],
+                'exit_price': ts['price'],
+                'qty': qty,
+                'pnl_abs': pnl_abs,
+                'pnl_pct': pnl_pct,
+                'pred_buy': pred_buy,
+                'pred_sell': pred_sell,
+            })
+
+        return jsonify({
+            'success': True,
+            'pairs': pairs,
+            'total_pairs': len(pairs)
+        }), 200
+
+    except Exception as e:
+        return jsonify({ 'success': False, 'error': str(e) }), 500
+
+@app.route('/api/analysis/qvalues_vs_pnl', methods=['GET'])
+def analysis_qvalues_vs_pnl():
+    """Возвращает датасет BUY→SELL пар с P&L и q_values для анализа порогов.
+
+    Params:
+      symbol: опционально, фильтр по символу
+      limit_trades: максимум сделок (по умолчанию 400)
+      limit_predictions: максимум предсказаний (по умолчанию 2000)
+      tolerance_buckets: допуск по времени в 5м свечах (по умолчанию 1)
+    """
+    try:
+        symbol = request.args.get('symbol')
+        limit_trades = request.args.get('limit_trades', 400, type=int)
+        limit_predictions = request.args.get('limit_predictions', 2000, type=int)
+        tolerance_buckets = request.args.get('tolerance_buckets', 1, type=int)
+
+        # Переиспользуем логику сопоставления
+        with app.test_request_context(
+            f"/api/trades/matched_full?symbol={symbol or ''}&limit_trades={limit_trades}&limit_predictions={limit_predictions}&tolerance_buckets={tolerance_buckets}"
+        ):
+            resp_raw = get_matched_full_trades()
+        # Нормализуем (Response | (Response, status))
+        if isinstance(resp_raw, tuple):
+            resp_obj, status_code = resp_raw
+        else:
+            resp_obj, status_code = resp_raw, getattr(resp_raw, 'status_code', 200)
+        if status_code != 200:
+            return resp_obj, status_code
+        payload = resp_obj.get_json() or {}
+        if not payload.get('success'):
+            return jsonify(payload), 200
+
+        rows = []
+        counters = {
+            'pairs_total': 0,
+            'pairs_with_buy_q': 0,
+            'pairs_with_sell_q': 0
+        }
+        for p in payload.get('pairs', []):
+            counters['pairs_total'] += 1
+            pred_buy = p.get('pred_buy') or {}
+            pred_sell = p.get('pred_sell') or {}
+            q_vals_buy = pred_buy.get('q_values') or []
+            q_vals_sell = pred_sell.get('q_values') or []
+            # Явно берем Q(BUY) и разрыв относительно max(HOLD, SELL)
+            q_buy = None
+            q_buy_gap = None
+            try:
+                if isinstance(q_vals_buy, list) and len(q_vals_buy) >= 2:
+                    q_buy = float(q_vals_buy[1])  # [hold, buy, sell]
+                    other = []
+                    if len(q_vals_buy) >= 1:
+                        other.append(float(q_vals_buy[0]))
+                    if len(q_vals_buy) >= 3:
+                        other.append(float(q_vals_buy[2]))
+                    if other:
+                        q_buy_gap = q_buy - max(other)
+                    counters['pairs_with_buy_q'] += 1
+            except Exception:
+                q_buy = None
+                q_buy_gap = None
+
+            # Для SELL: Q(SELL) и разрыв относительно max(HOLD, BUY)
+            q_sell = None
+            q_sell_gap = None
+            try:
+                if isinstance(q_vals_sell, list) and len(q_vals_sell) >= 3:
+                    q_sell = float(q_vals_sell[2])
+                    other_s = []
+                    if len(q_vals_sell) >= 1:
+                        other_s.append(float(q_vals_sell[0]))
+                    if len(q_vals_sell) >= 2:
+                        other_s.append(float(q_vals_sell[1]))
+                    if other_s:
+                        q_sell_gap = q_sell - max(other_s)
+                    counters['pairs_with_sell_q'] += 1
+            except Exception:
+                q_sell = None
+                q_sell_gap = None
+
+            rows.append({
+                'symbol': p.get('symbol'),
+                'entry_time': p.get('entry_time'),
+                'exit_time': p.get('exit_time'),
+                'pnl_abs': p.get('pnl_abs'),
+                'pnl_pct': p.get('pnl_pct'),
+                'buy_confidence': pred_buy.get('confidence'),
+                'sell_confidence': pred_sell.get('confidence'),
+                'buy_q_values': q_vals_buy,
+                'sell_q_values': pred_sell.get('q_values') or [],
+                'buy_max_q': q_buy,
+                'buy_gap_q': q_buy_gap,
+                'sell_max_q': q_sell,
+                'sell_gap_q': q_sell_gap,
+            })
+
+        return jsonify({ 'success': True, 'rows': rows, 'total': len(rows), 'counters': counters }), 200
+
+    except Exception as e:
+        return jsonify({ 'success': False, 'error': str(e) }), 500
+
+@app.route('/api/analysis/qgate_suggest', methods=['GET'])
+def analysis_qgate_suggest():
+    """Подбирает пороги T1/T2 (maxQ/gapQ) по сетке квантилей без внешних зависимостей.
+
+    Params: такие же, как у /api/analysis/qvalues_vs_pnl
+    Возвращает: { T1, T2, hit_rate, n, score }
+    """
+    try:
+        symbol = request.args.get('symbol')
+        limit_trades = request.args.get('limit_trades', 400, type=int)
+        limit_predictions = request.args.get('limit_predictions', 2000, type=int)
+        tolerance_buckets = request.args.get('tolerance_buckets', 1, type=int)
+        metric = request.args.get('metric', 'hit_rate')  # hit_rate | pnl_sum | pnl_per_trade
+        min_n = request.args.get('min_n', 20, type=int)
+        grid_points = request.args.get('grid_points', 15, type=int)
+        side = request.args.get('side', 'buy')  # buy | sell
+
+        # Получаем датасет
+        with app.test_request_context(
+            f"/api/analysis/qvalues_vs_pnl?symbol={symbol or ''}&limit_trades={limit_trades}&limit_predictions={limit_predictions}&tolerance_buckets={tolerance_buckets}"
+        ):
+            resp_raw = analysis_qvalues_vs_pnl()
+        # Нормализуем (Response | (Response, status))
+        if isinstance(resp_raw, tuple):
+            resp_obj, status_code = resp_raw
+        else:
+            resp_obj, status_code = resp_raw, getattr(resp_raw, 'status_code', 200)
+        if status_code != 200:
+            return resp_obj, status_code
+        js = resp_obj.get_json() or {}
+        if not js.get('success'):
+            return jsonify(js), 200
+
+        rows = js.get('rows', [])
+        # Преобразуем в простые массивы
+        maxqs = []
+        gapqs = []
+        wins = []
+        for r in rows:
+            if side == 'sell':
+                max_q = r.get('sell_max_q')
+                gap_q = r.get('sell_gap_q')
+            else:
+                max_q = r.get('buy_max_q')
+                gap_q = r.get('buy_gap_q')
+            pnl_abs = r.get('pnl_abs')
+            if max_q is None:
+                continue
+            maxqs.append(float(max_q))
+            gapqs.append(float(gap_q) if gap_q is not None else float('nan'))
+            wins.append(1.0 if (pnl_abs is not None and float(pnl_abs) > 0.0) else 0.0)
+
+        if not maxqs:
+            return jsonify({ 'success': False, 'error': 'Недостаточно данных' }), 200
+
+        # Квантильные сетки
+        def quantiles(arr, qs):
+            a = sorted([x for x in arr if not (x is None or (isinstance(x, float) and (x != x)))])
+            if not a:
+                return []
+            res = []
+            n = len(a)
+            for q in qs:
+                if q <= 0:
+                    res.append(a[0])
+                elif q >= 1:
+                    res.append(a[-1])
+                else:
+                    idx = int(q * (n - 1))
+                    res.append(a[idx])
+            return res
+
+        gp = max(5, grid_points)
+        qs = [0.2 + i*(0.7/(gp-1)) for i in range(gp)]  # 0.2..0.9, gp точек
+        maxq_vals = quantiles(maxqs, qs)
+        has_gap = any(not (g != g) for g in gapqs)  # есть хотя бы одно не-NaN
+        gapq_clean = [g for g in gapqs if not (isinstance(g, float) and (g != g))]
+        gapq_vals = quantiles(gapq_clean, qs) if gapq_clean else [0.0]
+
+        best = None
+        total = len(maxqs)
+        for t1 in maxq_vals:
+            for t2 in gapq_vals:
+                selected = 0
+                wins_sel = 0
+                pnl_sum = 0.0
+                for i in range(total):
+                    ok = (maxqs[i] >= t1)
+                    if has_gap and i < len(gapqs) and not (isinstance(gapqs[i], float) and (gapqs[i] != gapqs[i])):
+                        ok = ok and (gapqs[i] >= t2)
+                    if ok:
+                        selected += 1
+                        wins_sel += wins[i]
+                        # добавляем pnl, если доступен
+                        try:
+                            pnl_val = float(rows[i].get('pnl_abs') or 0.0)
+                        except Exception:
+                            pnl_val = 0.0
+                        pnl_sum += pnl_val
+                if selected < min_n:
+                    continue
+                hit = wins_sel / selected if selected > 0 else 0.0
+                if metric == 'hit_rate':
+                    score = hit * (selected / total)
+                elif metric == 'pnl_sum':
+                    score = pnl_sum
+                else:  # pnl_per_trade
+                    score = (pnl_sum / selected) if selected else -1e9
+                if (best is None) or (score > best['score']):
+                    best = { 'T1': float(t1), 'T2': float(t2), 'hit_rate': float(hit), 'n': int(selected), 'score': float(score), 'pnl_sum': float(pnl_sum), 'pnl_per_trade': float((pnl_sum/selected) if selected else 0.0) }
+
+        if not best:
+            # Эвристический фолбэк по квантилям, чтобы вернуть разумные пороги даже на малой выборке
+            def quantile_one(arr, q):
+                a = sorted([x for x in arr if not (isinstance(x, float) and (x != x))])
+                if not a:
+                    return None
+                if q <= 0:
+                    return a[0]
+                if q >= 1:
+                    return a[-1]
+                idx = int(q * (len(a) - 1))
+                return a[idx]
+
+            t1_fb = quantile_one(maxqs, 0.7) or maxqs[0]
+            t2_fb = quantile_one(gapq_clean if gapq_clean else [0.0], 0.6) if has_gap else 0.0
+
+            # Оценим метрики для фолбэка
+            selected = 0
+            wins_sel = 0
+            pnl_sum = 0.0
+            for i in range(total):
+                ok = (maxqs[i] >= t1_fb)
+                if has_gap and i < len(gapqs) and not (isinstance(gapqs[i], float) and (gapqs[i] != gapqs[i])):
+                    ok = ok and (gapqs[i] >= t2_fb)
+                if ok:
+                    selected += 1
+                    wins_sel += wins[i]
+                    try:
+                        pnl_val = float(rows[i].get('pnl_abs') or 0.0)
+                    except Exception:
+                        pnl_val = 0.0
+                    pnl_sum += pnl_val
+            hit = wins_sel / selected if selected else 0.0
+            best = { 'T1': float(t1_fb), 'T2': float(t2_fb), 'hit_rate': float(hit), 'n': int(selected), 'score': float(hit * (selected/total) if total else 0.0), 'pnl_sum': float(pnl_sum), 'pnl_per_trade': float((pnl_sum/selected) if selected else 0.0) }
+            approx = True
+        else:
+            approx = False
+
+        # Сводки распределений по win/loss
+        def summarize(arr, mask):
+            vals = [float(arr[i]) for i in range(len(arr)) if mask[i] and not (isinstance(arr[i], float) and (arr[i] != arr[i]))]
+            if not vals:
+                return { 'n': 0 }
+            vals_sorted = sorted(vals)
+            def q(p):
+                if not vals_sorted:
+                    return None
+                idx = int(p * (len(vals_sorted)-1))
+                return vals_sorted[idx]
+            return {
+                'n': len(vals_sorted),
+                'mean': sum(vals_sorted)/len(vals_sorted),
+                'q10': q(0.1), 'q50': q(0.5), 'q90': q(0.9)
+            }
+
+        mask_win = [w == 1.0 for w in wins]
+        mask_loss = [w == 0.0 for w in wins]
+        summary = {
+            'q_buy_win': summarize(maxqs, mask_win),
+            'q_buy_loss': summarize(maxqs, mask_loss),
+            'gap_win': summarize(gapqs, mask_win),
+            'gap_loss': summarize(gapqs, mask_loss)
+        }
+
+        env_str = (f"QGATE_{'SELL_' if side=='sell' else ''}MAXQ={best['T1']:.6f} "
+                   f"QGATE_{'SELL_' if side=='sell' else ''}GAPQ={best['T2']:.6f}")
+        # Дополнительные счетчики доступности q-значений
+        counters = None
+        try:
+            with app.test_request_context(
+                f"/api/analysis/qvalues_vs_pnl?symbol={symbol or ''}&limit_trades={limit_trades}&limit_predictions={limit_predictions}&tolerance_buckets={tolerance_buckets}"
+            ):
+                resp_raw2 = analysis_qvalues_vs_pnl()
+            if isinstance(resp_raw2, tuple):
+                resp_obj2, status_code2 = resp_raw2
+            else:
+                resp_obj2, status_code2 = resp_raw2, getattr(resp_raw2, 'status_code', 200)
+            if status_code2 == 200:
+                js2 = resp_obj2.get_json() or {}
+                counters = js2.get('counters')
+        except Exception:
+            counters = None
+
+        return jsonify({ 'success': True, 'suggestion': best, 'env': env_str, 'summary': summary, 'side': side, 'approx': approx, 'counters': counters }), 200
+
+    except Exception as e:
+        return jsonify({ 'success': False, 'error': str(e) }), 500
+
 
 @app.route('/api/trading/history', methods=['GET'])
 def trading_history():

@@ -325,7 +325,7 @@
                         filesText += `💡 Сначала запустите обучение модели\n`;
                     }
                     
-                    filesDiv.textContent = filesText;
+                    filesDiv.innerHTML = `<pre>${filesText}</pre>`;
                     
                 } else {
                     throw new Error(result.message);
@@ -365,7 +365,7 @@
                     let analysisText = `📊 АНАЛИЗ ФАЙЛА\n===============================\n\n`;
                     analysisText += `📄 Файл: ${result.file_analyzed}\n`;
                     analysisText += result.output || '';
-                    resultsDiv.textContent = analysisText;
+                    resultsDiv.innerHTML = `<pre>${analysisText}</pre>`;
                 } else {
                     throw new Error(result.message);
                 }
@@ -404,9 +404,9 @@
                     let summaryText = `📊 СВОДКА ПЛОХИХ СДЕЛОК\n===============================\n\n`;
                     summaryText += `📄 Файл: ${result.file_analyzed.split('/').pop()}\n`;
                     summaryText += `🔢 Плохих сделок: ${result.bad_trades_count} (${result.bad_trades_percentage.toFixed(2)}%)\n`;
-                    summaryDiv.textContent = summaryText;
+                    summaryDiv.innerHTML = `<pre>${summaryText}</pre>`;
                     resultsDiv.style.display = 'block';
-                    resultsDiv.textContent = result.output;
+                    resultsDiv.innerHTML = `<pre>${result.output}</pre>`;
                 } else {
                     throw new Error(result.message);
                 }
@@ -678,7 +678,7 @@
                         }
                     }
                     
-                    resultsDiv.textContent = analysisText;
+                    resultsDiv.innerHTML = `<pre>${analysisText}</pre>`;
                     
                 } else {
                     throw new Error(result.message);
@@ -690,7 +690,7 @@
                 
                 // Показываем детали ошибки
                 resultsDiv.style.display = 'block';
-                resultsDiv.textContent = `❌ ОШИБКА АНАЛИЗА:\n${error.message}\n\n💡 Убедитесь, что:\n• Обучение завершено\n• Файлы результатов существуют\n• Установлены matplotlib и numpy`;
+                resultsDiv.innerHTML = `<pre>❌ ОШИБКА АНАЛИЗА:\n${error.message}\n\n💡 Убедитесь, что:\n• Обучение завершено\n• Файлы результатов существуют\n• Установлены matplotlib и numpy</pre>`;
             } finally {
                 // Восстанавливаем кнопку
                 analyzeBtn.disabled = false;
@@ -765,11 +765,11 @@
                         }
                     }
                     
-                    summaryDiv.textContent = summaryText;
+                    summaryDiv.innerHTML = `<pre>${summaryText}</pre>`;
                     
                     // Показываем детальные результаты
                     resultsDiv.style.display = 'block';
-                    resultsDiv.textContent = result.output;
+                    resultsDiv.innerHTML = `<pre>${result.output}</pre>`;
                     
                 } else {
                     throw new Error(result.message);
@@ -781,7 +781,7 @@
                 
                 // Показываем детали ошибки
                 resultsDiv.style.display = 'block';
-                resultsDiv.textContent = `❌ ОШИБКА АНАЛИЗА ПЛОХИХ СДЕЛОК:\n${error.message}\n\n💡 Убедитесь, что:\n• Обучение завершено\n• Файлы результатов существуют\n• Установлены зависимости для анализа`;
+                resultsDiv.innerHTML = `<pre>❌ ОШИБКА АНАЛИЗА ПЛОХИХ СДЕЛОК:\n${error.message}\n\n💡 Убедитесь, что:\n• Обучение завершено\n• Файлы результатов существуют\n• Установлены зависимости для анализа</pre>`;
             } finally {
                 // Восстанавливаем кнопку
                 analyzeBtn.disabled = false;

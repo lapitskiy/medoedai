@@ -1,13 +1,19 @@
 import os
 import time
 import logging
+import json
+import redis
 from typing import Dict, Optional, Tuple
 import ccxt
 import math
 import numpy as np
 import torch
 from datetime import datetime, timedelta
-from utils.trade_utils import create_trade_record, update_trade_status
+from utils.trade_utils import create_trade_record, update_trade_status, create_model_prediction
+from utils.db_utils import db_get_or_fetch_ohlcv
+from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized
+from agents.vdqn.dqnn import DQNN
+from envs.dqn_model.gym.indicators_optimized import preprocess_dataframes
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -65,8 +71,7 @@ class TradingAgent:
             if isinstance(checkpoint, dict) and not hasattr(checkpoint, 'eval'):
                 # Попытка восстановить размерности из окружения (по умолчанию)
                 try:
-                    from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnv
-                    temp_env = CryptoTradingEnv(symbol='BTCUSDT', timeframe='5m')
+                    temp_env = CryptoTradingEnvOptimized(symbol='BTCUSDT', timeframe='5m')
                     obs_dim = getattr(temp_env, 'observation_space_shape', None)
                     if obs_dim is None and hasattr(temp_env, 'observation_space'):
                         obs_dim = temp_env.observation_space.shape[0]
@@ -78,7 +83,6 @@ class TradingAgent:
 
                 # Импортируем архитектуру сети
                 try:
-                    from agents.vdqn.dqnn import DQNN
                     model = DQNN(obs_dim=obs_dim, act_dim=act_dim, hidden_sizes=(512, 256, 128))
                 except Exception as arch_err:
                     logger.error(f"Не удалось создать архитектуру сети: {arch_err}")
@@ -146,15 +150,13 @@ class TradingAgent:
         Ничего не делает при ошибках доступа к Redis.
         """
         try:
-            import redis as _redis
-            import json as _json
-            r = _redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
+            r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
             raw = r.get('trading:symbols')
             if not raw:
                 return
             symbols = None
             try:
-                symbols = _json.loads(raw)
+                symbols = json.loads(raw)
             except Exception:
                 # Если по каким-то причинам строка не JSON, пробуем как одиночный символ
                 symbols = [raw] if isinstance(raw, str) and raw else None
@@ -985,7 +987,6 @@ class TradingAgent:
         """
         try:
             # Сначала пробуем получить из БД
-            from utils.db_utils import db_get_or_fetch_ohlcv
             
             symbol_for_db = getattr(self, 'base_symbol', None) or getattr(self, 'symbol', None) or 'BTCUSDT'
             df_5min = db_get_or_fetch_ohlcv(
@@ -1282,7 +1283,6 @@ class TradingAgent:
             
             # Логируем предсказание в БД
             try:
-                from utils.trade_utils import create_model_prediction
                 
                 # Определяем статус позиции
                 position_status = 'open' if self.current_position else 'none'
@@ -1331,7 +1331,6 @@ class TradingAgent:
         """
         try:
             # Используем ту же логику, что и в train_dqn_symbol
-            from utils.db_utils import db_get_or_fetch_ohlcv
             
             # Получаем данные из БД, докачиваем недостающие
             df_5min = db_get_or_fetch_ohlcv(
@@ -1378,7 +1377,6 @@ class TradingAgent:
             dict: Условия рынка
         """
         try:
-            from utils.db_utils import db_get_or_fetch_ohlcv
             
             # Получаем последние данные для расчета индикаторов
             df_5min = db_get_or_fetch_ohlcv(
@@ -1475,7 +1473,6 @@ class TradingAgent:
             }
             
             # Рассчитываем индикаторы
-            from envs.dqn_model.gym.indicators_optimized import preprocess_dataframes
             
             # Создаем заглушки для 15m и 1h (используем 5m данные)
             df_15min = df_5min[::3]  # Каждая 3-я свеча из 5m
@@ -1509,8 +1506,7 @@ class TradingAgent:
             # Добавляем funding-фичи при наличии в исходном DataFrame (через повторный fetch как pandas)
             funding_features_flat = np.array([], dtype=np.float32)
             try:
-                from utils.db_utils import db_get_or_fetch_ohlcv as _db_ohlcv
-                df_src = _db_ohlcv(self.base_symbol, '5m', limit_candles=max(100, lookback_window), exchange_id='bybit')
+                df_src = db_get_or_fetch_ohlcv(self.base_symbol, '5m', limit_candles=max(100, lookback_window), exchange_id='bybit')
                 if df_src is not None and not df_src.empty:
                     # Срез на то же окно
                     df_src = df_src.sort_values('timestamp')
@@ -1594,6 +1590,25 @@ class TradingAgent:
     def _execute_buy(self) -> Dict:
         """Выполнение покупки"""
         try:
+            # Q-gate по порогам из окружения (опционально)
+            try:
+                t1 = float(os.environ.get('QGATE_MAXQ', 'nan'))
+                t2 = float(os.environ.get('QGATE_GAPQ', 'nan'))
+            except Exception:
+                t1 = float('nan'); t2 = float('nan')
+            if self._last_q_values and (self.last_model_prediction == 'buy'):
+                try:
+                    max_q = max(self._last_q_values) if self._last_q_values else None
+                    sorted_q = sorted(self._last_q_values, reverse=True)
+                    second_q = sorted_q[1] if len(sorted_q) > 1 else None
+                    gap_q = (max_q - second_q) if (max_q is not None and second_q is not None) else None
+                    if (max_q is not None and max_q < t1) or (gap_q is not None and gap_q < t2):
+                        logger.info(f"QGate: skip BUY (maxQ={max_q}, gapQ={gap_q}, T1={t1}, T2={t2})")
+                        # Сохраняем информацию о Q-gate фильтрации в предсказание
+                        self._save_qgate_filtered_prediction('buy', max_q, gap_q, t1, t2)
+                        return {"success": False, "error": "QGate filtered", "qgate": {"max_q": max_q, "gap_q": gap_q, "T1": t1, "T2": t2}}
+                except Exception:
+                    pass
             # Получаем текущий баланс перед покупкой
             balance = self._get_current_balance()
             
@@ -1684,9 +1699,51 @@ class TradingAgent:
                 "error": str(e)
             }
     
+    def _save_qgate_filtered_prediction(self, action: str, max_q: float, gap_q: float, t1: float, t2: float):
+        """Сохраняет предсказание с информацией о Q-gate фильтрации"""
+        try:
+            
+            # Создаем предсказание с пометкой о Q-gate фильтрации
+            market_conditions = self._get_market_conditions()
+            market_conditions['qgate_filtered'] = True
+            market_conditions['qgate_reason'] = f"maxQ={max_q:.3f}<{t1:.3f} или gapQ={gap_q:.3f}<{t2:.3f}"
+            
+            create_model_prediction(
+                symbol=self.symbol,
+                action=action,
+                q_values=self._last_q_values or [0, 0, 0],
+                current_price=self._get_current_price(),
+                position_status='none',
+                model_path=getattr(self, 'model_path', 'unknown'),
+                market_conditions=market_conditions
+            )
+            logger.info(f"Сохранено Q-gate отфильтрованное предсказание: {action} - {market_conditions['qgate_reason']}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка сохранения Q-gate предсказания: {e}")
+
     def _execute_sell(self) -> Dict:
         """Выполнение продажи"""
         try:
+            # Q-gate по порогам из окружения (опционально)
+            try:
+                t1 = float(os.environ.get('QGATE_SELL_MAXQ', 'nan'))
+                t2 = float(os.environ.get('QGATE_SELL_GAPQ', 'nan'))
+            except Exception:
+                t1 = float('nan'); t2 = float('nan')
+            if self._last_q_values and (self.last_model_prediction == 'sell'):
+                try:
+                    max_q = max(self._last_q_values) if self._last_q_values else None
+                    sorted_q = sorted(self._last_q_values, reverse=True)
+                    second_q = sorted_q[1] if len(sorted_q) > 1 else None
+                    gap_q = (max_q - second_q) if (max_q is not None and second_q is not None) else None
+                    if (max_q is not None and max_q < t1) or (gap_q is not None and gap_q < t2):
+                        logger.info(f"QGate: skip SELL (maxQ={max_q}, gapQ={gap_q}, T1={t1}, T2={t2})")
+                        # Сохраняем информацию о Q-gate фильтрации в предсказание
+                        self._save_qgate_filtered_prediction('sell', max_q, gap_q, t1, t2)
+                        return {"success": False, "error": "QGate filtered", "qgate": {"max_q": max_q, "gap_q": gap_q, "T1": t1, "T2": t2}}
+                except Exception:
+                    pass
             # Получаем текущий баланс перед продажей
             balance = self._get_current_balance()
             

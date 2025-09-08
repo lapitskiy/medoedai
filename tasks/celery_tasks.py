@@ -347,6 +347,19 @@ def start_trading_task(self, symbols, model_path=None):
     if not trading_enabled:
         return {"success": False, "skipped": True, "reason": "ENABLE_TRADING_BEAT=0"}
     
+    # Redis-лок: предотвращаем параллельные запуски в пределах 5 минут
+    try:
+        from redis import Redis as _Redis
+        _rc_lock = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+        lock_key = 'trading:agent_lock'
+        # TTL 300с, set if not exists
+        got_lock = _rc_lock.set(lock_key, datetime.utcnow().isoformat(), nx=True, ex=300)
+        if not got_lock:
+            return {"success": False, "skipped": True, "reason": "agent_lock_active"}
+    except Exception as _e:
+        # Если Redis недоступен — продолжаем без лока (мягкая деградация)
+        pass
+    
     # Если параметры не передали в расписании — пробуем взять их из Redis (последние заданные из веб‑интерфейса)
     try:
         if (not symbols) or model_path is None:
@@ -463,9 +476,23 @@ def start_trading_task(self, symbols, model_path=None):
                         result_str = output_str.split('RESULT:')[1].strip()
                         parsed_result = json.loads(result_str)
                         result_data['parsed_result'] = parsed_result
+                        
+                        # Определяем, была ли реальная торговая операция
+                        trade_executed = parsed_result.get('trade_executed', 'hold')
+                        if trade_executed in ['buy', 'sell', 'sell_all', 'sell_partial']:
+                            # Реальная торговая операция
+                            result_data['trade_executed'] = True
+                            result_data['trade_type'] = trade_executed
+                        else:
+                            # Просто HOLD или ожидание
+                            result_data['trade_executed'] = False
+                            result_data['trade_type'] = 'hold'
+                            
                     except Exception as parse_error:
                         print(f"Ошибка парсинга результата: {parse_error}")
                         result_data['parse_error'] = str(parse_error)
+                        result_data['trade_executed'] = False
+                        result_data['trade_type'] = 'unknown'
                 
                 # Сохраняем в Redis (последние 10 результатов)
                 redis_key = f'trading:latest_result_{datetime.now().strftime("%Y%m%d_%H%M%S")}'

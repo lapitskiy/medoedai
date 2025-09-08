@@ -1,7 +1,7 @@
 from envs.dqn_model.gym.gutils_optimized import calc_relative_vol_numpy, commission_penalty, update_roi_stats, update_vol_stats
 from envs.dqn_model.gym.indicators_optimized import preprocess_dataframes
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
 import numpy as np
 import random
 import torch

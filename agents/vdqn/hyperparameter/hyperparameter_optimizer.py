@@ -18,8 +18,11 @@ import itertools
 from datetime import datetime
 import json
 
-# Добавляем путь к модулям
-sys.path.append('.')
+# Добавляем пути для импортов
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.join(current_dir, '..', '..', '..')
+sys.path.append(project_root)
+
 from agents.vdqn.cfg.vconfig import vDqnConfig
 from agents.vdqn.v_train_model_optimized import train_model_optimized
 
@@ -105,7 +108,12 @@ class HyperparameterOptimizer:
             if isinstance(results, str) and 'dqn_model.pth' in results:
                 # Модель сохранена, загружаем результаты
                 try:
-                    with open('temp/train_results/latest_results.pkl', 'rb') as f:
+                    # Получаем путь к корню проекта
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    project_root = os.path.join(current_dir, '..', '..', '..')
+                    results_path = os.path.join(project_root, 'temp', 'train_results', 'latest_results.pkl')
+                    
+                    with open(results_path, 'rb') as f:
                         training_results = pickle.load(f)
                     
                     # Рассчитываем score
@@ -293,10 +301,15 @@ class HyperparameterOptimizer:
     def save_intermediate_results(self):
         """Сохраняет промежуточные результаты"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"temp/hyperparameter_optimization_{timestamp}.json"
+        
+        # Получаем путь к корню проекта
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.join(current_dir, '..', '..', '..')
+        temp_dir = os.path.join(project_root, 'temp')
+        filename = os.path.join(temp_dir, f"hyperparameter_optimization_{timestamp}.json")
         
         # Создаем папку если не существует
-        Path('temp').mkdir(exist_ok=True)
+        Path(temp_dir).mkdir(exist_ok=True)
         
         # Подготавливаем данные для сохранения
         save_data = {
@@ -322,10 +335,15 @@ class HyperparameterOptimizer:
     def save_final_results(self):
         """Сохраняет финальные результаты оптимизации"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"temp/final_hyperparameter_optimization_{timestamp}.json"
+        
+        # Получаем путь к корню проекта
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.join(current_dir, '..', '..', '..')
+        temp_dir = os.path.join(project_root, 'temp')
+        filename = os.path.join(temp_dir, f"final_hyperparameter_optimization_{timestamp}.json")
         
         # Создаем папку если не существует
-        Path('temp').mkdir(exist_ok=True)
+        Path(temp_dir).mkdir(exist_ok=True)
         
         # Подготавливаем данные для сохранения
         save_data = {
@@ -382,9 +400,14 @@ def main():
     print("🚀 ОПТИМИЗАТОР ГИПЕРПАРАМЕТРОВ DQN МОДЕЛИ")
     print("=" * 60)
     
+    # Получаем путь к корню проекта
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(current_dir, '..', '..', '..')
+    
     # Проверяем наличие данных
-    if not Path('temp/binance_data').exists():
-        print("❌ Данные для обучения не найдены в temp/binance_data/")
+    data_path = os.path.join(project_root, 'temp', 'binance_data')
+    if not Path(data_path).exists():
+        print(f"❌ Данные для обучения не найдены в {data_path}")
         print("   Сначала запустите download.py для загрузки данных")
         return
     

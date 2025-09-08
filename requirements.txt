@@ -21,6 +21,7 @@ Markdown==3.6
 markdown-it-py==3.0.0
 MarkupSafe==2.1.5
 matplotlib==3.9.0
+seaborn==0.13.2
 mdurl==0.1.2
 ml-dtypes==0.3.2
 namex==0.0.8
@@ -55,8 +56,8 @@ ccxt
 celery
 flask
 redis
-gym
-pandas-ta
+gymnasium
+# pandas-ta  # Не совместимо с Python 3.10, используем альтернативы
 sqlalchemy
 wandb
 psycopg2-binary

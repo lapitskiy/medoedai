@@ -1,8 +1,8 @@
 from envs.dqn_model.gym.gutils import calc_relative_vol, commission_penalty, update_roi_stats, update_vol_stats
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
 import numpy as np
-import pandas_ta as ta
+# import pandas_ta as ta  # Заменено на стандартные функции pandas
 import random
 import torch
 from sklearn.preprocessing import StandardScaler # Добавлено для нормализации
@@ -818,14 +818,20 @@ class CryptoTradingEnv(gym.Env):
         # RSI
         if 'rsi' in self.indicators_config:
             length_rsi = self.indicators_config['rsi'].get('length', 14)
-            df[f'RSI_{length_rsi}'] = ta.rsi(df['close'], length=length_rsi)
+            # Простая реализация RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=length_rsi).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=length_rsi).mean()
+            rs = gain / loss
+            df[f'RSI_{length_rsi}'] = 100 - (100 / (1 + rs))
             features.append(f'RSI_{length_rsi}')
 
         # EMA
         if 'ema' in self.indicators_config and 'lengths' in self.indicators_config['ema']:
             for length in self.indicators_config['ema']['lengths']:
                 col = f'EMA_{length}'
-                df[col] = ta.ema(df['close'], length=length)
+                # Простая реализация EMA
+                df[col] = df['close'].ewm(span=length).mean()
                 features.append(col)
 
         # EMA Cross (если определено)

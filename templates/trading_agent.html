@@ -42,7 +42,7 @@
                             <label style="font-weight:600; margin-top:10px;">Ансамбль</label>
                             <select id="ensembleSelect" class="form-control" onchange="renderEnsembleVersions()">
                                 <option value="ensemble-a" selected>ensemble-a</option>
-                            </select>
+                    </select>
                         </div>
                     </div>
                 </div>
@@ -181,6 +181,15 @@
                     </button>
                     <button class="btn btn-primary" onclick="getModelPredictions()">
                         🧠 Предсказания ИИ
+                    </button>
+                    <button class="btn btn-primary" onclick="suggestQGate('buy')">
+                        🧪 Q-gate BUY
+                    </button>
+                    <button class="btn btn-primary" onclick="suggestQGate('sell')">
+                        🧪 Q-gate SELL
+                    </button>
+                    <button class="btn btn-primary" onclick="getTradeHistory()">
+                        📈 История сделок (БД)
                     </button>
                     <button class="btn btn-primary" onclick="getPredictionStatistics()">
                         📊 Статистика предсказаний
@@ -597,11 +606,20 @@
                     }
                     
                     historyDiv.style.display = 'block';
+                    try { historyDiv.scrollIntoView({ behavior: 'smooth' }); } catch (_) {}
                 } else {
-                    showStatus('tradingResult', 'error', result.error);
+                    const historyDiv = document.getElementById('tradingHistory');
+                    const contentDiv = document.getElementById('historyContent');
+                    contentDiv.innerHTML = '<p>❌ Ошибка получения истории</p><p><em>' + (result.error || 'Неизвестная ошибка') + '</em></p>';
+                    historyDiv.style.display = 'block';
+                    try { historyDiv.scrollIntoView({ behavior: 'smooth' }); } catch (_) {}
                 }
             } catch (error) {
-                showStatus('tradingResult', 'error', 'Ошибка при получении истории: ' + error.message);
+                const historyDiv = document.getElementById('tradingHistory');
+                const contentDiv = document.getElementById('historyContent');
+                contentDiv.innerHTML = '<p>❌ Ошибка сети</p><p><em>' + error.message + '</em></p>';
+                historyDiv.style.display = 'block';
+                try { historyDiv.scrollIntoView({ behavior: 'smooth' }); } catch (_) {}
             }
         }
 
@@ -620,12 +638,27 @@
                         
                         result.latest_results.forEach((tradeResult, index) => {
                             const resultTime = formatMoscowDateTime(tradeResult.timestamp);
-                            const successClass = tradeResult.exit_code === 0 ? 'success' : 'error';
+                            
+                            // Определяем тип результата
+                            let resultType, resultClass, resultIcon;
+                            if (tradeResult.exit_code !== 0) {
+                                resultType = 'ОШИБКА';
+                                resultClass = 'error';
+                                resultIcon = '❌';
+                            } else if (tradeResult.trade_executed === true) {
+                                resultType = 'СДЕЛКА';
+                                resultClass = 'success';
+                                resultIcon = '💰';
+                            } else {
+                                resultType = 'ОЖИДАНИЕ';
+                                resultClass = 'info';
+                                resultIcon = '⏸️';
+                            }
                             
                             resultsHTML += `
                                 <div class="trade-item">
                                     <div class="trade-header">
-                                        <span class="trade-action ${successClass}">${tradeResult.exit_code === 0 ? '✅ УСПЕХ' : '❌ ОШИБКА'}</span>
+                                        <span class="trade-action ${resultClass}">${resultIcon} ${resultType}</span>
                                         <span>${resultTime}</span>
                                     </div>
                                     <div class="trade-details">
@@ -637,6 +670,12 @@
                                             <div class="label">Код выхода</div>
                                             <div class="value">${tradeResult.exit_code}</div>
                                         </div>
+                                        ${tradeResult.trade_type ? `
+                                        <div class="trade-detail">
+                                            <div class="label">Тип операции</div>
+                                            <div class="value">${tradeResult.trade_type.toUpperCase()}</div>
+                                        </div>
+                                        ` : ''}
                                         ${tradeResult.parsed_result ? `
                                         <div class="trade-detail">
                                             <div class="label">Действие</div>
@@ -698,84 +737,150 @@
         // Получение истории сделок из базы данных
         async function getTradeHistory() {
             try {
-                const response = await fetch('/api/trades/recent?limit=20');
-                const result = await response.json();
-                
+                const symSel = document.getElementById('ensembleSymbolSelect');
+                const symbol = symSel ? (symSel.value || '') : '';
+                const qs = new URLSearchParams({
+                    limit_trades: '400',
+                    limit_predictions: '2000',
+                    tolerance_buckets: '2',
+                    ...(symbol ? { symbol } : {})
+                }).toString();
+                const resp = await fetch('/api/trades/matched_full?' + qs);
+                const data = await resp.json();
                 const historyDiv = document.getElementById('tradeHistory');
                 const contentDiv = document.getElementById('tradeHistoryContent');
-                
-                if (result.success) {
-                    if (result.trades && result.trades.length > 0) {
-                        let historyHTML = '';
-                        result.trades.forEach(trade => {
-                            const statusClass = trade.is_successful ? 'success' : 'error';
-                            const actionClass = trade.action === 'buy' ? 'buy' : trade.action === 'sell' ? 'sell' : 'hold';
-                            
-                            historyHTML += `
-                                <div class="trade-item ${statusClass}">
-                                    <div class="trade-header">
-                                        <div class="trade-number">${trade.trade_number}</div>
-                                        <div class="trade-symbol">${trade.symbol}</div>
-                                        <div class="trade-action ${actionClass}">${trade.action.toUpperCase()}</div>
-                                        <div class="trade-status">${trade.status}</div>
-                                    </div>
-                                    <div class="trade-details">
-                                        <div class="trade-detail">
-                                            <div class="label">Количество</div>
-                                            <div class="value">${trade.quantity}</div>
-                                        </div>
-                                        <div class="trade-detail">
-                                            <div class="label">Цена</div>
-                                            <div class="value">$${trade.price}</div>
-                                        </div>
-                                        <div class="trade-detail">
-                                            <div class="label">Стоимость</div>
-                                            <div class="value">$${trade.total_value}</div>
-                                        </div>
-                                        ${trade.model_prediction ? `
-                                        <div class="trade-detail">
-                                            <div class="label">Предсказание модели</div>
-                                            <div class="value">${trade.model_prediction}</div>
-                                        </div>
-                                        ` : ''}
-                                        ${trade.position_pnl ? `
-                                        <div class="trade-detail">
-                                            <div class="label">P&L</div>
-                                            <div class="value" style="color: ${trade.position_pnl >= 0 ? 'green' : 'red'}">
-                                                ${trade.position_pnl >= 0 ? '+' : ''}${trade.position_pnl.toFixed(2)}
-                                            </div>
-                                        </div>
-                                        ` : ''}
-                                        <div class="trade-detail">
-                                            <div class="label">Время создания</div>
-                                            <div class="value">${formatMoscowDateTime(trade.created_at)}</div>
-                                        </div>
-                                        ${trade.error_message ? `
-                                        <div class="trade-detail">
-                                            <div class="label">Ошибка</div>
-                                            <div class="value error">${trade.error_message}</div>
-                                        </div>
-                                        ` : ''}
-                                    </div>
-                                </div>
-                            `;
-                        });
-                        
-                        contentDiv.innerHTML = historyHTML;
-                    } else {
-                        contentDiv.innerHTML = '<p>История сделок пока отсутствует</p>';
-                    }
-                    
+
+                if (!data.success) {
+                    contentDiv.innerHTML = '<p>❌ Ошибка сопоставления</p><p><em>' + (data.error || 'Неизвестная ошибка') + '</em></p>';
                     historyDiv.style.display = 'block';
-                } else {
-                    console.error('Ошибка получения истории сделок:', result.error);
-                    // Показываем блок с ошибкой
-                    contentDiv.innerHTML = '<p>❌ Ошибка получения истории сделок</p><p><em>' + (result.error || 'Неизвестная ошибка') + '</em></p>';
-                    historyDiv.style.display = 'block';
+                    return;
                 }
+
+                // Дополнительно: подтягиваем сырые сделки и предсказания для визуальной сверки
+                const tradesUrl = symbol ? (`/api/trades/by_symbol/${encodeURIComponent(symbol)}?limit=200`) : '/api/trades/recent?limit=200';
+                const predsUrl = '/api/predictions/recent?limit=500' + (symbol ? ('&symbol=' + encodeURIComponent(symbol)) : '');
+                let tradesJson = { success: false }, predsJson = { success: false };
+                try {
+                    const [tResp, pResp] = await Promise.all([fetch(tradesUrl), fetch(predsUrl)]);
+                    tradesJson = await tResp.json();
+                    predsJson = await pResp.json();
+                } catch (_) {}
+
+                // Хелперы для сверки
+                const toMs = (v) => {
+                    if (!v) return null;
+                    try {
+                        if (typeof v === 'number') return v;
+                        const s = String(v);
+                        const hasTimezone = /[zZ]|[\+\-]\d{2}:?\d{2}$/.test(s);
+                        const isoBasic = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+                        const src = (!hasTimezone && isoBasic.test(s)) ? (s + 'Z') : s;
+                        const d = new Date(src);
+                        const t = d.getTime();
+                        return isNaN(t) ? null : t;
+                    } catch (_) { return null; }
+                };
+                const bucket5m = (ms) => (ms == null ? null : Math.floor(ms / 300000));
+
+                // Готовим текстовые списки для визуальной сверки
+                const trades = (tradesJson && tradesJson.success && Array.isArray(tradesJson.trades)) ? tradesJson.trades : [];
+                const tBuyLines = [];
+                const tSellLines = [];
+                for (const t of trades) {
+                    const ts = toMs(t.executed_at) ?? toMs(t.created_at) ?? toMs(t.time);
+                    const bk = bucket5m(ts);
+                    const priceNum = Number(t.price);
+                    const qtyNum = Number(t.quantity || t.amount || 0);
+                    const act = (t.action || '').toLowerCase();
+                    const actDisplay = act === 'sell_partial' ? 'SELL_PARTIAL' : (t.action?.toUpperCase());
+                    const line = `${formatMoscowDateTime(ts)} | ${t.symbol} | ${actDisplay} | $${priceNum.toFixed(4)} | qty=${qtyNum} | b=${bk}`;
+                    if (act === 'buy') tBuyLines.push(line);
+                    if (act === 'sell' || act === 'sell_partial') tSellLines.push(line);
+                }
+
+                const predictions = (predsJson && predsJson.success && Array.isArray(predsJson.predictions)) ? predsJson.predictions : [];
+                const pBuyLines = [];
+                const pSellLines = [];
+                for (const p of predictions) {
+                    const ts = toMs(p.timestamp);
+                    const bk = bucket5m(ts);
+                    const conf = (typeof p.confidence === 'number') ? (p.confidence * 100).toFixed(1) + '%' : '—';
+                    const line = `${formatMoscowDateTime(ts)} | ${p.symbol} | ${p.action?.toUpperCase()} | conf=${conf} | b=${bk}`;
+                    if ((p.action || '').toLowerCase() === 'buy') pBuyLines.push(line);
+                    if ((p.action || '').toLowerCase() === 'sell') pSellLines.push(line);
+                }
+
+                const debugHTML = `
+                    <div class="trade-item">
+                        <div class="trade-header">
+                            <span>Сверка данных (символ: ${symbol || '—'})</span>
+                        </div>
+                        <div class="trade-details" style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                            <div>
+                                <div class="label" style="font-weight:600; margin-bottom:6px;">Сделки (Bybit)</div>
+                                <div style="font-size:12px; color:#444;">
+                                    <div><strong>BUY (${tBuyLines.length})</strong></div>
+                                    <pre style="white-space:pre-wrap; margin:6px 0;">${tBuyLines.join('\n')}</pre>
+                                    <div><strong>SELL (${tSellLines.length})</strong></div>
+                                    <pre style="white-space:pre-wrap; margin:6px 0;">${tSellLines.join('\n')}</pre>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="label" style="font-weight:600; margin-bottom:6px;">Предсказания (БД)</div>
+                                <div style="font-size:12px; color:#444;">
+                                    <div><strong>BUY (${pBuyLines.length})</strong></div>
+                                    <pre style="white-space:pre-wrap; margin:6px 0;">${pBuyLines.join('\n')}</pre>
+                                    <div><strong>SELL (${pSellLines.length})</strong></div>
+                                    <pre style="white-space:pre-wrap; margin:6px 0;">${pSellLines.join('\n')}</pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                const pairs = Array.isArray(data.pairs) ? data.pairs : [];
+                if (pairs.length === 0) {
+                    contentDiv.innerHTML = debugHTML + '<p>Нет полных совпавших сделок за выбранный период.</p>';
+                    historyDiv.style.display = 'block';
+                    return;
+                }
+
+                let html = `<p><strong>Найдено совпадений:</strong> ${pairs.length}</p>`;
+                for (const d of pairs) {
+                    const pnlColor = (d.pnl_abs || 0) >= 0 ? 'green' : 'red';
+                    const buyConf = (d.pred_buy && typeof d.pred_buy.confidence === 'number') ? (d.pred_buy.confidence * 100).toFixed(1) + '%' : '—';
+                    const sellConf = (d.pred_sell && typeof d.pred_sell.confidence === 'number') ? (d.pred_sell.confidence * 100).toFixed(1) + '%' : '—';
+                    const buyQ = d.pred_buy && Array.isArray(d.pred_buy.q_values) ? d.pred_buy.q_values.map(v=>Number(v).toFixed(3)).join(', ') : '—';
+                    const sellQ = d.pred_sell && Array.isArray(d.pred_sell.q_values) ? d.pred_sell.q_values.map(v=>Number(v).toFixed(3)).join(', ') : '—';
+
+                    html += `
+                        <div class="trade-item">
+                            <div class="trade-header">
+                                <span class="trade-action buy">BUY</span>
+                                <span>${formatMoscowDateTime(d.entry_time)}</span>
+                                <span class="trade-action sell">→ SELL</span>
+                                <span>${formatMoscowDateTime(d.exit_time)}</span>
+                            </div>
+                            <div class="trade-details">
+                                <div class="trade-detail"><div class="label">Символ</div><div class="value">${d.symbol}</div></div>
+                                <div class="trade-detail"><div class="label">Вход</div><div class="value">$${Number(d.entry_price).toFixed(4)}</div></div>
+                                <div class="trade-detail"><div class="label">Выход</div><div class="value">$${Number(d.exit_price).toFixed(4)}</div></div>
+                                <div class="trade-detail"><div class="label">Кол-во</div><div class="value">${d.qty}</div></div>
+                                <div class="trade-detail"><div class="label">P&L</div><div class="value" style="color:${pnlColor}">${(d.pnl_abs||0) >= 0 ? '+' : ''}$${Number(d.pnl_abs||0).toFixed(4)} ${d.pnl_pct!=null?`(${Number(d.pnl_pct).toFixed(2)}%)`:''}</div></div>
+                                <div class="trade-detail"><div class="label">BUY conf</div><div class="value">${buyConf}</div></div>
+                                <div class="trade-detail"><div class="label">SELL conf</div><div class="value">${sellConf}</div></div>
+                                <div class="trade-detail"><div class="label">BUY Q</div><div class="value">[${buyQ}]</div></div>
+                                <div class="trade-detail"><div class="label">SELL Q</div><div class="value">[${sellQ}]</div></div>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                contentDiv.innerHTML = debugHTML + html;
+                historyDiv.style.display = 'block';
+
             } catch (error) {
                 console.error('Ошибка при получении истории сделок:', error);
-                // Показываем блок с ошибкой
                 const historyDiv = document.getElementById('tradeHistory');
                 const contentDiv = document.getElementById('tradeHistoryContent');
                 contentDiv.innerHTML = '<p>❌ Ошибка сети</p><p><em>' + error.message + '</em></p>';
@@ -925,7 +1030,7 @@
         // Получение предсказаний модели ИИ
         async function getModelPredictions() {
             try {
-                const response = await fetch('/api/predictions/recent?limit=50');
+                const response = await fetch('/api/predictions/recent?limit=150');
                 const result = await response.json();
                 
                 const predictionsDiv = document.getElementById('modelPredictions');
@@ -940,11 +1045,15 @@
                             const actionClass = prediction.action === 'buy' ? 'buy' : prediction.action === 'sell' ? 'sell' : 'hold';
                             const confidenceClass = prediction.confidence > 0.5 ? 'success' : prediction.confidence > 0.2 ? 'info' : 'warning';
                             
+                            // Проверяем, было ли предсказание отфильтровано Q-gate
+                            const isQgateFiltered = prediction.market_conditions && prediction.market_conditions.qgate_filtered;
+                            const qgateReason = prediction.market_conditions && prediction.market_conditions.qgate_reason;
+                            
                             predictionsHTML += `
-                                <div class="trade-item">
+                                <div class="trade-item" style="border-left: 4px solid ${isQgateFiltered ? '#ffc107' : (actionClass === 'buy' ? '#28a745' : actionClass === 'sell' ? '#dc3545' : '#6c757d')};">
                                     <div class="trade-header">
                                         <span class="trade-action ${actionClass}">${prediction.action.toUpperCase()}</span>
-                                        <span class="trade-confidence ${confidenceClass}">Уверенность: ${(prediction.confidence * 100).toFixed(1)}%</span>
+                                        ${isQgateFiltered ? '<span class="trade-confidence warning">🚫 Q-gate отфильтровано</span>' : `<span class="trade-confidence ${confidenceClass}">Уверенность: ${(prediction.confidence * 100).toFixed(1)}%</span>`}
                                         <span>${predictionTime}</span>
                                     </div>
                                     <div class="trade-details">
@@ -965,10 +1074,16 @@
                                             <div class="value">[${prediction.q_values.map(v => v.toFixed(3)).join(', ')}]</div>
                                         </div>
                                     </div>
-                                    ${prediction.market_conditions && Object.keys(prediction.market_conditions).length > 0 ? `
+                                    ${isQgateFiltered ? `
+                                    <div style="margin-top: 10px; padding: 10px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; font-size: 12px;">
+                                        <strong>🚫 Q-gate фильтрация:</strong><br>
+                                        <span style="color: #856404;">${qgateReason || 'Недостаточная уверенность модели'}</span>
+                                    </div>
+                                    ` : ''}
+                                    ${prediction.market_conditions && Object.keys(prediction.market_conditions).length > 0 && !isQgateFiltered ? `
                                     <div style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px; font-size: 12px;">
                                         <strong>Условия рынка:</strong><br>
-                                        ${Object.entries(prediction.market_conditions).map(([key, value]) => 
+                                        ${Object.entries(prediction.market_conditions).filter(([key]) => !key.startsWith('qgate_')).map(([key, value]) => 
                                             `${key}: ${value}`
                                         ).join(', ')}
                                     </div>
@@ -1058,6 +1173,80 @@
             }
         }
 
+        // Подбор порогов Q-gate (без зависимостей)
+        async function suggestQGate(side='buy') {
+            try {
+                const symSel = document.getElementById('ensembleSymbolSelect');
+                const symbol = symSel ? (symSel.value || '') : '';
+                const baseParams = {
+                    limit_trades: '600',
+                    limit_predictions: '3000',
+                    tolerance_buckets: '2',
+                    min_n: '10',
+                    grid_points: '21',
+                    side,
+                    ...(symbol ? { symbol } : {})
+                };
+                let qs = new URLSearchParams(baseParams).toString();
+                let resp = await fetch('/api/analysis/qgate_suggest?' + qs);
+                let data = await resp.json();
+                const resultsDiv = document.getElementById('tradingResults');
+                const contentDiv = document.getElementById('tradingResultsContent');
+                if (data.success) {
+                    const s = data.suggestion;
+                    contentDiv.innerHTML = `
+                        <div class="trade-item">
+                            <div class="trade-header"><span class="trade-action success">Q-gate ${side.toUpperCase()} пороги</span></div>
+                            <div class="trade-details">
+                                <div class="trade-detail"><div class="label">T1 (maxQ)</div><div class="value">${s.T1.toFixed(6)}</div></div>
+                                <div class="trade-detail"><div class="label">T2 (gapQ)</div><div class="value">${s.T2.toFixed(6)}</div></div>
+                                <div class="trade-detail"><div class="label">Hit-rate</div><div class="value">${(s.hit_rate*100).toFixed(2)}% (${s.n} сделок)</div></div>
+                                <div class="trade-detail"><div class="label">.env</div><div class="value"><code>${data.env}</code></div></div>
+                            </div>
+                        </div>`;
+                    resultsDiv.style.display = 'block';
+                    try { resultsDiv.scrollIntoView({ behavior: 'smooth' }); } catch (_) {}
+                } else {
+                    // Повтор с более мягкими параметрами, если мало данных
+                    const needRetry = (data && data.error && /Недостаточно данных/i.test(data.error));
+                    if (needRetry) {
+                        const retryParams = {
+                            ...baseParams,
+                            tolerance_buckets: '3',
+                            min_n: '5',
+                            grid_points: '11'
+                        };
+                        qs = new URLSearchParams(retryParams).toString();
+                        resp = await fetch('/api/analysis/qgate_suggest?' + qs);
+                        data = await resp.json();
+                        if (data.success) {
+                            const s = data.suggestion;
+                            contentDiv.innerHTML = `
+                                <div class="trade-item">
+                                    <div class="trade-header"><span class="trade-action success">Q-gate ${side.toUpperCase()} (повтор с мягкими параметрами)</span></div>
+                                    <div class="trade-details">
+                                        <div class="trade-detail"><div class="label">T1 (maxQ)</div><div class="value">${s.T1.toFixed(6)}</div></div>
+                                        <div class="trade-detail"><div class="label">T2 (gapQ)</div><div class="value">${s.T2.toFixed(6)}</div></div>
+                                        <div class="trade-detail"><div class="label">Hit-rate</div><div class="value">${(s.hit_rate*100).toFixed(2)}% (${s.n} сделок)</div></div>
+                                        <div class="trade-detail"><div class="label">.env</div><div class="value"><code>${data.env}</code></div></div>
+                                    </div>
+                                </div>`;
+                            resultsDiv.style.display = 'block';
+                            try { resultsDiv.scrollIntoView({ behavior: 'smooth' }); } catch (_) {}
+                            return;
+                        }
+                    }
+                    contentDiv.innerHTML = `<p>❌ Подбор порогов не удался</p><p><em>${(data && data.error) || 'Неизвестная ошибка'}</em></p>`;
+                    resultsDiv.style.display = 'block';
+                }
+            } catch (e) {
+                const resultsDiv = document.getElementById('tradingResults');
+                const contentDiv = document.getElementById('tradingResultsContent');
+                contentDiv.innerHTML = `<p>❌ Ошибка сети</p><p><em>${e.message}</em></p>`;
+                resultsDiv.style.display = 'block';
+            }
+        }
+
         // Функция для отображения стратегии оставшейся позиции
         function showRemainingPositionStrategy(strategy) {
             const contentDiv = document.getElementById('remainingStrategyContent');
@@ -1130,7 +1319,7 @@
                 trend: parseInt(document.getElementById('trendConsensus').value)
             };
         }
-
+        
         // Автоматически получаем статус при загрузке страницы
         window.addEventListener('load', () => {
             onEnsembleSymbolChange();
