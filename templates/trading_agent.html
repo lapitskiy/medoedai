@@ -105,8 +105,28 @@
                     <div id="modelInfoContent"></div>
                 </div>
                 
-                
-                
+            <!-- Переход к странице символа (отдельный блок) -->
+            <div class="section">
+                <h2>🔀 Перейти к странице символа</h2>
+                <p>Быстрый переход на детальную страницу агента по выбранному символу</p>
+                <div class="form-group">
+                    <label style="font-weight:600;">Символ</label>
+                    <select id="agentSymbolSelect" class="form-control">
+                        <option value="BTCUSDT" selected>BTCUSDT</option>
+                        <option value="ETHUSDT">ETHUSDT</option>
+                        <option value="SOLUSDT">SOLUSDT</option>
+                        <option value="TONUSDT">TONUSDT</option>
+                        <option value="ADAUSDT">ADAUSDT</option>
+                        <option value="BNBUSDT">BNBUSDT</option>
+                        <option value="XRPUSDT">XRPUSDT</option>
+                    </select>
+                </div>
+                <div class="button-group">
+                    <button class="btn btn-primary" onclick="goToAgent()">Открыть страницу символа</button>
+                </div>
+            </div>
+
+            
                 <div class="button-group">
                     <button class="btn btn-success" onclick="startTrading()">
                         🚀 Запустить торговлю
@@ -119,123 +139,9 @@
                 <div id="tradingResult" class="status" style="display: none;"></div>
             </div>
 
-            <!-- Секция статуса торговли -->
-            <div class="section">
-                <h2>📊 Статус торговли</h2>
-                <p>Текущее состояние торгового бота</p>
-                
-                <div class="button-group">
-                    <button class="btn btn-info" onclick="getTradingStatus()">
-                        🔍 Получить статус
-                    </button>
-                    <button class="btn btn-info" onclick="getBalance()">
-                        💰 Баланс на бирже
-                    </button>
-                    <button class="btn btn-warning" onclick="sendInstantOrder('buy')">
-                        🧪 Тестовый BUY (реальная покупка)
-                    </button>
-                    <button class="btn btn-danger" onclick="sendInstantOrder('sell')">
-                        🧪 Тестовый SELL (реальная продажа)
-                    </button>
-                </div>
-                
-                <div id="tradingStatus" class="trading-status" style="display: none;">
-                    <h3>📊 Статус торговли</h3>
-                    <div id="statusContent"></div>
-                </div>
-                
-                <div id="balanceStatus" class="trading-status" style="display: none;">
-                    <h3>💰 Баланс на бирже</h3>
-                    <div id="balanceContent"></div>
-                </div>
-            </div>
+            
 
-            <!-- Секция истории торговли -->
-            <div class="section">
-                <h2>📈 История торговли</h2>
-                <p>Детальная информация о всех сделках</p>
-                
-                <div class="button-group">
-                    <button class="btn btn-primary" onclick="getTradingHistory()">
-                        📊 История сделок
-                    </button>
-                </div>
-                
-                <div id="tradingHistory" class="trading-history" style="display: none;">
-                    <h3>📈 История сделок</h3>
-                    <div id="historyContent"></div>
-                </div>
-            </div>
-
-            <!-- Секция мониторинга -->
-            <div class="section">
-                <h2>🔍 Мониторинг</h2>
-                <p>Автоматическое обновление статуса и результатов торговли каждые 5 минут</p>
-                
-                <div class="button-group">
-                    <button class="btn btn-info" onclick="startMonitoring()">
-                        🔄 Запустить мониторинг
-                    </button>
-                    <button class="btn btn-warning" onclick="stopMonitoring()">
-                        ⏸️ Остановить мониторинг
-                    </button>
-                    <button class="btn btn-primary" onclick="getModelPredictions()">
-                        🧠 Предсказания ИИ
-                    </button>
-                    <button class="btn btn-primary" onclick="suggestQGate('buy')">
-                        🧪 Q-gate BUY
-                    </button>
-                    <button class="btn btn-primary" onclick="suggestQGate('sell')">
-                        🧪 Q-gate SELL
-                    </button>
-                    <button class="btn btn-primary" onclick="getTradeHistory()">
-                        📈 История сделок (БД)
-                    </button>
-                    <button class="btn btn-primary" onclick="getPredictionStatistics()">
-                        📊 Статистика предсказаний
-                    </button>
-                </div>
-                
-                <div id="monitoringStatus" class="status info" style="display: none;">
-                    Мониторинг активен - статус обновляется каждые 30 секунд
-                </div>
-                
-                <!-- Результаты торговли из Celery -->
-                <div id="tradingResults" class="trading-history" style="display: none;">
-                    <h3>📊 Последние результаты торговли (Celery)</h3>
-                    <div id="tradingResultsContent"></div>
-                </div>
-                
-                <!-- История сделок из базы данных -->
-                <div id="tradeHistory" class="trading-history" style="display: none;">
-                    <h3>📈 История сделок (База данных)</h3>
-                    <div id="tradeHistoryContent"></div>
-                </div>
-                
-                <!-- Статистика сделок -->
-                <div id="tradeStatistics" class="trading-history" style="display: none;">
-                    <h3>📊 Статистика сделок</h3>
-                    <div id="tradeStatisticsContent"></div>
-                </div>
-                
-                <!-- Стратегия для оставшейся позиции -->
-                <div id="remainingPositionStrategy" class="trading-history" style="display: none;">
-                    <h3>🎯 Стратегия для оставшейся позиции</h3>
-                    <div id="remainingStrategyContent"></div>
-                </div>
-                
-                <!-- Предсказания модели -->
-                <div id="modelPredictions" class="trading-history" style="display: none;">
-                    <h3>🧠 Предсказания модели ИИ</h3>
-                    <div id="predictionsContent"></div>
-                </div>
-                
-                <!-- Статистика предсказаний -->
-                <div id="predictionStatistics" class="trading-history" style="display: none;">
-                    <h3>📊 Статистика предсказаний</h3>
-                    <div id="predictionStatsContent"></div>
-                </div>
-            </div>
+            
         </div>
     </div>
 
@@ -360,6 +266,12 @@
             }
         }
 
+        // Быстрый переход к странице агента выбранного символа
+        function goToAgent(){
+            const sym = document.getElementById('agentSymbolSelect')?.value || 'BTCUSDT';
+            window.location.href = '/agent/' + encodeURIComponent(sym);
+        }
+
         // Запуск торговли
         async function startTrading() {
             const symbol = (document.getElementById('ensembleSymbolSelect')?.value) || 'BTCUSDT';
@@ -428,7 +340,7 @@
             }
         }
 
-        // Получение статуса торговли
+        // Получение статуса торговли (оставляем для старт/стоп и проверки)
         async function getTradingStatus() {
             try {
                 const response = await fetch('/api/trading/status');
@@ -491,7 +403,7 @@
             }
         }
 
-        // Получение истории торговли
+        // Получение истории торговли (больше не используется на этой странице)
         async function getTradingHistory() {
             try {
                 const response = await fetch('/api/trading/history');
@@ -624,7 +536,7 @@
         }
 
         // Получение последних результатов торговли из Celery
-        async function getTradingResults() {
+        async function getTradingResults(showAll = false) {
             try {
                 const response = await fetch('/api/trading/latest_results');
                 const result = await response.json();
@@ -632,11 +544,42 @@
                 if (result.success) {
                     const resultsDiv = document.getElementById('tradingResults');
                     const contentDiv = document.getElementById('tradingResultsContent');
+                    const titleDiv = document.getElementById('tradingResultsTitle');
                     
                     if (result.latest_results && result.latest_results.length > 0) {
-                        let resultsHTML = `<p><strong>Всего результатов:</strong> ${result.total_results}</p>`;
+                        // Фильтруем результаты в зависимости от параметра showAll
+                        let filteredResults;
+                        if (showAll) {
+                            // Показываем все результаты
+                            filteredResults = result.latest_results;
+                        } else {
+                            // Показываем только реальные торговые операции и ошибки
+                            filteredResults = result.latest_results.filter(tradeResult => {
+                                // Показываем только если:
+                                // 1. Была реальная торговая операция (trade_executed === true)
+                                // 2. Или произошла ошибка (exit_code !== 0)
+                                // 3. Или это не просто HOLD без торговли
+                                return tradeResult.trade_executed === true || 
+                                       tradeResult.exit_code !== 0 || 
+                                       (tradeResult.parsed_result && tradeResult.parsed_result.action && 
+                                        tradeResult.parsed_result.action !== 'hold');
+                            });
+                        }
+
+                        const sectionTitle = showAll ? 'Все результаты торговли (включая HOLD)' : 'Реальные торговые операции';
+                        let resultsHTML = `<p><strong>Всего результатов:</strong> ${result.total_results} | <strong>Показано:</strong> ${filteredResults.length}</p>`;
                         
-                        result.latest_results.forEach((tradeResult, index) => {
+                        if (filteredResults.length === 0) {
+                            if (showAll) {
+                                contentDiv.innerHTML = '<p>📊 Результатов пока нет</p><p><em>Система еще не выполняла никаких операций</em></p>';
+                            } else {
+                                contentDiv.innerHTML = '<p>📊 Реальных торговых операций пока нет</p><p><em>Система работает в режиме мониторинга, ожидая торговых сигналов</em></p><p><small>💡 Нажмите "🔍 Все результаты (включая HOLD)" чтобы увидеть все активности системы</small></p>';
+                            }
+                            resultsDiv.style.display = 'block';
+                            return;
+                        }
+                        
+                        filteredResults.forEach((tradeResult, index) => {
                             const resultTime = formatMoscowDateTime(tradeResult.timestamp);
                             
                             // Определяем тип результата
@@ -650,9 +593,9 @@
                                 resultClass = 'success';
                                 resultIcon = '💰';
                             } else {
-                                resultType = 'ОЖИДАНИЕ';
+                                resultType = 'АКТИВНОСТЬ';
                                 resultClass = 'info';
-                                resultIcon = '⏸️';
+                                resultIcon = '🔍';
                             }
                             
                             resultsHTML += `
@@ -711,8 +654,10 @@
                         });
                         
                         contentDiv.innerHTML = resultsHTML;
+                        titleDiv.textContent = `📊 ${sectionTitle}`;
                     } else {
                         contentDiv.innerHTML = '<p>📊 Результаты торговли пока отсутствуют</p><p><em>Данные появятся после выполнения торговых операций через Celery</em></p>';
+                        titleDiv.textContent = '📊 Последние результаты торговли (Celery)';
                     }
                     
                     resultsDiv.style.display = 'block';
@@ -721,7 +666,9 @@
                     // Показываем блок с ошибкой
                     const resultsDiv = document.getElementById('tradingResults');
                     const contentDiv = document.getElementById('tradingResultsContent');
+                    const titleDiv = document.getElementById('tradingResultsTitle');
                     contentDiv.innerHTML = '<p>❌ Ошибка получения результатов</p><p><em>' + (result.error || 'Неизвестная ошибка') + '</em></p>';
+                    titleDiv.textContent = '📊 Последние результаты торговли (Celery)';
                     resultsDiv.style.display = 'block';
                 }
             } catch (error) {
@@ -729,7 +676,9 @@
                 // Показываем блок с ошибкой
                 const resultsDiv = document.getElementById('tradingResults');
                 const contentDiv = document.getElementById('tradingResultsContent');
+                const titleDiv = document.getElementById('tradingResultsTitle');
                 contentDiv.innerHTML = '<p>❌ Ошибка сети</p><p><em>' + error.message + '</em></p>';
+                titleDiv.textContent = '📊 Последние результаты торговли (Celery)';
                 resultsDiv.style.display = 'block';
             }
         }
@@ -749,7 +698,7 @@
                 const data = await resp.json();
                 const historyDiv = document.getElementById('tradeHistory');
                 const contentDiv = document.getElementById('tradeHistoryContent');
-
+                
                 if (!data.success) {
                     contentDiv.innerHTML = '<p>❌ Ошибка сопоставления</p><p><em>' + (data.error || 'Неизвестная ошибка') + '</em></p>';
                     historyDiv.style.display = 'block';
@@ -812,9 +761,9 @@
 
                 const debugHTML = `
                     <div class="trade-item">
-                        <div class="trade-header">
+                                    <div class="trade-header">
                             <span>Сверка данных (символ: ${symbol || '—'})</span>
-                        </div>
+                                    </div>
                         <div class="trade-details" style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
                             <div>
                                 <div class="label" style="font-weight:600; margin-bottom:6px;">Сделки (Bybit)</div>
@@ -823,8 +772,8 @@
                                     <pre style="white-space:pre-wrap; margin:6px 0;">${tBuyLines.join('\n')}</pre>
                                     <div><strong>SELL (${tSellLines.length})</strong></div>
                                     <pre style="white-space:pre-wrap; margin:6px 0;">${tSellLines.join('\n')}</pre>
-                                </div>
-                            </div>
+                                        </div>
+                                        </div>
                             <div>
                                 <div class="label" style="font-weight:600; margin-bottom:6px;">Предсказания (БД)</div>
                                 <div style="font-size:12px; color:#444;">
@@ -832,10 +781,10 @@
                                     <pre style="white-space:pre-wrap; margin:6px 0;">${pBuyLines.join('\n')}</pre>
                                     <div><strong>SELL (${pSellLines.length})</strong></div>
                                     <pre style="white-space:pre-wrap; margin:6px 0;">${pSellLines.join('\n')}</pre>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                                        </div>
+                                        </div>
+                                            </div>
+                                        </div>
                 `;
 
                 const pairs = Array.isArray(data.pairs) ? data.pairs : [];
@@ -860,7 +809,7 @@
                                 <span>${formatMoscowDateTime(d.entry_time)}</span>
                                 <span class="trade-action sell">→ SELL</span>
                                 <span>${formatMoscowDateTime(d.exit_time)}</span>
-                            </div>
+                                        </div>
                             <div class="trade-details">
                                 <div class="trade-detail"><div class="label">Символ</div><div class="value">${d.symbol}</div></div>
                                 <div class="trade-detail"><div class="label">Вход</div><div class="value">$${Number(d.entry_price).toFixed(4)}</div></div>
@@ -871,13 +820,13 @@
                                 <div class="trade-detail"><div class="label">SELL conf</div><div class="value">${sellConf}</div></div>
                                 <div class="trade-detail"><div class="label">BUY Q</div><div class="value">[${buyQ}]</div></div>
                                 <div class="trade-detail"><div class="label">SELL Q</div><div class="value">[${sellQ}]</div></div>
-                            </div>
-                        </div>
-                    `;
-                }
-
+                                    </div>
+                                </div>
+                            `;
+                    }
+                    
                 contentDiv.innerHTML = debugHTML + html;
-                historyDiv.style.display = 'block';
+                    historyDiv.style.display = 'block';
 
             } catch (error) {
                 console.error('Ошибка при получении истории сделок:', error);
@@ -887,6 +836,8 @@
                 historyDiv.style.display = 'block';
             }
         }
+
+        
 
         // Получение статистики сделок
         async function getTradeStatistics() {
@@ -1048,6 +999,11 @@
                             // Проверяем, было ли предсказание отфильтровано Q-gate
                             const isQgateFiltered = prediction.market_conditions && prediction.market_conditions.qgate_filtered;
                             const qgateReason = prediction.market_conditions && prediction.market_conditions.qgate_reason;
+                            const qgateSide = prediction.market_conditions && prediction.market_conditions.qgate_side;
+                            const qgateT1 = prediction.market_conditions && prediction.market_conditions.qgate_T1;
+                            const qgateT2 = prediction.market_conditions && prediction.market_conditions.qgate_T2;
+                            const qgateMaxQ = prediction.market_conditions && prediction.market_conditions.qgate_maxQ;
+                            const qgateGapQ = prediction.market_conditions && prediction.market_conditions.qgate_gapQ;
                             
                             predictionsHTML += `
                                 <div class="trade-item" style="border-left: 4px solid ${isQgateFiltered ? '#ffc107' : (actionClass === 'buy' ? '#28a745' : actionClass === 'sell' ? '#dc3545' : '#6c757d')};">
@@ -1076,8 +1032,16 @@
                                     </div>
                                     ${isQgateFiltered ? `
                                     <div style="margin-top: 10px; padding: 10px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; font-size: 12px;">
-                                        <strong>🚫 Q-gate фильтрация:</strong><br>
-                                        <span style="color: #856404;">${qgateReason || 'Недостаточная уверенность модели'}</span>
+                                        <strong>🚫 Q-gate фильтрация</strong>${qgateSide ? ` <span style="opacity:0.8">(${qgateSide.toUpperCase()})</span>` : ''}:<br>
+                                        <div style="margin-top:6px; color:#856404;">
+                                            ${qgateReason || 'Недостаточная уверенность модели'}
+                                        </div>
+                                        <div style="margin-top:8px; display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:6px; color:#444;">
+                                            ${typeof qgateT1 === 'number' ? `<div><strong>T1 (maxQ)</strong>: ${qgateT1.toFixed(3)}</div>` : ''}
+                                            ${typeof qgateT2 === 'number' ? `<div><strong>T2 (gapQ)</strong>: ${qgateT2.toFixed(3)}</div>` : ''}
+                                            ${typeof qgateMaxQ === 'number' ? `<div><strong>maxQ</strong>: ${qgateMaxQ.toFixed(3)}</div>` : ''}
+                                            ${typeof qgateGapQ === 'number' ? `<div><strong>gapQ</strong>: ${qgateGapQ.toFixed(3)}</div>` : ''}
+                                        </div>
                                     </div>
                                     ` : ''}
                                     ${prediction.market_conditions && Object.keys(prediction.market_conditions).length > 0 && !isQgateFiltered ? `

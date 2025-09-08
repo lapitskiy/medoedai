@@ -41,6 +41,9 @@ class TradingAgent:
         
         # Для отслеживания Q-Values
         self._last_q_values = None
+        # Анти-флип: cooldown между противоположными сделками
+        self._last_trade_side = None  # 'buy' | 'sell'
+        self._last_trade_ts_ms = None  # timestamp последней закрытой свечи (ms)
         
         # Загружаем модель
         self._load_model()
@@ -1590,25 +1593,67 @@ class TradingAgent:
     def _execute_buy(self) -> Dict:
         """Выполнение покупки"""
         try:
+            # Анти-флип: если недавно был SELL — усиливаем пороги Q-gate для BUY
+            in_cd = False
+            cd_mult = 1.0
+            try:
+                candles = int(os.environ.get('FLIP_COOLDOWN_CANDLES', '1'))
+            except Exception:
+                candles = 1
+            if candles > 0 and self._last_trade_side == 'sell':
+                try:
+                    now_bucket_ts = self._get_last_closed_ts_ms('5m')
+                    if isinstance(self._last_trade_ts_ms, (int, float)) and isinstance(now_bucket_ts, (int, float)):
+                        required_delta = candles * 300000
+                        in_cd = (now_bucket_ts - self._last_trade_ts_ms) < required_delta
+                except Exception:
+                    in_cd = False
             # Q-gate по порогам из окружения (опционально)
             try:
                 t1 = float(os.environ.get('QGATE_MAXQ', 'nan'))
                 t2 = float(os.environ.get('QGATE_GAPQ', 'nan'))
             except Exception:
                 t1 = float('nan'); t2 = float('nan')
-            if self._last_q_values and (self.last_model_prediction == 'buy'):
+
+            if in_cd:
+                # Множитель порогов: FLIP_COOLDOWN_Q_MULT (по умолчанию 1.2)
                 try:
-                    max_q = max(self._last_q_values) if self._last_q_values else None
+                    cd_mult = float(os.environ.get('FLIP_COOLDOWN_Q_MULT', '1.2'))
+                except Exception:
+                    cd_mult = 1.2
+                if not (isinstance(cd_mult, (int, float)) and cd_mult > 0):
+                    cd_mult = 1.2
+                try:
+                    old_t1, old_t2 = t1, t2
+                    if t1 == t1 and t1 > 0:
+                        t1 = t1 * cd_mult
+                    if t2 == t2 and t2 > 0:
+                        t2 = t2 * cd_mult
+                    logger.info(f"Cooldown Q-gate boost for BUY: mult={cd_mult} (T1 {old_t1}→{t1}, T2 {old_t2}→{t2})")
+                except Exception as _e:
+                    logger.warning(f"Cooldown boost error: {_e}")
+
+            # Применяем Q-gate ВСЕГДА, если есть Q-values (не зависим от last_model_prediction)
+            if self._last_q_values:
+                try:
+                    max_q = max(self._last_q_values)
                     sorted_q = sorted(self._last_q_values, reverse=True)
                     second_q = sorted_q[1] if len(sorted_q) > 1 else None
-                    gap_q = (max_q - second_q) if (max_q is not None and second_q is not None) else None
-                    if (max_q is not None and max_q < t1) or (gap_q is not None and gap_q < t2):
+                    gap_q = (max_q - second_q) if (max_q is not None and second_q is not None) else float('nan')
+
+                    # Если пороги не заданы или нечисловые — не пропускаем слабые сигналы
+                    if any(map(lambda v: v is None or (isinstance(v, float) and (v != v)), [max_q, gap_q, t1, t2])):
+                        logger.info(f"QGate: skip BUY due to invalid thresholds/values (maxQ={max_q}, gapQ={gap_q}, T1={t1}, T2={t2})")
+                        self._save_qgate_filtered_prediction('buy', max_q if max_q is not None else float('nan'), gap_q, t1, t2)
+                        return {"success": False, "error": "QGate filtered (invalid thresholds/values)", "qgate": {"max_q": max_q, "gap_q": gap_q, "T1": t1, "T2": t2}}
+
+                    # Фильтруем, если ЛИБО max_q ниже порога, ЛИБО gap_q ниже порога
+                    if (max_q < t1) or (gap_q < t2):
                         logger.info(f"QGate: skip BUY (maxQ={max_q}, gapQ={gap_q}, T1={t1}, T2={t2})")
-                        # Сохраняем информацию о Q-gate фильтрации в предсказание
                         self._save_qgate_filtered_prediction('buy', max_q, gap_q, t1, t2)
                         return {"success": False, "error": "QGate filtered", "qgate": {"max_q": max_q, "gap_q": gap_q, "T1": t1, "T2": t2}}
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"QGate BUY check error: {e}")
             # Получаем текущий баланс перед покупкой
             balance = self._get_current_balance()
             
@@ -1675,6 +1720,13 @@ class TradingAgent:
             
             logger.info(f"Покупка выполнена: {order}, Trade #: {trade_record.trade_number}")
             
+            # Успешно: фиксируем анти-флип метки
+            try:
+                self._last_trade_side = 'buy'
+                self._last_trade_ts_ms = self._get_last_closed_ts_ms('5m')
+            except Exception:
+                pass
+
             return {
                 "success": True,
                 "order": order,
@@ -1707,6 +1759,12 @@ class TradingAgent:
             market_conditions = self._get_market_conditions()
             market_conditions['qgate_filtered'] = True
             market_conditions['qgate_reason'] = f"maxQ={max_q:.3f}<{t1:.3f} или gapQ={gap_q:.3f}<{t2:.3f}"
+            # Подробности для UI
+            market_conditions['qgate_side'] = action
+            market_conditions['qgate_T1'] = float(t1) if t1 is not None else None
+            market_conditions['qgate_T2'] = float(t2) if t2 is not None else None
+            market_conditions['qgate_maxQ'] = float(max_q) if max_q is not None else None
+            market_conditions['qgate_gapQ'] = float(gap_q) if gap_q is not None else None
             
             create_model_prediction(
                 symbol=self.symbol,
@@ -1722,6 +1780,27 @@ class TradingAgent:
         except Exception as e:
             logger.error(f"Ошибка сохранения Q-gate предсказания: {e}")
 
+    def _save_cooldown_filtered_prediction(self, action: str, reason: str, cooldown_candles: int):
+        """Сохраняет предсказание с информацией о фильтрации по cooldown."""
+        try:
+            market_conditions = self._get_market_conditions()
+            market_conditions['cooldown_filtered'] = True
+            market_conditions['cooldown_reason'] = reason
+            market_conditions['cooldown_candles'] = int(cooldown_candles)
+
+            create_model_prediction(
+                symbol=self.symbol,
+                action=action,
+                q_values=self._last_q_values or [0, 0, 0],
+                current_price=self._get_current_price(),
+                position_status='none',
+                model_path=getattr(self, 'model_path', 'unknown'),
+                market_conditions=market_conditions
+            )
+            logger.info(f"Сохранено cooldown-отфильтрованное предсказание: {action} - {reason}")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения cooldown предсказания: {e}")
+
     def _execute_sell(self) -> Dict:
         """Выполнение продажи"""
         try:
@@ -1731,19 +1810,26 @@ class TradingAgent:
                 t2 = float(os.environ.get('QGATE_SELL_GAPQ', 'nan'))
             except Exception:
                 t1 = float('nan'); t2 = float('nan')
-            if self._last_q_values and (self.last_model_prediction == 'sell'):
+
+            # Применяем Q-gate ВСЕГДА, если есть Q-values (не зависим от last_model_prediction)
+            if self._last_q_values:
                 try:
-                    max_q = max(self._last_q_values) if self._last_q_values else None
+                    max_q = max(self._last_q_values)
                     sorted_q = sorted(self._last_q_values, reverse=True)
                     second_q = sorted_q[1] if len(sorted_q) > 1 else None
-                    gap_q = (max_q - second_q) if (max_q is not None and second_q is not None) else None
-                    if (max_q is not None and max_q < t1) or (gap_q is not None and gap_q < t2):
+                    gap_q = (max_q - second_q) if (max_q is not None and second_q is not None) else float('nan')
+
+                    if any(map(lambda v: v is None or (isinstance(v, float) and (v != v)), [max_q, gap_q, t1, t2])):
+                        logger.info(f"QGate: skip SELL due to invalid thresholds/values (maxQ={max_q}, gapQ={gap_q}, T1={t1}, T2={t2})")
+                        self._save_qgate_filtered_prediction('sell', max_q if max_q is not None else float('nan'), gap_q, t1, t2)
+                        return {"success": False, "error": "QGate filtered (invalid thresholds/values)", "qgate": {"max_q": max_q, "gap_q": gap_q, "T1": t1, "T2": t2}}
+
+                    if (max_q < t1) or (gap_q < t2):
                         logger.info(f"QGate: skip SELL (maxQ={max_q}, gapQ={gap_q}, T1={t1}, T2={t2})")
-                        # Сохраняем информацию о Q-gate фильтрации в предсказание
                         self._save_qgate_filtered_prediction('sell', max_q, gap_q, t1, t2)
                         return {"success": False, "error": "QGate filtered", "qgate": {"max_q": max_q, "gap_q": gap_q, "T1": t1, "T2": t2}}
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"QGate SELL check error: {e}")
             # Получаем текущий баланс перед продажей
             balance = self._get_current_balance()
             
@@ -1805,7 +1891,14 @@ class TradingAgent:
             
             old_position = self.current_position
             self.current_position = None
-            
+
+            # Успешно: фиксируем анти-флип метки
+            try:
+                self._last_trade_side = 'sell'
+                self._last_trade_ts_ms = self._get_last_closed_ts_ms('5m')
+            except Exception:
+                pass
+
             return {
                 "success": True,
                 "order": order,

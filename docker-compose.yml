@@ -39,7 +39,7 @@ services:
     ports:
       - "5050:5050"
     environment:
-      TORCHSERVE_URL: http://serving:8080/predictions/medoedai_model
+      TORCHSERVE_URL: http://serving:8000/predict_ensemble
       DISABLE_TORCH_COMPILE: "true"   # Принудительно отключить torch.compile для Tesla P100
       FORCE_DISABLE_TORCH_COMPILE: "true"  # Дополнительная защита от torch.compile
       CELERY_BROKER_URL: redis://redis:6379/0
@@ -58,7 +58,6 @@ services:
       - .env
     volumes:
       - .:/workspace
-      - /var/run/docker.sock:/var/run/docker.sock  # Добавлено для доступа к Docker API
     working_dir: /workspace
     command: >
       sh -c "
@@ -109,13 +108,7 @@ services:
     working_dir: /workspace
     # Исключаем очередь train из общего воркера, чтобы не конкурировать за CPU
     command: ["sh","-lc","celery -A tasks.celery_tasks worker -Q celery -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-6} --loglevel=info"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # CPU-only воркер: GPU не требуется
 
   # Специализированный воркер для обучения, использует все CPU ядра
   celery-train:
@@ -136,11 +129,7 @@ services:
       CELERY_POOL: prefork
       CELERY_CONCURRENCY: "1"  # один процесс, но максимум потоков внутри BLAS/Torch
       CUDA_VISIBLE_DEVICES: ""
-      TRAIN_CPU_FRACTION: "0.8"  # доля CPU ядер, используемых обучением (по умолчанию 80%)
-      # Оптимизация для многопоточности
-      OMP_NUM_THREADS: "8"  # OpenMP потоки
-      MKL_NUM_THREADS: "8"  # Intel MKL потоки
-      TORCH_NUM_THREADS: "8"  # PyTorch потоки
+      TRAIN_CPU_FRACTION: "0.9"  # доля CPU ядер, используемых обучением (по умолчанию 80%)
       # Дополнительные настройки производительности
       OMP_SCHEDULE: "dynamic"
       MKL_DYNAMIC: "true"
@@ -149,7 +138,6 @@ services:
       - .env
     volumes:
       - .:/workspace
-      - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /workspace
     command: ['sh','-lc','NPROC=$$(nproc); THREADS=$$(python -c "import os,math; n=os.cpu_count() or 1; f=float(os.environ.get(\"TRAIN_CPU_FRACTION\", \"0.8\")); print(max(1,int(n*f)))"); export OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$THREADS} MKL_NUM_THREADS=$${MKL_NUM_THREADS:-$$THREADS} TORCH_NUM_THREADS=$${TORCH_NUM_THREADS:-$$THREADS} OMP_SCHEDULE=$${OMP_SCHEDULE:-dynamic} MKL_DYNAMIC=$${MKL_DYNAMIC:-true} MKL_INTERFACE_LAYER=$${MKL_INTERFACE_LAYER:-LP64}; echo "🚀 CPU Optimization: Using $$THREADS/$$NPROC threads (OMP=$$OMP_NUM_THREADS, MKL=$$MKL_NUM_THREADS, TORCH=$$TORCH_NUM_THREADS)"; exec celery -A tasks.celery_tasks worker -Q train -P $${CELERY_POOL:-prefork} -c $${CELERY_CONCURRENCY:-1} --loglevel=info']
 
@@ -167,13 +155,7 @@ services:
     working_dir: /workspace
     command: ["bash","-lc","python train.py && sleep 2"]
     restart: "no"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # CPU-only тренировка: GPU не требуется
 
   trading_agent:
     build:
@@ -192,16 +174,9 @@ services:
       - .env       
     volumes:
       - .:/workspace
-      - /var/run/docker.sock:/var/run/docker.sock  # Добавлено для доступа к Docker API
     working_dir: /workspace
     command: ["sleep", "infinity"]  # Добавлено для удержания контейнера в активном состоянии
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]    
+    # GPU не обязателен для trading_agent
 
   celery-beat:
     build: .
@@ -215,7 +190,6 @@ services:
       - .env      
     volumes:
       - .:/workspace
-      - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /workspace
     depends_on:
       - redis
@@ -227,9 +201,7 @@ services:
       context: ./serving
     container_name: serving
     restart: unless-stopped
-    depends_on:
-      medoedai:
-        condition: service_started
+    # Не зависит от веба, стартует независимо
     environment:
       - PYTHONUNBUFFERED=1
       - MODEL_BASE_DIR=/workspace/models
@@ -240,7 +212,13 @@ services:
       - .:/workspace
       - ./models:/workspace/models
     working_dir: /app
-    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "30"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     deploy:
       resources:
         reservations:

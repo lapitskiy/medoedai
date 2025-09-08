@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import logging
 import numpy as np
@@ -332,12 +333,35 @@ def train_model_optimized(
         result_dir = os.path.join("result")
         os.makedirs(result_dir, exist_ok=True)
         symbol_code = _symbol_code(crypto_symbol)
-        # Короткий UUID для версионирования
+        # Короткий UUID для версионирования (по умолчанию)
         import uuid
         short_id = str(uuid.uuid4())[:4].lower()
+
+        # Код для артефактов по умолчанию
+        artifacts_code = f"{symbol_code}_{short_id}"
+
+        # Если это дообучение (есть исходный путь к весам) — добавим суффикс _update[<n>]
+        try:
+            if load_model_path and isinstance(load_model_path, str):
+                base_name = os.path.basename(load_model_path)
+                m = re.match(r"^dqn_model_(.+)\.pth$", base_name)
+                if m:
+                    base_code = m.group(1)
+                    # Подбираем уникальный суффикс _update, _update2, ...
+                    candidate = f"{base_code}_update"
+                    counter = 2
+                    while os.path.exists(os.path.join(result_dir, f"dqn_model_{candidate}.pth")) or \
+                          os.path.exists(os.path.join(result_dir, f"replay_buffer_{candidate}.pkl")) or \
+                          os.path.exists(os.path.join(result_dir, f"train_result_{candidate}.pkl")):
+                        candidate = f"{base_code}_update{counter}"
+                        counter += 1
+                    artifacts_code = candidate
+        except Exception:
+            pass
+
         # Подготавливаем НОВЫЕ пути сохранения (после загрузки чекпойнта)
-        new_model_path = os.path.join(result_dir, f"dqn_model_{symbol_code}_{short_id}.pth")
-        new_buffer_path = os.path.join(result_dir, f"replay_buffer_{symbol_code}_{short_id}.pkl")
+        new_model_path = os.path.join(result_dir, f"dqn_model_{artifacts_code}.pth")
+        new_buffer_path = os.path.join(result_dir, f"replay_buffer_{artifacts_code}.pkl")
 
         # Если символ BNB — мягкие оверрайды обучения для стабильности
         try:
@@ -859,7 +883,8 @@ def train_model_optimized(
         os.makedirs(results_dir, exist_ok=True)
         
         # Сохраняем результаты в файле c символом и id + добавляем подробные метаданные
-        results_file = os.path.join(results_dir, f'train_result_{symbol_code}_{short_id}.pkl')
+        # Используем тот же код артефактов, чтобы имена файлов были согласованными
+        results_file = os.path.join(results_dir, f'train_result_{artifacts_code}.pkl')
 
         # Метаданные окружения и запуска
         try:

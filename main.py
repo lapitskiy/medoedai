@@ -1234,6 +1234,20 @@ def trading_agent_page():
     """Страница торгового агента"""
     return render_template('trading_agent.html')
 
+@app.route('/agent/<symbol>')
+def agent_symbol_page(symbol: str):
+    """Страница агента, отфильтрованная по конкретному символу (BTCUSDT, TONUSDT и т.д.)"""
+    try:
+        sym = (symbol or '').upper().strip()
+        # Простейшая валидация: только латиница и 'USDT' в конце
+        import re
+        if not re.match(r'^[A-Z]{2,10}USDT$', sym):
+            # дефолт на BTCUSDT
+            sym = 'BTCUSDT'
+        return render_template('agent_symbol.html', symbol=sym)
+    except Exception:
+        return render_template('agent_symbol.html', symbol='BTCUSDT')
+
 @app.route('/create_model_version', methods=['POST'])
 def create_model_version():
     """Создает новую версию модели с уникальным ID"""
@@ -1517,37 +1531,37 @@ def get_models_list():
                         model_file = model_files[0]
                         replay_file = replay_files[0]
                         result_file = result_files[0]
-                        model_id = model_file.stem.replace('dqn_model_', '')
-                        model_size = f"{model_file.stat().st_size / 1024 / 1024:.1f} MB"
-                        replay_size = f"{replay_file.stat().st_size / 1024 / 1024:.1f} MB"
-                        result_size = f"{result_file.stat().st_size / 1024:.1f} KB"
-                        creation_time = datetime.fromtimestamp(model_file.stat().st_ctime)
-                        date_str = creation_time.strftime('%d.%m.%Y %H:%M')
-                        stats = {}
-                        try:
-                            with open(result_file, 'rb') as f:
-                                results = pickle.load(f)
-                                if isinstance(results, dict) and 'final_stats' in results:
-                                    stats = results['final_stats']
-                        except Exception:
-                            pass
-                        models.append({
-                            "id": model_id,
-                            "date": date_str,
-                            "files": {
+            model_id = model_file.stem.replace('dqn_model_', '')
+            model_size = f"{model_file.stat().st_size / 1024 / 1024:.1f} MB"
+            replay_size = f"{replay_file.stat().st_size / 1024 / 1024:.1f} MB"
+            result_size = f"{result_file.stat().st_size / 1024:.1f} KB"
+            creation_time = datetime.fromtimestamp(model_file.stat().st_ctime)
+            date_str = creation_time.strftime('%d.%m.%Y %H:%M')
+            stats = {}
+            try:
+                with open(result_file, 'rb') as f:
+                    results = pickle.load(f)
+                    if isinstance(results, dict) and 'final_stats' in results:
+                        stats = results['final_stats']
+            except Exception:                                          
+                pass
+            models.append({
+                "id": model_id,
+                "date": date_str,
+                "files": {
                                 "model": model_file.name,
-                                "model_size": model_size,
+                    "model_size": model_size,
                                 "replay": replay_file.name,
-                                "replay_size": replay_size,
+                    "replay_size": replay_size,
                                 "results": result_file.name,
-                                "results_size": result_size
-                            },
-                            "stats": stats
-                        })
-
+                    "results_size": result_size
+                },
+                "stats": stats
+            })
+        
         # Сортируем по дате создания (новые сначала)
         models.sort(key=lambda x: x['date'], reverse=True)
-
+        
         return jsonify({
             "success": True,
             "models": models
@@ -1774,13 +1788,13 @@ def delete_model():
                                 _sh.rmtree(version_dir, ignore_errors=True)
                         except Exception:
                             pass
-
+        
         if not deleted_files:
             return jsonify({
                 "success": False,
                 "error": f"Файлы модели {model_id} не найдены"
             })
-
+        
         return jsonify({
             "success": True,
             "message": f"Модель {model_id} удалена",
@@ -2101,6 +2115,7 @@ def trading_status():
 def trading_latest_results():
     """Получение последних результатов торговли из Celery"""
     try:
+        requested_symbol = (request.args.get('symbol') or '').upper().strip()
         # Получаем последние результаты из Redis (ключи с таймстампом)
         latest_results = []
         try:
@@ -2116,11 +2131,18 @@ def trading_latest_results():
                     except Exception:
                         result = json.loads(raw)
                     latest_results.append(result)
-                except Exception as e:
-                    app.logger.warning(f"Ошибка чтения {k}: {e}")
+                except Exception as e:                
+                        app.logger.warning(f"Ошибка чтения {k}: {e}")
         except Exception as e:
             app.logger.warning(f"Ошибка получения ключей trading:latest_result_*: {e}")
 
+        # Фильтрация по символу, если задан
+        if requested_symbol:
+            try:
+                latest_results = [r for r in latest_results if isinstance(r.get('symbols'), list) and requested_symbol in r.get('symbols')]
+            except Exception:
+                pass
+        
         # Сортируем по времени (новые сначала)
         try:
             latest_results.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
