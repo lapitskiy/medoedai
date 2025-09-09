@@ -349,7 +349,11 @@
                 if (result.success) {
                     const statusDiv = document.getElementById('tradingStatus');
                     const contentDiv = document.getElementById('statusContent');
-                    
+                    if (!statusDiv || !contentDiv) {
+                        // Контейнеры отсутствуют на этой странице — тихо выходим
+                        return;
+                    }
+
                     let statusHTML = `
                         <p><strong>Статус:</strong> ${result.trading_status_full || result.trading_status || (result.is_trading ? '🟢 Активна' : '🔴 Остановлена')}</p>
                         <p><strong>Пара:</strong> ${result.symbol_display || result.symbol || 'Не указана'}</p>
@@ -365,8 +369,9 @@
                     if (result.position && result.position.partial_sell_strategy) {
                         showRemainingPositionStrategy(result.position.partial_sell_strategy);
                     } else {
-                        // Скрываем секцию стратегии, если нет
-                        document.getElementById('remainingPositionStrategy').style.display = 'none';
+                        // Скрываем секцию стратегии, если есть контейнер
+                        const rps = document.getElementById('remainingPositionStrategy');
+                        if (rps) rps.style.display = 'none';
                     }
                     
                     contentDiv.innerHTML = statusHTML;
@@ -1215,6 +1220,9 @@
         function showRemainingPositionStrategy(strategy) {
             const contentDiv = document.getElementById('remainingStrategyContent');
             const strategyDiv = document.getElementById('remainingPositionStrategy');
+            if (!strategyDiv || !contentDiv) {
+                return; // Контейнеры отсутствуют на этой странице
+            }
             
             if (strategy && strategy.type === 'remaining_position') {
                 const createdTime = formatMoscowDateTime(strategy.created_at);
@@ -1245,7 +1253,7 @@
                 contentDiv.innerHTML = strategyHTML;
                 strategyDiv.style.display = 'block';
             } else {
-                strategyDiv.style.display = 'none';
+                if (strategyDiv) strategyDiv.style.display = 'none';
             }
         }
         

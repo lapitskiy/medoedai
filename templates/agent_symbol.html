@@ -326,10 +326,73 @@ async function loadPredictions(symbol){
     const data = await resp.json();
     const box = document.getElementById('predictionsBox');
     const el = document.getElementById('predictionsContent');
-    if(!data.success){ el.innerHTML='❌ Ошибка'; box.style.display='block'; return; }
-    el.innerHTML = `<p><strong>Всего предсказаний:</strong> ${data.total_predictions}</p>`;
+    if(!box || !el) return;
+    if(!data.success){ el.innerHTML='❌ Ошибка получения предсказаний'; box.style.display='block'; return; }
+    const preds = Array.isArray(data.predictions)? data.predictions : [];
+    if(preds.length === 0){
+      el.innerHTML = '<p>🧠 Предсказания модели пока отсутствуют</p><p><em>Данные появятся после выполнения торговых операций</em></p>';
+      box.style.display='block';
+      return;
+    }
+    let predictionsHTML = `<p><strong>Всего предсказаний:</strong> ${data.total_predictions}</p>`;
+    for(const prediction of preds){
+      const predictionTime = formatMoscowDateTime(prediction.timestamp);
+      const action = (prediction.action||'hold').toLowerCase();
+      const actionClass = action === 'buy' ? 'buy' : action === 'sell' ? 'sell' : 'hold';
+      const conf = typeof prediction.confidence === 'number' ? prediction.confidence : null;
+      const confidenceClass = conf != null && conf > 0.5 ? 'success' : (conf != null && conf > 0.2 ? 'info' : 'warning');
+      const qvals = Array.isArray(prediction.q_values) ? prediction.q_values : [];
+      const isQgateFiltered = prediction.market_conditions && prediction.market_conditions.qgate_filtered;
+      const qgateReason = prediction.market_conditions && prediction.market_conditions.qgate_reason;
+      const qgateSide = prediction.market_conditions && prediction.market_conditions.qgate_side;
+      const qgateT1 = prediction.market_conditions && prediction.market_conditions.qgate_T1;
+      const qgateT2 = prediction.market_conditions && prediction.market_conditions.qgate_T2;
+      const qgateMaxQ = prediction.market_conditions && prediction.market_conditions.qgate_maxQ;
+      const qgateGapQ = prediction.market_conditions && prediction.market_conditions.qgate_gapQ;
+
+      predictionsHTML += `
+        <div class="trade-item" style="border-left: 4px solid ${isQgateFiltered ? '#ffc107' : (actionClass === 'buy' ? '#28a745' : actionClass === 'sell' ? '#dc3545' : '#6c757d')};">
+          <div class="trade-header">
+            <span class="trade-action ${actionClass}">${String(action).toUpperCase()}</span>
+            ${isQgateFiltered ? '<span class="trade-confidence warning">🚫 Q-gate отфильтровано</span>' : (conf!=null ? `<span class="trade-confidence ${confidenceClass}">Уверенность: ${(conf*100).toFixed(1)}%</span>` : '')}
+            <span>${predictionTime}</span>
+          </div>
+          <div class="trade-details">
+            <div class="trade-detail"><div class="label">Символ</div><div class="value">${prediction.symbol||symbol}</div></div>
+            <div class="trade-detail"><div class="label">Цена</div><div class="value">$${prediction.current_price!=null ? Number(prediction.current_price).toFixed(6) : 'N/A'}</div></div>
+            <div class="trade-detail"><div class="label">Позиция</div><div class="value">${prediction.position_status||'none'}</div></div>
+            <div class="trade-detail"><div class="label">Q-Values</div><div class="value">[${qvals.map(v=>Number(v).toFixed(3)).join(', ')}]</div></div>
+          </div>
+          ${isQgateFiltered ? `
+          <div style="margin-top: 10px; padding: 10px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; font-size: 12px;">
+            <strong>🚫 Q-gate фильтрация</strong>${qgateSide ? ` <span style="opacity:0.8">(${String(qgateSide).toUpperCase()})</span>` : ''}:<br>
+            <div style="margin-top:6px; color:#856404;">${qgateReason || 'Недостаточная уверенность модели'}</div>
+            <div style="margin-top:8px; display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:6px; color:#444;">
+              ${typeof qgateT1 === 'number' ? `<div><strong>T1 (maxQ)</strong>: ${qgateT1.toFixed(3)}</div>` : ''}
+              ${typeof qgateT2 === 'number' ? `<div><strong>T2 (gapQ)</strong>: ${qgateT2.toFixed(3)}</div>` : ''}
+              ${typeof qgateMaxQ === 'number' ? `<div><strong>maxQ</strong>: ${qgateMaxQ.toFixed(3)}</div>` : ''}
+              ${typeof qgateGapQ === 'number' ? `<div><strong>gapQ</strong>: ${qgateGapQ.toFixed(3)}</div>` : ''}
+            </div>
+          </div>` : ''}
+          ${prediction.market_conditions && Object.keys(prediction.market_conditions).filter(k=>!String(k).startsWith('qgate_')).length>0 && !isQgateFiltered ? `
+          <div style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px; font-size: 12px;">
+            <strong>Условия рынка:</strong><br>
+            ${Object.entries(prediction.market_conditions).filter(([key]) => !String(key).startsWith('qgate_')).map(([key, value]) => `${key}: ${value}`).join(', ')}
+          </div>` : ''}
+        </div>
+      `;
+    }
+    el.innerHTML = predictionsHTML;
     box.style.display='block';
-  }catch(e){console.error(e)}
+  }catch(e){
+    console.error(e);
+    try{
+      const box = document.getElementById('predictionsBox');
+      const el = document.getElementById('predictionsContent');
+      if(el){ el.innerHTML = '<p>❌ Ошибка сети</p>'; }
+      if(box){ box.style.display='block'; }
+    }catch(_){ }
+  }
 }
 
 async function loadPredictionStats(symbol){

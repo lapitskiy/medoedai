@@ -157,26 +157,29 @@ services:
     restart: "no"
     # CPU-only тренировка: GPU не требуется
 
-  trading_agent:
-    build:
-      context: .
-      dockerfile: Dockerfile.trading_agent
-    container_name: trading_agent
+  celery-trade:
+    build: .
+    container_name: celery-trade
     restart: unless-stopped
     depends_on:
       redis:
         condition: service_healthy
+      serving:
+        condition: service_started
     environment:
-      - BYBIT_API_KEY=${BYBIT_API_KEY:-}
-      - BYBIT_SECRET_KEY=${BYBIT_SECRET_KEY:-}
-      - TRADING_MODE=${TRADING_MODE:-sandbox}
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      BYBIT_API_KEY: ${BYBIT_API_KEY:-}
+      BYBIT_SECRET_KEY: ${BYBIT_SECRET_KEY:-}
+      TRADING_MODE: ${TRADING_MODE:-sandbox}
+      PYTHONDONTWRITEBYTECODE: "1"
+      SERVING_URL: http://serving:8000/predict_ensemble
     env_file:
-      - .env       
+      - .env
     volumes:
       - .:/workspace
     working_dir: /workspace
-    command: ["sleep", "infinity"]  # Добавлено для удержания контейнера в активном состоянии
-    # GPU не обязателен для trading_agent
+    command: ["sh","-lc","celery -A tasks.celery_tasks worker -Q trade -P prefork -c 8 --loglevel=info"]
 
   celery-beat:
     build: .

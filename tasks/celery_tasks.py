@@ -8,10 +8,14 @@ import os
 import pandas as pd
 
 import json
+import requests
+from redis import Redis
+import numpy as np
 
 from utils.db_utils import db_get_or_fetch_ohlcv  # Импортируем функцию загрузки данных
 from utils.db_utils import load_latest_candles_from_csv_to_db
 from utils.parser import parser_download_and_combine_with_library
+from utils.trade_utils import create_model_prediction
 # Загружаем переменные окружения из .env (если есть), чтобы Celery видел ключи
 try:
     from dotenv import load_dotenv, find_dotenv
@@ -44,13 +48,208 @@ celery = Celery(
 celery.conf.task_queues = (
     Queue('celery'),
     Queue('train'),
+    Queue('trade'),
 )
 celery.conf.task_default_queue = 'celery'
 celery.conf.task_routes = {
     'tasks.celery_tasks.train_dqn': {'queue': 'train'},
     'tasks.celery_tasks.train_dqn_symbol': {'queue': 'train'},
     'tasks.celery_tasks.train_dqn_multi_crypto': {'queue': 'train'},
+    'tasks.celery_tasks.execute_trade': {'queue': 'trade'},
 }
+
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='trade')
+def execute_trade(self, symbols: list, model_path: str | None = None, model_paths: list | None = None):
+    """Исполнение торгового шага: предсказание через serving, торговля через TradingAgent."""
+    try:
+        from trading_agent.trading_agent import TradingAgent
+        from utils.db_utils import db_get_or_fetch_ohlcv
+
+        # 1) Читаем параметры из Redis при необходимости
+        try:
+            rc = Redis(host='redis', port=6379, db=0, decode_responses=True)
+        except Exception:
+            rc = None
+
+        if (not symbols) and rc is not None:
+            try:
+                _sym_raw = rc.get('trading:symbols')
+                if _sym_raw:
+                    _sym = json.loads(_sym_raw)
+                    if isinstance(_sym, list) and _sym:
+                        symbols = _sym
+            except Exception:
+                pass
+        if not symbols:
+            symbols = ['BTCUSDT']
+
+        # Если не передали model_paths аргументом — читаем из Redis
+        if model_paths is None and rc is not None:
+            try:
+                _mps = rc.get('trading:model_paths')
+                if _mps:
+                    parsed = json.loads(_mps)
+                    if isinstance(parsed, list) and parsed:
+                        model_paths = parsed
+            except Exception:
+                model_paths = None
+        if (model_paths is None or not model_paths) and model_path:
+            model_paths = [model_path]
+        if not model_paths:
+            return {"success": False, "error": "model_paths not provided"}
+
+        # 2) Готовим состояние для serving (как в агенте: закрытые 5m свечи -> плотный вектор)
+        symbol = symbols[0]
+        # Последняя закрытая метка времени (5m)
+        def _last_closed_ts_ms():
+            try:
+                now_utc = datetime.utcnow().timestamp()
+                last_closed = (int(now_utc) // 300) * 300 - 300
+                return last_closed * 1000
+            except Exception:
+                return 0
+
+        df_5m = db_get_or_fetch_ohlcv(symbol_name=symbol, timeframe='5m', limit_candles=120, exchange_id='bybit')
+        if df_5m is None or df_5m.empty:
+            return {"success": False, "error": f"no candles in DB for {symbol}"}
+        cutoff = _last_closed_ts_ms()
+        df_5m = df_5m[df_5m['timestamp'] <= cutoff]
+        if df_5m is None or df_5m.empty:
+            return {"success": False, "error": "no closed candles available"}
+        # Простая нормализация: последние 100 строк OHLCV
+        ohlcv_cols = ['open','high','low','close','volume']
+        arr = df_5m[ohlcv_cols].tail(100).values.astype('float32')
+        if arr.shape[0] < 20:
+            return {"success": False, "error": "insufficient data for state"}
+        max_vals = np.maximum(arr.max(axis=0), 1e-9)
+        norm = (arr / max_vals).flatten()
+        # Ограничим/дополняем до 100*5=500 признаков
+        if norm.size < 500:
+            norm = np.pad(norm, (0, 500 - norm.size))
+        elif norm.size > 500:
+            norm = norm[:500]
+        state = norm.tolist()
+
+        # 3) Вызов serving
+        serving_url = os.environ.get('SERVING_URL', 'http://serving:8000/predict_ensemble')
+        payload = {
+            "state": state,
+            "model_paths": model_paths,
+            "symbol": symbol
+        }
+        try:
+            resp = requests.post(serving_url, json=payload, timeout=30)
+            # Пытаемся извлечь тело при ошибке
+            if not resp.ok:
+                body = None
+                try:
+                    body = resp.text
+                except Exception:
+                    body = None
+                return {"success": False, "error": f"serving error: {resp.status_code} {resp.reason}", "body": body}
+            pred_json = resp.json()
+        except Exception as e:
+            return {"success": False, "error": f"serving error: {e}"}
+
+        if not pred_json.get('success'):
+            return {"success": False, "error": pred_json.get('error', 'serving failed')}
+
+        decision = pred_json.get('decision', 'hold')
+
+        # 4) Торговля через TradingAgent (без docker exec)
+        agent = TradingAgent(model_path=(model_paths[0] if model_paths else None))
+        agent.symbols = symbols
+        agent.symbol = symbol
+        agent.base_symbol = symbol
+        try:
+            agent.trade_amount = agent._calculate_trade_amount()
+        except Exception:
+            agent.trade_amount = getattr(agent, 'trade_amount', 0.0)
+
+        # Отметим, что торговый цикл активен (для UI)
+        try:
+            agent.is_trading = True
+        except Exception:
+            pass
+
+        # Проставим последнее предсказание для UI
+        try:
+            agent.last_model_prediction = decision
+        except Exception:
+            pass
+
+        current_status_before = agent.get_trading_status()
+
+        # 4.1) Сохраняем предсказания в БД (по каждому пути модели)
+        try:
+            # Текущая цена: возьмём close последней закрытой свечи
+            try:
+                current_price = float(df_5m['close'].iloc[-1]) if (df_5m is not None and not df_5m.empty) else None
+            except Exception:
+                current_price = None
+            position_status = 'open' if getattr(agent, 'current_position', None) else 'none'
+            preds_list = pred_json.get('predictions') or []
+            for p in preds_list:
+                try:
+                    mp = p.get('model_path')
+                    act = p.get('action')
+                    qv = p.get('q_values') or []
+                    # сохранение без market_conditions (можно расширить позже)
+                    create_model_prediction(
+                        symbol=symbol,
+                        action=str(act or 'hold'),
+                        q_values=list(qv) if isinstance(qv, (list, tuple)) else [],
+                        current_price=current_price,
+                        position_status=position_status,
+                        model_path=str(mp) if mp is not None else '' ,
+                        market_conditions=None
+                    )
+                except Exception:
+                    # Не ломаем торговый цикл из-за БД
+                    pass
+        except Exception:
+            pass
+
+        trade_result = None
+        if decision == 'buy' and not agent.current_position:
+            trade_result = agent._execute_buy()
+        elif decision == 'sell' and agent.current_position:
+            sell_strategy = agent._determine_sell_amount(agent._get_current_price())
+            trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
+        else:
+            trade_result = {"success": True, "action": "hold"}
+
+        status_after = agent.get_trading_status()
+
+        # 5) Сохранение результата в Redis (как раньше)
+        try:
+            if rc is not None:
+                result_data = {
+                    'timestamp': datetime.now().isoformat(),
+                    'symbols': symbols,
+                    'model_paths': model_paths,
+                    'decision': decision,
+                    'serving_url': serving_url,
+                    'predictions_count': len(pred_json.get('predictions', []) or []),
+                    'trade_result': trade_result,
+                }
+                rc.setex(f'trading:latest_result_{datetime.now().strftime("%Y%m%d_%H%M%S")}', 3600, json.dumps(result_data, default=str))
+                rc.set('trading:current_status', json.dumps(status_after, default=str))
+                rc.set('trading:current_status_ts', datetime.utcnow().isoformat())
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "decision": decision,
+            "status_before": current_status_before,
+            "status_after": status_after,
+            "trade_result": trade_result,
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
 def search_lstm_task(self, query):
@@ -337,30 +536,38 @@ def trade_step():
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
 def start_trading_task(self, symbols, model_path=None):
     """
-    Task to start trading in the trading_agent container every 5 minutes.
+    Оркестратор: получает параметры, делает Redis-лок, публикует provisional-статус
+    и кладёт торговую задачу в очередь trade (без docker exec).
     """
-    import docker
     import os
+    from celery import chain
 
     # Проверяем, должна ли работать торговля
     trading_enabled = os.environ.get('ENABLE_TRADING_BEAT', '1') in ('1', 'true', 'True')
     if not trading_enabled:
         return {"success": False, "skipped": True, "reason": "ENABLE_TRADING_BEAT=0"}
-    
-    # Redis-лок: предотвращаем параллельные запуски в пределах 5 минут
+
+    # Redis-лок: предотвращаем параллельные запуски в пределах ~5 минут (per-symbol)
     try:
         from redis import Redis as _Redis
         _rc_lock = _Redis(host='redis', port=6379, db=0, decode_responses=True)
-        lock_key = 'trading:agent_lock'
-        # TTL 300с, set if not exists
-        got_lock = _rc_lock.set(lock_key, datetime.utcnow().isoformat(), nx=True, ex=300)
+        # Определяем символ для ключа
+        lock_symbol = None
+        try:
+            lock_symbol = (symbols[0] if (symbols and len(symbols) > 0) else None)
+        except Exception:
+            lock_symbol = None
+        if not lock_symbol:
+            lock_symbol = 'ALL'
+        lock_key = f'trading:agent_lock:{lock_symbol}'
+        # TTL 240с (4 минуты) — чтобы следующий тик в 5 минут не срезался из-за ручного запуска
+        got_lock = _rc_lock.set(lock_key, self.request.id, nx=True, ex=240)
         if not got_lock:
             return {"success": False, "skipped": True, "reason": "agent_lock_active"}
-    except Exception as _e:
-        # Если Redis недоступен — продолжаем без лока (мягкая деградация)
+    except Exception:
         pass
-    
-    # Если параметры не передали в расписании — пробуем взять их из Redis (последние заданные из веб‑интерфейса)
+
+    # Если параметры не передали — пробуем взять их из Redis
     try:
         if (not symbols) or model_path is None:
             from redis import Redis
@@ -385,16 +592,42 @@ def start_trading_task(self, symbols, model_path=None):
     except Exception:
         pass
 
-    # Дефолты на всякий случай
+    # Дефолты
     if not symbols:
         symbols = ['BTCUSDT']
 
-    print(f"🚀 Запуск торговой задачи для символов: {symbols} | model_path={model_path if model_path else 'default'}")
-    
+    print(f"🚀 Оркестрация торговли: symbols={symbols} | model_path={model_path if model_path else 'default'}")
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
-    
-    # Перед запуском зафиксируем предварительный статус в Redis,
-    # чтобы UI мгновенно видел "Активна" даже до первых RESULT
+
+    # Получаем список путей моделей (предпочтительно из Redis), иначе из model_path
+    model_paths = None
+    try:
+        from redis import Redis as _Redis
+        _r2 = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+        _mps = _r2.get('trading:model_paths')
+        if _mps:
+            import json as _json
+            parsed = _json.loads(_mps)
+            if isinstance(parsed, list) and parsed:
+                model_paths = parsed
+    except Exception:
+        model_paths = None
+    if (model_paths is None or not model_paths) and model_path:
+        model_paths = [model_path]
+
+    # Если моделей нет — снимаем лок и выходим без постановки задачи в trade
+    if not model_paths:
+        try:
+            # Снять лок, чтобы не блокировать следующий запуск
+            if '_rc_lock' in locals():
+                lock_symbol = (symbols[0] if (symbols and len(symbols) > 0) else 'ALL')
+                lock_key = f'trading:agent_lock:{lock_symbol}'
+                _rc_lock.delete(lock_key)
+        except Exception:
+            pass
+        return {"success": False, "skipped": True, "reason": "no_model_paths"}
+
+    # Промежуточный статус в Redis для UI
     try:
         from redis import Redis as _Redis
         import json as _json
@@ -422,121 +655,16 @@ def start_trading_task(self, symbols, model_path=None):
     except Exception:
         pass
 
-    # Connect to Docker
-    client = docker.from_env()
-    
+    # Кладём торговую задачу в очередь trade
     try:
-        # Get the medoedai container
-        container = client.containers.get('medoedai')
-        
-        # Check if the container is running
-        if container.status != 'running':
-            return {"success": False, "error": f'Container medoedai is not running. Status: {container.status}'}
-        
-        # Start trading via exec with API keys
-        if model_path:
-            cmd = f'python -c "import json; import os; os.environ[\'BYBIT_API_KEY\'] = \'{BYBIT_API_KEY}\'; os.environ[\'BYBIT_SECRET_KEY\'] = \'{BYBIT_SECRET_KEY}\'; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\"{model_path}\\"); start_result = agent.start_trading(symbols={symbols}); status_result = agent.get_trading_status(); print(\\"RESULT: \\" + json.dumps({{**start_result, **status_result}}, default=str))"'
-        else:
-            cmd = f'python -c "import json; import os; os.environ[\'BYBIT_API_KEY\'] = \'{BYBIT_API_KEY}\'; os.environ[\'BYBIT_SECRET_KEY\'] = \'{BYBIT_SECRET_KEY}\'; from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); start_result = agent.start_trading(symbols={symbols}); status_result = agent.get_trading_status(); print(\\"RESULT: \\" + json.dumps({{**start_result, **status_result}}, default=str))"'
-        
-        exec_result = container.exec_run(cmd, tty=True)
-        
-        # Log the execution result
-        print(f"🚀 Start trading - Command: {cmd}")
-        print(f"📊 Start trading - Exit code: {exec_result.exit_code}")
-        
-        # Инициализируем output_str
-        output_str = ""
-        if exec_result.output:
-            output_str = exec_result.output.decode('utf-8')
-            print(f"📝 Start trading - Output: {output_str}")
-    
-        
-            # Сохраняем результат в Redis для веб-интерфейса
-            try:
-                from redis import Redis
-                
-                # Подключение к Redis
-                redis_client = Redis(host='redis', port=6379, db=0, decode_responses=True)
-                
-                # Создаем результат для сохранения
-                result_data = {
-                    'timestamp': datetime.now().isoformat(),
-                    'symbols': symbols,
-                    'model_path': model_path,
-                    'command': cmd,
-                    'exit_code': exec_result.exit_code,
-                    'output': output_str
-                }
-                
-                # Парсим результат из вывода команды
-                parsed_result = None
-                if 'RESULT:' in output_str:
-                    try:
-                        result_str = output_str.split('RESULT:')[1].strip()
-                        parsed_result = json.loads(result_str)
-                        result_data['parsed_result'] = parsed_result
-                        
-                        # Определяем, была ли реальная торговая операция
-                        trade_executed = parsed_result.get('trade_executed', 'hold')
-                        if trade_executed in ['buy', 'sell', 'sell_all', 'sell_partial']:
-                            # Реальная торговая операция
-                            result_data['trade_executed'] = True
-                            result_data['trade_type'] = trade_executed
-                        else:
-                            # Просто HOLD или ожидание
-                            result_data['trade_executed'] = False
-                            result_data['trade_type'] = 'hold'
-                            
-                    except Exception as parse_error:
-                        print(f"Ошибка парсинга результата: {parse_error}")
-                        result_data['parse_error'] = str(parse_error)
-                        result_data['trade_executed'] = False
-                        result_data['trade_type'] = 'unknown'
-                
-                # Сохраняем в Redis (последние 10 результатов)
-                redis_key = f'trading:latest_result_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
-                redis_client.setex(redis_key, 3600, json.dumps(result_data, default=str))  # Храним 1 час
-                
-                # Единый текущий статус для быстрого чтения UI
-                if parsed_result:
-                    redis_client.set('trading:current_status', json.dumps(parsed_result, default=str))
-                    redis_client.set('trading:current_status_ts', datetime.now().isoformat())
-                
-                # Очищаем старые результаты (оставляем только последние 10)
-                all_keys = redis_client.keys('trading:latest_result_*')
-                if len(all_keys) > 20:
-                    # Сортируем по времени и удаляем старые
-                    sorted_keys = sorted(all_keys)
-                    for old_key in sorted_keys[:-10]:
-                        redis_client.delete(old_key)
-                        
-            except Exception as redis_error:
-                print(f"Ошибка сохранения в Redis: {redis_error}")
-        
-        if exec_result.exit_code == 0:
-            if exec_result.output:
-                output = exec_result.output.decode('utf-8')
-                # Log the result
-                if 'RESULT:' in output:
-                    result_str = output.split('RESULT:')[1].strip()
-                    try:
-                        result = json.loads(result_str)
-                        return result
-                    except:                    
-                        return {"success": True, "message": f'Trading started for {symbols}', "output": output}
-                else:
-                    return {"success": True, "message": f'Trading started for {symbols}', "output": output}
-            else:
-                return {"success": True, "message": f'Trading started for {symbols}', "output": "No output"}
-        else:
-            error_output = exec_result.output.decode("utf-8") if exec_result.output else "No output"
-            return {"success": False, "error": f'Command execution error: {error_output}'}
-        
-    except docker.errors.NotFound:
-        return {"success": False, "error": 'Container medoedai not found. Start it with docker-compose up medoedai'}
+        res = execute_trade.apply_async(kwargs={
+            'symbols': symbols,
+            'model_path': model_path,
+            'model_paths': model_paths,
+        }, queue='trade')
+        return {"success": True, "enqueued": True, "task_id": res.id}
     except Exception as e:
-        return {"success": False, "error": f'Docker error: {str(e)}'}
+        return {"success": False, "error": str(e)}
 
 # Включаем периодический запуск торговли
 import os

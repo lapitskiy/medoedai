@@ -2902,91 +2902,112 @@ def analysis_qgate_suggest():
 
 @app.route('/api/trading/history', methods=['GET'])
 def trading_history():
-    """История торговли из контейнера trading_agent"""
+    """История торговли без Docker exec: читаем из Redis последние результаты Celery."""
     try:
-        # Подключаемся к Docker
-        client = docker.from_env()
-        
+        # Читаем последние результаты из Redis (как в /api/trading/latest_results)
+        latest_results = []
         try:
-            # Получаем контейнер medoedai
-            container = client.containers.get('medoedai')
-            
-            # Проверяем что контейнер запущен
-            if container.status != 'running':
-                return jsonify({
-                    'success': False, 
-                    'error': f'Контейнер medoedai не запущен. Статус: {container.status}'
-                }), 500
-            
-            # Получаем ранее выбранный путь к модели (если есть)
-            model_path = None
-            try:
-                mp = redis_client.get('trading:model_path')
-                if mp:
-                    model_path = mp.decode('utf-8')
-            except Exception:
-                pass
-
-            # Получаем историю через exec (прокидываем API ключи)
-            api_key = os.environ.get('BYBIT_API_KEY', '') or ''
-            secret_key = os.environ.get('BYBIT_SECRET_KEY', '') or ''
-            api_key_esc = api_key.replace("'", "\\'")
-            secret_key_esc = secret_key.replace("'", "\\'")
-            if model_path:
-                cmd = (
-                    f"python -c \"import json, os; os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
-                    f"from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\\"{model_path}\\\"); result = agent.get_trading_history(); print(\\\"RESULT: \\\" + json.dumps(result))\""
-                )
-            else:
-                cmd = (
-                    "python -c \"import json, os; os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
-                    "from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.get_trading_history(); print(\\\"RESULT: \\\" + json.dumps(result))\""
-                )
-            
-            exec_result = container.exec_run(cmd, tty=True)
-            
-            if exec_result.exit_code == 0:
-                output = exec_result.output.decode('utf-8')
-                # Ищем результат в выводе
-                if 'RESULT:' in output:
-                    result_str = output.split('RESULT:')[1].strip()
+            keys = redis_client.keys('trading:latest_result_*') or []
+            for k in keys:
+                try:
+                    raw = redis_client.get(k)
+                    if not raw:
+                        continue
                     try:
-                        import json
-                        result = json.loads(result_str)
-                        return jsonify(result), 200
-                    except:
-                        return jsonify({
-                            'success': True,
-                            'message': 'История получена',
-                            'output': output
-                        }), 200
-                else:
-                    return jsonify({
-                        'success': True,
-                        'message': 'История получена',
-                        'output': output
-                    }), 200
-            else:
-                return jsonify({
-                    'success': False,
-                    'error': f'Ошибка выполнения команды: {exec_result.output.decode("utf-8")}'
-                }), 500
-                
-        except docker.errors.NotFound:
-            return jsonify({
-                'success': False, 
-                'error': 'Контейнер medoedai не найден. Запустите docker-compose up medoedai'
-            }), 500
+                        item = json.loads(raw.decode('utf-8'))
+                    except Exception:
+                        item = json.loads(raw)
+                    latest_results.append(item)
+                except Exception as e:
+                    app.logger.warning(f"Ошибка чтения {k}: {e}")
         except Exception as e:
-            return jsonify({
-                'success': False, 
-                'error': f'Ошибка Docker: {str(e)}'
-            }), 500
-            
+            app.logger.warning(f"Ошибка получения ключей trading:latest_result_*: {e}")
+
+        # Преобразуем результаты в упрощённые торговые записи
+        trades = []
+        for r in sorted(latest_results, key=lambda x: x.get('timestamp', ''), reverse=True):
+            try:
+                tr = r.get('trade_result') or {}
+                decision = r.get('decision') or (r.get('parsed_result') or {}).get('action')
+                action = None
+                if isinstance(tr, dict):
+                    # Явная метка из trade_result (hold или факт сделки)
+                    action = tr.get('action') or tr.get('trade_executed')
+                if not action:
+                    action = decision
+                if not action:
+                    action = 'hold'
+                action = str(action).lower()
+
+                # Пропускаем чистые HOLD, чтобы история была осмысленной
+                if action == 'hold':
+                    continue
+
+                # Время
+                tstamp = r.get('timestamp')
+                # Цена
+                price = None
+                order = tr.get('order') if isinstance(tr, dict) else None
+                if isinstance(order, dict):
+                    for key in ('price', 'average'):
+                        v = order.get(key)
+                        if v is not None:
+                            try:
+                                price = float(v)
+                                break
+                            except Exception:
+                                pass
+                    if price is None:
+                        info = order.get('info') or {}
+                        for key in ('avgPrice', 'lastPrice', 'orderPrice'):
+                            v = info.get(key)
+                            if v is not None:
+                                try:
+                                    price = float(v)
+                                    break
+                                except Exception:
+                                    pass
+                if price is None:
+                    # Фолбэк: цена из parsed_result или отсутствует
+                    parsed = r.get('parsed_result') or {}
+                    v = parsed.get('price')
+                    try:
+                        price = float(v) if v is not None else None
+                    except Exception:
+                        price = None
+
+                # Количество
+                amount = None
+                if action.startswith('sell') and isinstance(tr, dict):
+                    amount = tr.get('sold_amount') or (tr.get('closed_position') or {}).get('amount')
+                if amount is None and isinstance(tr, dict):
+                    pos = tr.get('position') or tr.get('remaining_position') or tr.get('closed_position')
+                    if isinstance(pos, dict):
+                        amount = pos.get('amount')
+                # Фолбэк
+                if amount is None:
+                    amount = r.get('trade_amount')
+
+                # Сбор записи
+                trades.append({
+                    'time': tstamp,
+                    'action': 'sell' if action.startswith('sell') else 'buy',
+                    'price': price,
+                    'amount': amount
+                })
+            except Exception:
+                continue
+
+        return jsonify({
+            'success': True,
+            'trades': trades,
+            'total_trades': len(trades)
+        }), 200
+
     except Exception as e:
         app.logger.error(f"Ошибка получения истории: {e}")
         return jsonify({
-            'success': False, 
+            'success': False,
             'error': str(e)
         }), 500
 
