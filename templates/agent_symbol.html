@@ -188,8 +188,22 @@ async function getTradingStatus(symbol){
     const box = document.getElementById('statusBox');
     const el = document.getElementById('statusContent');
     if(data.success){
+      // Определим, есть ли открытая позиция
+      const pos = (data.position || {});
+      const posAmt = Number(pos.amount || pos.qty || 0);
+      const inPos = Boolean(data.is_in_position || posAmt > 0);
+      const posType = pos && pos.type ? String(pos.type).toUpperCase() : (inPos ? 'LONG' : '');
+      const entry = (pos && (pos.entry_price != null ? pos.entry_price : pos.entryPrice));
+      const posLine = inPos
+        ? `<p><strong>Позиция:</strong> 🟡 В позиции${posType?` (${posType})`:''}${posAmt?`, qty=${posAmt}`:''}</p>`
+        : `<p><strong>Позиция:</strong> ⚪ Нет</p>`;
+      const entryLine = (inPos && entry!=null)
+        ? `<p><strong>Вход:</strong> $${Number(entry).toFixed(4)}</p>`
+        : '';
+
       el.innerHTML = `<p><strong>Символ:</strong> ${symbol}</p>` +
         `<p><strong>Статус:</strong> ${data.trading_status_full || data.trading_status || (data.is_trading ? '🟢 Активна' : '🔴 Остановлена')}</p>` +
+        posLine + entryLine +
         `<p><strong>Сделок:</strong> ${data.trades_count}</p>`;
       box.style.display='block';
     }

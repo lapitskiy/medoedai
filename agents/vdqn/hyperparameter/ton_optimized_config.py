@@ -42,6 +42,9 @@ TON_OPTIMIZED_CONFIG = {
         'memory_size': 500000,  # Увеличиваем размер памяти с 200000 до 500000
         'hidden_sizes': (1024, 512, 256),  # Увеличиваем размер сети
         'dropout_rate': 0.3,  # Увеличиваем dropout с 0.2 до 0.3 для регуляризации
+        'train_repeats': 4,
+        'soft_update_every': 40,
+        'target_update_freq': 800,
         'early_stopping_patience': 2000,  # Уменьшаем терпение с 3000 до 2000
         'min_episodes_before_stopping': 1500,  # Увеличиваем минимум эпизодов с 1000 до 1500
     },

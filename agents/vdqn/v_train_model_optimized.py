@@ -617,18 +617,22 @@ def train_model_optimized(
                 total_steps_processed += 1
                 
                 # Обучаем модель чаще для лучшего обучения (УЛУЧШЕНО)
-                soft_update_every = getattr(cfg, 'soft_update_every', 50)   # Уменьшил с 100 до 50 для более частого обучения
-                batch_size = getattr(cfg, 'batch_size', 128)               # Увеличил с 64 до 128 для лучшей стабильности
-                target_update_freq = getattr(cfg, 'target_update_freq', 500)  # Уменьшил с 1000 до 500 для более частого обновления target
+                soft_update_every = getattr(cfg, 'soft_update_every', 50)   # частота попыток обучения
+                batch_size = getattr(cfg, 'batch_size', 128)
+                target_update_freq = getattr(cfg, 'target_update_freq', 500)
+                train_repeats = max(1, int(getattr(cfg, 'train_repeats', 1)))
                 
-                if global_step % soft_update_every == 0 and len(dqn_solver.memory) >= batch_size:                    
-                    success, loss, abs_q, q_gap = dqn_solver.experience_replay(need_metrics=True)
-                    if success:
-                        grad_steps += 1                        
-                        
-                        # Обновляем target network чаще
-                        if global_step % target_update_freq == 0:
-                            dqn_solver.update_target_model()
+                if global_step % soft_update_every == 0 and len(dqn_solver.memory) >= batch_size:
+                    # Выполним несколько градиентных шагов подряд для лучшей загрузки CPU
+                    for _ in range(train_repeats):
+                        success, loss, abs_q, q_gap = dqn_solver.experience_replay(need_metrics=True)
+                        if success:
+                            grad_steps += 1
+                        else:
+                            break
+                    # Обновляем target network по расписанию
+                    if global_step % target_update_freq == 0:
+                        dqn_solver.update_target_model()
                     else:
                         print(f"      ⚠️   Обучение не удалось")
 
