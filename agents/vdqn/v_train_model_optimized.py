@@ -231,6 +231,10 @@ def train_model_optimized(
                             setattr(cfg, k, v)
                         except Exception:
                             pass
+                try:
+                    print(f"🔧 SYMBOL OVERRIDE[{crypto_symbol}] | lr={getattr(cfg,'lr',None)} | eps=({getattr(cfg,'eps_start',None)}→{getattr(cfg,'eps_final',None)}) | decay={getattr(cfg,'eps_decay_steps',None)} | batch={getattr(cfg,'batch_size',None)} | mem={getattr(cfg,'memory_size',None)} | repeats={getattr(cfg,'train_repeats',None)} | soft_every={getattr(cfg,'soft_update_every',None)} | target_freq={getattr(cfg,'target_update_freq',None)}")
+                except Exception:
+                    pass
 
             # indicators_config для env
             indicators_config = None
@@ -258,6 +262,10 @@ def train_model_optimized(
                             setattr(env, env_attr, rm[field_name])
                         except Exception:
                             pass
+                try:
+                    print(f"🔧 RISK OVERRIDE[{crypto_symbol}] | SL={getattr(env,'STOP_LOSS_PCT',None)} | TP={getattr(env,'TAKE_PROFIT_PCT',None)} | minHold={getattr(env,'min_hold_steps',None)} | volThr={getattr(env,'volume_threshold',None)}")
+                except Exception:
+                    pass
             print(f"✅ Создано обычное окружение для одной криптовалюты")
         
         # Начинаем отсчет времени тренировки
@@ -565,6 +573,7 @@ def train_model_optimized(
             
             # Эпизод
             step_count = 0
+            failed_train_attempts = 0
             while True:
                 step_count += 1
                 # Показываем прогресс каждые 100 шагов для ускорения
@@ -629,6 +638,7 @@ def train_model_optimized(
                         if success:
                             grad_steps += 1
                         else:
+                            failed_train_attempts += 1
                             break
                     # Обновляем target network по расписанию
                     if global_step % target_update_freq == 0:
@@ -668,7 +678,7 @@ def train_model_optimized(
                 episode_winrates.append(episode_winrate)
                 
                 # Детальная статистика эпизода
-                episode_stats = dqn_solver.print_trade_stats(env.all_trades)
+                episode_stats = dqn_solver.print_trade_stats(env.all_trades, failed_attempts=failed_train_attempts)
                 
                 # Добавляем сделки в общий список если их там нет
                 if len(all_trades) < len(env.all_trades):
@@ -684,7 +694,7 @@ def train_model_optimized(
                 episode_winrates.append(episode_winrate)
                 
                 # Детальная статистика эпизода
-                episode_stats = dqn_solver.print_trade_stats(episode_trades)
+                episode_stats = dqn_solver.print_trade_stats(episode_trades, failed_attempts=failed_train_attempts)
             else:
                 # Если нет сделок вообще, используем последние сделки из all_trades
                 if len(all_trades) > 0:

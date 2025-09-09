@@ -532,7 +532,7 @@ class DQNSolver:
         
         return True, None, None, None
 
-    def print_trade_stats(self, trades):
+    def print_trade_stats(self, trades, failed_attempts: int | None = None):
         if not trades:
             return {"trades_count": 0, "winrate": 0.0, "avg_profit": 0.0, "avg_loss": 0.0}
         
@@ -564,9 +564,12 @@ class DQNSolver:
             "bad_trades_count": bad_trades_count
         }
         
+        suffix = ''
+        if failed_attempts is not None:
+            suffix = f", Failed train: {failed_attempts}"
         print(f"📊 Trades: {stats['trades_count']}, Winrate: {stats['winrate']*100:.2f}%, "
               f"Avg P: {stats['avg_profit']:.3f}, Avg L: {stats['avg_loss']:.3f}, "
-              f"P/L ratio: {stats['pl_ratio']:.2f}, Bad trades: {stats['bad_trades_count']}")
+              f"P/L ratio: {stats['pl_ratio']:.2f}, Bad trades: {stats['bad_trades_count']}{suffix}")
         
         return stats
 

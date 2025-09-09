@@ -155,6 +155,33 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             return {"success": False, "error": pred_json.get('error', 'serving failed')}
 
         decision = pred_json.get('decision', 'hold')
+        # --- Server-side Q-gate ---
+        try:
+            # Ищем агрегированные пороги в ответе или используем дефолт
+            qgate = pred_json.get('qgate') or {}
+            T1 = float(qgate.get('T1', pred_json.get('qgate_T1', 0.35)))
+            T2 = float(qgate.get('T2', pred_json.get('qgate_T2', 0.25)))
+            # Берём q_values из решения ансамбля (если есть) либо из первого предикта
+            q_values = pred_json.get('q_values')
+            if not isinstance(q_values, list):
+                preds_list = pred_json.get('predictions') or []
+                if preds_list:
+                    q_values = preds_list[0].get('q_values')
+            if isinstance(q_values, list) and len(q_values) >= 2:
+                q_sorted = sorted([float(x) for x in q_values], reverse=True)
+                maxQ = q_sorted[0]
+                gapQ = q_sorted[0] - q_sorted[1]
+                passed = (maxQ >= T1) and (gapQ >= T2)
+                # Если не прошёл фильтр — принудительно HOLD
+                if not passed:
+                    decision = 'hold'
+                # Лог для диагностики
+                try:
+                    print(f"Q‑gate: {'PASS' if passed else 'BLOCK'} (maxQ={maxQ:.3f}, gapQ={gapQ:.3f}, T1={T1:.3f}, T2={T2:.3f})")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         # 4) Торговля через TradingAgent (без docker exec)
         agent = TradingAgent(model_path=(model_paths[0] if model_paths else None))

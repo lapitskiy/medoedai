@@ -188,23 +188,38 @@ async function getTradingStatus(symbol){
     const box = document.getElementById('statusBox');
     const el = document.getElementById('statusContent');
     if(data.success){
-      // Определим, есть ли открытая позиция
-      const pos = (data.position || {});
+      // Унифицируем ответ
+      const st = data.agent_status || data;
+      const isTrading = !!st.is_trading;
+      const tradingText = st.trading_status_full || st.trading_status || (isTrading ? '🟢 Активна' : '🔴 Остановлена');
+      const pos = st.position || st.current_position || {};
       const posAmt = Number(pos.amount || pos.qty || 0);
-      const inPos = Boolean(data.is_in_position || posAmt > 0);
+      const inPos = Boolean(st.is_in_position || posAmt > 0);
       const posType = pos && pos.type ? String(pos.type).toUpperCase() : (inPos ? 'LONG' : '');
       const entry = (pos && (pos.entry_price != null ? pos.entry_price : pos.entryPrice));
+      const entryTime = (pos && pos.entry_time) ? formatMoscowDateTime(pos.entry_time) : null;
+      const cur = Number(st.current_price || 0);
+      let pnlAbs = null, pnlPct = null;
+      if(inPos && entry != null && cur > 0){
+        pnlAbs = (cur - Number(entry)) * (posAmt || 0);
+        pnlPct = ((cur - Number(entry)) / Number(entry)) * 100;
+      }
       const posLine = inPos
         ? `<p><strong>Позиция:</strong> 🟡 В позиции${posType?` (${posType})`:''}${posAmt?`, qty=${posAmt}`:''}</p>`
         : `<p><strong>Позиция:</strong> ⚪ Нет</p>`;
       const entryLine = (inPos && entry!=null)
-        ? `<p><strong>Вход:</strong> $${Number(entry).toFixed(4)}</p>`
+        ? `<p><strong>Вход:</strong> $${Number(entry).toFixed(4)}${entryTime?` <span style="opacity:.75">(${entryTime})</span>`:''}</p>`
         : '';
+      const priceLine = cur>0 ? `<p><strong>Текущая цена:</strong> $${cur.toFixed(4)}</p>` : '';
+      const pnlLine = (pnlAbs!=null && pnlPct!=null)
+        ? `<p><strong>P&L:</strong> <span style="color:${pnlAbs>=0?'green':'red'}">${pnlAbs>=0?'+':''}$${pnlAbs.toFixed(4)} (${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%)</span></p>`
+        : '';
+      const lm = st.last_model_prediction ? `<p><strong>Последнее решение ИИ:</strong> ${String(st.last_model_prediction).toUpperCase()}</p>` : '';
+      const tradesCnt = (st.trades_count!=null) ? `<p><strong>Сделок:</strong> ${st.trades_count}</p>` : '';
 
       el.innerHTML = `<p><strong>Символ:</strong> ${symbol}</p>` +
-        `<p><strong>Статус:</strong> ${data.trading_status_full || data.trading_status || (data.is_trading ? '🟢 Активна' : '🔴 Остановлена')}</p>` +
-        posLine + entryLine +
-        `<p><strong>Сделок:</strong> ${data.trades_count}</p>`;
+        `<p><strong>Статус:</strong> ${tradingText}</p>` +
+        posLine + entryLine + priceLine + pnlLine + lm + tradesCnt;
       box.style.display='block';
     }
   }catch(e){
@@ -328,7 +343,9 @@ async function loadDbHistory(symbol){
     if(!pairs.length){ el.innerHTML = 'Нет совпавших пар'; box.style.display='block'; return; }
     let html = '';
     for(const d of pairs){
-      html += `<div class="trade-item"><div class="trade-header"><span class="trade-action buy">BUY</span><span>${d.entry_time}</span><span class="trade-action sell">→ SELL</span><span>${d.exit_time}</span></div></div>`
+      const entry = formatMoscowDateTime(d.entry_time);
+      const exit  = formatMoscowDateTime(d.exit_time);
+      html += `<div class="trade-item"><div class="trade-header"><span class="trade-action buy">BUY</span><span>${entry}</span><span class="trade-action sell">→ SELL</span><span>${exit}</span></div></div>`
     }
     el.innerHTML = html; box.style.display='block';
   }catch(e){console.error(e)}
@@ -363,12 +380,16 @@ async function loadPredictions(symbol){
       const qgateT2 = prediction.market_conditions && prediction.market_conditions.qgate_T2;
       const qgateMaxQ = prediction.market_conditions && prediction.market_conditions.qgate_maxQ;
       const qgateGapQ = prediction.market_conditions && prediction.market_conditions.qgate_gapQ;
+      const gatePass = !isQgateFiltered;
+      const gateClass = gatePass ? 'success' : 'warning';
+      const gateText = gatePass ? 'Gate: проходит' : 'Gate: не проходит';
 
       predictionsHTML += `
         <div class="trade-item" style="border-left: 4px solid ${isQgateFiltered ? '#ffc107' : (actionClass === 'buy' ? '#28a745' : actionClass === 'sell' ? '#dc3545' : '#6c757d')};">
           <div class="trade-header">
             <span class="trade-action ${actionClass}">${String(action).toUpperCase()}</span>
             ${isQgateFiltered ? '<span class="trade-confidence warning">🚫 Q-gate отфильтровано</span>' : (conf!=null ? `<span class="trade-confidence ${confidenceClass}">Уверенность: ${(conf*100).toFixed(1)}%</span>` : '')}
+            <span class="trade-confidence ${gateClass}" style="margin-left:6px;">${gateText}</span>
             <span>${predictionTime}</span>
           </div>
           <div class="trade-details">
@@ -513,8 +534,11 @@ async function refreshDbTradeHistory(symbol){
       const act = (t.action || '').toLowerCase();
       const actDisplay = act === 'sell_partial' ? 'SELL_PARTIAL' : (t.action?.toUpperCase());
       const line = `${formatMoscowDateTime(ts)} | ${t.symbol} | ${actDisplay} | $${(priceNum||0).toFixed(4)} | qty=${qtyNum} | b=${bk}`;
-      if (act === 'buy') tBuyLines.push(line);
-      if (act === 'sell' || act === 'sell_partial') tSellLines.push(line);
+      // Фильтруем записи с нулевой ценой — это не реальные сделки
+      if (priceNum > 0) {
+        if (act === 'buy') tBuyLines.push(line);
+        if (act === 'sell' || act === 'sell_partial') tSellLines.push(line);
+      }
     }
 
     const predictions = (predsJson && predsJson.success && Array.isArray(predsJson.predictions)) ? predsJson.predictions : [];
@@ -558,14 +582,33 @@ async function refreshDbTradeHistory(symbol){
     `;
 
     const pairs = Array.isArray(data.pairs) ? data.pairs : [];
-    if (pairs.length === 0) {
+    // Фильтруем некорректные совпадения (нулевая цена/количество или неверные времена)
+    const toMs = (v) => {
+      if (!v) return null; try{
+        if (typeof v === 'number') return v; const s=String(v);
+        const hasTZ=/[zZ]|[\+\-]\d{2}:?\d{2}$/.test(s); const iso=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+        const src=(!hasTZ&&iso.test(s))?(s+'Z'):s; const d=new Date(src); const t=d.getTime(); return isNaN(t)?null:t;
+      }catch(_){return null}
+    };
+    const validPairs = pairs.filter((d)=>{
+      const ep = Number(d.entry_price || 0);
+      const xp = Number(d.exit_price || 0);
+      const qty = Number(d.qty || d.quantity || d.amount || 0);
+      const tEntry = toMs(d.entry_time);
+      const tExit  = toMs(d.exit_time);
+      if (!isFinite(ep) || !isFinite(xp) || ep<=0 || xp<=0) return false;
+      if (!isFinite(qty) || qty<=0) return false;
+      if (tEntry==null || tExit==null || tExit<=tEntry) return false;
+      return true;
+    });
+    if (validPairs.length === 0) {
       contentDiv.innerHTML = debugHTML + '<p>Нет полных совпавших сделок за выбранный период.</p>';
       historyDiv.style.display = 'block';
       return;
     }
 
-    let html = `<p><strong>Найдено совпадений:</strong> ${pairs.length}</p>`;
-    for (const d of pairs) {
+    let html = `<p><strong>Найдено совпадений:</strong> ${validPairs.length}${pairs.length!==validPairs.length?` (отфильтровано: ${pairs.length-validPairs.length})`:''}</p>`;
+    for (const d of validPairs) {
       const pnlColor = (d.pnl_abs || 0) >= 0 ? 'green' : 'red';
       const buyConf = (d.pred_buy && typeof d.pred_buy.confidence === 'number') ? (d.pred_buy.confidence * 100).toFixed(1) + '%' : '—';
       const sellConf = (d.pred_sell && typeof d.pred_sell.confidence === 'number') ? (d.pred_sell.confidence * 100).toFixed(1) + '%' : '—';
