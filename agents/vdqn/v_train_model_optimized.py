@@ -22,6 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from agents.vdqn.dqnsolver import DQNSolver
 from agents.vdqn.cfg.vconfig import vDqnConfig
 from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized
+from agents.vdqn.hyperparameter.symbol_overrides import get_symbol_override
 
 
 # Настройка логирования
@@ -210,12 +211,53 @@ def train_model_optimized(
         else:
             # Используем обычное окружение для одной криптовалюты
             dfs = prepare_data_for_training(dfs)
+            # --- SYMBOL-SPECIFIC OVERRIDES ---
+            crypto_symbol = None
+            try:
+                if isinstance(dfs, dict):
+                    crypto_symbol = dfs.get('symbol') or dfs.get('SYMBOL')
+                if not crypto_symbol:
+                    # попытка из данных
+                    crypto_symbol = 'TONUSDT' if 'TON' in str(dfs).upper() else None
+            except Exception:
+                crypto_symbol = None
+
+            override = get_symbol_override(crypto_symbol) if crypto_symbol else None
+            # применяем training_params к cfg
+            if override and 'training_params' in override:
+                for k, v in override['training_params'].items():
+                    if hasattr(cfg, k):
+                        try:
+                            setattr(cfg, k, v)
+                        except Exception:
+                            pass
+
+            # indicators_config для env
+            indicators_config = None
+            if override and 'indicators_config' in override:
+                indicators_config = override['indicators_config']
+
             env = CryptoTradingEnvOptimized(
                 dfs=dfs,
                 cfg=cfg,
-                lookback_window=20,
-                indicators_config=None  # Используем дефолтную конфигурацию
+                lookback_window=override.get('gym_config', {}).get('lookback_window', 20) if override else 20,
+                indicators_config=indicators_config
             )
+
+            # risk_management в env
+            if override and 'risk_management' in override:
+                rm = override['risk_management']
+                for field_name, env_attr in [
+                    ('STOP_LOSS_PCT', 'STOP_LOSS_PCT'),
+                    ('TAKE_PROFIT_PCT', 'TAKE_PROFIT_PCT'),
+                    ('min_hold_steps', 'min_hold_steps'),
+                    ('volume_threshold', 'volume_threshold'),
+                ]:
+                    if field_name in rm:
+                        try:
+                            setattr(env, env_attr, rm[field_name])
+                        except Exception:
+                            pass
             print(f"✅ Создано обычное окружение для одной криптовалюты")
         
         # Начинаем отсчет времени тренировки
@@ -236,7 +278,7 @@ def train_model_optimized(
             # Базовые параметры окружения и риск-менеджмента
             gym_snapshot = {
                 'symbol': getattr(env, 'symbol', None),
-                'lookback_window': lookback_window if 'lookback_window' in locals() else getattr(env, 'lookback_window', None),
+                'lookback_window': getattr(env, 'lookback_window', None),
                 'indicators_config': getattr(env, 'indicators_config', None),
                 'funding_features': {
                     'present_in_input_df': funding_present,
