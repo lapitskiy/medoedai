@@ -1,5 +1,6 @@
 services:
   medoedai:
+    gpus: all
     deploy:
       resources:
         reservations:
@@ -12,6 +13,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
 
   serving:
+    gpus: all
     deploy:
       resources:
         reservations:
@@ -24,6 +26,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
 
   celery-train:
+    gpus: all
     deploy:
       resources:
         reservations:

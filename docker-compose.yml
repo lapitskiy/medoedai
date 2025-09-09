@@ -66,13 +66,7 @@ services:
         echo '✅ Redis очищен, запускаю Flask...' &&
         python main.py
       "
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # CPU-only по умолчанию. GPU добавляется через docker-compose.gpu.yml
 
   celery-worker:
     build: .
@@ -222,13 +216,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # CPU-only по умолчанию. GPU добавляется через docker-compose.gpu.yml
 
 volumes:
   pgdata:
