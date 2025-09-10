@@ -1406,7 +1406,12 @@ def create_model_version():
             models_root.mkdir(exist_ok=True)
 
             # Символ папки как в примере (btc, bnb, ton)
-            symbol_dir = models_root / base_code.lower()
+            # Извлекаем символ из кода (префикс до первого '_')
+            try:
+                symbol_base = (base_code.split('_', 1)[0] or base_code).lower()
+            except Exception:
+                symbol_base = base_code.lower()
+            symbol_dir = models_root / symbol_base
             symbol_dir.mkdir(exist_ok=True)
 
             # Ensemble можно передать в payload, иначе по умолчанию 'ensemble-a'
