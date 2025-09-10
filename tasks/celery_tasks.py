@@ -23,6 +23,7 @@ try:
 except Exception:
     pass
 from datetime import datetime
+import uuid
 from celery.schedules import crontab
 
 # API ключи Bybit (без шумного вывода при импорте)
@@ -95,6 +96,28 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 model_paths = None
         if (model_paths is None or not model_paths) and model_path:
             model_paths = [model_path]
+        # Санити: оставляем только существующие файлы и убираем дубликаты
+        try:
+            import os as _os
+            if model_paths:
+                mp_clean = []
+                seen = set()
+                for p in model_paths:
+                    try:
+                        pn = str(p)
+                        if pn in seen:
+                            continue
+                        seen.add(pn)
+                        # Если это папка current без имени файла — пропускаем
+                        if _os.path.isdir(pn):
+                            continue
+                        if _os.path.exists(pn):
+                            mp_clean.append(pn)
+                    except Exception:
+                        continue
+                model_paths = mp_clean
+        except Exception:
+            pass
         if not model_paths:
             return {"success": False, "error": "model_paths not provided"}
 
@@ -131,7 +154,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         state = norm.tolist()
 
         # Оценка рыночного режима (flat / uptrend / downtrend) по последним закрытым свечам
-        def _compute_regime(df: pd.DataFrame) -> str:
+        def _compute_regime(df: pd.DataFrame):
             try:
                 # Загружаем конфигурацию из Redis (если есть)
                 cfg = None
@@ -155,29 +178,42 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 closes_full = df['close'].astype(float).values
                 if closes_full.size < max(windows) + 5:
                     # данных маловато — считаем flat
-                    return 'flat'
+                    return 'flat', {
+                        'windows': windows,
+                        'weights': weights,
+                        'voting': voting,
+                        'tie_break': tie_break,
+                        'labels': ['flat'] * len(windows),
+                        'votes_map': {'flat': 0.0, 'uptrend': 0.0, 'downtrend': 0.0},
+                        'drift_threshold': float(drift_thr),
+                        'flat_vol_threshold': float(vol_flat_thr),
+                        'metrics': []
+                    }
 
-                def classify_window(n: int) -> str:
+                def classify_window(n: int):
+                    # Возвращает (label, drift, vol) для окна n
                     c = closes_full[-n:]
                     if c.size < max(20, n // 3):
-                        return 'flat'
+                        return 'flat', 0.0, 0.0
                     start = float(c[0]); end = float(c[-1])
                     drift = (end - start) / max(start, 1e-9)
                     rr = np.diff(c) / np.maximum(c[:-1], 1e-9)
                     vol = float(np.std(rr))
                     if abs(drift) < (0.75 * drift_thr) and vol < vol_flat_thr:
-                        return 'flat'
+                        return 'flat', drift, vol
                     if drift >= drift_thr:
-                        return 'uptrend'
+                        return 'uptrend', drift, vol
                     if drift <= -drift_thr:
-                        return 'downtrend'
-                    return 'flat'
+                        return 'downtrend', drift, vol
+                    return 'flat', drift, vol
 
                 votes = {'flat': 0.0, 'uptrend': 0.0, 'downtrend': 0.0}
                 labels = []
+                metrics = []
                 for i, w in enumerate(windows):
-                    lab = classify_window(int(w))
+                    lab, drift, vol = classify_window(int(w))
                     labels.append(lab)
+                    metrics.append({'window': int(w), 'drift': float(drift), 'vol': float(vol)})
                     wt = float(weights[i] if i < len(weights) else 1.0)
                     votes[lab] += wt
 
@@ -187,21 +223,46 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     mx = max(counts.values())
                     winners = [k for k, v in counts.items() if v == mx]
                     if len(winners) == 1:
-                        return winners[0]
-                    # Ничья → правило tie_break
-                    return 'flat' if tie_break == 'flat' else labels[-1]
+                        winner = winners[0]
+                    else:
+                        # Ничья → правило tie_break
+                        winner = 'flat' if tie_break == 'flat' else labels[-1]
                 else:
                     # Взвешенное голосование по weights
                     best = max(votes.items(), key=lambda kv: kv[1])[0]
                     # Проверка ничьей по сумме весов
                     vals = sorted(votes.values(), reverse=True)
                     if len(vals) >= 2 and abs(vals[0] - vals[1]) < 1e-9:
-                        return 'flat' if tie_break == 'flat' else labels[-1]
-                    return best
-            except Exception:
-                return 'flat'
+                        winner = 'flat' if tie_break == 'flat' else labels[-1]
+                    else:
+                        winner = best
 
-        market_regime = _compute_regime(df_5m)
+                details = {
+                    'windows': [int(w) for w in windows],
+                    'weights': [float(weights[i] if i < len(weights) else 1.0) for i in range(len(windows))],
+                    'voting': voting,
+                    'tie_break': tie_break,
+                    'labels': labels,
+                    'votes_map': votes,
+                    'drift_threshold': float(drift_thr),
+                    'flat_vol_threshold': float(vol_flat_thr),
+                    'metrics': metrics
+                }
+                return winner, details
+            except Exception:
+                return 'flat', {
+                    'windows': [60, 180, 300],
+                    'weights': [1, 1, 1],
+                    'voting': 'majority',
+                    'tie_break': 'flat',
+                    'labels': ['flat', 'flat', 'flat'],
+                    'votes_map': {'flat': 0.0, 'uptrend': 0.0, 'downtrend': 0.0},
+                    'drift_threshold': 0.002,
+                    'flat_vol_threshold': 0.0025,
+                    'metrics': []
+                }
+
+        market_regime, market_regime_details = _compute_regime(df_5m)
 
         # 3) Вызов serving (+ передаём настройки консенсуса, если заданы)
         # Читаем консенсус из Redis: {'counts': {flat, trend, total_selected}, 'percents': {flat, trend}}
@@ -215,12 +276,17 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             consensus_cfg = None
 
         serving_url = os.environ.get('SERVING_URL', 'http://serving:8000/predict_ensemble')
+        try:
+            print(f"[ensemble] models={len(model_paths)} | files={[p.split('/')[-1] for p in model_paths]}")
+        except Exception:
+            pass
         payload = {
             "state": state,
             "model_paths": model_paths,
             "symbol": symbol,
             "consensus": consensus_cfg or {},
-            "market_regime": market_regime
+            "market_regime": market_regime,
+            "market_regime_details": market_regime_details
         }
         try:
             resp = requests.post(serving_url, json=payload, timeout=30)
@@ -239,20 +305,79 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         if not pred_json.get('success'):
             return {"success": False, "error": pred_json.get('error', 'serving failed')}
 
+        # Подготовим пороги Q-gate один раз (если serving их не передал — дефолт)
+        qgate_cfg = pred_json.get('qgate') or {}
+        try:
+            T1 = float(qgate_cfg.get('T1', pred_json.get('qgate_T1', 0.35)))
+        except Exception:
+            T1 = 0.35
+        try:
+            T2 = float(qgate_cfg.get('T2', pred_json.get('qgate_T2', 0.25)))
+        except Exception:
+            T2 = 0.25
+        # Смягчение/усиление порогов для flat через переменную окружения QGATE_FLAT (например, 1.2)
+        try:
+            if market_regime == 'flat':
+                import os as _os
+                factor_flat = float(_os.environ.get('QGATE_FLAT', '1.0') or '1.0')
+                if factor_flat != 1.0:
+                    T1 *= factor_flat
+                    T2 *= factor_flat
+        except Exception:
+            pass
+        # Фактор ужесточения для флэта (env QGATE_FLAT, по умолчанию 1.0)
+        try:
+            flat_factor = float(os.environ.get('QGATE_FLAT', '1.0'))
+        except Exception:
+            flat_factor = 1.0
+        eff_T1 = T1 * (flat_factor if (market_regime == 'flat') else 1.0)
+        eff_T2 = T2 * (flat_factor if (market_regime == 'flat') else 1.0)
+
         # 3.1) Консенсус по ансамблю на стороне оркестратора
         preds_list = pred_json.get('predictions') or []
+        try:
+            if len(model_paths) > 1 and len(preds_list) <= 1:
+                print(f"[ensemble] WARNING: requested {len(model_paths)} models, serving returned {len(preds_list)} predictions")
+        except Exception:
+            pass
         decision = pred_json.get('decision', 'hold')
+        # Заполним сводку по голосам/порогам для последующего сохранения в prediction.market_conditions
+        votes = {'buy': 0, 'sell': 0, 'hold': 0}
+        total_sel = len(model_paths)
+        req_flat = None
+        req_trend = None
+        required = None
+        required_type = 'flat'
+        consensus_from_qgate = False
         try:
             if isinstance(preds_list, list) and len(preds_list) > 0:
-                votes = {'buy': 0, 'sell': 0, 'hold': 0}
+                # Пер‑модельный Q-gate: учитываем в голосах только те BUY/SELL, что проходят T1/T2
                 for p in preds_list:
                     act = str(p.get('action') or 'hold').lower()
-                    if act in votes:
-                        votes[act] += 1
-                total_sel = len(model_paths)
+                    qv = p.get('q_values') or []
+                    gate_ok = False
+                    try:
+                        if isinstance(qv, list) and len(qv) >= 3:
+                            if act == 'buy':
+                                q_buy = float(qv[1])
+                                other = max(float(qv[0]), float(qv[2]))
+                                gate_ok = (q_buy >= eff_T1) and ((q_buy - other) >= eff_T2)
+                            elif act == 'sell':
+                                q_sell = float(qv[2])
+                                other = max(float(qv[0]), float(qv[1]))
+                                gate_ok = (q_sell >= eff_T1) and ((q_sell - other) >= eff_T2)
+                            else:
+                                gate_ok = True  # HOLD не блокируем Q‑gate
+                        else:
+                            gate_ok = (act == 'hold')
+                    except Exception:
+                        gate_ok = (act == 'hold')
+                    if act in ('buy','sell'):
+                        if gate_ok:
+                            votes[act] += 1
+                    elif act == 'hold':
+                        votes['hold'] += 1
                 # Выбираем порог в моделях в зависимости от режима
-                req_flat = None
-                req_trend = None
                 if consensus_cfg:
                     counts = (consensus_cfg.get('counts') or {})
                     perc = (consensus_cfg.get('percents') or {})
@@ -270,41 +395,39 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     req_flat = total_sel
                 if req_trend is None:
                     req_trend = total_sel
-                required = req_trend if market_regime in ('uptrend','downtrend') else req_flat
+                required_type = 'trend' if market_regime in ('uptrend','downtrend') else 'flat'
+                required = req_trend if required_type == 'trend' else req_flat
                 # Правило консенсуса: если хватает голосов BUY → buy, если SELL → sell; иначе hold
                 if votes['buy'] >= required and votes['buy'] > votes['sell']:
                     decision = 'buy'
+                    consensus_from_qgate = True
                 elif votes['sell'] >= required and votes['sell'] > votes['buy']:
                     decision = 'sell'
+                    consensus_from_qgate = True
                 else:
                     decision = 'hold'
         except Exception:
             pass
         # --- Server-side Q-gate ---
         try:
-            # Ищем агрегированные пороги в ответе или используем дефолт
-            qgate = pred_json.get('qgate') or {}
-            T1 = float(qgate.get('T1', pred_json.get('qgate_T1', 0.35)))
-            T2 = float(qgate.get('T2', pred_json.get('qgate_T2', 0.25)))
-            # Берём q_values из решения ансамбля (если есть) либо из первого предикта
-            q_values = pred_json.get('q_values')
-            if not isinstance(q_values, list):
-                preds_list = pred_json.get('predictions') or []
-                if preds_list:
-                    q_values = preds_list[0].get('q_values')
-            if isinstance(q_values, list) and len(q_values) >= 2:
-                q_sorted = sorted([float(x) for x in q_values], reverse=True)
-                maxQ = q_sorted[0]
-                gapQ = q_sorted[0] - q_sorted[1]
-                passed = (maxQ >= T1) and (gapQ >= T2)
-                # Если не прошёл фильтр — принудительно HOLD
-                if not passed:
-                    decision = 'hold'
-                # Лог для диагностики
-                try:
-                    print(f"Q‑gate: {'PASS' if passed else 'BLOCK'} (maxQ={maxQ:.3f}, gapQ={gapQ:.3f}, T1={T1:.3f}, T2={T2:.3f})")
-                except Exception:
-                    pass
+            # Если решение уже получено через консенсус моделей, прошедших Q‑gate, не блокируем финальным агрегатом
+            if not consensus_from_qgate:
+                q_values = pred_json.get('q_values')
+                if not isinstance(q_values, list):
+                    preds_list_tmp = pred_json.get('predictions') or []
+                    if preds_list_tmp:
+                        q_values = preds_list_tmp[0].get('q_values')
+                if isinstance(q_values, list) and len(q_values) >= 2:
+                    q_sorted = sorted([float(x) for x in q_values], reverse=True)
+                    maxQ = q_sorted[0]
+                    gapQ = q_sorted[0] - q_sorted[1]
+                    passed = (maxQ >= eff_T1) and (gapQ >= eff_T2)
+                    if not passed:
+                        decision = 'hold'
+                    try:
+                        print(f"Q‑gate: {'PASS' if passed else 'BLOCK'} (maxQ={maxQ:.3f}, gapQ={gapQ:.3f}, T1={eff_T1:.3f}, T2={eff_T2:.3f})")
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -332,7 +455,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
 
         current_status_before = agent.get_trading_status()
 
-        # 4.1) Сохраняем предсказания в БД (по каждому пути модели)
+        # 4.1) Сохраняем предсказания в БД (по каждому пути модели) + сводка консенсуса и per‑model Q‑gate
         try:
             # Текущая цена: возьмём close последней закрытой свечи
             try:
@@ -341,12 +464,49 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 current_price = None
             position_status = 'open' if getattr(agent, 'current_position', None) else 'none'
             preds_list = pred_json.get('predictions') or []
+            # Общий ID группы ансамбля для этого тика, чтобы фронт мог объединять карточки
+            ensemble_group_id = str(uuid.uuid4()) if preds_list else None
             for p in preds_list:
                 try:
                     mp = p.get('model_path')
                     act = p.get('action')
                     qv = p.get('q_values') or []
-                    # сохранение без market_conditions (можно расширить позже)
+                    # Per‑model q‑gate метрики
+                    q_max = None; q_gap = None; q_pass = None
+                    try:
+                        if isinstance(qv, list) and len(qv) >= 3:
+                            if str(act or 'hold').lower() == 'buy':
+                                qb = float(qv[1]); other = max(float(qv[0]), float(qv[2]))
+                                q_max = qb; q_gap = qb - other; q_pass = (qb >= T1) and (q_gap >= T2)
+                            elif str(act or 'hold').lower() == 'sell':
+                                qs = float(qv[2]); other = max(float(qv[0]), float(qv[1]))
+                                q_max = qs; q_gap = qs - other; q_pass = (qs >= T1) and (q_gap >= T2)
+                            else:
+                                q_pass = True
+                    except Exception:
+                        q_pass = (str(act or 'hold').lower() == 'hold')
+                    mc = {
+                        'ensemble_total': int(total_sel),
+                        'ensemble_votes_buy': int(votes.get('buy', 0)),
+                        'ensemble_votes_sell': int(votes.get('sell', 0)),
+                        'ensemble_votes_hold': int(votes.get('hold', 0)),
+                        'ensemble_required': int(required) if required is not None else None,
+                        'ensemble_required_type': required_type,
+                        'ensemble_regime': market_regime,
+                        'ensemble_decision': decision,
+                        'ensemble_group_id': ensemble_group_id,
+                        # Детали режима по окнам, чтобы UI мог показать 60=F,180=U,300=D
+                        'regime_windows': list(market_regime_details.get('windows', [])) if isinstance(market_regime_details, dict) else [],
+                        'regime_labels': list(market_regime_details.get('labels', [])) if isinstance(market_regime_details, dict) else [],
+                        'regime_weights': list(market_regime_details.get('weights', [])) if isinstance(market_regime_details, dict) else [],
+                        'regime_voting': (market_regime_details.get('voting') if isinstance(market_regime_details, dict) else None),
+                        'regime_tie_break': (market_regime_details.get('tie_break') if isinstance(market_regime_details, dict) else None),
+                        'qgate_T1': float(eff_T1),
+                        'qgate_T2': float(eff_T2),
+                        'qgate_maxQ': float(q_max) if q_max is not None else None,
+                        'qgate_gapQ': float(q_gap) if q_gap is not None else None,
+                        'qgate_filtered': (False if q_pass is None else (not q_pass)),
+                    }
                     create_model_prediction(
                         symbol=symbol,
                         action=str(act or 'hold'),
@@ -354,7 +514,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         current_price=current_price,
                         position_status=position_status,
                         model_path=str(mp) if mp is not None else '' ,
-                        market_conditions=None
+                        market_conditions=mc
                     )
                 except Exception:
                     # Не ломаем торговый цикл из-за БД
@@ -403,6 +563,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     'predictions': preds_brief,
                     'consensus': consensus_cfg or {},
                     'market_regime': market_regime,
+                    'market_regime_details': market_regime_details,
                     'consensus_applied': {
                         'regime': market_regime,
                         'votes': preds_list and {
@@ -790,10 +951,21 @@ def start_trading_task(self, symbols, model_path=None):
             parsed = _json.loads(_mps)
             if isinstance(parsed, list) and parsed:
                 model_paths = parsed
+        # Фолбэк: если не нашли актуальные пути — попробуем последние сохранённые
+        if (model_paths is None or not model_paths):
+            _last = _r2.get('trading:last_model_paths')
+            if _last:
+                import json as _json
+                parsed_last = _json.loads(_last)
+                if isinstance(parsed_last, list) and parsed_last:
+                    model_paths = parsed_last
     except Exception:
         model_paths = None
     if (model_paths is None or not model_paths) and model_path:
         model_paths = [model_path]
+    # Если нашли список — синхронизируем model_path для совместимости
+    if (not model_path) and isinstance(model_paths, list) and len(model_paths) > 0:
+        model_path = model_paths[0]
 
     # Если моделей нет — снимаем лок и выходим без постановки задачи в trade
     if not model_paths:
@@ -832,6 +1004,15 @@ def start_trading_task(self, symbols, model_path=None):
         _rc.set('trading:current_status', _json.dumps(provisional, ensure_ascii=False))
         from datetime import datetime as _dt
         _rc.set('trading:current_status_ts', _dt.utcnow().isoformat())
+        # Обновим last_* для фолбэка следующего тика
+        try:
+            if model_paths:
+                _rc.set('trading:last_model_paths', _json.dumps(model_paths, ensure_ascii=False))
+            cons_raw = _rc.get('trading:consensus')
+            if cons_raw:
+                _rc.set('trading:last_consensus', cons_raw)
+        except Exception:
+            pass
     except Exception:
         pass
 

@@ -1824,6 +1824,29 @@ def delete_model():
 
 # ==================== ТОРГОВЫЕ ENDPOINT'Ы ====================
 
+@app.route('/api/trading/save_config', methods=['POST'])
+def save_trading_config():
+    """Автосохранение выбора моделей и консенсуса без запуска торговли."""
+    try:
+        data = request.get_json() or {}
+        symbols = data.get('symbols') or []
+        model_paths = data.get('model_paths') or []
+        consensus = data.get('consensus') or None
+        import json as _json
+        rc = get_redis_client()
+        if symbols:
+            rc.set('trading:symbols', _json.dumps(symbols, ensure_ascii=False))
+        # Не перезаписываем model_paths пустым списком — чтобы не ломать следующий тик
+        if isinstance(model_paths, list) and len(model_paths) > 0:
+            rc.set('trading:model_paths', _json.dumps(model_paths, ensure_ascii=False))
+            rc.set('trading:last_model_paths', _json.dumps(model_paths, ensure_ascii=False))
+        if consensus is not None:
+            rc.set('trading:consensus', _json.dumps(consensus, ensure_ascii=False))
+            rc.set('trading:last_consensus', _json.dumps(consensus, ensure_ascii=False))
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/trading/start', methods=['POST'])
 def start_trading():
     """
@@ -1856,6 +1879,14 @@ def start_trading():
                 consensus = data.get('consensus')
                 if consensus is not None:
                     _rc.set('trading:consensus', _json.dumps(consensus, ensure_ascii=False))
+                    # Сохраняем дубликат для фолбэка тиков
+                    _rc.set('trading:last_consensus', _json.dumps(consensus, ensure_ascii=False))
+            except Exception:
+                pass
+            # Обновим last_model_paths для фолбэка тиков
+            try:
+                if isinstance(model_paths, list) and model_paths:
+                    _rc.set('trading:last_model_paths', _json.dumps(model_paths, ensure_ascii=False))
             except Exception:
                 pass
             # Пишем мгновенный «активный» статус, чтобы UI сразу показывал Активна до первого RESULT

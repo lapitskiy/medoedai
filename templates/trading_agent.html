@@ -310,6 +310,7 @@
                 }).join('');
                 box.innerHTML = `<div class=\"versions-table\">${header}${rows}</div>`;
                 updateConsensusDisplay();
+                autoSaveTradingConfig();
             } catch (e) {
                 box.innerHTML = '<em>Ошибка отображения версий</em>';
             }
@@ -572,20 +573,17 @@
                     }
                     
                     historyDiv.style.display = 'block';
-                    try { historyDiv.scrollIntoView({ behavior: 'smooth' }); } catch (_) {}
                 } else {
                     const historyDiv = document.getElementById('tradingHistory');
                     const contentDiv = document.getElementById('historyContent');
                     contentDiv.innerHTML = '<p>❌ Ошибка получения истории</p><p><em>' + (result.error || 'Неизвестная ошибка') + '</em></p>';
                     historyDiv.style.display = 'block';
-                    try { historyDiv.scrollIntoView({ behavior: 'smooth' }); } catch (_) {}
                 }
             } catch (error) {
                 const historyDiv = document.getElementById('tradingHistory');
                 const contentDiv = document.getElementById('historyContent');
                 contentDiv.innerHTML = '<p>❌ Ошибка сети</p><p><em>' + error.message + '</em></p>';
                 historyDiv.style.display = 'block';
-                try { historyDiv.scrollIntoView({ behavior: 'smooth' }); } catch (_) {}
             }
         }
 
@@ -1134,8 +1132,8 @@
                                             ${qgateReason || 'Недостаточная уверенность модели'}
                                         </div>
                                         <div style="margin-top:8px; display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:6px; color:#444;">
-                                            ${typeof qgateT1 === 'number' ? `<div><strong>T1 (maxQ)</strong>: ${qgateT1.toFixed(3)}</div>` : ''}
-                                            ${typeof qgateT2 === 'number' ? `<div><strong>T2 (gapQ)</strong>: ${qgateT2.toFixed(3)}</div>` : ''}
+                                            ${typeof qgateT1 === 'number' ? `<div><strong>MAXQ</strong>: ${qgateT1.toFixed(3)}</div>` : ''}
+                                            ${typeof qgateT2 === 'number' ? `<div><strong>GAPQ</strong>: ${qgateT2.toFixed(3)}</div>` : ''}
                                             ${typeof qgateMaxQ === 'number' ? `<div><strong>maxQ</strong>: ${qgateMaxQ.toFixed(3)}</div>` : ''}
                                             ${typeof qgateGapQ === 'number' ? `<div><strong>gapQ</strong>: ${qgateGapQ.toFixed(3)}</div>` : ''}
                                         </div>
@@ -1259,14 +1257,13 @@
                         <div class="trade-item">
                             <div class="trade-header"><span class="trade-action success">Q-gate ${side.toUpperCase()} пороги</span></div>
                             <div class="trade-details">
-                                <div class="trade-detail"><div class="label">T1 (maxQ)</div><div class="value">${s.T1.toFixed(6)}</div></div>
-                                <div class="trade-detail"><div class="label">T2 (gapQ)</div><div class="value">${s.T2.toFixed(6)}</div></div>
+                                <div class="trade-detail"><div class="label">MAXQ</div><div class="value">${s.T1.toFixed(6)}</div></div>
+                                <div class="trade-detail"><div class="label">GAPQ</div><div class="value">${s.T2.toFixed(6)}</div></div>
                                 <div class="trade-detail"><div class="label">Hit-rate</div><div class="value">${(s.hit_rate*100).toFixed(2)}% (${s.n} сделок)</div></div>
                                 <div class="trade-detail"><div class="label">.env</div><div class="value"><code>${data.env}</code></div></div>
                             </div>
                         </div>`;
                     resultsDiv.style.display = 'block';
-                    try { resultsDiv.scrollIntoView({ behavior: 'smooth' }); } catch (_) {}
                 } else {
                     // Повтор с более мягкими параметрами, если мало данных
                     const needRetry = (data && data.error && /Недостаточно данных/i.test(data.error));
@@ -1286,14 +1283,13 @@
                                 <div class="trade-item">
                                     <div class="trade-header"><span class="trade-action success">Q-gate ${side.toUpperCase()} (повтор с мягкими параметрами)</span></div>
                                     <div class="trade-details">
-                                        <div class="trade-detail"><div class="label">T1 (maxQ)</div><div class="value">${s.T1.toFixed(6)}</div></div>
-                                        <div class="trade-detail"><div class="label">T2 (gapQ)</div><div class="value">${s.T2.toFixed(6)}</div></div>
+                                        <div class="trade-detail"><div class="label">MAXQ</div><div class="value">${s.T1.toFixed(6)}</div></div>
+                                        <div class="trade-detail"><div class="label">GAPQ</div><div class="value">${s.T2.toFixed(6)}</div></div>
                                         <div class="trade-detail"><div class="label">Hit-rate</div><div class="value">${(s.hit_rate*100).toFixed(2)}% (${s.n} сделок)</div></div>
                                         <div class="trade-detail"><div class="label">.env</div><div class="value"><code>${data.env}</code></div></div>
                                     </div>
                                 </div>`;
                             resultsDiv.style.display = 'block';
-                            try { resultsDiv.scrollIntoView({ behavior: 'smooth' }); } catch (_) {}
                             return;
                         }
                     }
@@ -1392,6 +1388,7 @@
             const trendDisp = document.getElementById('trendConsensusDisplay');
             if (flatDisp) flatDisp.textContent = `${flatCount} из ${selectedCount} моделей (${flatPct}%)`;
             if (trendDisp) trendDisp.textContent = `${trendCount} из ${selectedCount} моделей (${trendPct}%)`;
+            autoSaveTradingConfig();
         }
 
         function initConsensusSliders() {
@@ -1400,6 +1397,20 @@
             if (flatSlider) flatSlider.addEventListener('input', updateConsensusDisplay);
             if (trendSlider) trendSlider.addEventListener('input', updateConsensusDisplay);
             updateConsensusDisplay();
+        }
+
+        // Автосохранение выбора моделей и консенсуса в Redis
+        async function autoSaveTradingConfig(){
+            try{
+                const symbol = (document.getElementById('ensembleSymbolSelect')?.value) || 'BTCUSDT';
+                const selectedPaths = Array.from(document.querySelectorAll('.verCheck:checked')).map(i => i.value).filter(Boolean);
+                const consensusSettings = getConsensusSettings();
+                await fetch('/api/trading/save_config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols: [symbol], model_paths: selectedPaths, consensus: consensusSettings })
+                });
+            }catch(_){ }
         }
 
         // Получение настроек консенсуса (и в штуках, и в процентах)

@@ -399,6 +399,7 @@ async function loadPredictions(symbol){
       return;
     }
     let predictionsHTML = `<p><strong>Всего предсказаний:</strong> ${data.total_predictions}</p>`;
+    const seenGroups = new Set();
     for(const prediction of preds){
       const predictionTime = formatMoscowDateTime(prediction.timestamp);
       const action = (prediction.action||'hold').toLowerCase();
@@ -417,20 +418,190 @@ async function loadPredictions(symbol){
       const gateClass = gatePass ? 'success' : 'warning';
       const gateText = gatePass ? 'Gate: проходит' : 'Gate: не проходит';
 
+      // Версия модели (из пути) + эмодзи действия; цвет фона чипа = PASS (зелёный) / BLOCK (красный)
+      const modelPath = prediction.model_path || '';
+      let modelVer = '';
+      try{
+        const m = modelPath.match(/\/(v\d+)\//i);
+        modelVer = m ? m[1].toUpperCase() : (modelPath.split('/')?.slice(-2,-1)?.[0] || '').toUpperCase();
+      }catch(_){ modelVer=''; }
+      const chipColor = gatePass ? '#28a745' : '#dc3545';
+      const actLetter = action === 'buy' ? 'B' : (action === 'sell' ? 'S' : 'H');
+      const modelChip = modelVer ? `<span style="margin-left:6px; padding:2px 8px; border-radius:999px; background:${chipColor}1a; color:${chipColor}; font-weight:600; font-size:12px;">${modelVer} ${actLetter}</span>` : '';
+
+      // Консенсус ансамбля (если есть в market_conditions)
+      const mc = prediction.market_conditions || {};
+      const etotal = Number(mc.ensemble_total);
+      const evb = Number(mc.ensemble_votes_buy);
+      const evs = Number(mc.ensemble_votes_sell);
+      const evh = Number(mc.ensemble_votes_hold);
+      const ereq = (mc.ensemble_required!=null) ? Number(mc.ensemble_required) : null;
+      const ereqType = mc.ensemble_required_type || null;
+      const ereg = mc.ensemble_regime || null;
+      const edec = mc.ensemble_decision || null;
+      // Дедупликатор карточек: приоритетно по ensemble_group_id, иначе по (symbol,total,5s_bucket)
+      try{
+        const gid = mc.ensemble_group_id || null;
+        if (gid) {
+          if (seenGroups.has('gid:'+gid)) { continue; }
+          seenGroups.add('gid:'+gid);
+        } else {
+          const curTs = Date.parse(prediction.timestamp);
+          const bucket = isFinite(curTs) ? Math.floor(curTs/5000) : `na|${String(prediction.timestamp)}`;
+          const groupKey = `${prediction.symbol||symbol}|${Number(etotal)||0}|${bucket}`;
+          if (seenGroups.has(groupKey)) { continue; }
+          seenGroups.add(groupKey);
+        }
+      }catch(_){ }
+      // Для шапки используем итог ансамбля, если есть
+      const headerAction = (edec || action || 'hold').toLowerCase();
+      const headerActionClass = headerAction === 'buy' ? 'buy' : (headerAction === 'sell' ? 'sell' : 'hold');
+      // Подготовим чипы для всех моделей текущего тика: V1 B / V2 S / V3 H
+      let modelsLine = '';
+      let anyPassForHeader = false;
+      let perModelQHtml = '';
+      try{
+        const curTs = Date.parse(prediction.timestamp);
+        const siblings = (Array.isArray(preds)? preds : []).filter(pp => {
+          try{
+            if ((pp.symbol||'') !== (prediction.symbol||'')) return false;
+            const a = Number(mc.ensemble_total) || null;
+            const b = Number((pp.market_conditions||{}).ensemble_total) || null;
+            if (a && b && a !== b) return false;
+            const ts = Date.parse(pp.timestamp);
+            if (!isFinite(curTs) || !isFinite(ts)) return String(pp.timestamp) === String(prediction.timestamp);
+            return Math.abs(ts - curTs) <= 5000; // 5 секундный коридор для одного тика ансамбля
+          }catch(_){ return false; }
+        });
+        // Есть ли хотя бы одна модель, прошедшая Q-gate по итоговому действию заголовка (BUY/SELL)?
+        try{
+          for(const pp of siblings){
+            const act = String(pp.action||'').toLowerCase();
+            const filt = !!(pp.market_conditions && pp.market_conditions.qgate_filtered);
+            if (act === headerAction && !filt){ anyPassForHeader = true; break; }
+          }
+        }catch(__){}
+        // Отсортируем по версии модели: V1, V2, V3, ...
+        const getVerNum = (mp) => {
+          try{
+            const m = String(mp||'').match(/\/v(\d+)\//i);
+            if (m) return parseInt(m[1], 10);
+            const seg = String(mp||'').split('/').find(s=>/^v\d+$/i.test(s));
+            if (seg) return parseInt(seg.replace(/[^0-9]/g,''), 10);
+          }catch(_){ }
+          return Number.MAX_SAFE_INTEGER;
+        };
+        siblings.sort((a,b)=>{
+          const va = getVerNum(a.model_path);
+          const vb = getVerNum(b.model_path);
+          if (va !== vb) return va - vb;
+          return String(a.model_path||'').localeCompare(String(b.model_path||''));
+        });
+        const chips = siblings.map(pp => {
+          try{
+            const act = (pp.action||'hold').toLowerCase();
+            const gateBlocked = !!(pp.market_conditions && pp.market_conditions.qgate_filtered);
+            const pass = !gateBlocked;
+            const color = pass ? '#28a745' : '#dc3545';
+            const mp = pp.model_path || '';
+            let ver = '';
+            try{
+              const m = mp.match(/\/(v\d+)\//i);
+              ver = m ? m[1].toUpperCase() : (mp.split('/')?.slice(-2,-1)?.[0] || '').toUpperCase();
+            }catch(_){ ver=''; }
+            const letter = act === 'buy' ? 'B' : (act === 'sell' ? 'S' : 'H');
+            return `<span style="padding:2px 8px; border-radius:999px; background:${color}1a; color:${color}; font-weight:600; font-size:12px;">${ver||'—'} ${letter}</span>`;
+          }catch(__){ return ''; }
+        }).filter(Boolean);
+        if(chips.length){ modelsLine = chips.join(' / '); }
+        // Сформируем строки с Q-Values и статусом gate по каждой модели
+        try{
+          const rows = siblings.map(pp => {
+            try{
+              const mp = String(pp.model_path||'');
+              let ver = '';
+              try{
+                const m = mp.match(/\/(v\d+)\//i);
+                ver = m ? m[1].toUpperCase() : (mp.split('/')?.slice(-2,-1)?.[0] || '').toUpperCase();
+              }catch(_){ ver=''; }
+              const qs = Array.isArray(pp.q_values) ? pp.q_values.map(v=>Number(v).toFixed(3)).join(', ') : '—';
+              const blocked = !!(pp.market_conditions && pp.market_conditions.qgate_filtered);
+              const gate = blocked ? 'BLOCK' : 'PASS';
+              const act = (pp.action||'hold').toLowerCase();
+              const letter = act==='buy'?'B':(act==='sell'?'S':'H');
+              const mc2 = pp.market_conditions || {};
+              const t1 = (typeof mc2.qgate_T1 === 'number') ? mc2.qgate_T1 : null;
+              const t2 = (typeof mc2.qgate_T2 === 'number') ? mc2.qgate_T2 : null;
+              const mQ = (typeof mc2.qgate_maxQ === 'number') ? mc2.qgate_maxQ : null;
+              const gQ = (typeof mc2.qgate_gapQ === 'number') ? mc2.qgate_gapQ : null;
+              const dM = (mQ!=null && t1!=null) ? (mQ - t1) : null;
+              const dG = (gQ!=null && t2!=null) ? (gQ - t2) : null;
+              const fmt = (v)=> (typeof v === 'number' ? v.toFixed(3) : '—');
+              const details = `MAXQ>=${fmt(t1)}, GAPQ>=${fmt(t2)}, m=${fmt(mQ)}, g=${fmt(gQ)}${(dM!=null||dG!=null)?` (Δm=${fmt(dM)}, Δg=${fmt(dG)})`:''}`;
+              return `<div><strong>${ver||'—'} ${letter}</strong>: [${qs}] <span style="font-weight:600; color:${blocked?'#dc3545':'#28a745'}">${gate}</span><span style="margin-left:8px; color:#555;">${details}</span></div>`;
+            }catch(__){ return ''; }
+          }).filter(Boolean);
+          if(rows.length){ perModelQHtml = rows.join(''); }
+        }catch(__){}
+      }catch(__){}
+      let ensembleBlock = '';
+      if (Number.isFinite(etotal) && (Number.isFinite(evb) || Number.isFinite(evs) || Number.isFinite(evh))) {
+        const votesLine = `BUY=${Number.isFinite(evb)?evb:'—'}, SELL=${Number.isFinite(evs)?evs:'—'}, HOLD=${Number.isFinite(evh)?evh:'—'}`;
+        const reqLine = (ereq!=null) ? `Требуется: ${ereq} (${ereqType||'—'})` : '';
+        const regLine = ereg ? `Режим: ${ereg}` : '';
+        // Детали режима по окнам: 60=F, 180=U, 300=D
+        let regWindowsLine = '';
+        try{
+          const rw = Array.isArray(mc.regime_windows) ? mc.regime_windows : [];
+          const rl = Array.isArray(mc.regime_labels) ? mc.regime_labels : [];
+          if(rw.length && rl.length){
+            const mapLabel = (s)=>{
+              const v = String(s||'flat').toLowerCase();
+              if(v==='uptrend') return 'U';
+              if(v==='downtrend') return 'D';
+              return 'F';
+            };
+            const chips = rw.map((w,i)=>{
+              const lab = mapLabel(rl[i]);
+              const color = (lab==='U')? '#1976d2' : (lab==='D' ? '#dc3545' : '#28a745');
+              const faded = (ereg && rl[i] && String(rl[i]).toLowerCase() !== String(ereg).toLowerCase());
+              const style = `padding:2px 8px; border-radius:999px; background:${color}1a; color:${color}; font-weight:600; font-size:12px;` + (faded? ' opacity:0.55; text-decoration:line-through;' : '');
+              return `<span style="${style}">${w}=${lab}</span>`;
+            });
+            if(chips.length){ regWindowsLine = chips.join(' '); }
+          }
+        }catch(__){}
+        const decLine = edec ? `Итог: ${String(edec).toUpperCase()}` : '';
+        ensembleBlock = `
+          <div style="margin-top: 8px; padding: 8px; background:#f8f9fa; border:1px solid #e9ecef; border-radius:6px; font-size:12px;">
+            <strong>Консенсус ансамбля</strong>
+            <div style="margin-top:4px; display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:6px;">
+              <div>Всего моделей: ${etotal}</div>
+              <div>Голоса: ${votesLine}</div>
+              ${reqLine ? `<div>${reqLine}</div>` : ''}
+              ${regLine ? `<div>${regLine}</div>` : ''}
+              ${regWindowsLine ? `<div style="grid-column: 1 / -1;">Режим (окна): ${regWindowsLine}</div>` : ''}
+              ${decLine ? `<div>${decLine}</div>` : ''}
+              ${modelsLine ? `<div style="grid-column: 1 / -1;">Модели: ${modelsLine}</div>` : ''}
+              ${perModelQHtml ? `<div style="grid-column: 1 / -1; margin-top:4px;"><div style=\"font-weight:600; margin-bottom:3px;\">Q-Values по моделям:</div>${perModelQHtml}</div>` : ''}
+            </div>
+          </div>`;
+      }
+
+      const showQgateBanner = isQgateFiltered && !anyPassForHeader;
       predictionsHTML += `
-        <div class="trade-item" style="border-left: 4px solid ${isQgateFiltered ? '#ffc107' : (actionClass === 'buy' ? '#28a745' : actionClass === 'sell' ? '#dc3545' : '#6c757d')};">
+        <div class="trade-item" style="border-left: 4px solid ${isQgateFiltered ? '#ffc107' : (headerActionClass === 'buy' ? '#28a745' : headerActionClass === 'sell' ? '#dc3545' : '#6c757d')};">
           <div class="trade-header">
-            <span class="trade-action ${actionClass}">${String(action).toUpperCase()}</span>
-            ${isQgateFiltered ? '<span class="trade-confidence warning">🚫 Q-gate отфильтровано</span>' : (conf!=null ? `<span class="trade-confidence ${confidenceClass}">Уверенность: ${(conf*100).toFixed(1)}%</span>` : '')}
-            <span class="trade-confidence ${gateClass}" style="margin-left:6px;">${gateText}</span>
+            <span class="trade-action ${headerActionClass}">${String(headerAction).toUpperCase()}</span>
+            ${showQgateBanner ? '<span class="trade-confidence warning">🚫 Q-gate отфильтровано</span>' : (conf!=null ? `<span class="trade-confidence ${confidenceClass}">Уверенность: ${(conf*100).toFixed(1)}%</span>` : '')}
             <span>${predictionTime}</span>
           </div>
           <div class="trade-details">
             <div class="trade-detail"><div class="label">Символ</div><div class="value">${prediction.symbol||symbol}</div></div>
             <div class="trade-detail"><div class="label">Цена</div><div class="value">$${prediction.current_price!=null ? Number(prediction.current_price).toFixed(6) : 'N/A'}</div></div>
             <div class="trade-detail"><div class="label">Позиция</div><div class="value">${prediction.position_status||'none'}</div></div>
-            <div class="trade-detail"><div class="label">Q-Values</div><div class="value">[${qvals.map(v=>Number(v).toFixed(3)).join(', ')}]</div></div>
           </div>
+          ${ensembleBlock}
           ${isQgateFiltered ? `
           <div style="margin-top: 10px; padding: 10px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; font-size: 12px;">
             <strong>🚫 Q-gate фильтрация</strong>${qgateSide ? ` <span style="opacity:0.8">(${String(qgateSide).toUpperCase()})</span>` : ''}:<br>
