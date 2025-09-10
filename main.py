@@ -809,6 +809,16 @@ def get_result_model_info():
                     'trades_count': stats.get('trades_count')
                 }
                 info['episodes'] = results.get('actual_episodes', results.get('episodes'))
+                # Добавим суммарное время и среднее время на эпизод (если есть)
+                total_training_time = results.get('total_training_time')
+                if isinstance(total_training_time, (int, float)):
+                    info['total_training_time'] = float(total_training_time)
+                    try:
+                        if info.get('episodes'):
+                            avg_sec = float(total_training_time) / float(info['episodes'])
+                            info['avg_time_per_episode_sec'] = avg_sec
+                    except Exception:
+                        pass
             except Exception as _e:
                 info['stats_error'] = str(_e)
 
@@ -1979,6 +1989,11 @@ def stop_trading():
 def trading_status():
     """Статус торговли из контейнера trading_agent"""
     try:
+        # Входная точка: фиксируем вызов эндпоинта
+        try:
+            app.logger.info("[trading_status] ▶ request received")
+        except Exception:
+            pass
         # Сначала пробуем быстрый статус из Redis (обновляется периодическим таском)
         try:
             _rc = get_redis_client()
@@ -2002,107 +2017,47 @@ def trading_status():
                     flat = {'success': True, 'agent_status': status_obj}
                     if isinstance(status_obj, dict):
                         flat.update(status_obj)
+                    try:
+                        app.logger.info(f"[trading_status] ✓ using cached status | keys={list(flat.keys())}")
+                        # Краткий обзор важных полей
+                        app.logger.info("[trading_status] summary: is_trading=%s, position=%s, trades_count=%s",
+                                        flat.get('is_trading'), bool(flat.get('position') or flat.get('current_position')), flat.get('trades_count'))
+                    except Exception:
+                        pass
                     return jsonify(flat), 200
         except Exception:
             pass
 
-        # Fallback: получаем статус через Docker exec
-        # Подключаемся к Docker
-        client = docker.from_env()
-        
+        # Нет свежего статуса в Redis — возвращаем понятный OFF статус для UI
         try:
-            # Получаем контейнер medoedai
-            container = client.containers.get('medoedai')
-            
-            # Проверяем что контейнер запущен
-            if container.status != 'running':
-                return jsonify({
-                    'success': False, 
-                    'error': f'Контейнер medoedai не запущен. Статус: {container.status}'
-                }), 500
-            
-            # Получаем ранее выбранный путь к модели (если есть)
-            model_path = None
+            default_status = {
+                'success': True,
+                'is_trading': False,
+                'trading_status': 'Остановлена',
+                'trading_status_emoji': '🔴',
+                'trading_status_full': '🔴 Остановлена (агент не запущен)',
+                'symbol': None,
+                'symbol_display': 'Не указана',
+                'amount': None,
+                'amount_display': 'Не указано',
+                'amount_usdt': 0.0,
+                'position': None,
+                'trades_count': 0,
+                'balance': {},
+                'current_price': 0.0,
+                'last_model_prediction': None,
+                'is_fresh': False,
+                'reason': 'status not available in redis'
+            }
+            flat = {'success': True, 'agent_status': default_status}
+            flat.update(default_status)
             try:
-                mp = redis_client.get('trading:model_path')
-                if mp:
-                    model_path = mp.decode('utf-8')
+                app.logger.info("[trading_status] ⚠ no redis status, returning OFF state")
             except Exception:
                 pass
-
-            # Получаем статус через exec (прокидываем API ключи в окружение процесса)
-            api_key = os.environ.get('BYBIT_API_KEY', '') or ''
-            secret_key = os.environ.get('BYBIT_SECRET_KEY', '') or ''
-            api_key_esc = api_key.replace("'", "\\'")
-            secret_key_esc = secret_key.replace("'", "\\'")
-            if model_path:
-                cmd = (
-                    f"python -c \"import sys, json, os; print(sys.version); "
-                    f"os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
-                    f"from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\\"{model_path}\\\"); "
-                    f"result = agent.get_trading_status(); print(\\\"RESULT: \\\" + json.dumps(result))\""
-                )
-            else:
-                cmd = (
-                    "python -c \"import sys, json, os; print(sys.version); "
-                    f"os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
-                    "from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.get_trading_status(); print(\\\"RESULT: \\\" + json.dumps(result))\""
-                )
-            
-            exec_result = container.exec_run(cmd, tty=True)
-            
-            # Логируем результат выполнения команды
-            app.logger.info(f"Get status - Exit code: {exec_result.exit_code}")
-            if exec_result.output:
-                output_str = exec_result.output.decode('utf-8')
-                app.logger.info(f"Get status - Output: {output_str}")
-            else:
-                app.logger.info("Get status - No output received")
-            
-            if exec_result.exit_code == 0:
-                output = exec_result.output.decode('utf-8') if exec_result.output else ""
-                # Ищем результат в выводе
-                if 'RESULT:' in output:
-                    result_str = output.split('RESULT:')[1].strip()
-                    try:
-                        import json
-                        result = json.loads(result_str)
-                        # Возвращаем плоскую структуру для фронтенда (как и при кэше)
-                        flat = {'success': True, 'agent_status': result}
-                        if isinstance(result, dict):
-                            flat.update(result)
-                        return jsonify(flat), 200
-                    except Exception as parse_error:
-                        app.logger.error(f"Ошибка парсинга статуса: {parse_error}")
-                        return jsonify({
-                            'success': False,
-                            'error': f'Ошибка парсинга JSON: {parse_error}',
-                            'raw_output': output
-                        }), 500
-                else:
-                    return jsonify({
-                        'success': False,
-                        'error': 'Не найден RESULT в выводе команды',
-                        'raw_output': output
-                    }), 500
-            else:
-                error_output = exec_result.output.decode('utf-8') if exec_result.output else "No error output"
-                app.logger.error(f"Ошибка получения статуса: {error_output}")
-                return jsonify({
-                    'success': False,
-                    'error': f'Ошибка выполнения команды: {error_output}'
-                }), 500
-                
-        except docker.errors.NotFound:
-            return jsonify({
-                'success': False, 
-                'error': 'Контейнер medoedai не найден. Запустите docker-compose up medoedai'
-            }), 500
-        except Exception as e:
-            return jsonify({
-                'success': False, 
-                'error': f'Ошибка Docker: {str(e)}'
-            }), 500
+            return jsonify(flat), 200
+        except Exception:
+            return jsonify({'success': False, 'error': 'status not available in redis', 'is_fresh': False}), 200
             
     except Exception as e:
         app.logger.error(f"Ошибка получения статуса: {e}")
@@ -2164,93 +2119,36 @@ def trading_latest_results():
 
 @app.route('/api/trading/balance', methods=['GET'])
 def trading_balance():
-    """Баланс на бирже из контейнера trading_agent"""
+    """Баланс берём из Redis-кэша trading:current_status. Без Docker exec."""
     try:
-        # Подключаемся к Docker
-        client = docker.from_env()
-        
-        try:
-            # Получаем контейнер medoedai
-            container = client.containers.get('medoedai')
-            
-            # Проверяем что контейнер запущен
-            if container.status != 'running':
-                return jsonify({
-                    'success': False, 
-                    'error': f'Контейнер medoedai не запущен. Статус: {container.status}'
-                }), 500
-            
-            # Получаем ранее выбранный путь к модели (если есть)
-            model_path = None
+        _rc = get_redis_client()
+        cached = _rc.get('trading:current_status') if _rc else None
+        resp_obj = None
+        if cached:
+            import json as _json
             try:
-                mp = redis_client.get('trading:model_path')
-                if mp:
-                    model_path = mp.decode('utf-8')
-            except Exception:
-                pass
-
-            # Получаем баланс через exec (прокидываем API ключи)
-            api_key = os.environ.get('BYBIT_API_KEY', '') or ''
-            secret_key = os.environ.get('BYBIT_SECRET_KEY', '') or ''
-            api_key_esc = api_key.replace("'", "\\'")
-            secret_key_esc = secret_key.replace("'", "\\'")
-            if model_path:
-                cmd = (
-                    f"python -c \"import json, os; os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
-                    f"from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\\"{model_path}\\\"); result = agent.get_balance(); print(\\\"RESULT: \\\" + json.dumps(result))\""
-                )
-            else:
-                cmd = (
-                    "python -c \"import json, os; os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
-                    "from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); result = agent.get_balance(); print(\\\"RESULT: \\\" + json.dumps(result))\""
-                )
-            
-            exec_result = container.exec_run(cmd, tty=True)
-            
-            if exec_result.exit_code == 0:
-                output = exec_result.output.decode('utf-8')
-                # Ищем результат в выводе
-                if 'RESULT:' in output:
-                    result_str = output.split('RESULT:')[1].strip()
-                    try:
-                        import json
-                        result = json.loads(result_str)
-                        return jsonify(result), 200
-                    except:
-                        return jsonify({
-                            'success': True,
-                            'message': 'Баланс получен',
-                            'output': output
-                        }), 200
-                else:
-                    return jsonify({
+                st = _json.loads(cached)
+                if isinstance(st, dict) and st.get('balance'):
+                    resp_obj = {
                         'success': True,
-                        'message': 'Баланс получен',
-                        'output': output
-                    }), 200
-            else:
-                return jsonify({
-                    'success': False,
-                    'error': f'Ошибка выполнения команды: {exec_result.output.decode("utf-8")}'
-                }), 500
-        except docker.errors.NotFound:
-            return jsonify({
-                'success': False, 
-                'error': 'Контейнер medoedai не найден'
-            }), 500
-        except Exception as e:
-            return jsonify({
-                'success': False, 
-                'error': f'Ошибка Docker: {str(e)}'
-            }), 500
-            
+                        'balance': st.get('balance'),
+                        'is_trading': st.get('is_trading', False),
+                        'is_fresh': st.get('is_fresh', False)
+                    }
+            except Exception:
+                resp_obj = None
+
+        if resp_obj is None:
+            resp_obj = {
+                'success': True,
+                'balance': {},
+                'message': 'balance not available (agent not running)'
+            }
+
+        return jsonify(resp_obj), 200
     except Exception as e:
         app.logger.error(f"Ошибка получения баланса: {e}")
-        return jsonify({
-            'success': False, 
-            'error': str(e)
-        }), 500
-
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/trading/test_order', methods=['POST'])
 def trading_test_order():
@@ -2527,14 +2425,23 @@ def get_matched_full_trades():
                     return arr[0]
             return None
 
-        # Нормализуем сделки и собираем пары BUY→SELL
+        # Нормализуем сделки и собираем пары BUY→SELL (предсказания НЕ обязательны)
         norm_trades = []
         for t in trades:
             ms = to_ms((t.executed_at or t.created_at or None).isoformat() if getattr(t, 'executed_at', None) or getattr(t, 'created_at', None) else None)
             act_raw = (t.action or '').lower()
-            act = 'sell' if act_raw == 'sell_partial' else act_raw
+            # Нормализуем действие: считаем sell_partial как sell
+            if 'buy' in act_raw:
+                act = 'buy'
+            elif 'sell' in act_raw:
+                act = 'sell'
+            else:
+                continue
             sym = unify_symbol(t.symbol.name if getattr(t, 'symbol', None) else getattr(t, 'symbol', '') or '')
             price = float(getattr(t, 'price', 0.0) or 0.0)
+            if not (price and price > 0):
+                # Игнорируем нулевые/отсутствующие цены как шум
+                continue
             qty = float(getattr(t, 'quantity', None) or getattr(t, 'total_value', 0.0) / price if price else (getattr(t, 'quantity', 0.0) or 0.0))
             if ms is None or act not in ('buy', 'sell'):
                 continue
@@ -2542,31 +2449,44 @@ def get_matched_full_trades():
 
         norm_trades.sort(key=lambda x: x['ms'])
 
+        # Подсчёт для отладки
+        num_buys = sum(1 for x in norm_trades if x['action'] == 'buy')
+        num_sells = sum(1 for x in norm_trades if x['action'] == 'sell')
+
         used_sell_idx = set()
         pairs = []
         for i, tb in enumerate(norm_trades):
             if tb['action'] != 'buy':
                 continue
             b_buy = bucket_5m(tb['ms'])
-            pred_buy = pick_pred(b_buy, tb['symbol'], 'buy')
-            if not pred_buy:
-                continue
-            # Найти следующий sell
+            pred_buy = pick_pred(b_buy, tb['symbol'], 'buy')  # опционально
+            # Найти последнюю продажу до следующего BUY того же символа
             sell_j = None
+            next_buy_idx = None
             for j in range(i+1, len(norm_trades)):
+                ts = norm_trades[j]
+                if ts['symbol'] != tb['symbol']:
+                    continue
+                if ts['action'] == 'buy':
+                    next_buy_idx = j
+                    break
+            # диапазон для поиска sell: (i, next_buy_idx) или до конца
+            end_idx = next_buy_idx if next_buy_idx is not None else len(norm_trades)
+            for j in range(i+1, end_idx):
                 if j in used_sell_idx:
                     continue
                 ts = norm_trades[j]
-                if ts['action'] == 'sell' and ts['symbol'] == tb['symbol']:
-                    sell_j = j
-                    break
+                if ts['symbol'] != tb['symbol']:
+                    continue
+                if ts['action'] == 'sell':
+                    sell_j = j  # запоминаем последнюю продажу в диапазоне
+            if sell_j is None:
+                continue
             if sell_j is None:
                 continue
             ts = norm_trades[sell_j]
             b_sell = bucket_5m(ts['ms'])
-            pred_sell = pick_pred(b_sell, ts['symbol'], 'sell')
-            if not pred_sell:
-                continue
+            pred_sell = pick_pred(b_sell, ts['symbol'], 'sell')  # опционально
 
             used_sell_idx.add(sell_j)
             qty = tb['qty'] or ts['qty'] or 0.0
@@ -2590,11 +2510,38 @@ def get_matched_full_trades():
                 'pred_sell': pred_sell,
             })
 
-        return jsonify({
-            'success': True,
-            'pairs': pairs,
-            'total_pairs': len(pairs)
-        }), 200
+        # Доп. отладка по запросу
+        debug_payload = None
+        try:
+            if (request.args.get('debug') in ('1','true','yes')):
+                app.logger.info(
+                    f"[matched_full] trades={len(trades)} norm={len(norm_trades)} (buy={num_buys}/sell={num_sells}) pairs={len(pairs)} preds={len(preds)} symbol={symbol or 'ALL'} tol={tolerance_buckets}"
+                )
+                from datetime import datetime, timezone
+                sample = []
+                for it in norm_trades[:10]:
+                    sample.append({
+                        'time': datetime.fromtimestamp(it['ms']/1000.0, tz=timezone.utc).isoformat(),
+                        'action': it['action'],
+                        'symbol': it['symbol'],
+                        'price': it['price'],
+                        'qty': it['qty']
+                    })
+                debug_payload = {
+                    'trades_total': len(trades),
+                    'norm_total': len(norm_trades),
+                    'norm_buys': num_buys,
+                    'norm_sells': num_sells,
+                    'pairs_total': len(pairs),
+                    'norm_sample': sample,
+                }
+        except Exception:
+            debug_payload = None
+
+        resp = {'success': True, 'pairs': pairs, 'total_pairs': len(pairs)}
+        if debug_payload is not None:
+            resp['debug'] = debug_payload
+        return jsonify(resp), 200
 
     except Exception as e:
         return jsonify({ 'success': False, 'error': str(e) }), 500

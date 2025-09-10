@@ -397,14 +397,41 @@ def train_model_optimized(
                 m = re.match(r"^dqn_model_(.+)\.pth$", base_name)
                 if m:
                     base_code = m.group(1)
-                    # Подбираем уникальный суффикс _update, _update2, ...
-                    candidate = f"{base_code}_update"
-                    counter = 2
-                    while os.path.exists(os.path.join(result_dir, f"dqn_model_{candidate}.pth")) or \
-                          os.path.exists(os.path.join(result_dir, f"replay_buffer_{candidate}.pkl")) or \
-                          os.path.exists(os.path.join(result_dir, f"train_result_{candidate}.pkl")):
-                        candidate = f"{base_code}_update{counter}"
-                        counter += 1
+                    # Вычисляем корректный next-суффикс: _update, _update_2, _update_3, ...
+                    # Избегаем _update_update и формата без подчёркивания
+                    mm = re.match(r"^(.*?)(?:_update(?:_(\d+))?)?$", base_code)
+                    if mm:
+                        root = mm.group(1) or base_code
+                        n_str = mm.group(2)
+                        if base_code.endswith('_update') and not n_str:
+                            # Было ..._update → станет ..._update_2
+                            next_code = f"{root}_update_2"
+                        elif n_str is not None:
+                            next_code = f"{root}_update_{int(n_str)+1}"
+                        else:
+                            # Первый дообученный артефакт
+                            next_code = f"{base_code}_update"
+                    else:
+                        next_code = f"{base_code}_update"
+
+                    # Гарантируем уникальность, при коллизии инкрементируем номер
+                    candidate = next_code
+                    while (
+                        os.path.exists(os.path.join(result_dir, f"dqn_model_{candidate}.pth")) or
+                        os.path.exists(os.path.join(result_dir, f"replay_buffer_{candidate}.pkl")) or
+                        os.path.exists(os.path.join(result_dir, f"train_result_{candidate}.pkl"))
+                    ):
+                        mm2 = re.match(r"^(.*?)(?:_update(?:_(\d+))?)?$", candidate)
+                        if mm2:
+                            root2 = mm2.group(1) or candidate
+                            n2 = mm2.group(2)
+                            if n2 is None:
+                                candidate = f"{root2}_update_2"
+                            else:
+                                candidate = f"{root2}_update_{int(n2)+1}"
+                        else:
+                            candidate = candidate + "_update_2"
+
                     artifacts_code = candidate
         except Exception:
             pass
@@ -643,8 +670,6 @@ def train_model_optimized(
                     # Обновляем target network по расписанию
                     if global_step % target_update_freq == 0:
                         dqn_solver.update_target_model()
-                    else:
-                        print(f"      ⚠️   Обучение не удалось")
 
                 if terminal:
                     break
@@ -703,12 +728,12 @@ def train_model_optimized(
                     profitable_trades = [t for t in recent_trades if t.get('roi', 0) > 0]
                     episode_winrate = len(profitable_trades) / len(recent_trades) if recent_trades else 0
                     episode_winrates.append(episode_winrate)
-                    episode_stats = dqn_solver.print_trade_stats(recent_trades)
+                    episode_stats = dqn_solver.print_trade_stats(recent_trades, failed_attempts=failed_train_attempts)
                 else:
-                    # Только если действительно нет сделок
-                    episode_winrate = 0.0  # ИСПРАВЛЕНИЕ: Определяем episode_winrate
+                    # Нет сделок вовсе — выводим агрегатную строку статистики с Failed train
+                    episode_winrate = 0.0
                     episode_winrates.append(episode_winrate)
-                    episode_stats = "Нет сделок"
+                    episode_stats = dqn_solver.print_trade_stats([], failed_attempts=failed_train_attempts)
                 
                 # Объединяем всю статистику эпизода в одну строку
                 action_stats = ""

@@ -709,4 +709,108 @@ if os.environ.get('ENABLE_TRADING_BEAT', '0').lower() in ('1', 'true', 'yes', 'o
 else:
     print("⚠️ Периодическая торговля отключена (ENABLE_TRADING_BEAT=0)")
 
-   
+# --- Периодический апдейтер статуса в Redis ---
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0})
+def refresh_trading_status(self):
+    """Обновляет trading:current_status в Redis, если он отсутствует или устарел.
+
+    Лёгкий хелпер для UI: не лезет в биржу, не вызывает модель.
+    Помечает is_trading исходя из наличия активного lock ключа.
+    """
+    try:
+        from redis import Redis as _Redis
+        import json as _json
+        from datetime import datetime as _dt, timedelta as _td
+
+        rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+
+        # Текущие параметры
+        try:
+            symbols_raw = rc.get('trading:symbols')
+            symbols = _json.loads(symbols_raw) if symbols_raw else ['BTCUSDT']
+            if not isinstance(symbols, list) or not symbols:
+                symbols = ['BTCUSDT']
+        except Exception:
+            symbols = ['BTCUSDT']
+        sym = symbols[0]
+
+        # Текущий статус
+        cached = rc.get('trading:current_status')
+        cached_ts = rc.get('trading:current_status_ts')
+
+        # Проверяем свежесть (6 минут)
+        is_fresh = False
+        try:
+            if cached_ts:
+                ts = _dt.fromisoformat(cached_ts)
+                is_fresh = _dt.utcnow() <= (ts + _td(minutes=6))
+        except Exception:
+            is_fresh = False
+
+        if cached and is_fresh:
+            return {"success": True, "updated": False, "reason": "fresh"}
+
+        # Активность оцениваем по наличию lock ключа с TTL > 0
+        is_active = False
+        try:
+            lock_key = f'trading:agent_lock:{sym}'
+            ttl = rc.ttl(lock_key)
+            if ttl is not None and int(ttl) > 0:
+                is_active = True
+        except Exception:
+            is_active = False
+
+        # Базовый статус
+        status = {
+            'success': True,
+            'is_trading': bool(is_active),
+            'trading_status': 'Активна' if is_active else 'Остановлена',
+            'trading_status_emoji': '🟢' if is_active else '🔴',
+            'trading_status_full': ('🟢 Активна' if is_active else '🔴 Остановлена'),
+            'symbol': sym,
+            'symbol_display': sym,
+            'amount': None,
+            'amount_display': 'Не указано',
+            'amount_usdt': 0.0,
+            'position': None,
+            'trades_count': 0,
+            'balance': {},
+            'current_price': 0.0,
+            'last_model_prediction': None,
+        }
+
+        # Не перетираем имеющиеся поля, если cached есть
+        try:
+            if cached:
+                prev = _json.loads(cached)
+                if isinstance(prev, dict):
+                    prev.update({k: v for k, v in status.items() if k not in prev or prev.get(k) is None})
+                    status = prev
+        except Exception:
+            pass
+
+        rc.set('trading:current_status', _json.dumps(status, ensure_ascii=False))
+        rc.set('trading:current_status_ts', _dt.utcnow().isoformat())
+        return {"success": True, "updated": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# keep beat schedule extension together with trading beat
+if os.environ.get('ENABLE_TRADING_BEAT', '0').lower() in ('1', 'true', 'yes', 'on'):
+    try:
+        # Расширяем уже созданный beat_schedule
+        celery.conf.beat_schedule.update({
+            'refresh-trading-status-every-minute': {
+                'task': 'tasks.celery_tasks.refresh_trading_status',
+                'schedule': crontab(minute='*'),
+                'args': (),
+            },
+        })
+    except Exception:
+        celery.conf.beat_schedule = {
+            'refresh-trading-status-every-minute': {
+                'task': 'tasks.celery_tasks.refresh_trading_status',
+                'schedule': crontab(minute='*'),
+                'args': (),
+            },
+        }

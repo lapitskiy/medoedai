@@ -70,14 +70,8 @@
 
                 <div class="form-group">
                     <label>Эпизоды дообучения</label>
-                    <select id="continueEpisodesSelect" class="form-control">
-                        <option value="100">100</option>
-                        <option value="1000">1000</option>
-                        <option value="3000">3000</option>
-                        <option value="6000">6000</option>
-                        <option value="9000">9000</option>
-                        <option value="10000" selected>10000</option>
-                    </select>
+                    <input id="continueEpisodesInput" class="form-control" type="number" min="1" step="1" value="1000" oninput="updateEstimatedTime()">
+                    <div id="episodesEstimate" class="status info" style="display:none; margin-top:6px;"></div>
                 </div>
 
                 <div class="button-group">
@@ -163,6 +157,9 @@
                 button.textContent = '🚀 Создать новую версию';
             }
         }
+
+        // Глобально храним среднее время за эпизод (сек)
+        let avgTimePerEpisodeSec = null;
 
         // Загрузка списка доступных результатов обучения из result/
         async function loadResultFiles() {
@@ -251,6 +248,14 @@
                 const plr = typeof stats.pl_ratio === 'number' ? stats.pl_ratio.toFixed(2) : 'N/A';
                 const trades = (stats.trades_count != null) ? stats.trades_count : 'N/A';
                 const episodes = (result.episodes != null) ? result.episodes : 'N/A';
+                const totalTime = (typeof result.total_training_time === 'number') ? result.total_training_time : null;
+                const avgTime = (typeof result.avg_time_per_episode_sec === 'number') ? result.avg_time_per_episode_sec : (totalTime && episodes ? (totalTime/episodes) : null);
+                const fmtSec = (s)=>{
+                    if(!s && s!==0) return 'N/A';
+                    try{ const m=Math.floor(s/60), r=Math.round(s%60); return (m>0?`${m}м `:'')+`${r}с`; }catch(_){ return s.toFixed? s.toFixed(1)+'с' : String(s); }
+                };
+                // Сохраняем для онлайн-оценки времени при вводе
+                try { avgTimePerEpisodeSec = (typeof avgTime === 'number' && avgTime > 0) ? avgTime : null; } catch(_) { avgTimePerEpisodeSec = null; }
                 // Код может включать символ, попытаемся извлечь
                 const code = (result.code || '').toUpperCase();
                 let symbolGuess = '';
@@ -269,8 +274,12 @@ P/L Ratio: ${plr}
 Эпизодов: ${episodes}
 Буфер: ${result.replay_exists ? '✅ есть' : '❌ нет'}
 Результаты обучения: ${result.train_result_exists ? '✅ есть' : '❌ нет'}
+Среднее время за эпизод: ${fmtSec(avgTime)}
+Общее время обучения: ${totalTime ? fmtSec(totalTime) : 'N/A'}
 `;
                 infoDiv.style.display = 'block';
+                // Обновим подсказку времени после выбора модели
+                try { updateEstimatedTime(); } catch(_) {}
             } catch (e) {
                 infoDiv.className = 'status error';
                 infoDiv.textContent = '❌ Ошибка сети: ' + e.message;
@@ -278,11 +287,30 @@ P/L Ratio: ${plr}
             }
         }
 
+        // Обновление оценки общего времени при вводе эпизодов
+        function updateEstimatedTime(){
+            const estDiv = document.getElementById('episodesEstimate');
+            const inp = document.getElementById('continueEpisodesInput');
+            if(!estDiv || !inp){ return; }
+            const n = Math.max(1, parseInt(inp.value || '0', 10) || 0);
+            if (avgTimePerEpisodeSec && n > 0){
+                const totalSec = n * avgTimePerEpisodeSec;
+                const hours = Math.floor(totalSec/3600);
+                const minutes = Math.round((totalSec%3600)/60);
+                const human = (hours>0? `${hours} ч `: '') + `${minutes} мин`;
+                estDiv.textContent = `≈ ${human}`;
+                estDiv.style.display = 'block';
+            } else {
+                estDiv.textContent = 'Время будет рассчитано после выбора модели со статистикой';
+                estDiv.style.display = 'block';
+            }
+        }
+
         // Запуск дообучения
         async function continueTraining() {
             const statusDiv = document.getElementById('continueStatus');
             const fileSelect = document.getElementById('continueModelSelect');
-            const episodes = document.getElementById('continueEpisodesSelect').value;
+            const episodes = document.getElementById('continueEpisodesInput').value;
             const selectedFile = fileSelect ? fileSelect.value : '';
 
             if (!selectedFile) {
