@@ -27,6 +27,14 @@
                         <option value="">Загрузка списка...</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label>Ансамбль назначения</label>
+                    <select id="resultEnsembleSelect" class="form-control">
+                        <option value="ensemble-a" selected>ensemble-a</option>
+                        <option value="ensemble-b">ensemble-b</option>
+                        <option value="ensemble-c">ensemble-c</option>
+                    </select>
+                </div>
                 <div class="button-group">
                     <button class="btn btn-success" onclick="createModelVersion()">🚀 Создать новую версию</button>
                 </div>
@@ -115,6 +123,8 @@
             const button = event.target;
             const fileSelect = document.getElementById('resultFileSelect');
             const selectedFile = fileSelect ? fileSelect.value : '';
+            const ensSelect = document.getElementById('resultEnsembleSelect');
+            const selectedEns = ensSelect ? ensSelect.value : 'ensemble-a';
             
             if (!selectedFile) {
                 statusDiv.innerHTML = '<div class="status error">❌ Сначала выберите модель из result</div>';
@@ -131,7 +141,7 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ file: selectedFile })
+                    body: JSON.stringify({ file: selectedFile, ensemble: selectedEns })
                 });
                 
                 const result = await response.json();
