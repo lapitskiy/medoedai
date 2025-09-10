@@ -130,12 +130,97 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             norm = norm[:500]
         state = norm.tolist()
 
-        # 3) Вызов serving
+        # Оценка рыночного режима (flat / uptrend / downtrend) по последним закрытым свечам
+        def _compute_regime(df: pd.DataFrame) -> str:
+            try:
+                # Загружаем конфигурацию из Redis (если есть)
+                cfg = None
+                try:
+                    if rc is not None:
+                        raw = rc.get('trading:regime_config')
+                        if raw:
+                            cfg = json.loads(raw)
+                except Exception:
+                    cfg = None
+
+                # Значения по умолчанию
+                windows = (cfg.get('windows') if isinstance(cfg, dict) else None) or [60, 180, 300]
+                weights = (cfg.get('weights') if isinstance(cfg, dict) else None) or [1, 1, 1]
+                voting = (cfg.get('voting') if isinstance(cfg, dict) else None) or 'majority'
+                tie_break = (cfg.get('tie_break') if isinstance(cfg, dict) else None) or 'flat'
+                drift_thr = float((cfg.get('drift_threshold') if isinstance(cfg, dict) else 0.002) or 0.002)
+                vol_flat_thr = float((cfg.get('flat_vol_threshold') if isinstance(cfg, dict) else 0.0025) or 0.0025)
+                # Пока регрессию/ADX не включаем (флаги можно будет учесть позже)
+
+                closes_full = df['close'].astype(float).values
+                if closes_full.size < max(windows) + 5:
+                    # данных маловато — считаем flat
+                    return 'flat'
+
+                def classify_window(n: int) -> str:
+                    c = closes_full[-n:]
+                    if c.size < max(20, n // 3):
+                        return 'flat'
+                    start = float(c[0]); end = float(c[-1])
+                    drift = (end - start) / max(start, 1e-9)
+                    rr = np.diff(c) / np.maximum(c[:-1], 1e-9)
+                    vol = float(np.std(rr))
+                    if abs(drift) < (0.75 * drift_thr) and vol < vol_flat_thr:
+                        return 'flat'
+                    if drift >= drift_thr:
+                        return 'uptrend'
+                    if drift <= -drift_thr:
+                        return 'downtrend'
+                    return 'flat'
+
+                votes = {'flat': 0.0, 'uptrend': 0.0, 'downtrend': 0.0}
+                labels = []
+                for i, w in enumerate(windows):
+                    lab = classify_window(int(w))
+                    labels.append(lab)
+                    wt = float(weights[i] if i < len(weights) else 1.0)
+                    votes[lab] += wt
+
+                if voting == 'majority':
+                    # Простое большинство по равным весам
+                    counts = {'flat': labels.count('flat'), 'uptrend': labels.count('uptrend'), 'downtrend': labels.count('downtrend')}
+                    mx = max(counts.values())
+                    winners = [k for k, v in counts.items() if v == mx]
+                    if len(winners) == 1:
+                        return winners[0]
+                    # Ничья → правило tie_break
+                    return 'flat' if tie_break == 'flat' else labels[-1]
+                else:
+                    # Взвешенное голосование по weights
+                    best = max(votes.items(), key=lambda kv: kv[1])[0]
+                    # Проверка ничьей по сумме весов
+                    vals = sorted(votes.values(), reverse=True)
+                    if len(vals) >= 2 and abs(vals[0] - vals[1]) < 1e-9:
+                        return 'flat' if tie_break == 'flat' else labels[-1]
+                    return best
+            except Exception:
+                return 'flat'
+
+        market_regime = _compute_regime(df_5m)
+
+        # 3) Вызов serving (+ передаём настройки консенсуса, если заданы)
+        # Читаем консенсус из Redis: {'counts': {flat, trend, total_selected}, 'percents': {flat, trend}}
+        consensus_cfg = None
+        try:
+            if rc is not None:
+                _c = rc.get('trading:consensus')
+                if _c:
+                    consensus_cfg = json.loads(_c)
+        except Exception:
+            consensus_cfg = None
+
         serving_url = os.environ.get('SERVING_URL', 'http://serving:8000/predict_ensemble')
         payload = {
             "state": state,
             "model_paths": model_paths,
-            "symbol": symbol
+            "symbol": symbol,
+            "consensus": consensus_cfg or {},
+            "market_regime": market_regime
         }
         try:
             resp = requests.post(serving_url, json=payload, timeout=30)
@@ -154,7 +239,47 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         if not pred_json.get('success'):
             return {"success": False, "error": pred_json.get('error', 'serving failed')}
 
+        # 3.1) Консенсус по ансамблю на стороне оркестратора
+        preds_list = pred_json.get('predictions') or []
         decision = pred_json.get('decision', 'hold')
+        try:
+            if isinstance(preds_list, list) and len(preds_list) > 0:
+                votes = {'buy': 0, 'sell': 0, 'hold': 0}
+                for p in preds_list:
+                    act = str(p.get('action') or 'hold').lower()
+                    if act in votes:
+                        votes[act] += 1
+                total_sel = len(model_paths)
+                # Выбираем порог в моделях в зависимости от режима
+                req_flat = None
+                req_trend = None
+                if consensus_cfg:
+                    counts = (consensus_cfg.get('counts') or {})
+                    perc = (consensus_cfg.get('percents') or {})
+                    # counts приоритетнее percents
+                    if isinstance(counts.get('flat'), (int, float)):
+                        req_flat = int(max(1, counts.get('flat')))
+                    if isinstance(counts.get('trend'), (int, float)):
+                        req_trend = int(max(1, counts.get('trend')))
+                    if req_flat is None and isinstance(perc.get('flat'), (int, float)):
+                        req_flat = int(max(1, int(np.ceil(total_sel * (float(perc.get('flat'))/100.0)))))
+                    if req_trend is None and isinstance(perc.get('trend'), (int, float)):
+                        req_trend = int(max(1, int(np.ceil(total_sel * (float(perc.get('trend'))/100.0)))))
+                # Фолбэки: если не задано — требуем все модели
+                if req_flat is None:
+                    req_flat = total_sel
+                if req_trend is None:
+                    req_trend = total_sel
+                required = req_trend if market_regime in ('uptrend','downtrend') else req_flat
+                # Правило консенсуса: если хватает голосов BUY → buy, если SELL → sell; иначе hold
+                if votes['buy'] >= required and votes['buy'] > votes['sell']:
+                    decision = 'buy'
+                elif votes['sell'] >= required and votes['sell'] > votes['buy']:
+                    decision = 'sell'
+                else:
+                    decision = 'hold'
+        except Exception:
+            pass
         # --- Server-side Q-gate ---
         try:
             # Ищем агрегированные пороги в ответе или используем дефолт
@@ -251,6 +376,23 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         # 5) Сохранение результата в Redis (как раньше)
         try:
             if rc is not None:
+                # Упакуем предсказания по моделям для UI
+                try:
+                    preds_list = pred_json.get('predictions') or []
+                    preds_brief = []
+                    for p in preds_list:
+                        try:
+                            preds_brief.append({
+                                'model_path': p.get('model_path'),
+                                'action': p.get('action'),
+                                'confidence': p.get('confidence'),
+                                'q_values': p.get('q_values') or []
+                            })
+                        except Exception:
+                            continue
+                except Exception:
+                    preds_brief = []
+
                 result_data = {
                     'timestamp': datetime.now().isoformat(),
                     'symbols': symbols,
@@ -258,6 +400,17 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     'decision': decision,
                     'serving_url': serving_url,
                     'predictions_count': len(pred_json.get('predictions', []) or []),
+                    'predictions': preds_brief,
+                    'consensus': consensus_cfg or {},
+                    'market_regime': market_regime,
+                    'consensus_applied': {
+                        'regime': market_regime,
+                        'votes': preds_list and {
+                            'buy': sum(1 for _p in preds_list if str((_p.get('action') or 'hold')).lower()=='buy'),
+                            'sell': sum(1 for _p in preds_list if str((_p.get('action') or 'hold')).lower()=='sell'),
+                            'hold': sum(1 for _p in preds_list if str((_p.get('action') or 'hold')).lower()=='hold')
+                        } or {'buy':0,'sell':0,'hold':0}
+                    },
                     'trade_result': trade_result,
                 }
                 rc.setex(f'trading:latest_result_{datetime.now().strftime("%Y%m%d_%H%M%S")}', 3600, json.dumps(result_data, default=str))

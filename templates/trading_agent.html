@@ -6,6 +6,54 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MedoedAI - Торговый агент</title>
     <style>
+        /* Стиль красивых ползунков со "шариком" */
+        .count-range {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 8px;
+            border-radius: 6px;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            outline: none;
+            opacity: 0.95;
+            transition: opacity 0.2s;
+        }
+        .count-range:hover { opacity: 1; }
+        .count-range::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #fff;
+            border: 3px solid #667eea;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            cursor: pointer;
+        }
+        .count-range::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #fff;
+            border: 3px solid #667eea;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            cursor: pointer;
+        }
+        .range-inline {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .range-badge {
+            font-weight: 600;
+            color: #667eea;
+            background: #eef2ff;
+            border: 1px solid #dfe4ff;
+            padding: 2px 8px;
+            border-radius: 999px;
+            min-width: 80px;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -74,28 +122,28 @@
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px; margin-bottom:15px;">
                         <div>
                             <label style="font-weight:500; margin-bottom:5px; display:block;">Боковик (flat/range)</label>
-                            <div style="display:flex; align-items:center; gap:8px;">
-                                <input type="range" id="flatConsensus" min="50" max="100" value="80" style="flex:1;">
-                                <span id="flatConsensusValue" style="font-weight:600; color:#667eea; min-width:40px;">80%</span>
+                            <div class="range-inline">
+                                <input type="range" id="flatConsensusCount" class="count-range" min="1" max="1" value="1" style="flex:1;">
+                                <span id="flatConsensusCountValue" class="range-badge">1 модель</span>
                             </div>
-                            <small style="color:#666;">Стандартное: 80-90% из 100% моделей</small>
+                            <small id="flatConsensusPercentHint" style="color:#666; display:block; margin-top:6px;">≈ 100% от выбранных</small>
                         </div>
                         
                         <div>
                             <label style="font-weight:500; margin-bottom:5px; display:block;">Тренд (сильный ап/даун)</label>
-                            <div style="display:flex; align-items:center; gap:8px;">
-                                <input type="range" id="trendConsensus" min="50" max="100" value="65" style="flex:1;">
-                                <span id="trendConsensusValue" style="font-weight:600; color:#667eea; min-width:40px;">65%</span>
+                            <div class="range-inline">
+                                <input type="range" id="trendConsensusCount" class="count-range" min="1" max="1" value="1" style="flex:1;">
+                                <span id="trendConsensusCountValue" class="range-badge">1 модель</span>
                             </div>
-                            <small style="color:#666;">Рекомендуется: ≥60-70% из 100</small>
+                            <small id="trendConsensusPercentHint" style="color:#666; display:block; margin-top:6px;">≈ 100% от выбранных</small>
                         </div>
                     </div>
                     
                     <div style="background:white; padding:10px; border-radius:6px; border:1px solid #dee2e6;">
                         <div style="font-size:14px; color:#495057;">
                             <strong>Текущие настройки:</strong><br>
-                            • Боковик: <span id="flatConsensusDisplay">80%</span> моделей должны согласиться<br>
-                            • Тренд: <span id="trendConsensusDisplay">65%</span> моделей должны согласиться
+                            • Боковик: <span id="flatConsensusDisplay">—</span><br>
+                            • Тренд: <span id="trendConsensusDisplay">—</span>
                         </div>
                     </div>
                 </div>
@@ -254,13 +302,14 @@
                     const trades = (typeof stats.trades_count === 'number') ? stats.trades_count : '—';
                     return `
                         <div class=\"vt-row\">
-                            <div class=\"c-check\"><input type=\"checkbox\" class=\"verCheck\" value=\"${path}\" data-version=\"${v.version}\"></div>
+                            <div class=\"c-check\"><input type=\"checkbox\" class=\"verCheck\" value=\"${path}\" data-version=\"${v.version}\" onchange=\"updateConsensusDisplay()\"></div>
                             <div><span style=\"font-weight:600;\">${v.version}</span></div>
                             <div><code>${modelFile || '—'}</code></div>
                             <div style=\"font-size:12px;color:#555;\">Winrate: ${winrate} · P/L: ${plr} · Trades: ${trades}</div>
                         </div>`;
                 }).join('');
                 box.innerHTML = `<div class=\"versions-table\">${header}${rows}</div>`;
+                updateConsensusDisplay();
             } catch (e) {
                 box.innerHTML = '<em>Ошибка отображения версий</em>';
             }
@@ -603,6 +652,47 @@
                                 resultIcon = '🔍';
                             }
                             
+                            // Блок предсказаний по моделям (если есть)
+                            let predsBlock = '';
+                            try {
+                                const preds = Array.isArray(tradeResult.predictions) ? tradeResult.predictions : [];
+                                if (preds.length > 0) {
+                                    const rows = preds.map(p => {
+                                        const qvals = Array.isArray(p.q_values) ? '[' + p.q_values.map(v => Number(v).toFixed(3)).join(', ') + ']' : '—';
+                                        const conf = (typeof p.confidence === 'number') ? (p.confidence * 100).toFixed(1) + '%' : '—';
+                                        const fname = (p.model_path || '').split('/').pop();
+                                        return `<div class="vt-row"><div><code>${fname || 'model.pth'}</code></div><div>${(p.action||'').toUpperCase()}</div><div>${conf}</div><div>${qvals}</div></div>`;
+                                    }).join('');
+                                    predsBlock = `
+                                        <div style="margin-top:10px;">
+                                            <div style="font-weight:600; margin-bottom:6px;">Предсказания по моделям (${preds.length})</div>
+                                            <div class="versions-table">
+                                                <div class="vt-row vt-head"><div>Модель</div><div>Действие</div><div>Уверенность</div><div>Q-Values</div></div>
+                                                ${rows}
+                                            </div>
+                                        </div>`;
+                                }
+                            } catch(_) {}
+
+                            // Консенсус (если передавали)
+                            let consensusBlock = '';
+                            try {
+                                const c = tradeResult.consensus || {};
+                                const counts = c.counts || {};
+                                const perc = c.percents || {};
+                                if (counts.flat || counts.trend) {
+                                    const total = counts.total_selected || (Array.isArray(tradeResult.model_paths) ? tradeResult.model_paths.length : null);
+                                    const flatLine = (counts.flat && total) ? `${counts.flat} из ${total} (${perc.flat!=null?perc.flat+'%':'~'})` : '';
+                                    const trendLine = (counts.trend && total) ? `${counts.trend} из ${total} (${perc.trend!=null?perc.trend+'%':'~'})` : '';
+                                    consensusBlock = `
+                                        <div style="margin-top:8px; font-size:12px; color:#555;">
+                                            <div><strong>Консенсус:</strong></div>
+                                            ${flatLine ? `<div>Боковик: ${flatLine}</div>` : ''}
+                                            ${trendLine ? `<div>Тренд: ${trendLine}</div>` : ''}
+                                        </div>`;
+                                }
+                            } catch(_) {}
+
                             resultsHTML += `
                                 <div class="trade-item">
                                     <div class="trade-header">
@@ -649,6 +739,8 @@
                                         ` : ''}
                                         ` : ''}
                                     </div>
+                                    ${consensusBlock}
+                                    ${predsBlock}
                                     ${tradeResult.parse_error ? `
                                     <div style="margin-top: 10px; padding: 10px; background: #f8d7da; border-radius: 5px; font-size: 12px;">
                                         <strong>Ошибка парсинга:</strong> ${tradeResult.parse_error}
@@ -1257,38 +1349,75 @@
             }
         }
         
-        // Обработчики для слайдеров консенсуса
-        function updateConsensusDisplay() {
-            const flatValue = document.getElementById('flatConsensus').value;
-            const trendValue = document.getElementById('trendConsensus').value;
-            
-            document.getElementById('flatConsensusValue').textContent = flatValue + '%';
-            document.getElementById('trendConsensusValue').textContent = trendValue + '%';
-            document.getElementById('flatConsensusDisplay').textContent = flatValue + '%';
-            document.getElementById('trendConsensusDisplay').textContent = trendValue + '%';
+        // Обработчики и логика для слайдеров консенсуса (по количеству моделей)
+        function syncConsensusSlidersMax() {
+            const selectedCount = Math.max(1, Array.from(document.querySelectorAll('.verCheck:checked')).length);
+            const flatSlider = document.getElementById('flatConsensusCount');
+            const trendSlider = document.getElementById('trendConsensusCount');
+            if (!flatSlider || !trendSlider) return;
+            // Обновляем max и подгоняем value в диапазон
+            flatSlider.max = String(selectedCount);
+            trendSlider.max = String(selectedCount);
+            if (parseInt(flatSlider.value || '1', 10) > selectedCount) flatSlider.value = String(selectedCount);
+            if (parseInt(trendSlider.value || '1', 10) > selectedCount) trendSlider.value = String(selectedCount);
         }
 
-        // Инициализация слайдеров консенсуса
+        function updateConsensusDisplay() {
+            syncConsensusSlidersMax();
+            const selectedCount = Math.max(1, Array.from(document.querySelectorAll('.verCheck:checked')).length);
+            const flatSlider = document.getElementById('flatConsensusCount');
+            const trendSlider = document.getElementById('trendConsensusCount');
+            if (!flatSlider || !trendSlider) return;
+            const flatCount = parseInt(flatSlider.value || '1', 10);
+            const trendCount = parseInt(trendSlider.value || '1', 10);
+            // Вычисляем приблизительный процент (для подсказки)
+            const toPct = (count) => Math.round((count / selectedCount) * 100);
+            const flatPct = toPct(flatCount);
+            const trendPct = toPct(trendCount);
+
+            // Обновляем бейджи и подписи
+            const plural = (n) => (n === 1 ? 'модель' : (n >= 2 && n <= 4 ? 'модели' : 'моделей'));
+            const flatBadge = document.getElementById('flatConsensusCountValue');
+            const trendBadge = document.getElementById('trendConsensusCountValue');
+            if (flatBadge) flatBadge.textContent = `${flatCount} ${plural(flatCount)}`;
+            if (trendBadge) trendBadge.textContent = `${trendCount} ${plural(trendCount)}`;
+
+            const flatHint = document.getElementById('flatConsensusPercentHint');
+            const trendHint = document.getElementById('trendConsensusPercentHint');
+            if (flatHint) flatHint.textContent = `≈ ${flatPct}% от выбранных`;
+            if (trendHint) trendHint.textContent = `≈ ${trendPct}% от выбранных`;
+
+            // Сводка ниже
+            const flatDisp = document.getElementById('flatConsensusDisplay');
+            const trendDisp = document.getElementById('trendConsensusDisplay');
+            if (flatDisp) flatDisp.textContent = `${flatCount} из ${selectedCount} моделей (${flatPct}%)`;
+            if (trendDisp) trendDisp.textContent = `${trendCount} из ${selectedCount} моделей (${trendPct}%)`;
+        }
+
         function initConsensusSliders() {
-            const flatSlider = document.getElementById('flatConsensus');
-            const trendSlider = document.getElementById('trendConsensus');
-            
-            if (flatSlider) {
-                flatSlider.addEventListener('input', updateConsensusDisplay);
-            }
-            if (trendSlider) {
-                trendSlider.addEventListener('input', updateConsensusDisplay);
-            }
-            
-            // Инициализация значений
+            const flatSlider = document.getElementById('flatConsensusCount');
+            const trendSlider = document.getElementById('trendConsensusCount');
+            if (flatSlider) flatSlider.addEventListener('input', updateConsensusDisplay);
+            if (trendSlider) trendSlider.addEventListener('input', updateConsensusDisplay);
             updateConsensusDisplay();
         }
 
-        // Получение настроек консенсуса
+        // Получение настроек консенсуса (и в штуках, и в процентах)
         function getConsensusSettings() {
+            const selectedCount = Math.max(1, Array.from(document.querySelectorAll('.verCheck:checked')).length);
+            const flatCount = parseInt(document.getElementById('flatConsensusCount').value || '1', 10);
+            const trendCount = parseInt(document.getElementById('trendConsensusCount').value || '1', 10);
+            const toPct = (count) => Math.round((count / selectedCount) * 100);
             return {
-                flat: parseInt(document.getElementById('flatConsensus').value),
-                trend: parseInt(document.getElementById('trendConsensus').value)
+                counts: {
+                    flat: flatCount,
+                    trend: trendCount,
+                    total_selected: selectedCount
+                },
+                percents: {
+                    flat: toPct(flatCount),
+                    trend: toPct(trendCount)
+                }
             };
         }
         

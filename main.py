@@ -1851,6 +1851,13 @@ def start_trading():
             except Exception:
                 pass
             _rc.set('trading:symbols', _json.dumps(symbols, ensure_ascii=False))
+            # Консенсус (counts/percents) — запоминаем выбор пользователя
+            try:
+                consensus = data.get('consensus')
+                if consensus is not None:
+                    _rc.set('trading:consensus', _json.dumps(consensus, ensure_ascii=False))
+            except Exception:
+                pass
             # Пишем мгновенный «активный» статус, чтобы UI сразу показывал Активна до первого RESULT
             initial_status = {
                 'success': True,
@@ -2962,6 +2969,65 @@ def trading_history():
             'success': False,
             'error': str(e)
         }), 500
+
+
+# ==== Конфигурация режима рынка (multi-window) через Redis ====
+@app.route('/api/trading/regime_config', methods=['GET', 'POST'])
+def regime_config():
+    """GET — получить текущую конфигурацию мульти-окон/порогов, POST — сохранить.
+
+    JSON структура (пример по умолчанию):
+    {
+      "windows": [60, 180, 300],
+      "weights": [1, 1, 1],
+      "voting": "majority",            # majority | weighted
+      "tie_break": "flat",             # flat | longest
+      "drift_threshold": 0.002,
+      "flat_vol_threshold": 0.0025,
+      "use_regression": false,
+      "reg_slope_min": 0.0,
+      "reg_r2_min": 0.2,
+      "use_adx": false,
+      "adx_period": 14,
+      "adx_trend_min": 25
+    }
+    """
+    try:
+        import json as _json
+        rc = get_redis_client()
+        key = 'trading:regime_config'
+        if request.method == 'POST':
+            cfg = request.get_json(silent=True) or {}
+            rc.set(key, _json.dumps(cfg, ensure_ascii=False))
+            return jsonify({ 'success': True, 'saved': True, 'config': cfg })
+        else:
+            raw = rc.get(key)
+            if raw:
+                try:
+                    js = _json.loads(raw)
+                except Exception:
+                    js = None
+            else:
+                js = None
+            # Значения по умолчанию
+            if not isinstance(js, dict):
+                js = {
+                    'windows': [60, 180, 300],
+                    'weights': [1, 1, 1],
+                    'voting': 'majority',
+                    'tie_break': 'flat',
+                    'drift_threshold': 0.002,
+                    'flat_vol_threshold': 0.0025,
+                    'use_regression': False,
+                    'reg_slope_min': 0.0,
+                    'reg_r2_min': 0.2,
+                    'use_adx': False,
+                    'adx_period': 14,
+                    'adx_trend_min': 25
+                }
+            return jsonify({ 'success': True, 'config': js })
+    except Exception as e:
+        return jsonify({ 'success': False, 'error': str(e) }), 500
 
 
 @app.route('/api/predictions/recent')

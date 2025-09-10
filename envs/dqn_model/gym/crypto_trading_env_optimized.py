@@ -148,6 +148,79 @@ class CryptoTradingEnvOptimized(gym.Env):
         except Exception as e:
             print(f"⚠️ Не удалось добавить funding признаки: {e}")
         
+        # РЕЖИМ РЫНКА: добавляем per-window непрерывные фичи (drift, vol, slope, r2) для каждого окна
+        try:
+            def _compute_regime_metrics_per_window(closes: np.ndarray, windows=(60,180,300)) -> np.ndarray:
+                T = closes.shape[0]
+                if T < 10:
+                    return np.zeros((T, 4 * len(windows)), dtype=np.float32)
+                y = closes.astype(np.float64)
+                # предвычислим returns
+                r = np.zeros_like(y)
+                r[1:] = (y[1:] - y[:-1]) / np.maximum(y[:-1], 1e-12)
+                all_feats = []
+                for w in windows:
+                    if w < 2 or T <= w:
+                        all_feats.append(np.zeros((T, 4), dtype=np.float32))
+                        continue
+                    N = float(w)
+                    # Суммы по x (0..w-1)
+                    sum_x = N*(N-1.0)/2.0
+                    sum_x2 = (N*(N-1.0)*(2.0*N-1.0))/6.0
+                    xbar = sum_x / N
+                    S_xx = sum_x2 - N*(xbar**2)
+                    # Скольжения по y
+                    ones_w = np.ones(w, dtype=np.float64)
+                    sum_y = np.convolve(y, ones_w, mode='valid')  # len T-w+1
+                    sum_y2 = np.convolve(y*y, ones_w, mode='valid')
+                    # sum(x*y) со свёрткой ядра x[::-1]
+                    kernel = np.arange(w, dtype=np.float64)[::-1]
+                    sum_xy = np.convolve(y, kernel, mode='valid')
+                    # Drift: (y_t - y_{t-w})/y_{t-w}
+                    drift = (y[w-1:] - y[:-w+1]) / np.maximum(y[:-w+1], 1e-12)
+                    # Volatility: std returns за (w-1)
+                    try:
+                        win_r = np.lib.stride_tricks.sliding_window_view(r[1:], w-1)
+                        vol = win_r.std(axis=1)
+                    except Exception:
+                        vol = np.array([r[i-w+2:i+1].std() if i+1 >= (w-1) else 0.0 for i in range(T-1)], dtype=np.float64)
+                        vol = vol[w-2:]
+                    # Регрессия: slope и R^2
+                    S_xy = sum_xy - xbar*sum_y
+                    slope = S_xy / np.maximum(S_xx, 1e-12)
+                    ybar = sum_y / N
+                    SST = sum_y2 - N*(ybar**2)
+                    SSR = (slope**2) * S_xx
+                    r2 = SSR / np.maximum(SST, 1e-12)
+                    # Приводим к длине T: заполняем нулями первые w-1
+                    zeros_head = np.zeros((w-1, 4), dtype=np.float32)
+                    M = min(drift.shape[0], vol.shape[0], slope.shape[0], r2.shape[0])
+                    tail = np.stack([
+                        drift[:M].astype(np.float32),
+                        vol[:M].astype(np.float32),
+                        slope[:M].astype(np.float32),
+                        np.clip(r2[:M], 0.0, 1.0).astype(np.float32)
+                    ], axis=1)
+                    feats_w = np.concatenate([zeros_head, tail], axis=0)
+                    if feats_w.shape[0] < T:
+                        pad = np.zeros((T - feats_w.shape[0], 4), dtype=np.float32)
+                        feats_w = np.vstack([feats_w, pad])
+                    all_feats.append(feats_w)
+                if all_feats:
+                    return np.concatenate(all_feats, axis=1).astype(np.float32)
+                return np.zeros((T, 4 * len(windows)), dtype=np.float32)
+
+            closes = self.df_5min[:, 3].astype(np.float32)
+            regime_feats = _compute_regime_metrics_per_window(closes)
+            if regime_feats is not None and regime_feats.shape[0] == self.df_5min.shape[0]:
+                if self.indicators.size > 0:
+                    self.indicators = np.concatenate([self.indicators, regime_feats], axis=1).astype(np.float32)
+                else:
+                    self.indicators = regime_feats.astype(np.float32)
+                print("🧭 Regime per-window metrics added: for each window [drift, vol, slope, r2]")
+        except Exception as e:
+            print(f"⚠️ Не удалось добавить regime признаки: {e}")
+        
         # ИСПРАВЛЕНИЕ: Создаем datetime информацию для фильтра времени
         try:
             if hasattr(dfs, 'df_5min') and hasattr(dfs['df_5min'], 'index'):
