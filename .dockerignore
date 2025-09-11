@@ -1,6 +1,21 @@
 # .dockerignore
+
+# каталоги целиком
 __pycache__/
 **/__pycache__/
-*.py[cod]
 wandb/
 temp/
+result/
+models/
+datasets/
+.git
+
+# файлы по расширению
+*.pth
+*.pkl
+*.png
+*.csv
+*.ipynb
+
+# лишнее имя (если не нужно — удалите)
+pycache_/

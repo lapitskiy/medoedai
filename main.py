@@ -770,6 +770,31 @@ def get_result_model_info():
             except Exception as _e:
                 info['stats_error'] = str(_e)
 
+        # Fallback: если train_result.pkl отсутствует, но есть manifest.json — достаём seed/эпизоды/дату
+        try:
+            if (not train_file.exists()) and p.name == 'model.pth' and 'runs' in str(p):
+                run_dir = p.parent
+                mf = run_dir / 'manifest.json'
+                if mf.exists():
+                    import json as _json
+                    try:
+                        with open(mf, 'r', encoding='utf-8') as _f:
+                            _m = _json.load(_f)
+                        if isinstance(_m, dict):
+                            if 'seed' in _m and ('seed' not in info or info.get('seed') in (None, '—')):
+                                info['seed'] = _m.get('seed')
+                            if 'episodes_end' in _m and (info.get('episodes') is None):
+                                info['episodes'] = _m.get('episodes_end')
+                            if not info.get('symbol') and _m.get('symbol'):
+                                info['symbol'] = _m.get('symbol')
+                            # Отметим дату создания
+                            if _m.get('created_at'):
+                                info['created_at'] = _m.get('created_at')
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         return jsonify(info)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500

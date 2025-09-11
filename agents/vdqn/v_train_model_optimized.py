@@ -391,6 +391,15 @@ def train_model_optimized(
         import uuid
         short_id = str(uuid.uuid4())[:4].lower()
 
+        # Структурированный каталог результата: result/<SYMBOL>/runs/<run_id>/
+        # Папка символа без суффикса (TON, BTC, BNB...) в верхнем регистре
+        symbol_dir_name = _symbol_code(crypto_symbol).upper() if crypto_symbol else "UNKNOWN"
+        # Короткий run_id (4 символа) если не передан
+        this_run_id = run_id or str(uuid.uuid4())[:4]
+        this_root_id = root_id or this_run_id
+        run_dir = os.path.join("result", symbol_dir_name, "runs", this_run_id)
+        os.makedirs(run_dir, exist_ok=True)
+
         # Код для артефактов по умолчанию
         artifacts_code = f"{symbol_code}_{short_id}"
 
@@ -440,9 +449,9 @@ def train_model_optimized(
         except Exception:
             pass
 
-        # Подготавливаем НОВЫЕ пути сохранения (после загрузки чекпойнта)
-        new_model_path = os.path.join(result_dir, f"dqn_model_{artifacts_code}.pth")
-        new_buffer_path = os.path.join(result_dir, f"replay_buffer_{artifacts_code}.pkl")
+        # Подготавливаем НОВЫЕ пути сохранения: сразу в run_dir
+        new_model_path = os.path.join(run_dir, 'model.pth')
+        new_buffer_path = os.path.join(run_dir, 'replay.pkl')
 
         # Если символ BNB — мягкие оверрайды обучения для стабильности
         try:
@@ -484,6 +493,9 @@ def train_model_optimized(
                 dqn_solver.cfg.buffer_path = load_buffer_path
             except Exception:
                 pass
+        # Если внешняя cfg не передана — используем конфиг из dqn_solver
+        if cfg is None:
+            cfg = dqn_solver.cfg
         
         # 🚀 Дополнительная оптимизация PyTorch 2.x
         if torch.cuda.is_available():
@@ -512,11 +524,16 @@ def train_model_optimized(
             print(f"⚠️ Не удалось загрузить replay buffer: {_e}")
 
         # После загрузки переназначаем пути сохранения на НОВЫЕ в result/<symbol>_<id>
+        # Обновляем пути сохранения на структурированные независимо от наличия внешней cfg
         try:
-            cfg.model_path = new_model_path
-            cfg.buffer_path = new_buffer_path
-            dqn_solver.cfg.model_path = cfg.model_path
-            dqn_solver.cfg.buffer_path = cfg.buffer_path
+            dqn_solver.cfg.model_path = new_model_path
+            dqn_solver.cfg.buffer_path = new_buffer_path
+        except Exception:
+            pass
+        try:
+            if cfg is not None:
+                cfg.model_path = dqn_solver.cfg.model_path
+                cfg.buffer_path = dqn_solver.cfg.buffer_path
         except Exception:
             pass
         
@@ -963,13 +980,20 @@ def train_model_optimized(
             'total_steps_processed': total_steps_processed,
         }
         
-        # Создаем папку если не существует (используем result/)
-        results_dir = os.path.join("result")
-        os.makedirs(results_dir, exist_ok=True)
-        
-        # Сохраняем результаты в файле c символом и id + добавляем подробные метаданные
-        # Используем тот же код артефактов, чтобы имена файлов были согласованными
-        results_file = os.path.join(results_dir, f'train_result_{artifacts_code}.pkl')
+        # Создаем папку если не существует (используем структурированный run_dir)
+        try:
+            run_dir  # noqa: F401
+        except NameError:
+            # Папка символа без суффикса (TON, BTC, BNB...) в верхнем регистре
+            symbol_dir_name = _symbol_code(training_name).upper() if training_name else "UNKNOWN"
+            # Короткий run_id (4 символа) если не передан
+            this_run_id = run_id or str(__import__('uuid').uuid4())[:4]
+            this_root_id = root_id or this_run_id
+            run_dir = os.path.join("result", symbol_dir_name, "runs", this_run_id)
+            os.makedirs(run_dir, exist_ok=True)
+
+        # Сохраняем результаты в файле в run_dir
+        results_file = os.path.join(run_dir, 'train_result.pkl')
 
         # Метаданные окружения и запуска
         try:
@@ -1039,25 +1063,26 @@ def train_model_optimized(
 
         # === Структурированное сохранение в result/<SYMBOL>/runs/<run_id>/ ===
         try:
-            symbol_dir_name = str(training_name).upper() if training_name else "UNKNOWN"
-            this_run_id = run_id or str(__import__('uuid').uuid4())
-            # Наследование root_id: если не передан, считаем этот запуск корневым
-            this_root_id = root_id or this_run_id
-            run_dir = os.path.join("result", symbol_dir_name, "runs", this_run_id)
-            os.makedirs(run_dir, exist_ok=True)
+            # run_dir уже создан выше
 
             # Копируем артефакты в папку запуска с фиксированными именами
             try:
                 import shutil as _sh
                 # Модель
                 if cfg and getattr(cfg, 'model_path', None) and os.path.exists(cfg.model_path):
-                    _sh.copy2(cfg.model_path, os.path.join(run_dir, 'model.pth'))
+                    _dst_m = os.path.join(run_dir, 'model.pth')
+                    if os.path.abspath(cfg.model_path) != os.path.abspath(_dst_m):
+                        _sh.copy2(cfg.model_path, _dst_m)
                 # Буфер
                 if cfg and getattr(cfg, 'buffer_path', None) and os.path.exists(cfg.buffer_path):
-                    _sh.copy2(cfg.buffer_path, os.path.join(run_dir, 'replay.pkl'))
+                    _dst_b = os.path.join(run_dir, 'replay.pkl')
+                    if os.path.abspath(cfg.buffer_path) != os.path.abspath(_dst_b):
+                        _sh.copy2(cfg.buffer_path, _dst_b)
                 # Результаты
                 if os.path.exists(results_file):
-                    _sh.copy2(results_file, os.path.join(run_dir, 'train_result.pkl'))
+                    _dst_r = os.path.join(run_dir, 'train_result.pkl')
+                    if os.path.abspath(results_file) != os.path.abspath(_dst_r):
+                        _sh.copy2(results_file, _dst_r)
             except Exception as _copy_err:
                 print(f"⚠️ Не удалось скопировать артефакты в {run_dir}: {_copy_err}")
 
@@ -1074,7 +1099,7 @@ def train_model_optimized(
                 'created_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
                 'artifacts': {
                     'model': 'model.pth',
-                    'replay': 'replay.pkl' if (cfg and getattr(cfg, 'buffer_path', None)) else None,
+                    'replay': 'replay.pkl' if (dqn_solver and getattr(dqn_solver, 'cfg', None) and getattr(dqn_solver.cfg, 'buffer_path', None)) else None,
                     'result': 'train_result.pkl'
                 }
             }

@@ -40,7 +40,9 @@ def parser_download_and_combine_with_library(
         )
         print("Загрузка завершена. Чтение и объединение данных...")
 
-        data_path = f"{temp_data_dir}/spot/monthly/klines/{symbol}/{interval}"
+        # Путь в исходной библиотеке использует формат без разделителя (BTCUSDT)
+        _sym_flat = str(symbol).replace('/', '').replace('-', '').replace('_', '').upper()
+        data_path = f"{temp_data_dir}/spot/monthly/klines/{_sym_flat}/{interval}"
         all_files = []
 
         if os.path.exists(data_path):

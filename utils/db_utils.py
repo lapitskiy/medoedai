@@ -15,7 +15,7 @@ from orm.models import Base, Symbol, OHLCV, FundingRate
 
 import logging
 
-from utils.cctx_utils import normalize_symbol
+from utils.cctx_utils import normalize_symbol, normalize_to_db
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -108,10 +108,14 @@ def db_get_or_fetch_ohlcv(
     detailed_logs = False
 
     try:
-        # Получаем или создаем запись символа
-        
+        # Получаем или создаем запись символа в БД в формате БЕЗ слеша (TONUSDT)
+        # CCXT-формат (TON/USDT) используем только для биржи
         # 1. Получить или создать символ
-        symbol_obj = _get_or_create_symbol(session, symbol_name)
+        try:
+            symbol_db = normalize_to_db(symbol_name)
+        except Exception:
+            symbol_db = str(symbol_name).replace('/', '').upper()
+        symbol_obj = _get_or_create_symbol(session, symbol_db)
 
         total_count = session.query(OHLCV).filter_by(
             symbol_id=symbol_obj.id,
@@ -188,8 +192,62 @@ def db_get_or_fetch_ohlcv(
             except Exception as _te:
                 if detailed_logs:
                     logging.warning(f"Не удалось синхронизировать время с биржей {exchange_id}: {_te}")
-            if symbol_cctx not in exchange.symbols:
-                raise ValueError(f"Символ {symbol_cctx} не найден на бирже {exchange_id}.")
+            # Если на Bybit не найден символ в текущем типе рынка (по умолчанию swap) — пробуем spot
+            if symbol_cctx not in getattr(exchange, 'symbols', []):
+                if exchange_id == 'bybit':
+                    if detailed_logs:
+                        logging.info(f"{symbol_cctx} не найден в текущем типе рынка, пробую spot...")
+                    # Переинициализация под spot
+                    if api_key and secret_key:
+                        exchange = exchange_class({
+                            'apiKey': api_key,
+                            'secret': secret_key,
+                            'enableRateLimit': True,
+                            'timeout': 30000,
+                            'options': {
+                                'recv_window': 20000,
+                                'recvWindow': 20000,
+                                'adjustForTimeDifference': True,
+                                'timeDifference': True,
+                                'defaultType': 'spot',
+                            }
+                        })
+                    else:
+                        exchange = exchange_class({
+                            'enableRateLimit': True,
+                            'timeout': 30000,
+                            'options': {
+                                'recv_window': 20000,
+                                'recvWindow': 20000,
+                                'adjustForTimeDifference': True,
+                                'timeDifference': True,
+                                'defaultType': 'spot',
+                            }
+                        })
+                    exchange.load_markets()
+                # Финальная проверка доступности символа: учитываем как unified-символы, так и id без слеша
+                markets = getattr(exchange, 'markets', {}) or {}
+                symbol_fetch = None
+                try:
+                    # Прямое совпадение unified
+                    if symbol_cctx in markets:
+                        symbol_fetch = symbol_cctx
+                    else:
+                        # Совпадение по market id без слеша (BNBUSDT и т.п.)
+                        sym_no_sep = normalize_to_db(symbol_name)
+                        for uni, m in markets.items():
+                            mid = m.get('id') if isinstance(m, dict) else None
+                            if mid and str(mid).upper() == str(sym_no_sep).upper():
+                                symbol_fetch = uni
+                                break
+                except Exception:
+                    symbol_fetch = None
+                if not symbol_fetch:
+                    raise ValueError(f"Символ {symbol_cctx} не найден на бирже {exchange_id}.")
+            else:
+                # Символ найден как unified
+                markets = getattr(exchange, 'markets', {}) or {}
+                symbol_fetch = symbol_cctx if symbol_cctx in markets else None
             if detailed_logs:
                 logging.info(f"Биржа {exchange_id} успешно инициализирована.")
         except Exception as e:
@@ -218,7 +276,9 @@ def db_get_or_fetch_ohlcv(
         while True:
             try:
                 limit_fetch = min(exchange.options.get('fetchOHLCVLimit', 1000), 1000)
-                ohlcv = exchange.fetch_ohlcv(symbol_cctx, timeframe, since=since_ms, limit=limit_fetch)
+                # Используем symbol_fetch (unified) если он определён, иначе fallback к symbol_cctx
+                _sym_to_use = symbol_fetch or symbol_cctx
+                ohlcv = exchange.fetch_ohlcv(_sym_to_use, timeframe, since=since_ms, limit=limit_fetch)
 
                 if not ohlcv:
                     if detailed_logs:
