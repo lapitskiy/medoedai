@@ -13,24 +13,22 @@ from flask import Flask, request, jsonify, render_template
 from flask import redirect, url_for
 
 import redis
-from redis import Redis as _Redis
 
 from tasks.celery_tasks import celery
+from routes.bybit import bybit_bp
+from routes.trading import trading_bp
+from routes.models_admin import models_admin_bp
+from utils.redis_utils import get_redis_client, clear_redis_on_startup
 
-# Глобальный Redis-клиент для переиспользования
-_redis_client = None
+"""get_redis_client берём из utils.redis_utils"""
 
-def get_redis_client():
-    """Получить глобальный Redis-клиент"""
-    global _redis_client
-    if _redis_client is None:
-        _redis_client = _Redis(host='redis', port=6379, db=0, decode_responses=True)
-    return _redis_client
+ 
 from celery.result import AsyncResult
 
 import os
+import re
 from tasks.celery_tasks import search_lstm_task, train_dqn, train_dqn_multi_crypto, trade_step, start_trading_task, train_dqn_symbol
-from utils.db_utils import clean_ohlcv_data, delete_ohlcv_for_symbol_timeframe, load_latest_candles_from_csv_to_db
+from utils.db_utils import load_latest_candles_from_csv_to_db
 from utils.parser import parser_download_and_combine_with_library
 from utils.trade_utils import (
     get_recent_trades, 
@@ -52,63 +50,19 @@ import os
 import docker
 
 from tasks.celery_tasks import start_trading_task
-
-# Убираем импорт TradingAgent и глобальный экземпляр
-# from trading_agent.trading_agent import TradingAgent
-# trading_agent = None
-
-# Убираем функцию init_trading_agent
-# def init_trading_agent():
-#     """Инициализация торгового агента"""
-#     global trading_agent
-#     try:
-#         trading_agent = TradingAgent()
-#         app.logger.info("Торговый агент инициализирован")
-#     except Exception as e:
-#         app.logger.error(f"Ошибка инициализации торгового агента: {e}")
+from utils.celery_utils import ensure_symbol_worker
 
 logging.basicConfig(level=logging.INFO)
 
 # Создаем Flask приложение
 app = Flask(__name__)
+app.register_blueprint(bybit_bp)
+app.register_blueprint(trading_bp)
+app.register_blueprint(models_admin_bp)
+from routes.clean import clean_bp
+app.register_blueprint(clean_bp)
 
-# Функция очистки Redis при запуске
-def clear_redis_on_startup():
-    """Очищает Redis при запуске приложения"""
-    try:
-        # Подключаемся к Redis (пробуем разные хосты)
-        redis_hosts = ['localhost', 'redis', '127.0.0.1']
-        r = None
-        
-        for host in redis_hosts:
-            try:
-                r = redis.Redis(host=host, port=6379, db=0, socket_connect_timeout=5)
-                r.ping()  # Проверяем соединение
-                print(f"✅ Подключились к Redis на {host}")
-                break
-            except Exception:
-                continue
-        
-        if r is None:
-            print("⚠️ Не удалось подключиться к Redis")
-            return None
-        
-        # Очищаем все данные
-        r.flushall()
-        print("✅ Redis очищен при запуске")
-        
-        # Проверяем, что очистка прошла успешно
-        if r.dbsize() == 0:
-            print("✅ Redis пуст, готов к работе")
-        else:
-            print(f"⚠️ В Redis осталось {r.dbsize()} ключей")
-            
-        return r
-            
-    except Exception as e:
-        print(f"⚠️ Не удалось очистить Redis: {e}")
-        print("Продолжаем работу без очистки Redis")
-        return None
+# Функция очистки Redis вынесена в utils.redis_utils.clear_redis_on_startup
 
 # Инициализируем Redis клиент и очищаем при запуске
 redis_client = clear_redis_on_startup()
@@ -118,69 +72,6 @@ if redis_client is None:
         redis_client = redis.Redis(host='localhost', port=6379, db=0)
     except:
         redis_client = redis.Redis(host='redis', port=6379, db=0)
-
-
-
-def ensure_symbol_worker(queue_name: str) -> dict:
-    """Гарантирует наличие отдельного Celery-воркера для указанной очереди.
-
-    - Проверяет Redis-лок `celery:worker:<queue>`
-    - Проверяет процесс внутри контейнера `celery-worker`
-    - При отсутствии — запускает новый процесс воркера для очереди
-    """
-    try:
-        lock_key = f"celery:worker:{queue_name}"
-        # Быстрая проверка по Redis-метке
-        try:
-            if redis_client.get(lock_key):
-                return {"started": False, "reason": "already_marked_running"}
-        except Exception:
-            pass
-
-        import docker
-        client = docker.from_env()
-        container = client.containers.get('celery-worker')
-        app.logger.info(f"[ensure_worker] container 'celery-worker' status={container.status}")
-
-        # Проверяем по процессам внутри контейнера
-        check_cmd = f"sh -lc 'pgrep -af \"celery.*-Q {queue_name}\" >/dev/null 2>&1'"
-        exec_res = container.exec_run(check_cmd, tty=True)
-        already_running = (exec_res.exit_code == 0)
-        app.logger.info(f"[ensure_worker] check queue={queue_name} exit={exec_res.exit_code}")
-
-        if already_running:
-            # Ставим метку в Redis и выходим
-            try:
-                redis_client.setex(lock_key, 24 * 3600, 'running')
-            except Exception:
-                pass
-            return {"started": False, "reason": "process_exists"}
-
-        # Запускаем новый воркер-процесс в фоне
-        start_cmd = (
-            "sh -lc '"
-            "mkdir -p /workspace/logs && "
-            f"(OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 TORCH_NUM_THREADS=4 nohup celery -A tasks.celery_tasks worker -Q {queue_name} -P solo -c 1 --loglevel=info "
-            f"> /workspace/logs/{queue_name}.log 2>&1 & echo $! > /workspace/logs/{queue_name}.pid) "
-            "'"
-        )
-        res = container.exec_run(start_cmd, tty=True)
-        app.logger.info(f"[ensure_worker] start queue={queue_name} exit={res.exit_code}")
-
-        # Повторная проверка
-        exec_res2 = container.exec_run(check_cmd, tty=True)
-        app.logger.info(f"[ensure_worker] recheck queue={queue_name} exit={exec_res2.exit_code}")
-
-        # Отмечаем в Redis
-        try:
-            redis_client.setex(lock_key, 24 * 3600, 'running')
-        except Exception:
-            pass
-
-        return {"started": True}
-    except Exception as e:
-        app.logger.error(f"[ensure_worker] error: {e}")
-        return {"started": False, "error": str(e)}
 
 @app.before_request
 def log_request_info():
@@ -308,6 +199,14 @@ def train_dqn_symbol_route():
             episodes = int(episodes_str)
     except Exception:
         episodes = None
+    # Seed: из формы/JSON; если пусто — сгенерируем случайный на бэкенде
+    seed_raw = (data.get('seed') or request.form.get('seed') or '').strip()
+    seed = None
+    try:
+        if seed_raw != '':
+            seed = int(seed_raw)
+    except Exception:
+        seed = None
     # Очередь per-symbol
     queue_name = f"train_{symbol.lower()}"
 
@@ -337,7 +236,13 @@ def train_dqn_symbol_route():
         app.logger.error(f"Не удалось проверить активную задачу для {symbol}: {_e}")
 
     # Временно отправляем в общую очередь 'train' (слушается базовым воркером)
-    task = train_dqn_symbol.apply_async(args=[symbol, episodes], queue="train")
+    # Если seed не указан — сгенерируем случайный на стороне web и передадим в Celery
+    if seed is None:
+        import random as _rnd
+        seed = _rnd.randint(1, 2**31 - 1)
+        app.logger.info(f"[train_dqn_symbol] generated random seed={seed}")
+
+    task = train_dqn_symbol.apply_async(args=[symbol, episodes, seed], queue="train")
     app.logger.info(f"/train_dqn_symbol queued symbol={symbol} queue=train task_id={task.id}")
     # Сохраняем task_id для отображения на главной и отметку per-symbol
     try:
@@ -354,7 +259,8 @@ def train_dqn_symbol_route():
             "success": True,
             "task_id": task.id,
             "symbol": symbol,
-            "episodes": episodes
+            "episodes": episodes,
+            "seed": seed
         })
     return redirect(url_for("index"))
 
@@ -376,6 +282,14 @@ def continue_training_route():
                 episodes = int(episodes_str)
         except Exception:
             episodes = None
+        # Разобрать seed; если не указан — сгенерировать позже
+        seed_raw = (data.get('seed') or request.form.get('seed') or '').strip()
+        seed = None
+        try:
+            if seed_raw != '':
+                seed = int(seed_raw)
+        except Exception:
+            seed = None
 
         from pathlib import Path as _Path
         result_dir = _Path('result')
@@ -403,8 +317,9 @@ def continue_training_route():
         model_file = None
         replay_file = None
         code = None
+        symbol_from_path = None
 
-        # Поддержка двух форматов: train_result_* и dqn_model_*
+        # Поддержка трёх форматов: train_result_*, dqn_model_* и runs/<run_id>/model.pth
         if cand_resolved.name.startswith('train_result_') and cand_resolved.suffix == '.pkl':
             fname = cand_resolved.stem  # train_result_<code>
             parts = fname.split('_', 2)
@@ -424,8 +339,24 @@ def continue_training_route():
             code = parts[2]
             model_file = cand_resolved
             replay_file = result_dir / f'replay_buffer_{code}.pkl'  # может не существовать
+        elif cand_resolved.name == 'model.pth' and 'runs' in cand_resolved.parts:
+            # Новый формат: result/<SYMBOL>/runs/<run_id>/model.pth
+            try:
+                parts = list(cand_resolved.parts)
+                runs_idx = parts.index('runs')
+                run_id = parts[runs_idx + 1] if runs_idx + 1 < len(parts) else None
+                symbol_from_path = parts[runs_idx - 1] if runs_idx - 1 >= 0 else None
+                if not run_id:
+                    return jsonify({"success": False, "error": "Некорректный путь к run"}), 400
+                code = run_id
+                model_file = cand_resolved
+                run_dir = cand_resolved.parent
+                replay_file = run_dir / 'replay.pkl'
+                # train_result не обязателен для запуска дообучения
+            except Exception:
+                return jsonify({"success": False, "error": "Не удалось распознать путь run"}), 400
         else:
-            return jsonify({"success": False, "error": "Ожидался файл dqn_model_*.pth или train_result_*.pkl"}), 400
+            return jsonify({"success": False, "error": "Ожидался файл dqn_model_*.pth, train_result_*.pkl или runs/.../model.pth"}), 400
 
         # Запускаем фоновой таск обучения, передав пути в ENV (упрощение без изменения сигнатуры Celery)
         # Используем общую очередь 'train'
@@ -440,8 +371,23 @@ def continue_training_route():
 
         # Таск train_dqn_symbol не принимает пути, поэтому временно применим символ из code для данных,
         # а загрузка модели произойдет в v_train_model_optimized по этим путям через ENV.
-        symbol_guess = (code.split('_', 1)[0] + 'USDT').upper()
-        task = train_dqn_symbol.apply_async(args=[symbol_guess, episodes], queue='train')
+        symbol_guess = None
+        try:
+            if symbol_from_path:
+                symbol_guess = (str(symbol_from_path).upper())
+            else:
+                symbol_guess = (code.split('_', 1)[0] + 'USDT').upper()
+        except Exception:
+            symbol_guess = None
+        if not symbol_guess:
+            symbol_guess = 'BTCUSDT'
+        # Если seed не указан — сгенерируем случайный
+        if seed is None:
+            import random as _rnd
+            seed = _rnd.randint(1, 2**31 - 1)
+            app.logger.info(f"[continue_training] generated random seed={seed}")
+
+        task = train_dqn_symbol.apply_async(args=[symbol_guess, episodes, seed], queue='train')
 
         # Прокинем пути через ENV переменные для этого процесса воркера (если он читает их)
         # Если воркер в другом процессе, используем Redis как источник — уже сохранено выше.
@@ -460,59 +406,15 @@ def continue_training_route():
         except Exception:
             pass
 
-        return jsonify({"success": True, "task_id": task.id})
+        return jsonify({"success": True, "task_id": task.id, "seed": seed})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 
 
 
-
-@app.route('/trade_dqn', methods=['POST'])
-def trade():
-    task = trade_step.apply_async()
-    return redirect(url_for("index"))
-
 # Новый маршрут для запуска очистки данных
-@app.route('/clean_data', methods=['POST'])
-def clean_data():
-    timeframes_to_clean = ['5m', '15m', '1h']
-    symbol_name ='BTCUSDT'
-    
-    max_close_change_percent = 15.0
-    max_hl_range_percent = 20.0
-    volume_multiplier = 10.0
-
-    results = []
-    for tf in timeframes_to_clean:
-        try:
-            # Вызываем функцию очистки напрямую (она больше не Celery-задача)
-            result = clean_ohlcv_data(tf, symbol_name,
-                                      max_close_change_percent,
-                                      max_hl_range_percent,
-                                      volume_multiplier)
-            results.append(result)
-        except Exception as e:
-            results.append({"status": "error", "message": f"Ошибка при очистке {tf} для {symbol_name}: {str(e)}"})
-
-    return jsonify({'status': 'Очистка данных завершена для всех указанных таймфреймов.', 'results': results})
-
-
-# Новый маршрут для запуска очистки данных
-@app.route('/clean_db', methods=['POST'])
-def clean_db():
-    timeframes_to_clean = '5m'
-    symbol_name ='BTCUSDT'            
-
-    results = []
-    try:
-        # Вызываем функцию очистки напрямую (она больше не Celery-задача)
-        delete_ohlcv_for_symbol_timeframe('BTCUSDT', timeframes_to_clean)
-    except Exception as e:
-        results.append({"status": "error", "message": f"Ошибка при очистке для {symbol_name}: {str(e)}"})
-
-
-    return jsonify({'status': 'Очистка базы от всех свечей завершена указанных таймфреймов.', 'results': results})
+ 
 
 @app.route('/analyze_training_results', methods=['POST'])
 def analyze_training_results():
@@ -775,19 +677,54 @@ def get_result_model_info():
         # Безопасность: только внутри result/
         if not str(p).lower().startswith(str(results_dir.resolve()).lower()):
             return jsonify({'success': False, 'error': 'Файл вне папки result'}), 400
-        if not p.exists() or not p.is_file() or not p.name.startswith('dqn_model_') or p.suffix != '.pth':
-            return jsonify({'success': False, 'error': 'Ожидается существующий файл dqn_model_*.pth'}), 400
+        if not p.exists() or not p.is_file() or p.suffix != '.pth':
+            return jsonify({'success': False, 'error': 'Ожидается существующий файл модели (.pth) внутри result'}), 400
 
-        # Извлекаем код
-        code = p.stem.replace('dqn_model_', '')
-        replay_file = results_dir / f'replay_buffer_{code}.pkl'
-        train_file = results_dir / f'train_result_{code}.pkl'
+        # Поддержка двух форматов путей:
+        # 1) Плоский: result/dqn_model_<code>.pth
+        # 2) Структурированный run: result/<SYMBOL>/runs/<run_id>/model.pth
+        code = None
+        symbol_str = None
+        replay_file = None
+        train_file = None
+        if p.name.startswith('dqn_model_'):
+            code = p.stem.replace('dqn_model_', '')
+            replay_file = results_dir / f'replay_buffer_{code}.pkl'
+            train_file = results_dir / f'train_result_{code}.pkl'
+            # Попытаемся извлечь символ из префикса кода
+            try:
+                base = code.split('_')[0].upper()
+                if base and len(base) <= 6:
+                    symbol_str = base + 'USDT'
+            except Exception:
+                symbol_str = None
+        else:
+            # Пытаемся распознать путь run: .../result/<SYMBOL>/runs/<run_id>/model.pth
+            try:
+                parts = [x for x in p.parts]
+                # Найдём индекс 'runs'
+                if 'runs' in parts:
+                    idx = parts.index('runs')
+                    if idx + 1 < len(parts):
+                        run_id = parts[idx + 1]
+                        code = run_id
+                        run_dir = p.parent
+                        replay_file = run_dir / 'replay.pkl'
+                        train_file = run_dir / 'train_result.pkl'
+                        # Символ берём из каталога перед 'runs'
+                        if idx - 1 >= 0:
+                            symbol_str = parts[idx - 1]
+            except Exception:
+                pass
+            if not code:
+                return jsonify({'success': False, 'error': 'Не удалось распознать модель: ожидается dqn_model_*.pth или runs/.../model.pth'}), 400
 
         info = {
             'success': True,
             'model_file': str(p),
             'model_size_bytes': p.stat().st_size if p.exists() else 0,
             'code': code,
+            'symbol': symbol_str,
             'replay_exists': replay_file.exists(),
             'train_result_exists': train_file.exists(),
             'replay_file': str(replay_file) if replay_file.exists() else None,
@@ -809,6 +746,17 @@ def get_result_model_info():
                     'trades_count': stats.get('trades_count')
                 }
                 info['episodes'] = results.get('actual_episodes', results.get('episodes'))
+                # Пробрасываем seed из метаданных, если сохранён
+                try:
+                    meta = results.get('train_metadata') or {}
+                    if isinstance(meta, dict) and 'seed' in meta:
+                        info['seed'] = meta.get('seed')
+                    # Устройство обучения
+                    if isinstance(meta, dict):
+                        info['cuda_available'] = bool(meta.get('cuda_available')) if ('cuda_available' in meta) else None
+                        info['gpu_name'] = meta.get('gpu_name')
+                except Exception:
+                    pass
                 # Добавим суммарное время и среднее время на эпизод (если есть)
                 total_training_time = results.get('total_training_time')
                 if isinstance(total_training_time, (int, float)):
@@ -1855,6 +1803,7 @@ def start_trading():
     try:
         data = request.get_json() or {}
         symbols = data.get('symbols', ['BTCUSDT'])
+        account_id = str(data.get('account_id') or '').strip()
         # Поддержка многомодельного запуска: model_paths (список) + совместимость с model_path
         model_paths = data.get('model_paths') or []
         model_path = data.get('model_path')
@@ -1874,6 +1823,8 @@ def start_trading():
             except Exception:
                 pass
             _rc.set('trading:symbols', _json.dumps(symbols, ensure_ascii=False))
+            if account_id:
+                _rc.set('trading:account_id', account_id)
             # Консенсус (counts/percents) — запоминаем выбор пользователя
             try:
                 consensus = data.get('consensus')

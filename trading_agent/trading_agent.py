@@ -108,9 +108,22 @@ class TradingAgent:
     def _init_exchange(self):
         """Инициализация подключения к бирже Bybit для деривативов"""
         try:
-            # API ключи из переменных окружения
-            api_key = os.getenv('BYBIT_API_KEY')
-            secret_key = os.getenv('BYBIT_SECRET_KEY')
+            # API ключи: приоритет — выбранный аккаунт из Redis (trading:account_id)
+            api_key = None
+            secret_key = None
+            try:
+                r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
+                sel = r.get('trading:account_id')
+                if sel:
+                    api_key = os.getenv(f'BYBIT_{sel}_API_KEY') or None
+                    secret_key = os.getenv(f'BYBIT_{sel}_SECRET_KEY') or None
+            except Exception:
+                api_key = None
+                secret_key = None
+            # Фолбэк: одиночные ключи без индекса
+            if not api_key or not secret_key:
+                api_key = api_key or os.getenv('BYBIT_API_KEY')
+                secret_key = secret_key or os.getenv('BYBIT_SECRET_KEY')
             
             if not api_key or not secret_key:
                 logger.error("API ключи не настроены")

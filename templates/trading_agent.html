@@ -73,6 +73,13 @@
                 <p>Запуск и остановка торгового бота</p>
                 
                 <div class="form-group">
+                    <label style="font-weight:600;">Аккаунт Bybit</label>
+                    <select id="bybitAccountSelect" class="form-control" onchange="onSelectBybitAccount(this.value)">
+                        <option value="">Загрузка...</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
                     <label>Ансамбль и версии:</label>
                     <div style="display:grid; grid-template-columns: 1fr; gap: 12px; align-items:start;">
                         <div>
@@ -340,6 +347,8 @@
             
             // Получаем настройки консенсуса
             const consensusSettings = getConsensusSettings();
+            const accountSel = document.getElementById('bybitAccountSelect');
+            const accountId = accountSel ? (accountSel.value || '') : '';
             
             try {
                 const response = await fetch('/api/trading/start', {
@@ -350,7 +359,8 @@
                     body: JSON.stringify({ 
                         symbols: selectedSymbols,
                         model_paths: selectedPaths,
-                        consensus: consensusSettings
+                        consensus: consensusSettings,
+                        account_id: accountId
                     })
                 });
                 
@@ -1438,7 +1448,37 @@
             getTradingStatus();
             getBalance();
             initConsensusSliders();
+            loadBybitAccounts();
         });
+
+        async function loadBybitAccounts(){
+            try{
+                const resp = await fetch('/api/bybit/accounts');
+                const data = await resp.json();
+                const sel = document.getElementById('bybitAccountSelect');
+                if(!sel) return;
+                if(!data.success){ sel.innerHTML = '<option value="">Ошибка</option>'; return; }
+                if(!Array.isArray(data.accounts) || data.accounts.length===0){ sel.innerHTML = '<option value="">Нет аккаунтов</option>'; return; }
+                sel.innerHTML = data.accounts.map(a=>`<option value="${a.id}">${a.label}${a.api_key_masked?` (${a.api_key_masked})`:''}</option>`).join('');
+                try{
+                    const cur = localStorage.getItem('bybit:account');
+                    if(cur){ sel.value = cur; }
+                }catch(_){ }
+            }catch(e){
+                const sel = document.getElementById('bybitAccountSelect');
+                if(sel) sel.innerHTML = '<option value="">Ошибка загрузки</option>';
+            }
+        }
+
+        async function onSelectBybitAccount(id){
+            try{
+                await fetch('/api/bybit/select', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
+                try{ localStorage.setItem('bybit:account', id); }catch(_){ }
+                showStatus('tradingResult', 'success', 'Аккаунт выбран');
+            }catch(e){
+                showStatus('tradingResult', 'error', 'Не удалось выбрать аккаунт: '+e.message);
+            }
+        }
     </script>
 </body>
 </html>

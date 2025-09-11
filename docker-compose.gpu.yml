@@ -1,6 +1,5 @@
 services:
   medoedai:
-    gpus: all
     deploy:
       resources:
         reservations:
@@ -11,9 +10,9 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    # device_requests не поддерживается вашей версией Compose — используем только deploy.reservations.devices
 
   serving:
-    gpus: all
     deploy:
       resources:
         reservations:
@@ -24,9 +23,9 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    # device_requests не поддерживается вашей версией Compose — используем только deploy.reservations.devices
 
   celery-train:
-    gpus: all
     deploy:
       resources:
         reservations:
@@ -42,4 +41,5 @@ services:
       CUDA_VISIBLE_DEVICES: "all"
       # torch.compile можно оставить выключенным для старых GPU (P100)
       DISABLE_TORCH_COMPILE: "${DISABLE_TORCH_COMPILE:-false}"
+    # device_requests не поддерживается вашей версией Compose — используем только deploy.reservations.devices
 

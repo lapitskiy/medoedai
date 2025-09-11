@@ -25,6 +25,7 @@ except Exception:
 from datetime import datetime
 import uuid
 from celery.schedules import crontab
+from utils.seed import set_global_seed
 
 # API ключи Bybit (без шумного вывода при импорте)
 BYBIT_API_KEY = os.getenv('BYBIT_API_KEY')
@@ -604,10 +605,17 @@ def search_lstm_task(self, query):
     return {"message": "Task completed!", "query": query}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
-def train_dqn(self):
+def train_dqn(self, seed: int | None = None):
     
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
     
+    # Устанавливаем сид, если задан аргументом
+    seed = int(seed) if seed is not None else None
+    if seed is not None:
+        set_global_seed(seed)
+        print(f"🔒 Seed установлен: {seed}")
+        # ENV больше не используем для сидов
+
     print("🚀 Начинаю загрузку данных для мультивалютного обучения...")
     
     # Список всех криптовалют для обучения
@@ -712,11 +720,11 @@ def train_dqn(self):
     episodes = int(os.getenv('DEFAULT_EPISODES', 10000))
     print(f"🎯 Количество эпизодов: {episodes}")
     
-    result = train_model_optimized(dfs=df, episodes=episodes)
+    result = train_model_optimized(dfs=df, episodes=episodes, seed=seed)
     return {"message": result}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
-def train_dqn_symbol(self, symbol: str, episodes: int = None):
+def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None = None):
     """Обучение DQN для одного символа (BTCUSDT/ETHUSDT/...)
 
     Загружает данные из БД, готовит 5m/15m/1h, запускает train_model_optimized.
@@ -724,6 +732,13 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None):
     self.update_state(state="IN_PROGRESS", meta={"progress": 0, "symbol": symbol})
 
     try:
+        # Сид до любых инициализаций
+        seed = int(seed) if seed is not None else None
+        if seed is not None:
+            set_global_seed(seed)
+            print(f"🔒 Seed установлен: {seed}")
+            # ENV больше не используем для сидов
+
         print(f"\n🚀 Старт обучения для {symbol} [{datetime.now()}]")
         df_5min = db_get_or_fetch_ohlcv(
             symbol_name=symbol,
@@ -814,7 +829,8 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None):
             dfs=dfs,
             episodes=episodes,
             load_model_path=load_model_path,
-            load_buffer_path=load_buffer_path
+            load_buffer_path=load_buffer_path,
+            seed=seed
         )
         return {"message": f"✅ Обучение {symbol} завершено: {result}"}
     except Exception as e:
@@ -823,9 +839,16 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None):
         return {"message": f"❌ Ошибка обучения {symbol}: {str(e)}"}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
-def train_dqn_multi_crypto(self):
+def train_dqn_multi_crypto(self, seed: int | None = None):
     """Задача для мультивалютного обучения DQN"""
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
+    # Сид из аргумента/ENV
+    seed = int(seed) if seed is not None else None
+    if seed is not None:
+        set_global_seed(seed)
+        print(f"🔒 Seed установлен: {seed}")
+        # ENV больше не используем для сидов
+
     print("🚀 Начинаю мультивалютное обучение DQN...")
     try:
         # Новый модуль для мульти-обучения

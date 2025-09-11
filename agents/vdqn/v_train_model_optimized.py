@@ -153,7 +153,11 @@ def train_model_optimized(
     patience_limit: int = 3000,  # Увеличено с 2000 до 3000 для более длительного обучения
     use_wandb: bool = False,
     load_model_path: Optional[str] = None,
-    load_buffer_path: Optional[str] = None
+    load_buffer_path: Optional[str] = None,
+    seed: Optional[int] = None,
+    run_id: Optional[str] = None,
+    parent_run_id: Optional[str] = None,
+    root_id: Optional[str] = None,
 ) -> str:
     """
     Оптимизированная функция тренировки модели без pandas в hot-path
@@ -974,6 +978,8 @@ def train_model_optimized(
                 git_commit = subprocess.check_output(['git','rev-parse','--short','HEAD'], stderr=subprocess.DEVNULL).decode().strip()
             except Exception:
                 pass
+            # Сохраняем seed, если он был передан аргументом функции
+            train_seed = seed if isinstance(seed, int) else None
             train_metadata = {
                 'created_at_utc': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
                 'hostname': platform.node(),
@@ -988,6 +994,7 @@ def train_model_optimized(
                 'train_cpu_fraction': os.environ.get('TRAIN_CPU_FRACTION'),
                 'git_commit': git_commit,
                 'script': os.path.basename(__file__),
+                'seed': train_seed,
             }
         except Exception:
             train_metadata = {}
@@ -1029,6 +1036,56 @@ def train_model_optimized(
             pickle.dump(enriched_results, f, protocol=HIGHEST_PROTOCOL)
         
         print(f"📊 Детальные результаты сохранены в: {results_file}")
+
+        # === Структурированное сохранение в result/<SYMBOL>/runs/<run_id>/ ===
+        try:
+            symbol_dir_name = str(training_name).upper() if training_name else "UNKNOWN"
+            this_run_id = run_id or str(__import__('uuid').uuid4())
+            # Наследование root_id: если не передан, считаем этот запуск корневым
+            this_root_id = root_id or this_run_id
+            run_dir = os.path.join("result", symbol_dir_name, "runs", this_run_id)
+            os.makedirs(run_dir, exist_ok=True)
+
+            # Копируем артефакты в папку запуска с фиксированными именами
+            try:
+                import shutil as _sh
+                # Модель
+                if cfg and getattr(cfg, 'model_path', None) and os.path.exists(cfg.model_path):
+                    _sh.copy2(cfg.model_path, os.path.join(run_dir, 'model.pth'))
+                # Буфер
+                if cfg and getattr(cfg, 'buffer_path', None) and os.path.exists(cfg.buffer_path):
+                    _sh.copy2(cfg.buffer_path, os.path.join(run_dir, 'replay.pkl'))
+                # Результаты
+                if os.path.exists(results_file):
+                    _sh.copy2(results_file, os.path.join(run_dir, 'train_result.pkl'))
+            except Exception as _copy_err:
+                print(f"⚠️ Не удалось скопировать артефакты в {run_dir}: {_copy_err}")
+
+            # Пишем манифест (минимум метаданных; подробности уже в train_result.pkl)
+            manifest = {
+                'run_id': this_run_id,
+                'parent_run_id': parent_run_id,
+                'root_id': this_root_id,
+                'symbol': symbol_dir_name,
+                'seed': int(seed) if isinstance(seed, int) else None,
+                'episodes_start': 0 if not load_model_path else None,
+                'episodes_end': int(training_results.get('actual_episodes') or episodes),
+                'episodes_added': int(training_results.get('actual_episodes') or episodes),
+                'created_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'artifacts': {
+                    'model': 'model.pth',
+                    'replay': 'replay.pkl' if (cfg and getattr(cfg, 'buffer_path', None)) else None,
+                    'result': 'train_result.pkl'
+                }
+            }
+            try:
+                import json as _json
+                with open(os.path.join(run_dir, 'manifest.json'), 'w', encoding='utf-8') as mf:
+                    _json.dump(manifest, mf, ensure_ascii=False, indent=2)
+            except Exception as _mf_err:
+                print(f"⚠️ Не удалось записать manifest.json: {_mf_err}")
+        except Exception as _struct_err:
+            print(f"⚠️ Ошибка структурированного сохранения: {_struct_err}")
         
         # Анализ трендов
         if len(episode_winrates) > 10:
