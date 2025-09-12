@@ -404,20 +404,21 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 if consensus_cfg:
                     counts = (consensus_cfg.get('counts') or {})
                     perc = (consensus_cfg.get('percents') or {})
-                    # counts приоритетнее percents
+                    # counts приоритетнее percents — используем только counts; проценты игнорируем, чтобы не было 1/3
                     if isinstance(counts.get('flat'), (int, float)):
                         req_flat = int(max(1, counts.get('flat')))
                     if isinstance(counts.get('trend'), (int, float)):
                         req_trend = int(max(1, counts.get('trend')))
-                    if req_flat is None and isinstance(perc.get('flat'), (int, float)):
-                        req_flat = int(max(1, int(np.ceil(total_sel * (float(perc.get('flat'))/100.0)))))
-                    if req_trend is None and isinstance(perc.get('trend'), (int, float)):
-                        req_trend = int(max(1, int(np.ceil(total_sel * (float(perc.get('trend'))/100.0)))))
-                # Фолбэки: если не задано — требуем все модели
+                # Фолбэки: если counts не заданы — фиксируем требование без процентов
+                # По умолчанию: 2 для total>=3; для 2 моделей — 2; для 1 — 1
+                default_req = 2 if total_sel >= 3 else max(1, total_sel)
                 if req_flat is None:
-                    req_flat = total_sel
+                    req_flat = default_req
                 if req_trend is None:
-                    req_trend = total_sel
+                    req_trend = default_req
+                # Ограничим максимумом total_sel
+                req_flat = int(min(max(1, req_flat), total_sel))
+                req_trend = int(min(max(1, req_trend), total_sel))
                 required_type = 'trend' if market_regime in ('uptrend','downtrend') else 'flat'
                 required = req_trend if required_type == 'trend' else req_flat
                 # Правило консенсуса: если хватает голосов BUY → buy, если SELL → sell; иначе hold
