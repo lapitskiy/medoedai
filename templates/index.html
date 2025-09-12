@@ -89,6 +89,7 @@
                     <button id="analyzeResultsBtn" class="btn btn-primary" onclick="analyzeTrainingResultsSelected()">📈 Анализ результатов</button>
                     <button id="analyzeBadTradesBtn" class="btn btn-warning" onclick="analyzeBadTradesSelected()">🔍 Плохие сделки</button>
                 </div>
+                <div id="indexRunInfo" class="status info" style="display:none; white-space: pre-line;"></div>
                 <div id="analysisStatus" class="status" style="display: none;"></div>
                 <div id="analysisResults" class="results" style="display: none;"></div>
                 <div id="filesList" class="results" style="display: none;"></div>
@@ -291,6 +292,7 @@
                 const runs = (data && data.success && Array.isArray(data.runs))? data.runs: [];
                 indexRunsBySymbol[sym] = runs;
                 runSel.innerHTML = runs.length? runs.map(r=>`<option value="${r.run_id}">${r.run_id}</option>`).join(''): '<option value="">Нет runов</option>';
+                try{ await showIndexRunInfo(); }catch(_){ }
             }catch(e){ runSel.innerHTML = '<option value="">Ошибка</option>'; }
         }
 
@@ -302,6 +304,57 @@
             if(found && found.result_path){ return found.result_path; }
             if(sym && runId){ return `result/${sym}/runs/${runId}/train_result.pkl`; }
             return '';
+        }
+
+        async function showIndexRunInfo(){
+            const infoDiv = document.getElementById('indexRunInfo');
+            if(!infoDiv) return;
+            const sym = (document.getElementById('indexSymbolSelect')?.value||'').trim();
+            const runId = (document.getElementById('indexRunSelect')?.value||'').trim();
+            if(!sym || !runId){ infoDiv.style.display='none'; return; }
+            const modelPath = `result/${sym}/runs/${runId}/model.pth`;
+            try{
+                const resp = await fetch('/get_result_model_info', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ filename: modelPath }) });
+                const result = await resp.json();
+                if(!result.success){
+                    infoDiv.className = 'status error';
+                    infoDiv.textContent = '❌ ' + (result.error || 'Ошибка получения информации');
+                    infoDiv.style.display = 'block';
+                    return;
+                }
+                const stats = result.stats || {};
+                const winrate = typeof stats.winrate === 'number' ? (stats.winrate * 100).toFixed(1) + '%' : 'N/A';
+                const plr = typeof stats.pl_ratio === 'number' ? stats.pl_ratio.toFixed(2) : 'N/A';
+                const trades = (stats.trades_count != null) ? stats.trades_count : 'N/A';
+                const episodes = (result.episodes != null) ? result.episodes : 'N/A';
+                const seed = (result.seed != null) ? result.seed : '—';
+                const gpu = (result.cuda_available===true) ? (result.gpu_name || 'GPU') : (result.cuda_available===false ? 'CPU' : '—');
+                const totalTime = (typeof result.total_training_time === 'number') ? result.total_training_time : null;
+                const avgTime = (typeof result.avg_time_per_episode_sec === 'number') ? result.avg_time_per_episode_sec : (totalTime && episodes ? (totalTime/episodes) : null);
+                const fmtSec = (s)=>{ if(!s && s!==0) return 'N/A'; try{ const m=Math.floor(s/60), r=Math.round(s%60); return (m>0?`${m}м `:'')+`${r}с`; }catch(_){ return s.toFixed? s.toFixed(1)+'с' : String(s); } };
+                infoDiv.className = 'status info';
+                infoDiv.innerHTML = `
+Символ: ${sym}
+Run: ${runId}
+Seed: ${seed}
+Устройство: ${gpu}
+Winrate: ${winrate}
+P/L Ratio: ${plr}
+Сделок: ${trades}
+Эпизодов: ${episodes}
+Буфер: ${result.replay_exists ? '✅ есть' : '❌ нет'}
+Результаты обучения: ${result.train_result_exists ? '✅ есть' : '❌ нет'}
+Среднее время за эпизод: ${fmtSec(avgTime)}
+Общее время обучения: ${totalTime ? fmtSec(totalTime) : 'N/A'}
+Модель: ${result.model_file ? result.model_file.split('/').pop().split('\\').pop() : 'N/A'}
+Результаты: ${result.train_result_file ? result.train_result_file.split('/').pop().split('\\').pop() : '—'}
+`;
+                infoDiv.style.display = 'block';
+            }catch(e){
+                infoDiv.className = 'status error';
+                infoDiv.textContent = '❌ Ошибка сети: ' + e.message;
+                infoDiv.style.display = 'block';
+            }
         }
         async function listTrainingResults() {
             const statusDiv = document.getElementById('analysisStatus');
@@ -620,6 +673,8 @@
                 loadIndexSymbols();
                 const symSel = document.getElementById('indexSymbolSelect');
                 if(symSel){ symSel.addEventListener('change', loadIndexRuns); }
+                const runSel = document.getElementById('indexRunSelect');
+                if(runSel){ runSel.addEventListener('change', showIndexRunInfo); }
                 // Автоматически запускаем мониторинг агента
                 startAgentMonitoring();
             } catch (e) { 
