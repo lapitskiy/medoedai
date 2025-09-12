@@ -653,7 +653,7 @@ P/L Ratio: ${plr}
                 const payloadBase = { filename:file, code:code, gate_disable: gateDisable, gate_scale: gateScale, start_capital: startCapital };
                 // Мульти‑окна: 30/60/90
                 const windows = [30,60,90];
-                const scales = multiRuns ? [0, 0.2, 0.6, 0.8] : [null];
+                const scales = multiRuns ? [0.0, 0.5, 1.0] : [null];
                 const allResults = [];
                 for(const days of windows){
                     for(const s of scales){
@@ -786,7 +786,7 @@ P/L Ratio: ${plr}
                             <div class="muted">Эквити = старт + PnL; MaxDD считается от эквити</div>
                         </div>
                         <div class="form-group">
-                            <label><input type="checkbox" id="oosMultiRuns"> Выполнить 4 прогона: 100% / 80% / 40% / 20% порогов</label>
+                            <label><input type="checkbox" id="oosMultiRuns"> Выполнить 3 прогона: 100% / 50% / 0% порогов</label>
                         </div>
                         <div style="text-align:right;display:flex;gap:8px;justify-content:flex-end;">
                             <button class="btn" onclick="document.getElementById('oosModal').style.display='none'">Закрыть</button>
