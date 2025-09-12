@@ -75,13 +75,17 @@
             <!-- Объединенная секция анализа -->
             <div class="section">
                 <h2>📊 Аналитика результатов</h2>
-                <p>Выберите файл результатов и запустите нужный анализ</p>
+                <p>Выберите символ и run (result/<SYMBOL>/runs/<run_id>)</p>
                 <div class="form-group">
-                    <label>Файл результатов (result/train_result_*.pkl)</label>
-                    <select id="resultsFileSelect"></select>
+                    <label>Символ</label>
+                    <select id="indexSymbolSelect"></select>
+                </div>
+                <div class="form-group">
+                    <label>Run (UUID)</label>
+                    <select id="indexRunSelect"></select>
                 </div>
                 <div class="button-group">
-                    <button id="listResultsBtn" class="btn btn-info" onclick="listTrainingResults()">📋 Обновить список</button>
+                    <button id="listResultsBtn" class="btn btn-info" onclick="loadIndexSymbols()">📋 Обновить список</button>
                     <button id="analyzeResultsBtn" class="btn btn-primary" onclick="analyzeTrainingResultsSelected()">📈 Анализ результатов</button>
                     <button id="analyzeBadTradesBtn" class="btn btn-warning" onclick="analyzeBadTradesSelected()">🔍 Плохие сделки</button>
                 </div>
@@ -261,6 +265,42 @@
         });
 
         // Функции для анализа результатов обучения
+        let indexRunsBySymbol = {};
+
+        async function loadIndexSymbols(){
+            const sel = document.getElementById('indexSymbolSelect');
+            const runSel = document.getElementById('indexRunSelect');
+            if(!sel) return;
+            try{
+                const resp = await fetch('/api/runs/symbols');
+                const data = await resp.json();
+                const symbols = (data && data.success && Array.isArray(data.symbols))? data.symbols: [];
+                sel.innerHTML = symbols.length? symbols.map(s=>`<option value="${s}">${s}</option>`).join(''): '<option value="">Нет символов</option>';
+                if(symbols.length){ await loadIndexRuns(); }
+                else if(runSel){ runSel.innerHTML = '<option value="">—</option>'; }
+            }catch(e){ if(sel) sel.innerHTML = '<option value="">Ошибка</option>'; }
+        }
+
+        async function loadIndexRuns(){
+            const sym = (document.getElementById('indexSymbolSelect')?.value||'').trim();
+            const runSel = document.getElementById('indexRunSelect');
+            if(!sym || !runSel) return;
+            try{
+                const resp = await fetch('/api/runs/list?symbol='+encodeURIComponent(sym));
+                const data = await resp.json();
+                const runs = (data && data.success && Array.isArray(data.runs))? data.runs: [];
+                indexRunsBySymbol[sym] = runs;
+                runSel.innerHTML = runs.length? runs.map(r=>`<option value="${r.run_id}">${r.run_id}</option>`).join(''): '<option value="">Нет runов</option>';
+            }catch(e){ runSel.innerHTML = '<option value="">Ошибка</option>'; }
+        }
+
+        function getSelectedTrainResultPath(){
+            const sym = (document.getElementById('indexSymbolSelect')?.value||'').trim();
+            const runId = (document.getElementById('indexRunSelect')?.value||'').trim();
+            const runs = indexRunsBySymbol[sym]||[];
+            const found = runs.find(r=>r.run_id===runId);
+            return found && found.result_path ? found.result_path : '';
+        }
         async function listTrainingResults() {
             const statusDiv = document.getElementById('analysisStatus');
             const filesDiv = document.getElementById('filesList');
@@ -342,8 +382,12 @@
         }
 
         async function analyzeTrainingResultsSelected() {
-            const selectEl = document.getElementById('resultsFileSelect');
-            const file = selectEl.value;
+            let file = getSelectedTrainResultPath();
+            if(!file){
+                // Fallback: скрытый select не используется больше
+                const selectEl = document.getElementById('resultsFileSelect');
+                file = selectEl? (selectEl.value||'') : '';
+            }
             const analyzeBtn = document.getElementById('analyzeResultsBtn');
             const statusDiv = document.getElementById('analysisStatus');
             const resultsDiv = document.getElementById('analysisResults');
@@ -378,8 +422,11 @@
         }
 
         async function analyzeBadTradesSelected() {
-            const selectEl = document.getElementById('resultsFileSelect');
-            const file = selectEl.value;
+            let file = getSelectedTrainResultPath();
+            if(!file){
+                const selectEl = document.getElementById('resultsFileSelect');
+                file = selectEl? (selectEl.value||'') : '';
+            }
             const analyzeBtn = document.getElementById('analyzeBadTradesBtn');
             const statusDiv = document.getElementById('badTradesStatus');
             const resultsDiv = document.getElementById('badTradesResults');
@@ -565,10 +612,12 @@
             document.getElementById('agentDetails').style.display = 'none';
         }
 
-        // Автозагрузка списка файлов результатов при открытии страницы
+        // Автозагрузка списка результатов (новая структура) при открытии страницы
         document.addEventListener('DOMContentLoaded', function() {
             try { 
-                listTrainingResults(); 
+                loadIndexSymbols();
+                const symSel = document.getElementById('indexSymbolSelect');
+                if(symSel){ symSel.addEventListener('change', loadIndexRuns); }
                 // Автоматически запускаем мониторинг агента
                 startAgentMonitoring();
             } catch (e) { 
