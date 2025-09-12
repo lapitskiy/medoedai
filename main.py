@@ -420,37 +420,39 @@ def continue_training_route():
 def analyze_training_results():
     """Анализирует результаты обучения DQN модели"""
     try:
-        # Ищем файлы с результатами обучения в папке result
+        # Новая логика: сначала пробуем конкретный файл из запроса (поддержка runs/*/train_result.pkl)
         results_dir = "result"
-        if not os.path.exists(results_dir):
-            return jsonify({
-                'status': 'error',
-                'message': f'Папка {results_dir} не найдена. Сначала запустите обучение.',
-                'success': False
-            }), 404
-        
-        result_files = glob.glob(os.path.join(results_dir, 'train_result_*.pkl'))
-        
-        if not result_files:
-            return jsonify({
-                'status': 'error',
-                'message': 'Файлы результатов обучения не найдены. Сначала запустите обучение.',
-                'success': False
-            }), 404
-        
-        # Опционально берём конкретный файл из тела запроса
         data = request.get_json(silent=True) or {}
-        requested_file = data.get('file')
+        requested_file = (data.get('file') or '').strip()
         selected_file = None
         if requested_file:
-            # Простая валидация: путь внутри result/
-            safe_path = os.path.abspath(requested_file)
+            # Нормализуем относительный путь внутри result/
+            req = requested_file.replace('\\', '/')</n+            if not os.path.isabs(req):
+                cand = os.path.abspath(os.path.join(results_dir, req))
+            else:
+                cand = os.path.abspath(req)
+            # Принимаем только пути внутри result/
             base_path = os.path.abspath(results_dir)
-            if safe_path.startswith(base_path) and os.path.exists(safe_path):
-                selected_file = safe_path
-        # Если не указан/невалиден — берём самый свежий
+            if cand.startswith(base_path) and os.path.exists(cand):
+                selected_file = cand
+        # Если файл не указан/не найден — ищем новый формат result/<SYMBOL>/runs/*/train_result.pkl
         if not selected_file:
-            selected_file = max(result_files, key=os.path.getctime)
+            run_results = []
+            if os.path.exists(results_dir):
+                for sym in os.listdir(results_dir):
+                    rdir = os.path.join(results_dir, sym, 'runs')
+                    if not os.path.isdir(rdir):
+                        continue
+                    for run_id in os.listdir(rdir):
+                        p = os.path.join(rdir, run_id, 'train_result.pkl')
+                        if os.path.exists(p):
+                            run_results.append(p)
+            # Фоллбек на старый плоский формат
+            flat_results = glob.glob(os.path.join(results_dir, 'train_result_*.pkl'))
+            all_candidates = (run_results or []) + (flat_results or [])
+            if not all_candidates:
+                return jsonify({'status': 'error','message': 'Файлы результатов обучения не найдены. Сначала запустите обучение.','success': False}), 404
+            selected_file = max(all_candidates, key=os.path.getctime)
         
         # Импортируем функцию анализа
         try:

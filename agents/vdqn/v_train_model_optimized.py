@@ -566,6 +566,13 @@ def train_model_optimized(
         all_trades = []
         episode_winrates = []
         best_winrate = 0.0
+        best_episode_idx = -1
+         # Reduce-on-plateau и warmup для best
+        lr_plateau_patience = int(getattr(cfg, 'lr_plateau_patience', 1000))
+        lr_min = float(getattr(cfg, 'lr_min', 1e-5))
+        best_warmup_episodes = int(getattr(cfg, 'best_warmup_episodes', 1500))
+        reduce_plateau_only_for_retrain = bool(getattr(cfg, 'reduce_on_plateau_only_for_retrain', True))
+        episodes_since_best = 0
         patience_counter = 0
         global_step = 0
         grad_steps = 0
@@ -796,9 +803,12 @@ def train_model_optimized(
                 print(f"  🏁 Эпизод {episode} для {current_crypto} завершен | reward={episode_reward:.4f}{action_stats}{time_stats} | {episode_stats}")
                 
                 # Проверяем на улучшение с более умной логикой
-                if episode_winrate > best_winrate:
+                # Считаем улучшением только после warmup
+                is_improvement = (episode >= best_warmup_episodes) and (episode_winrate > best_winrate)
+                if is_improvement:
                     best_winrate = episode_winrate
                     patience_counter = 0
+                    episodes_since_best = 0
                     
                     # Сохраняем модель, а по настройке — и replay buffer при улучшении
                     save_replay_on_improvement = getattr(cfg, 'save_replay_on_improvement', True)
@@ -808,6 +818,14 @@ def train_model_optimized(
                     else:
                         dqn_solver.save_model()
                         logger.info("[INFO] New best winrate: %.3f, saving model", best_winrate)
+                    # Дублируем текущую модель как best_model.pth и фиксируем эпизод
+                    try:
+                        import shutil as _sh
+                        if os.path.exists(cfg.model_path):
+                            _sh.copy2(cfg.model_path, os.path.join(run_dir, 'best_model.pth'))
+                            best_episode_idx = int(episode)
+                    except Exception:
+                        pass
                 else:
                     # Мягкая логика patience - увеличиваем только при явном ухудшении
                     if episode >= min_episodes_before_stopping:
@@ -829,6 +847,42 @@ def train_model_optimized(
                     else:
                         # В начале обучения не увеличиваем patience
                         patience_counter = 0
+                # Reduce-on-plateau: только для дообучения по умолчанию
+                try:
+                    episodes_since_best += 1
+                except Exception:
+                    episodes_since_best = lr_plateau_patience + 1
+                is_retrain = bool(load_model_path) or bool(parent_run_id)
+                allow_reduce = (not reduce_plateau_only_for_retrain) or is_retrain
+                if allow_reduce and episodes_since_best >= lr_plateau_patience:
+                    try:
+                        # текущее lr из оптимизатора
+                        current_lr = None
+                        for g in dqn_solver.optimizer.param_groups:
+                            current_lr = g.get('lr', None)
+                            break
+                        if current_lr is None:
+                            current_lr = float(getattr(cfg, 'lr', 1e-3))
+                        new_lr = max(lr_min, float(current_lr) * 0.5)
+                        if new_lr < current_lr:
+                            for g in dqn_solver.optimizer.param_groups:
+                                g['lr'] = new_lr
+                            try:
+                                cfg.lr = new_lr
+                            except Exception:
+                                pass
+                            print(f"🔧 Reduce-on-plateau: lr {current_lr:.6f} → {new_lr:.6f}")
+                        # Снижаем epsilon к eps_final мягко
+                        try:
+                            eps_final = float(getattr(cfg, 'eps_final', 0.01))
+                            dqn_solver.epsilon = max(eps_final, dqn_solver.epsilon * 0.7)
+                            print(f"🔧 Reduce-on-plateau: epsilon → {dqn_solver.epsilon:.4f}")
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                    finally:
+                        episodes_since_best = 0
 
             # --- Агрегируем поведенческие метрики эпизода ---
             try:
@@ -880,6 +934,13 @@ def train_model_optimized(
             if episode > 0 and episode % buffer_save_frequency == 0:
                 dqn_solver.save()
                 logger.info("[INFO] Periodic save model + replay buffer at episode %d", episode)
+                # Сохраняем последний снапшот last_model.pth
+                try:
+                    import shutil as _sh
+                    if os.path.exists(cfg.model_path):
+                        _sh.copy2(cfg.model_path, os.path.join(run_dir, 'last_model.pth'))
+                except Exception:
+                    pass
             
             # Улучшенный Early stopping с множественными критериями
             if episode >= min_episodes_before_stopping:
@@ -962,6 +1023,13 @@ def train_model_optimized(
         # Финальное сохранение модели и replay buffer
         print("\n💾 Финальное сохранение модели и replay buffer")
         dqn_solver.save()
+        # Финальный last_model снапшот
+        try:
+            import shutil as _sh
+            if os.path.exists(cfg.model_path):
+                _sh.copy2(cfg.model_path, os.path.join(run_dir, 'last_model.pth'))
+        except Exception:
+            pass
         
         # Сохраняем детальные результаты обучения
         # Определяем список плохих сделок (убыточные сделки)
@@ -1121,11 +1189,18 @@ def train_model_optimized(
                 'episodes_start': 0 if not load_model_path else None,
                 'episodes_end': int(training_results.get('actual_episodes') or episodes),
                 'episodes_added': int(training_results.get('actual_episodes') or episodes),
+                'episodes_last': int(training_results.get('actual_episodes') or episodes),
+                'episodes_best': int(best_episode_idx) if best_episode_idx is not None and best_episode_idx >= 0 else None,
                 'created_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
                 'artifacts': {
                     'model': 'model.pth',
                     'replay': 'replay.pkl' if (dqn_solver and getattr(dqn_solver, 'cfg', None) and getattr(dqn_solver.cfg, 'buffer_path', None)) else None,
-                    'result': 'train_result.pkl'
+                    'result': 'train_result.pkl',
+                    'best_model': 'best_model.pth' if os.path.exists(os.path.join(run_dir, 'best_model.pth')) else None,
+                    'last_model': 'last_model.pth' if os.path.exists(os.path.join(run_dir, 'last_model.pth')) else None
+                },
+                'best_metrics': {
+                    'winrate': float(best_winrate) if isinstance(best_winrate, (int, float)) else None
                 }
             }
             try:

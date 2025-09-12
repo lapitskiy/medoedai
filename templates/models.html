@@ -679,18 +679,25 @@ P/L Ratio: ${plr}
                 function renderCard(title, res){
                     const r = (res||{}).result || {};
                     const details = Array.isArray(r.trades_details)? r.trades_details: [];
-                    const lines = [title,
+                    const roiPct = (r && r.start_capital && typeof r.pnl_total === 'number') ? ((r.pnl_total / r.start_capital) * 100.0) : null;
+                    // Оценка метрик
+                    const isGood = (roiPct!=null && roiPct>10) && (r.profit_factor!=null && r.profit_factor>=1.2) && (r.pl_ratio!=null && r.pl_ratio>1.0) && (r.max_dd!=null && r.max_dd<0.40);
+                    const isBad  = (roiPct!=null && roiPct<=0) || (r.profit_factor!=null && r.profit_factor<1.0) || (r.pl_ratio!=null && r.pl_ratio<1.0) || (r.max_dd!=null && r.max_dd>0.70);
+                    const candidateBadge = isGood ? '<span class="badge" style="background:#10b981;color:#fff;border-radius:4px;padding:2px 6px;">Кандидат на дообучение</span>' : '';
+                    const lines = [title + (candidateBadge? ' ' + candidateBadge : ''),
                         `Winrate: ${r.winrate!=null?(r.winrate*100).toFixed(1)+'%':'N/A'}`,
                         `PLR: ${r.pl_ratio!=null?r.pl_ratio.toFixed(2):'N/A'}`,
                         `PF: ${r.profit_factor!=null?r.profit_factor.toFixed(2):'N/A'}`,
                         `MaxDD: ${r.max_dd!=null?(r.max_dd*100).toFixed(1)+'%':'N/A'}`,
-                        `PnL: ${r.pnl_total!=null?r.pnl_total.toFixed(2):'N/A'}`,
+                        `PnL: ${roiPct!=null?roiPct.toFixed(2)+'%':'N/A'}`,
                         `Trades: ${r.trades!=null?r.trades:'N/A'}`,
                         r.symbol? `Symbol: ${r.symbol}`: '',
                         r.days!=null? `Window: ${r.days}d`: ''
                     ].filter(Boolean);
                     const text = lines.join('\n');
                     const item = document.createElement('div'); item.className = 'card';
+                    if(isGood){ item.style.border = '1px solid #10b981'; item.style.boxShadow = '0 0 0 2px rgba(16,185,129,0.12)'; }
+                    else if(isBad){ item.style.border = '1px solid #ef4444'; item.style.boxShadow = '0 0 0 2px rgba(239,68,68,0.12)'; }
                     const ts = new Date(); const hh = String(ts.getHours()).padStart(2,'0'); const mm = String(ts.getMinutes()).padStart(2,'0');
                     const detailsId = 'oosd_'+Math.random().toString(36).slice(2);
                     item.innerHTML = `
@@ -708,19 +715,26 @@ P/L Ratio: ${plr}
                 const groups = {30:[],60:[],90:[]};
                 for(const r of allResults){ if(r.data&&r.data.success) groups[r.days].push(r); }
                 // 30d
+                const showOnlyCandidates = !!document.getElementById('oosShowOnlyCandidates')?.checked;
                 for(const g of groups[30]){
                     const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
-                    wrap.prepend(renderCard(`✅ 30d (${pct})`, g.data));
+                    const card = renderCard(`✅ 30d (${pct})`, g.data);
+                    if(showOnlyCandidates){ if(card && card.style && card.style.border && card.style.border.includes('#10b981')) wrap.prepend(card); }
+                    else{ wrap.prepend(card); }
                 }
                 // 60d
                 for(const g of groups[60]){
                     const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
-                    wrap.prepend(renderCard(`✅ 60d (${pct})`, g.data));
+                    const card = renderCard(`✅ 60d (${pct})`, g.data);
+                    if(showOnlyCandidates){ if(card && card.style && card.style.border && card.style.border.includes('#10b981')) wrap.prepend(card); }
+                    else{ wrap.prepend(card); }
                 }
                 // 90d
                 for(const g of groups[90]){
                     const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
-                    wrap.prepend(renderCard(`✅ 90d (${pct})`, g.data));
+                    const card = renderCard(`✅ 90d (${pct})`, g.data);
+                    if(showOnlyCandidates){ if(card && card.style && card.style.border && card.style.border.includes('#10b981')) wrap.prepend(card); }
+                    else{ wrap.prepend(card); }
                 }
             }catch(e){ console.error('[OOS] error', e); alert('❌ OOS сеть: '+e.message); }
         }
@@ -731,8 +745,14 @@ P/L Ratio: ${plr}
             const html = `
                 <div class="section" id="oosPanel">
                     <h2>📈 Результаты OOS (копируемые)</h2>
-                    <div style="margin-bottom:8px;">
+                    <div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
                         <button class="btn btn-info" onclick="openOOSModal()">⚙️ Настройки OOS</button>
+                        <label class="muted" style="display:flex;gap:6px;align-items:center;">
+                            <input type="checkbox" id="oosShowOnlyCandidates"> показывать кандидатов на дообучение
+                        </label>
+                        <div class="muted" style="font-size:12px;">
+                            Пороги: ROI>10%, PF≥1.2, PLR>1.0, MaxDD<40%
+                        </div>
                     </div>
                     <div id="oosResults"></div>
                 </div>

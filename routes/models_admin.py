@@ -210,6 +210,23 @@ def oos_test_model():
             start_capital = float(data.get('start_capital') or os.environ.get('OOS_START_CAPITAL', 10000))
         except Exception:
             start_capital = 10000.0
+
+        # Комиссии: по умолчанию учитываем taker 0.055% на сторону
+        fee_enabled = bool(data.get('fee_enabled') if data.get('fee_enabled') is not None else True)
+        try:
+            fee_rate = data.get('fee_rate')
+            # fee_rate может прийти в процентах (например 0.055) или доле (0.00055)
+            if fee_rate is None or fee_rate == '':
+                fee_rate = 0.00055  # 0.055% за сторону
+            else:
+                fee_rate = float(fee_rate)
+                # Если пользователь передал как проценты (> 0.01), конвертируем в долю
+                if fee_rate > 0.01:
+                    fee_rate = fee_rate / 100.0
+            if fee_rate < 0:
+                fee_rate = 0.0
+        except Exception:
+            fee_rate = 0.00055
         # Управление Q‑gate через UI: disable или понижающий коэффициент (0..1)
         gate_disable = bool(data.get('gate_disable') or False)
         gate_scale = None
@@ -327,7 +344,7 @@ def oos_test_model():
 
         # Подготовка состояния (как в trade): последние 100 OHLCV нормализованных
         ohlcv_cols = ['open','high','low','close','volume']
-        pnl_total = 0.0
+        pnl_total = 0.0  # суммарный PnL NET (с учётом комиссий)
         wins = 0
         losses = 0
         trades = 0
@@ -561,21 +578,28 @@ def oos_test_model():
                 except Exception:
                     pass
             elif decision == 'sell' and position == 'long':
-                pl = price - float(entry_price)
-                pnl_total += pl
+                pl_gross = price - float(entry_price)
+                # Комиссии за вход и выход (за сторону): notional = price * 1.0 условных единиц
+                fee_entry = (float(entry_price) * fee_rate) if fee_enabled else 0.0
+                fee_exit = (float(price) * fee_rate) if fee_enabled else 0.0
+                pl_net = pl_gross - fee_entry - fee_exit
+                pnl_total += pl_net
                 trades += 1
-                wins += 1 if pl > 0 else 0
-                losses += 1 if pl <= 0 else 0
+                wins += 1 if pl_net > 0 else 0
+                losses += 1 if pl_net <= 0 else 0
                 try:
                     trade_rec = {
                         'entry_ts': entry_ts,
                         'entry_price': float(entry_price),
                         'exit_ts': ts_iso,
                         'exit_price': float(price),
-                        'pnl': float(pl)
+                        'pnl_gross': float(pl_gross),
+                        'fee_entry': float(fee_entry),
+                        'fee_exit': float(fee_exit),
+                        'pnl': float(pl_net)
                     }
                     trades_details.append(trade_rec)
-                    current_app.logger.info(f"[OOS] SELL close ts={ts_iso} price={price} pnl={pl}")
+                    current_app.logger.info(f"[OOS] SELL close ts={ts_iso} price={price} pnl_net={pl_net} (gross={pl_gross} fee_in={fee_entry} fee_out={fee_exit})")
                 except Exception:
                     pass
                 position = None; entry_price = None; entry_ts = None
