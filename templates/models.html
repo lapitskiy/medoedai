@@ -4,7 +4,7 @@
     <link rel="stylesheet" href="/static/css/styles.css">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Управление моделями DQN</title>
+    <title>!Управление моделями DQN</title>
     <style>
         /* Компактная таблица для секции "Модели в result (удаление)" */
         #resultModelsSection { font-size: 12px; }
@@ -539,16 +539,16 @@ P/L Ratio: ${plr}
                             const indent = `<span style=\"display:inline-block; width:${depth*16}px;\"></span>`;
                             const label = `${depth>0?'▸ ':''}${run.run_id}`;
                             const parent = run.parent_run_id || '—';
-                            const oosBtn = run.model_path ? `<button class=\"btn btn-info\" style=\"margin-right:6px;\" onclick=\"runOOSTest('${run.run_id}','${run.model_path}')\">OOS 30д</button>` : '';
-                            const delBtn = `<button class=\"btn btn-danger\" onclick=\"deleteRun('${s}','${run.run_id}')\">✖</button>`;
+                            const oosBtn = run.model_path ? `<button class="btn btn-info" style="margin-right:6px;" onclick="runOOSTest('${run.run_id}','${run.model_path}')">Test</button>` : '';
+                            const delBtn = `<button class="btn btn-danger" onclick="deleteRun('${s}','${run.run_id}')\">✖</button>`;
                             rows.push(`
                                 <tr>
-                                    <td class=\"nowrap mono\">${s}</td>
-                                    <td class=\"nowrap mono\">${indent}${label}</td>
-                                    <td class=\"nowrap mono\">${parent}</td>
-                                    <td class=\"nowrap\">${win}</td>
-                                    <td class=\"nowrap\">${episodes}</td>
-                                    <td class=\"nowrap\" style=\"text-align:right;\">${oosBtn}${delBtn}</td>
+                                    <td class="nowrap mono">${s}</td>
+                                    <td class="nowrap mono">${indent}${label}</td>
+                                    <td class="nowrap mono">${parent}</td>
+                                    <td class="nowrap">${win}</td>
+                                    <td class="nowrap">${episodes}</td>
+                                    <td class="nowrap" style="text-align:right;">${oosBtn}${delBtn}</td>
                                 </tr>
                             `);
                             const children = idToChildren[runId]||[];
@@ -560,15 +560,15 @@ P/L Ratio: ${plr}
                 const header = `
                     <thead>
                         <tr>
-                            <th class=\"nowrap\">Символ</th>
-                            <th class=\"nowrap\">Модель</th>
-                            <th class=\"nowrap\">Родитель</th>
-                            <th class=\"nowrap\">Winrate</th>
-                            <th class=\"nowrap\">Эпизоды</th>
-                            <th class=\"nowrap\" style=\"width:160px; text-align:right;\">Действия</th>
+                            <th class="nowrap">Символ</th>
+                            <th class="nowrap">Модель</th>
+                            <th class="nowrap">Родитель</th>
+                            <th class="nowrap">Winrate</th>
+                            <th class="nowrap">Эпизоды</th>
+                            <th class="nowrap" style="width:160px; text-align:right;">Действия</th>
                         </tr>
                     </thead>`;
-                listDiv.innerHTML = rows.length>0 ? `<table id=\"resultModelsTable\">${header}<tbody>${rows.join('')}</tbody></table>` : '<div class=\"status info\">📭 Пусто</div>';
+                listDiv.innerHTML = rows.length>0 ? `<table id="resultModelsTable">${header}<tbody>${rows.join('')}</tbody></table>` : '<div class="status info">📭 Пусто</div>';
             } catch (e) {
                 listDiv.innerHTML = `<div class="status error">❌ Ошибка загрузки: ${e.message}</div>`;
             }
@@ -598,7 +598,7 @@ P/L Ratio: ${plr}
                     <td class="nowrap">${episodes}</td>
                     <td class="nowrap" style="text-align:right;">
                         <button class="btn btn-info" style="margin-right:6px;" title="OOS‑тест 30 дней"
-                            onclick="runOOSTest('${code}', '${info.model_file || ''}')">OOS 30д</button>
+                            onclick="runOOSTest('${code}', '${info.model_file || ''}')">Test</button>
                         <button class="btn btn-danger" title="Удалить"
                             onclick="deleteResultModel('${code}', '${info.model_file || ''}')">✖</button>
                     </td>
@@ -642,18 +642,146 @@ P/L Ratio: ${plr}
             const name = code || (file.split('/').pop().split('\\').pop());
             try{
                 const btn = event.target; const prev = btn.textContent; btn.disabled=true; btn.textContent='⏳ OOS...';
-                const resp = await fetch('/oos_test_model', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ filename:file, code:code, days:30 }) });
-                const data = await resp.json();
+                console.log('[OOS] start', {code, file, ts: Date.now()});
+                // Считываем настройки из модалки (если пользователь открыл её)
+                const gateDisable = !!document.getElementById('oosGateDisable')?.checked;
+                const multiRuns = !!document.getElementById('oosMultiRuns')?.checked;
+                let gateScale = document.getElementById('oosGateScale')?.value;
+                gateScale = gateScale===''? null : Number(gateScale);
+                let startCapital = document.getElementById('oosStartCapital')?.value;
+                startCapital = startCapital===''? null : Number(startCapital);
+                const payloadBase = { filename:file, code:code, gate_disable: gateDisable, gate_scale: gateScale, start_capital: startCapital };
+                // Мульти‑окна: 30/60/90
+                const windows = [30,60,90];
+                const scales = multiRuns ? [0, 0.2, 0.6, 0.8] : [null];
+                const allResults = [];
+                for(const days of windows){
+                    for(const s of scales){
+                        const payload = {...payloadBase, days};
+                        if (s !== null){ payload.gate_disable = false; payload.gate_scale = s; }
+                        const r = await fetch('/oos_test_model', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+                        const j = await r.json().catch(()=>({success:false,error:'bad json'}));
+                        allResults.push({days, scale:s, data:j});
+                    }
+                }
                 btn.disabled=false; btn.textContent=prev;
-                if(!data.success){ alert('❌ OOS: '+(data.error||'ошибка')); return; }
-                const r = data.result||{};
-                alert(`✅ OOS готово для ${name}\nWinrate: ${r.winrate!=null?(r.winrate*100).toFixed(1)+'%':'N/A'}\nPLR: ${r.pl_ratio!=null?r.pl_ratio.toFixed(2):'N/A'}\nPF: ${r.profit_factor!=null?r.profit_factor.toFixed(2):'N/A'}\nMaxDD: ${r.max_dd!=null?(r.max_dd*100).toFixed(1)+'%':'N/A'}\nPnL: ${r.pnl_total!=null?r.pnl_total.toFixed(2):'N/A'}`);
-            }catch(e){ alert('❌ OOS сеть: '+e.message); }
+                // Выводим результат в панель (копируемый текст)
+                ensureOOSPanel();
+                const wrap = document.getElementById('oosResults');
+                const first = (allResults[0]||{}).data || {success:false};
+                if(!first.success){
+                    const err = '❌ OOS: '+(first.error||'ошибка');
+                    if (wrap){
+                        const el = document.createElement('div'); el.className = 'status error'; el.textContent = err; wrap.prepend(el);
+                    } else { alert(err); }
+                    return;
+                }
+                function renderCard(title, res){
+                    const r = (res||{}).result || {};
+                    const details = Array.isArray(r.trades_details)? r.trades_details: [];
+                    const lines = [title,
+                        `Winrate: ${r.winrate!=null?(r.winrate*100).toFixed(1)+'%':'N/A'}`,
+                        `PLR: ${r.pl_ratio!=null?r.pl_ratio.toFixed(2):'N/A'}`,
+                        `PF: ${r.profit_factor!=null?r.profit_factor.toFixed(2):'N/A'}`,
+                        `MaxDD: ${r.max_dd!=null?(r.max_dd*100).toFixed(1)+'%':'N/A'}`,
+                        `PnL: ${r.pnl_total!=null?r.pnl_total.toFixed(2):'N/A'}`,
+                        `Trades: ${r.trades!=null?r.trades:'N/A'}`,
+                        r.symbol? `Symbol: ${r.symbol}`: '',
+                        r.days!=null? `Window: ${r.days}d`: ''
+                    ].filter(Boolean);
+                    const text = lines.join('\n');
+                    const item = document.createElement('div'); item.className = 'card';
+                    const ts = new Date(); const hh = String(ts.getHours()).padStart(2,'0'); const mm = String(ts.getMinutes()).padStart(2,'0');
+                    const detailsId = 'oosd_'+Math.random().toString(36).slice(2);
+                    item.innerHTML = `
+                        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><div class="mono" style="font-weight:600;">${name}</div><div class="muted">${hh}:${mm}</div></div>
+                        <pre style="white-space:pre-wrap;margin:6px 0;">${text}</pre>
+                        <details id="${detailsId}"><summary>Сделки (${details.length})</summary>
+                            <pre style="white-space:pre-wrap;margin:6px 0;max-height:240px;overflow:auto;">${details.map((t,idx)=>{
+                                const e=t.entry_ts||''; const x=t.exit_ts||''; const ep=(t.entry_price!=null)? Number(t.entry_price).toFixed(2):'N/A'; const xp=(t.exit_price!=null)? Number(t.exit_price).toFixed(2):'N/A'; const pnl=(t.pnl!=null)? Number(t.pnl).toFixed(2):'N/A'; return `${idx+1}) ${e} @ ${ep} → ${x} @ ${xp} | PnL ${pnl}`;}).join('\n')}</pre>
+                        </details>
+                        <div style="text-align:right;display:flex;gap:8px;justify-content:flex-end;"><button class="btn" data-text="${text.replace(/&/g,'&amp;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" onclick="copyText(this.getAttribute('data-text'))">Копировать</button></div>`;
+                    return item;
+                }
+                // Рендерим все карточки: сперва 30д, потом 60, потом 90
+                // сгруппируем
+                const groups = {30:[],60:[],90:[]};
+                for(const r of allResults){ if(r.data&&r.data.success) groups[r.days].push(r); }
+                // 30d
+                for(const g of groups[30]){
+                    const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
+                    wrap.prepend(renderCard(`✅ 30d (${pct})`, g.data));
+                }
+                // 60d
+                for(const g of groups[60]){
+                    const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
+                    wrap.prepend(renderCard(`✅ 60d (${pct})`, g.data));
+                }
+                // 90d
+                for(const g of groups[90]){
+                    const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
+                    wrap.prepend(renderCard(`✅ 90d (${pct})`, g.data));
+                }
+            }catch(e){ console.error('[OOS] error', e); alert('❌ OOS сеть: '+e.message); }
+        }
+
+        function ensureOOSPanel(){
+            if (document.getElementById('oosPanel')) return;
+            const content = document.querySelector('.content'); if(!content) return;
+            const html = `
+                <div class="section" id="oosPanel">
+                    <h2>📈 Результаты OOS (копируемые)</h2>
+                    <div style="margin-bottom:8px;">
+                        <button class="btn btn-info" onclick="openOOSModal()">⚙️ Настройки OOS</button>
+                    </div>
+                    <div id="oosResults"></div>
+                </div>
+            `;
+            content.insertAdjacentHTML('beforeend', html);
+        }
+
+        async function copyText(t){
+            try{ await navigator.clipboard.writeText(String(t||'')); }
+            catch(_){ try{ prompt('Скопируйте вручную:', String(t||'')); }catch(__){} }
+        }
+
+        // Простейшая модалка настроек OOS
+        function openOOSModal(){
+            if(document.getElementById('oosModal')){ document.getElementById('oosModal').style.display='block'; return; }
+            const html = `
+                <div id="oosModal" style="position:fixed;inset:0;display:block;background:rgba(0,0,0,0.4);z-index:9999;">
+                    <div style="background:#fff;max-width:460px;margin:10% auto;padding:16px;border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.2);">
+                        <h3 style="margin-top:0;">⚙️ Настройки OOS</h3>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="oosGateDisable"> Отключить Q‑gate (T1/T2=0)</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Снизить пороги Q‑gate на долю (0..1)</label>
+                            <input type="number" id="oosGateScale" class="form-control" step="0.05" min="0" max="1" placeholder="например, 0.5">
+                            <div class="muted">0.5 = пороги вдвое ниже; пусто = без изменений</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Стартовый капитал (для MaxDD)</label>
+                            <input type="number" id="oosStartCapital" class="form-control" step="100" min="0" placeholder="например, 10000">
+                            <div class="muted">Эквити = старт + PnL; MaxDD считается от эквити</div>
+                        </div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="oosMultiRuns"> Выполнить 4 прогона: 100% / 80% / 40% / 20% порогов</label>
+                        </div>
+                        <div style="text-align:right;display:flex;gap:8px;justify-content:flex-end;">
+                            <button class="btn" onclick="document.getElementById('oosModal').style.display='none'">Закрыть</button>
+                            <button class="btn btn-info" onclick="document.getElementById('oosModal').style.display='none'">OK</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', html);
         }
 
         // Вставляем секцию при загрузке и сразу обновляем список
         document.addEventListener('DOMContentLoaded', function() {
             try { ensureResultModelsSection(); refreshResultModels(); } catch(_){}
+            try { ensureOOSPanel(); } catch(_){}
         });
 
         // Карточки/анализ/удаление моделей отключены

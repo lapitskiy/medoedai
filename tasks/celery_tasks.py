@@ -27,9 +27,31 @@ import uuid
 from celery.schedules import crontab
 from utils.seed import set_global_seed
 
-# API ключи Bybit (без шумного вывода при импорте)
-BYBIT_API_KEY = os.getenv('BYBIT_API_KEY')
-BYBIT_SECRET_KEY = os.getenv('BYBIT_SECRET_KEY')
+# API ключи Bybit (поддержка новых имён BYBIT_<N>_*)
+def _discover_bybit_api_keys() -> tuple[str | None, str | None]:
+    try:
+        ak = os.getenv('BYBIT_1_API_KEY')
+        sk = os.getenv('BYBIT_1_SECRET_KEY')
+        if ak and sk:
+            return ak, sk
+        # Автоскан: BYBIT_<ID>_API_KEY
+        candidates = []
+        for k, v in os.environ.items():
+            if not k.startswith('BYBIT_') or not k.endswith('_API_KEY'):
+                continue
+            idx = k[len('BYBIT_'):-len('_API_KEY')]
+            sec_name = f'BYBIT_{idx}_SECRET_KEY'
+            sec_val = os.getenv(sec_name)
+            if v and sec_val:
+                candidates.append((k, v, sec_name, sec_val))
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            return candidates[0][1], candidates[0][3]
+        return None, None
+    except Exception:
+        return None, None
+
+BYBIT_API_KEY, BYBIT_SECRET_KEY = _discover_bybit_api_keys()
 
 def are_bybit_keys_configured() -> bool:
     try:
@@ -807,6 +829,9 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
         # Прокидываем пути для продолжения обучения из ENV/Redis если заданы
         load_model_path = os.environ.get('CONTINUE_MODEL_PATH')
         load_buffer_path = os.environ.get('CONTINUE_BUFFER_PATH')
+        # Определим родителя/корень для цепочки run'ов при дообучении
+        parent_run_id = None
+        root_run_id = None
         try:
             # Попробуем Redis как приоритетный источник
             from redis import Redis
@@ -825,12 +850,40 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
         except Exception:
             pass
 
+        # Если дообучаем из структурированного пути runs/.../model.pth — проставим связи
+        try:
+            if isinstance(load_model_path, str):
+                norm_path = load_model_path.replace('\\', '/')
+                parts = norm_path.split('/')
+                if len(parts) >= 4 and parts[-1] == 'model.pth' and 'runs' in parts:
+                    runs_idx = parts.index('runs')
+                    if runs_idx + 1 < len(parts):
+                        parent_run_id = parts[runs_idx + 1]
+                        # Попытаемся прочитать root_id из манифеста родителя
+                        try:
+                            parent_dir = os.path.dirname(load_model_path)
+                            manifest_path = os.path.join(parent_dir, 'manifest.json')
+                            if os.path.exists(manifest_path):
+                                import json as _json
+                                with open(manifest_path, 'r', encoding='utf-8') as mf:
+                                    mf_data = _json.load(mf)
+                                root_run_id = mf_data.get('root_id') or parent_run_id
+                            else:
+                                root_run_id = parent_run_id
+                        except Exception:
+                            root_run_id = parent_run_id
+        except Exception:
+            parent_run_id = parent_run_id or None
+            root_run_id = root_run_id or None
+
         result = train_model_optimized(
             dfs=dfs,
             episodes=episodes,
             load_model_path=load_model_path,
             load_buffer_path=load_buffer_path,
-            seed=seed
+            seed=seed,
+            parent_run_id=parent_run_id,
+            root_id=root_run_id
         )
         return {"message": f"✅ Обучение {symbol} завершено: {result}"}
     except Exception as e:
@@ -873,8 +926,8 @@ def trade_step():
     Выполняет один торговый шаг с использованием API Bybit
     """
     try:
-        # Проверяем наличие API ключей
-        if BYBIT_API_KEY == 'your_bybit_api_key_here' or BYBIT_SECRET_KEY == 'your_bybit_secret_key_here':
+        # Проверяем наличие API ключей (новый формат)
+        if not BYBIT_API_KEY or not BYBIT_SECRET_KEY:
             return {"error": "API ключи Bybit не настроены"}
         
         # Получаем текущее состояние рынка (замени на получение реальных данных)

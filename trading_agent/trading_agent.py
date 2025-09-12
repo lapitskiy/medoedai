@@ -120,10 +120,25 @@ class TradingAgent:
             except Exception:
                 api_key = None
                 secret_key = None
-            # Фолбэк: одиночные ключи без индекса
+            # Фолбэк: автоскан BYBIT_<ID>_API_KEY, если аккаунт в Redis не выбран
             if not api_key or not secret_key:
-                api_key = api_key or os.getenv('BYBIT_API_KEY')
-                secret_key = secret_key or os.getenv('BYBIT_SECRET_KEY')
+                try:
+                    # Сначала BYBIT_1_*
+                    api_key = api_key or os.getenv('BYBIT_1_API_KEY')
+                    secret_key = secret_key or os.getenv('BYBIT_1_SECRET_KEY')
+                    if not api_key or not secret_key:
+                        # Автоскан по первому доступному индексу
+                        for k, v in os.environ.items():
+                            if not k.startswith('BYBIT_') or not k.endswith('_API_KEY'):
+                                continue
+                            idx = k[len('BYBIT_'):-len('_API_KEY')]
+                            sk = os.getenv(f'BYBIT_{idx}_SECRET_KEY')
+                            if v and sk:
+                                api_key = v
+                                secret_key = sk
+                                break
+                except Exception:
+                    pass
             
             if not api_key or not secret_key:
                 logger.error("API ключи не настроены")

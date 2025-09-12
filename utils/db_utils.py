@@ -22,6 +22,32 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 import math # Для isclose
 import time
+# --- Helpers: Bybit API keys discovery (supports BYBIT_<N>_API_KEY only) ---
+def _discover_bybit_api_keys() -> tuple[str | None, str | None]:
+    try:
+        # 1) По умолчанию берём аккаунт 1, если задан
+        api_key = os.getenv('BYBIT_1_API_KEY')
+        secret_key = os.getenv('BYBIT_1_SECRET_KEY')
+        if api_key and secret_key:
+            return api_key, secret_key
+        # 2) Автоскан: BYBIT_<ID>_API_KEY / BYBIT_<ID>_SECRET_KEY
+        candidates = []
+        for k, v in os.environ.items():
+            if not k.startswith('BYBIT_') or not k.endswith('_API_KEY'):
+                continue
+            idx = k[len('BYBIT_'):-len('_API_KEY')]
+            sec_name = f'BYBIT_{idx}_SECRET_KEY'
+            sec_val = os.getenv(sec_name)
+            if v and sec_val:
+                candidates.append((k, v, sec_name, sec_val))
+        # Стабильный порядок: сортируем по имени переменной (BYBIT_1_*, BYBIT_2_* ...)
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            return candidates[0][1], candidates[0][3]
+        return None, None
+    except Exception:
+        return None, None
+
 
 # --- Database Engine and Session setup ---
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://medoed_user:medoed@postgres:5432/medoed_db")
@@ -148,8 +174,8 @@ def db_get_or_fetch_ohlcv(
             
             # Для Bybit: используем API ключи, если заданы, иначе публичные эндпоинты (они достаточны для OHLCV)
             if exchange_id == 'bybit':
-                api_key = os.getenv('BYBIT_API_KEY')
-                secret_key = os.getenv('BYBIT_SECRET_KEY')
+                # Поддержка BYBIT_API_KEY/BYBIT_SECRET_KEY и множественных BYBIT_<N>_*
+                api_key, secret_key = _discover_bybit_api_keys()
                 if api_key and secret_key:
                     exchange = exchange_class({
                         'apiKey': api_key,

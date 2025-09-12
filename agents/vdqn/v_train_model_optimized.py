@@ -453,6 +453,31 @@ def train_model_optimized(
         new_model_path = os.path.join(run_dir, 'model.pth')
         new_buffer_path = os.path.join(run_dir, 'replay.pkl')
 
+        # Если дообучаем из структурированного пути runs/... и parent/root не переданы — авто‑детект
+        try:
+            if (not parent_run_id) and load_model_path and isinstance(load_model_path, str):
+                norm_path = load_model_path.replace('\\', '/')
+                parts = norm_path.split('/')
+                if len(parts) >= 4 and parts[-1] == 'model.pth' and 'runs' in parts:
+                    runs_idx = parts.index('runs')
+                    if runs_idx + 1 < len(parts):
+                        parent_run_id = parts[runs_idx + 1]
+                        # Прочитаем root из manifest.json родителя, если есть
+                        try:
+                            parent_dir = os.path.dirname(load_model_path)
+                            mf_path = os.path.join(parent_dir, 'manifest.json')
+                            if os.path.exists(mf_path):
+                                import json as _json
+                                with open(mf_path, 'r', encoding='utf-8') as mf:
+                                    mf_data = _json.load(mf)
+                                root_id = root_id or mf_data.get('root_id') or parent_run_id
+                            else:
+                                root_id = root_id or parent_run_id
+                        except Exception:
+                            root_id = root_id or parent_run_id
+        except Exception:
+            pass
+
         # Если символ BNB — мягкие оверрайды обучения для стабильности
         try:
             if not is_multi_crypto and isinstance(crypto_symbol, str) and 'BNB' in crypto_symbol.upper():

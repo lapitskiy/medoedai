@@ -554,55 +554,52 @@ def analyze_training_results():
 
 @app.route('/list_training_results', methods=['GET'])
 def list_training_results():
-    """Возвращает список доступных файлов с результатами обучения"""
+    """Возвращает список доступных результатов в новой структуре result/<SYMBOL>/runs/*/{train_result.pkl, manifest.json}"""
     try:
-        # Ищем файлы с результатами обучения в папке result
-        results_dir = "result"
-        if not os.path.exists(results_dir):
-            return jsonify({
-                'status': 'error',
-                'message': f'Папка {results_dir} не найдена',
-                'success': False,
-                'files': []
-            }), 404
-        
-        result_files = glob.glob(os.path.join(results_dir, 'train_result_*.pkl'))
-        
-        if not result_files:
-            return jsonify({
-                'status': 'error',
-                'message': 'Файлы результатов обучения не найдены',
-                'success': False,
-                'files': []
-            }), 404
-        
-        # Получаем информацию о файлах
-        files_info = []
-        for file in result_files:
-            stat = os.stat(file)
-            files_info.append({
-                'filename': file,
-                'size': stat.st_size,
-                'created': stat.st_ctime,
-                'modified': stat.st_mtime
-            })
-        
-        # Сортируем по дате создания (новые первыми)
-        files_info.sort(key=lambda x: x['created'], reverse=True)
-        
-        return jsonify({
-            'status': 'success',
-            'message': f'Найдено {len(result_files)} файлов результатов',
-            'success': True,
-            'files': files_info
-        })
-        
+        base = os.path.join('result')
+        if not os.path.exists(base):
+            return jsonify({'status': 'error','message': f'Папка {base} не найдена','success': False,'files': []}), 404
+        items = []
+        for sym in sorted(os.listdir(base)):
+            sym_dir = os.path.join(base, sym, 'runs')
+            if not os.path.isdir(sym_dir):
+                continue
+            for run_id in os.listdir(sym_dir):
+                run_dir = os.path.join(sym_dir, run_id)
+                if not os.path.isdir(run_dir):
+                    continue
+                tr = os.path.join(run_dir, 'train_result.pkl')
+                mf = os.path.join(run_dir, 'manifest.json')
+                mp = os.path.join(run_dir, 'model.pth')
+                if os.path.exists(tr):
+                    try:
+                        stat = os.stat(tr)
+                        manifest = {}
+                        try:
+                            if os.path.exists(mf):
+                                import json as _json
+                                manifest = _json.loads(open(mf,'r',encoding='utf-8').read())
+                        except Exception:
+                            manifest = {}
+                        items.append({
+                            'symbol': sym,
+                            'run_id': run_id,
+                            'train_result': tr,
+                            'model_path': mp if os.path.exists(mp) else None,
+                            'manifest': manifest,
+                            'size': stat.st_size,
+                            'created': stat.st_ctime,
+                            'modified': stat.st_mtime
+                        })
+                    except Exception:
+                        continue
+        if not items:
+            return jsonify({'status': 'error','message': 'Файлы результатов не найдены','success': False,'files': []}), 404
+        items.sort(key=lambda x: (x.get('created') or 0), reverse=True)
+        return jsonify({'status': 'success','message': f'Найдено {len(items)} результатов','success': True,'files': items})
     except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'Ошибка при получении списка файлов: {str(e)}',
-            'success': False
-        }), 500
+        return jsonify({'status': 'error','message': f'Ошибка при получении списка: {str(e)}','success': False}), 500
+
 @app.route('/list_result_models', methods=['GET'])
 def list_result_models():
     """Возвращает список доступных весов моделей из result (dqn_model_*.pth)."""
@@ -2210,20 +2207,38 @@ def trading_test_order():
             py_symbol = _py_str_literal(symbol)
             py_quantity = 'None' if quantity is None else str(float(quantity))
 
-            api_key = os.environ.get('BYBIT_API_KEY', '') or ''
-            secret_key = os.environ.get('BYBIT_SECRET_KEY', '') or ''
+            def _disc():
+                ak = os.environ.get('BYBIT_1_API_KEY')
+                sk = os.environ.get('BYBIT_1_SECRET_KEY')
+                if ak and sk:
+                    return ak, sk
+                # Поиск первого BYBIT_<ID>_*
+                c = []
+                for k, v in os.environ.items():
+                    if not k.startswith('BYBIT_') or not k.endswith('_API_KEY'):
+                        continue
+                    idx = k[len('BYBIT_'):-len('_API_KEY')]
+                    sec = f'BYBIT_{idx}_SECRET_KEY'
+                    sv = os.environ.get(sec)
+                    if v and sv:
+                        c.append((k, v, sec, sv))
+                if c:
+                    c.sort(key=lambda x: x[0])
+                    return c[0][1], c[0][3]
+                return '', ''
+            api_key, secret_key = _disc()
             api_key_esc = api_key.replace("'", "\\'")
             secret_key_esc = secret_key.replace("'", "\\'")
             if model_path:
                 cmd = (
-                    f"python -c \"import json, os; os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
+                    f"python -c \"import json, os; os.environ['BYBIT_1_API_KEY']='{api_key_esc}'; os.environ['BYBIT_1_SECRET_KEY']='{secret_key_esc}'; "
                     f"from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(model_path=\\\"{model_path}\\\"); "
                     f"action = {py_action}; symbol = {py_symbol}; quantity = {py_quantity}; "
                     f"result = agent.execute_direct_order(action, symbol, quantity); print(\\\"RESULT: \\\" + json.dumps(result))\""
                 )
             else:
                 cmd = (
-                    "python -c \"import json, os; os.environ['BYBIT_API_KEY']='{api_key_esc}'; os.environ['BYBIT_SECRET_KEY']='{secret_key_esc}'; "
+                    "python -c \"import json, os; os.environ['BYBIT_1_API_KEY']='{api_key_esc}'; os.environ['BYBIT_1_SECRET_KEY']='{secret_key_esc}'; "
                     "from trading_agent.trading_agent import TradingAgent; agent = TradingAgent(); "
                     f"action = {py_action}; symbol = {py_symbol}; quantity = {py_quantity}; "
                     "result = agent.execute_direct_order(action, symbol, quantity); print(\\\"RESULT: \\\" + json.dumps(result))\""
