@@ -299,7 +299,9 @@
             const runId = (document.getElementById('indexRunSelect')?.value||'').trim();
             const runs = indexRunsBySymbol[sym]||[];
             const found = runs.find(r=>r.run_id===runId);
-            return found && found.result_path ? found.result_path : '';
+            if(found && found.result_path){ return found.result_path; }
+            if(sym && runId){ return `result/${sym}/runs/${runId}/train_result.pkl`; }
+            return '';
         }
         async function listTrainingResults() {
             const statusDiv = document.getElementById('analysisStatus');

@@ -426,9 +426,15 @@ def analyze_training_results():
         requested_file = (data.get('file') or '').strip()
         selected_file = None
         if requested_file:
-            # Нормализуем относительный путь внутри result/
-            req = requested_file.replace('\\', '/')</n+            if not os.path.isabs(req):
-                cand = os.path.abspath(os.path.join(results_dir, req))
+            # Нормализуем путь; поддерживаем Windows-разделители
+            req = requested_file.replace('\\', '/')
+            if not os.path.isabs(req):
+                # Если уже начинается с result/ — трактуем как относительный к корню проекта
+                if req.startswith('result/'):
+                    cand = os.path.abspath(req)
+                else:
+                    # Иначе считаем относительным к каталогу result/
+                    cand = os.path.abspath(os.path.join(results_dir, req))
             else:
                 cand = os.path.abspath(req)
             # Принимаем только пути внутри result/
@@ -504,7 +510,7 @@ def analyze_training_results():
             'success': True,
             'file_analyzed': selected_file,
             'output': analysis_output,
-            'available_files': result_files
+            'available_files': []
         }
         
         # Добавляем информацию об эпизодах если доступна
