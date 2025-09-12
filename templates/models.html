@@ -19,21 +19,147 @@
         #resultModelsTable .truncate { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
         #resultModelsSection .button-group { margin-bottom: 10px; }
         #resultModelsSection .btn.btn-danger { font-size: 12px; padding: 6px 10px; }
+
+        /* Sidebar навигация */
+        .sidebar {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 250px;
+            height: 100vh;
+            background: #f8f9fa;
+            border-right: 1px solid #e0e0e0;
+            padding: 20px 0;
+            overflow-y: auto;
+            z-index: 1000;
+            box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+        }
+        
+        .sidebar h3 {
+            margin: 0 0 15px 20px;
+            font-size: 16px;
+            color: #333;
+            font-weight: 600;
+        }
+        
+        .sidebar-nav {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        
+        .sidebar-nav li {
+            margin: 0;
+        }
+        
+        .sidebar-nav a {
+            display: block;
+            padding: 10px 20px;
+            color: #555;
+            text-decoration: none;
+            border-left: 3px solid transparent;
+            transition: all 0.2s ease;
+            font-size: 14px;
+        }
+        
+        .sidebar-nav a:hover {
+            background: #e9ecef;
+            color: #333;
+            border-left-color: #007bff;
+        }
+        
+        .sidebar-nav a.active {
+            background: #e3f2fd;
+            color: #1976d2;
+            border-left-color: #1976d2;
+            font-weight: 500;
+        }
+        
+        .main-content {
+            margin-left: 250px;
+            padding: 20px 30px;
+            width: calc(100% - 250px);
+            max-width: none;
+            min-height: 100vh;
+            background: #fff;
+        }
+        
+        .container {
+            max-width: none;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        
+        .section {
+            scroll-margin-top: 20px;
+        }
+        
+        @media (max-width: 768px) {
+            .sidebar {
+                transform: translateX(-100%);
+                transition: transform 0.3s ease;
+            }
+            
+            .sidebar.open {
+                transform: translateX(0);
+            }
+            
+            .main-content {
+                margin-left: 0;
+                width: 100%;
+                padding: 20px 15px;
+            }
+            
+            .mobile-menu-btn {
+                display: block;
+                position: fixed;
+                top: 20px;
+                left: 20px;
+                z-index: 1001;
+                background: #007bff;
+                color: white;
+                border: none;
+                padding: 10px;
+                border-radius: 5px;
+                cursor: pointer;
+            }
+        }
+        
+        .mobile-menu-btn {
+            display: none;
+        }
     </style>
 
 </head>
 <body>
+    <!-- Sidebar навигация -->
+    <nav class="sidebar">
+        <h3>📋 Навигация</h3>
+        <ul class="sidebar-nav">
+            <li><a href="#create-model" onclick="scrollToSection('create-model')">📦 Создать версию</a></li>
+            <li><a href="#training" onclick="scrollToSection('training')">🎯 Обучение DQN</a></li>
+            <li><a href="#continue-training" onclick="scrollToSection('continue-training')">🔁 Дообучить модель</a></li>
+            <li><a href="#result-models" onclick="scrollToSection('result-models')">🗑️ Модели в result</a></li>
+            <li><a href="#oos-results" onclick="scrollToSection('oos-results')">📈 OOS результаты</a></li>
+        </ul>
+    </nav>
+
+    <!-- Кнопка мобильного меню -->
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
     <div class="container">
-        <div class="header">
-            <h1>🤖 Управление моделями DQN</h1>
-            <p>Версионирование и управление обученными моделями</p>
-        </div>
-        
-        <div class="content">
+        <div class="main-content">
+            <div class="header">
+                <h1>🤖 Управление моделями DQN</h1>
+                <p>Версионирование и управление обученными моделями</p>
+            </div>
+            
+            <div class="content">
             <a href="/" class="back-link">← Вернуться на главную</a>
             
             <!-- Секция создания новой модели -->
-            <div class="section">
+            <div class="section" id="create-model">
                 <h2>📦 Создать новую версию модели</h2>
                 <p>Скопирует веса/буфер/результаты из <code>result/</code> в <code>models/&lt;symbol&gt;/ensemble-a/vN</code> (с <code>manifest.yaml</code> и ссылкой <code>current</code>)</p>
                 <div class="form-group">
@@ -56,7 +182,7 @@
             </div>
 
             <!-- Секция запуска обучения DQN -->
-            <div class="section">
+            <div class="section" id="training">
                 <h2>🎯 Обучение DQN модели</h2>
                 <p>Запустите обучение Deep Q-Network модели для торговли криптовалютами</p>
                 <div class="form-group">
@@ -82,7 +208,7 @@
             </div>
 
             <!-- Секция дообучения существующей модели -->
-            <div class="section">
+            <div class="section" id="continue-training">
                 <h2>🔁 Дообучить существующую модель</h2>
                 <p>Выберите файл весов из <code>result/</code> (формат <code>dqn_model_*.pth</code>). Если найдется соответствующий <code>replay_buffer_*.pkl</code>, он также будет загружен. Дообучение сохранит результат как новую версию.</p>
 
@@ -122,6 +248,7 @@
             </div>
 
             
+            </div>
         </div>
     </div>
 
@@ -479,12 +606,12 @@ P/L Ratio: ${plr}
 
         // === Блок: удаление моделей из папки result ===
         function ensureResultModelsSection() {
-            if (document.getElementById('resultModelsSection')) return;
+            if (document.getElementById('result-models')) return;
             const content = document.querySelector('.content');
             if (!content) return;
             const sectionHtml = `
-                <div class="section" id="resultModelsSection">
-                    <h2>🗑️ Модели в result (удаление)</h2>
+                <div class="section" id="result-models">
+                    <h2>🗑️ Модели в result</h2>
                     <p>Показывает файлы в папке <code>result/</code> с краткой статистикой. Можно удалить комплект (веса, буфер, результат) по коду модели.</p>
                     <div class="button-group">
                         <button class="btn btn-info" onclick="refreshResultModels()">🔄 Обновить список</button>
@@ -524,14 +651,22 @@ P/L Ratio: ${plr}
 
                         async function renderRunRow(runId, depth){
                             const run = idToNode[runId]; if(!run) return;
-                            let win = 'N/A', episodes = 'N/A';
+                            let win = 'N/A', plr = 'N/A', episodes = 'N/A';
+                            let isBad = false;
                             try{
                                 if(run.model_path){
                                     const infoResp = await fetch('/get_result_model_info', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ filename: run.model_path })});
                                     const info = await infoResp.json();
                                     if(info && info.success){
                                         const st = info.stats||{};
-                                        if(typeof st.winrate==='number') win = (st.winrate*100).toFixed(1)+'%';
+                                        if(typeof st.winrate==='number') {
+                                            win = (st.winrate*100).toFixed(1)+'%';
+                                            if(st.winrate < 0.5) isBad = true;
+                                        }
+                                        if(typeof st.pl_ratio==='number') {
+                                            plr = st.pl_ratio.toFixed(2);
+                                            if(st.pl_ratio < 1.0) isBad = true;
+                                        }
                                         if(info.episodes!=null) episodes = info.episodes;
                                     }
                                 }
@@ -541,12 +676,14 @@ P/L Ratio: ${plr}
                             const parent = run.parent_run_id || '—';
                             const oosBtn = run.model_path ? `<button class="btn btn-info" style="margin-right:6px;" onclick="runOOSTest('${run.run_id}','${run.model_path}')">Test</button>` : '';
                             const delBtn = `<button class="btn btn-danger" onclick="deleteRun('${s}','${run.run_id}')\">✖</button>`;
+                            const rowStyle = isBad ? 'style="background-color: #fef2f2; border-left: 3px solid #ef4444;"' : '';
                             rows.push(`
-                                <tr>
+                                <tr ${rowStyle}>
                                     <td class="nowrap mono">${s}</td>
                                     <td class="nowrap mono">${indent}${label}</td>
                                     <td class="nowrap mono">${parent}</td>
                                     <td class="nowrap">${win}</td>
+                                    <td class="nowrap">${plr}</td>
                                     <td class="nowrap">${episodes}</td>
                                     <td class="nowrap" style="text-align:right;">${oosBtn}${delBtn}</td>
                                 </tr>
@@ -564,6 +701,7 @@ P/L Ratio: ${plr}
                             <th class="nowrap">Модель</th>
                             <th class="nowrap">Родитель</th>
                             <th class="nowrap">Winrate</th>
+                            <th class="nowrap">P/L Ratio</th>
                             <th class="nowrap">Эпизоды</th>
                             <th class="nowrap" style="width:160px; text-align:right;">Действия</th>
                         </tr>
@@ -680,11 +818,26 @@ P/L Ratio: ${plr}
                     const r = (res||{}).result || {};
                     const details = Array.isArray(r.trades_details)? r.trades_details: [];
                     const roiPct = (r && r.start_capital && typeof r.pnl_total === 'number') ? ((r.pnl_total / r.start_capital) * 100.0) : null;
-                    // Оценка метрик
-                    const isGood = (roiPct!=null && roiPct>10) && (r.profit_factor!=null && r.profit_factor>=1.2) && (r.pl_ratio!=null && r.pl_ratio>1.0) && (r.max_dd!=null && r.max_dd<0.40);
-                    const isBad  = (roiPct!=null && roiPct<=0) || (r.profit_factor!=null && r.profit_factor<1.0) || (r.pl_ratio!=null && r.pl_ratio<1.0) || (r.max_dd!=null && r.max_dd>0.70);
-                    const candidateBadge = isGood ? '<span class="badge" style="background:#10b981;color:#fff;border-radius:4px;padding:2px 6px;">Кандидат на дообучение</span>' : '';
-                    const lines = [title + (candidateBadge? ' ' + candidateBadge : ''),
+                    // Оценка метрик (более мягкая логика)
+                    const isGood = (roiPct!=null && roiPct>10) && 
+                                   (r.profit_factor==null || r.profit_factor>=1.2) && 
+                                   (r.pl_ratio==null || r.pl_ratio>1.0) && 
+                                   (r.max_dd==null || r.max_dd<0.40);
+                    const isBad  = (roiPct!=null && roiPct<=0) || 
+                                   (r.profit_factor!=null && r.profit_factor<1.0) || 
+                                   (r.pl_ratio!=null && r.pl_ratio<1.0) || 
+                                   (r.max_dd!=null && r.max_dd>0.70);
+                    
+                    // Бейджи в зависимости от результата
+                    let statusBadge = '';
+                    if (isGood) {
+                        statusBadge = '<span class="badge" style="background:#10b981;color:#fff;border-radius:4px;padding:2px 6px;">✅ Кандидат на дообучение</span>';
+                    } else if (isBad) {
+                        statusBadge = '<span class="badge" style="background:#ef4444;color:#fff;border-radius:4px;padding:2px 6px;">❌ Дообучать нельзя</span>';
+                    } else {
+                        statusBadge = '<span class="badge" style="background:#6b7280;color:#fff;border-radius:4px;padding:2px 6px;">⚠️ Требует анализа</span>';
+                    }
+                    const lines = [title + ' ' + statusBadge,
                         `Winrate: ${r.winrate!=null?(r.winrate*100).toFixed(1)+'%':'N/A'}`,
                         `PLR: ${r.pl_ratio!=null?r.pl_ratio.toFixed(2):'N/A'}`,
                         `PF: ${r.profit_factor!=null?r.profit_factor.toFixed(2):'N/A'}`,
@@ -707,51 +860,84 @@ P/L Ratio: ${plr}
                             <pre style="white-space:pre-wrap;margin:6px 0;max-height:240px;overflow:auto;">${details.map((t,idx)=>{
                                 const e=t.entry_ts||''; const x=t.exit_ts||''; const ep=(t.entry_price!=null)? Number(t.entry_price).toFixed(2):'N/A'; const xp=(t.exit_price!=null)? Number(t.exit_price).toFixed(2):'N/A'; const pnl=(t.pnl!=null)? Number(t.pnl).toFixed(2):'N/A'; return `${idx+1}) ${e} @ ${ep} → ${x} @ ${xp} | PnL ${pnl}`;}).join('\n')}</pre>
                         </details>
-                        <div style="text-align:right;display:flex;gap:8px;justify-content:flex-end;"><button class="btn" data-text="${text.replace(/&/g,'&amp;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" onclick="copyText(this.getAttribute('data-text'))">Копировать</button></div>`;
+                        <div style="text-align:right;display:flex;gap:8px;justify-content:flex-end;"><button class="btn" data-text="${text.replace(/&/g,'&amp;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" onclick="copyText(this.getAttribute('data-text'))">Сохранить</button></div>`;
                     return item;
                 }
                 // Рендерим все карточки: сперва 30д, потом 60, потом 90
                 // сгруппируем
                 const groups = {30:[],60:[],90:[]};
                 for(const r of allResults){ if(r.data&&r.data.success) groups[r.days].push(r); }
+                
+                // Подсчитываем статистику OOS результатов
+                let stats = {good: 0, bad: 0, neutral: 0};
+                for(const r of allResults){
+                    if(r.data && r.data.success){
+                        const res = r.data.result || {};
+                        const roiPct = (res && res.start_capital && typeof res.pnl_total === 'number') ? ((res.pnl_total / res.start_capital) * 100.0) : null;
+                        const isGood = (roiPct!=null && roiPct>10) && 
+                                       (res.profit_factor==null || res.profit_factor>=1.2) && 
+                                       (res.pl_ratio==null || res.pl_ratio>1.0) && 
+                                       (res.max_dd==null || res.max_dd<0.40);
+                        const isBad  = (roiPct!=null && roiPct<=0) || 
+                                       (res.profit_factor!=null && res.profit_factor<1.0) || 
+                                       (res.pl_ratio!=null && res.pl_ratio<1.0) || 
+                                       (res.max_dd!=null && res.max_dd>0.70);
+                        
+                        if(isGood) stats.good++;
+                        else if(isBad) stats.bad++;
+                        else stats.neutral++;
+                    }
+                }
+                
+                // Сохраняем статистику в oos_results.json
+                try {
+                    await fetch('/api/strategies/save_stats', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            filename: file,
+                            code: code,
+                            stats: stats
+                        })
+                    });
+                } catch(e) {
+                    console.warn('Failed to save OOS stats:', e);
+                }
+                
                 // 30d
-                const showOnlyCandidates = !!document.getElementById('oosShowOnlyCandidates')?.checked;
                 for(const g of groups[30]){
                     const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
                     const card = renderCard(`✅ 30d (${pct})`, g.data);
-                    if(showOnlyCandidates){ if(card && card.style && card.style.border && card.style.border.includes('#10b981')) wrap.prepend(card); }
-                    else{ wrap.prepend(card); }
+                    wrap.prepend(card);
                 }
                 // 60d
                 for(const g of groups[60]){
                     const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
                     const card = renderCard(`✅ 60d (${pct})`, g.data);
-                    if(showOnlyCandidates){ if(card && card.style && card.style.border && card.style.border.includes('#10b981')) wrap.prepend(card); }
-                    else{ wrap.prepend(card); }
+                    wrap.prepend(card);
                 }
                 // 90d
                 for(const g of groups[90]){
                     const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
                     const card = renderCard(`✅ 90d (${pct})`, g.data);
-                    if(showOnlyCandidates){ if(card && card.style && card.style.border && card.style.border.includes('#10b981')) wrap.prepend(card); }
-                    else{ wrap.prepend(card); }
+                    wrap.prepend(card);
                 }
             }catch(e){ console.error('[OOS] error', e); alert('❌ OOS сеть: '+e.message); }
         }
 
         function ensureOOSPanel(){
-            if (document.getElementById('oosPanel')) return;
+            if (document.getElementById('oos-results')) return;
             const content = document.querySelector('.content'); if(!content) return;
             const html = `
-                <div class="section" id="oosPanel">
+                <div class="section" id="oos-results">
                     <h2>📈 Результаты OOS (копируемые)</h2>
                     <div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
                         <button class="btn btn-info" onclick="openOOSModal()">⚙️ Настройки OOS</button>
-                        <label class="muted" style="display:flex;gap:6px;align-items:center;">
-                            <input type="checkbox" id="oosShowOnlyCandidates"> показывать кандидатов на дообучение
-                        </label>
                         <div class="muted" style="font-size:12px;">
-                            Пороги: ROI>10%, PF≥1.2, PLR>1.0, MaxDD<40%
+                            <strong>Критерии оценки:</strong><br>
+                            ✅ <span style="color:#10b981;">Кандидат на дообучение</span>: ROI>10%, PF≥1.2, PLR>1.0, MaxDD<40%<br>
+                            ❌ <span style="color:#ef4444;">Дообучать нельзя</span>: ROI≤0% ИЛИ PF<1.0 ИЛИ PLR<1.0 ИЛИ MaxDD>70%<br>
+                            ⚠️ <span style="color:#6b7280;">Требует анализа</span>: средние показатели
                         </div>
                     </div>
                     <div id="oosResults"></div>
@@ -809,6 +995,65 @@ P/L Ratio: ${plr}
         // Анализ модели отключён
 
         // Удаление модели отключено
+
+        // === Sidebar навигация ===
+        function scrollToSection(sectionId) {
+            const element = document.getElementById(sectionId);
+            if (element) {
+                element.scrollIntoView({ 
+                    behavior: 'smooth',
+                    block: 'start'
+                });
+                updateActiveNavLink(sectionId);
+            }
+        }
+
+        function updateActiveNavLink(activeId) {
+            // Убираем активный класс со всех ссылок
+            document.querySelectorAll('.sidebar-nav a').forEach(link => {
+                link.classList.remove('active');
+            });
+            
+            // Добавляем активный класс к текущей ссылке
+            const activeLink = document.querySelector(`.sidebar-nav a[href="#${activeId}"]`);
+            if (activeLink) {
+                activeLink.classList.add('active');
+            }
+        }
+
+        function toggleSidebar() {
+            const sidebar = document.querySelector('.sidebar');
+            sidebar.classList.toggle('open');
+        }
+
+        // Обновляем активную ссылку при прокрутке
+        function handleScroll() {
+            const sections = ['create-model', 'training', 'continue-training', 'result-models', 'oos-results'];
+            const scrollPos = window.scrollY + 100; // offset для точности
+            
+            for (let sectionId of sections) {
+                const element = document.getElementById(sectionId);
+                if (element) {
+                    const top = element.offsetTop;
+                    const bottom = top + element.offsetHeight;
+                    
+                    if (scrollPos >= top && scrollPos < bottom) {
+                        updateActiveNavLink(sectionId);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Добавляем обработчик прокрутки
+        window.addEventListener('scroll', handleScroll);
+        
+        // Инициализация активной ссылки при загрузке
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(() => {
+                handleScroll();
+            }, 100);
+        });
     </script>
 </body>
 </html>

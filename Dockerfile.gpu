@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    TORCH_CUDA_ARCH_LIST="All" \
+    CUDA_VISIBLE_DEVICES=all
+
+WORKDIR /workspace
+
+# System deps (minimal)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy reqs and install
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --upgrade pip && \
+    pip install -r /tmp/requirements.txt
+
+# Copy project
+COPY . /workspace
+
+# Default command is set by compose (celery entrypoints)

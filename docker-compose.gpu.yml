@@ -26,6 +26,13 @@ services:
     # device_requests не поддерживается вашей версией Compose — используем только deploy.reservations.devices
 
   celery-train:
+    gpus:
+      - count: all
+        capabilities:
+          - gpu
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
     deploy:
       resources:
         reservations:
@@ -39,6 +46,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       # Разрешаем CUDA внутри контейнера
       CUDA_VISIBLE_DEVICES: "all"
+      GPU_COUNT: "1"
       # torch.compile можно оставить выключенным для старых GPU (P100)
       DISABLE_TORCH_COMPILE: "${DISABLE_TORCH_COMPILE:-false}"
     # device_requests не поддерживается вашей версией Compose — используем только deploy.reservations.devices

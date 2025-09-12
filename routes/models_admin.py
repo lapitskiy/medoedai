@@ -49,7 +49,8 @@ def api_strategy_save():
         if run_dir is None or not run_dir.exists():
             return jsonify({'success': False, 'error': 'cannot resolve run directory'}), 400
 
-        stg_file = run_dir / 'strategies.json'
+        # Совместим сохранение стратегий с oos_results.json: складываем в раздел 'strategies'
+        stg_file = run_dir / 'oos_results.json'
         payload = {
             'label': label,
             'created_at': __import__('datetime').datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
@@ -59,20 +60,22 @@ def api_strategy_save():
             'run_id': str(run_id),
         }
         stg_id = f"stg_{__import__('datetime').datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-        # Читаем/пишем файл
-        doc = {'version': 1, 'current': None, 'items': {}}
+        # Читаем/пишем файл oos_results.json
+        doc = {'version': 1, 'counters': {'good':0,'bad':0,'neutral':0}, 'history': [], 'strategies': {'current': None, 'items': {}}}
         if stg_file.exists():
             try:
                 doc = json.loads(stg_file.read_text(encoding='utf-8'))
                 if not isinstance(doc, dict):
-                    doc = {'version': 1, 'current': None, 'items': {}}
+                    doc = {'version': 1, 'counters': {'good':0,'bad':0,'neutral':0}, 'history': [], 'strategies': {'current': None, 'items': {}}}
             except Exception:
-                doc = {'version': 1, 'current': None, 'items': {}}
-        if 'items' not in doc or not isinstance(doc['items'], dict):
-            doc['items'] = {}
-        doc['items'][stg_id] = payload
+                doc = {'version': 1, 'counters': {'good':0,'bad':0,'neutral':0}, 'history': [], 'strategies': {'current': None, 'items': {}}}
+        if 'strategies' not in doc or not isinstance(doc['strategies'], dict):
+            doc['strategies'] = {'current': None, 'items': {}}
+        items = doc['strategies'].get('items') or {}
+        items[stg_id] = payload
+        doc['strategies']['items'] = items
         if set_current:
-            doc['current'] = stg_id
+            doc['strategies']['current'] = stg_id
         stg_file.parent.mkdir(parents=True, exist_ok=True)
         stg_file.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding='utf-8')
         return jsonify({'success': True, 'stg_id': stg_id, 'file': str(stg_file)})
@@ -95,15 +98,19 @@ def api_strategy_apply():
         run_id = p.parts[runs_idx+1] if runs_idx+1 < len(p.parts) else None
         symbol = p.parts[runs_idx-1] if runs_idx-1 >= 0 else None
         run_dir = Path('result')/str(symbol)/'runs'/str(run_id)
-        stg_file = run_dir / 'strategies.json'
+        stg_file = run_dir / 'oos_results.json'
         if not stg_file.exists():
-            return jsonify({'success': False, 'error': 'strategies.json not found'}), 404
+            return jsonify({'success': False, 'error': 'oos_results.json not found'}), 404
         doc = json.loads(stg_file.read_text(encoding='utf-8'))
-        item = (doc.get('items') or {}).get(stg_id)
+        strategies = (doc.get('strategies') or {})
+        items = (strategies.get('items') or {})
+        item = items.get(stg_id)
         if not item:
             return jsonify({'success': False, 'error': 'strategy not found'}), 404
         # Обновим current
-        doc['current'] = stg_id
+        if 'strategies' not in doc or not isinstance(doc['strategies'], dict):
+            doc['strategies'] = {'current': None, 'items': {}}
+        doc['strategies']['current'] = stg_id
         stg_file.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding='utf-8')
         # Применим qgate в Redis (если доступен)
         try:
@@ -613,19 +620,47 @@ def oos_test_model():
         winrate = (wins / trades) if trades > 0 else None
         pl_ratio = None
         try:
-            avg_win = pnl_total / max(1, wins)
-            avg_loss = abs(pnl_total / max(1, losses)) if losses > 0 else None
-            if avg_win is not None and avg_loss:
-                pl_ratio = (avg_win / avg_loss) if avg_loss > 1e-12 else None
+            if wins > 0 and losses > 0:
+                # Рассчитываем средние прибыль и убыток из деталей сделок
+                winning_trades = [t for t in trades_details if t.get('pnl', 0) > 0]
+                losing_trades = [t for t in trades_details if t.get('pnl', 0) <= 0]
+                if winning_trades and losing_trades:
+                    avg_win = sum(t.get('pnl', 0) for t in winning_trades) / len(winning_trades)
+                    avg_loss = abs(sum(t.get('pnl', 0) for t in losing_trades) / len(losing_trades))
+                    pl_ratio = (avg_win / avg_loss) if avg_loss > 1e-12 else None
+            elif wins > 0 and losses == 0:
+                # Все сделки прибыльные - PLR = бесконечность, но показываем как очень высокий
+                pl_ratio = 999.99
         except Exception:
             pl_ratio = None
         profit_factor = None
         try:
-            gross_profit = max(0.0, pnl_total)
-            gross_loss = abs(min(0.0, pnl_total))
-            profit_factor = (gross_profit / gross_loss) if gross_loss > 1e-12 else None
+            if trades > 0:
+                # Рассчитываем из деталей сделок
+                gross_profit = sum(max(0, t.get('pnl', 0)) for t in trades_details)
+                gross_loss = abs(sum(min(0, t.get('pnl', 0)) for t in trades_details))
+                if gross_loss > 1e-12:
+                    profit_factor = gross_profit / gross_loss
+                elif gross_profit > 0:
+                    # Только прибыльные сделки - PF = бесконечность, но показываем как очень высокий
+                    profit_factor = 999.99
         except Exception:
             profit_factor = None
+
+        # Классификация результата для агрегирования в oos_results.json
+        try:
+            roi_pct = ((pnl_total / float(start_capital)) * 100.0) if (start_capital and isinstance(pnl_total, (int, float))) else None
+        except Exception:
+            roi_pct = None
+        is_good = (roi_pct is not None and roi_pct > 10.0) \
+            and (profit_factor is None or (isinstance(profit_factor, (int, float)) and profit_factor >= 1.2)) \
+            and (pl_ratio is None or (isinstance(pl_ratio, (int, float)) and pl_ratio > 1.0)) \
+            and (max_dd is None or (isinstance(max_dd, (int, float)) and max_dd < 0.40))
+        is_bad = (roi_pct is not None and roi_pct <= 0.0) \
+            or (isinstance(profit_factor, (int, float)) and profit_factor < 1.0) \
+            or (isinstance(pl_ratio, (int, float)) and pl_ratio < 1.0) \
+            or (isinstance(max_dd, (int, float)) and max_dd > 0.70)
+        classification = 'good' if is_good else ('bad' if is_bad else 'neutral')
 
         result_payload = {
             'success': True,
@@ -645,8 +680,73 @@ def oos_test_model():
                 't2_base': float(T2_user),
                 'start_capital': float(start_capital),
                 'equity_end': float(equity),
+                'classification': classification,
             }
         }
+        # Автосохранение в oos_results.json (суммируем счётчики и пишем историю)
+        try:
+            from pathlib import Path as _Path
+            import json as _json
+            run_dir = None
+            if filename:
+                pth = _Path(str(filename).replace('\\','/')).resolve()
+                if pth.name == 'model.pth' and 'runs' in pth.parts:
+                    runs_idx = list(pth.parts).index('runs')
+                    _run_id = pth.parts[runs_idx+1] if runs_idx+1 < len(pth.parts) else None
+                    _symbol = pth.parts[runs_idx-1] if runs_idx-1 >= 0 else None
+                    run_dir = _Path('result')/str(_symbol)/'runs'/str(_run_id)
+            if run_dir and run_dir.exists():
+                oos_file = run_dir / 'oos_results.json'
+                doc = {'version': 1, 'counters': {'good': 0, 'bad': 0, 'neutral': 0}, 'history': []}
+                if oos_file.exists():
+                    try:
+                        doc = _json.loads(oos_file.read_text(encoding='utf-8'))
+                        if not isinstance(doc, dict):
+                            doc = {'version': 1, 'counters': {'good': 0, 'bad': 0, 'neutral': 0}, 'history': []}
+                    except Exception:
+                        doc = {'version': 1, 'counters': {'good': 0, 'bad': 0, 'neutral': 0}, 'history': []}
+                # Обновляем счётчики
+                counters = doc.get('counters') or {}
+                for k in ('good','bad','neutral'):
+                    if k not in counters or not isinstance(counters.get(k), int):
+                        counters[k] = 0
+                counters[classification] = int(counters.get(classification, 0)) + 1
+                doc['counters'] = counters
+                # Добавляем запись истории
+                try:
+                    from datetime import datetime as _dt
+                    ts_utc = _dt.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+                except Exception:
+                    ts_utc = None
+                history = doc.get('history') or []
+                history.append({
+                    'ts': ts_utc,
+                    'days': int(days),
+                    'gate_disable': bool(gate_disable),
+                    'gate_scale': (float(gate_scale) if isinstance(gate_scale, (int, float)) else None),
+                    't1_base': float(T1_user),
+                    't2_base': float(T2_user),
+                    'metrics': {
+                        'winrate': winrate,
+                        'pl_ratio': pl_ratio,
+                        'profit_factor': profit_factor,
+                        'max_dd': max_dd,
+                        'pnl_total': pnl_total,
+                        'trades': trades,
+                        'start_capital': float(start_capital),
+                        'roi_pct': roi_pct,
+                    },
+                    'classification': classification,
+                    'symbol': symbol,
+                })
+                # Ограничим историю, чтобы файл не рос бесконечно
+                if len(history) > 500:
+                    history = history[-500:]
+                doc['history'] = history
+                oos_file.parent.mkdir(parents=True, exist_ok=True)
+                oos_file.write_text(_json.dumps(doc, ensure_ascii=False, indent=2), encoding='utf-8')
+        except Exception:
+            pass
         try:
             current_app.logger.info(f"[OOS] done symbol={symbol} days={days} trades={trades} winrate={winrate} pf={profit_factor} maxDD={max_dd} pnl={pnl_total}")
         except Exception:

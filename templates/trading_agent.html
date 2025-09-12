@@ -317,7 +317,6 @@
                 }).join('');
                 box.innerHTML = `<div class=\"versions-table\">${header}${rows}</div>`;
                 updateConsensusDisplay();
-                autoSaveTradingConfig();
             } catch (e) {
                 box.innerHTML = '<em>Ошибка отображения версий</em>';
             }
@@ -1398,7 +1397,6 @@
             const trendDisp = document.getElementById('trendConsensusDisplay');
             if (flatDisp) flatDisp.textContent = `${flatCount} из ${selectedCount} моделей (${flatPct}%)`;
             if (trendDisp) trendDisp.textContent = `${trendCount} из ${selectedCount} моделей (${trendPct}%)`;
-            autoSaveTradingConfig();
         }
 
         function initConsensusSliders() {
