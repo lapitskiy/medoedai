@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Dict, Any
+import os
 import torch
 from datetime import datetime
    
@@ -87,8 +88,14 @@ class vDqnConfig:
     model_path="dqn_model.pth"
     buffer_path="replay_buffer.pkl"
     
-    # Определение устройства (GPU или CPU)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
+    # Определение устройства (GPU или CPU), учитываем GPU_COUNT
+    _gpu_count_env = os.environ.get('GPU_COUNT', '').strip().lower()
+    _want_gpu = False
+    try:
+        _want_gpu = (_gpu_count_env != '' and _gpu_count_env not in ('0', 'false', 'no', 'off'))
+    except Exception:
+        _want_gpu = False
+    device = torch.device("cuda" if (_want_gpu and torch.cuda.is_available()) else "cpu")    
     
     use_wandb: bool = False
         
