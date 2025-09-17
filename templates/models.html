@@ -840,6 +840,9 @@ P/L Ratio: ${plr}
                     } else {
                         statusBadge = '<span class="badge" style="background:#6b7280;color:#fff;border-radius:4px;padding:2px 6px;">⚠️ Требует анализа</span>';
                     }
+                    const dc = (r.decisions_counts||{});
+                    const dBuy = Number(dc.buy||0), dHold = Number(dc.hold||0), dSell = Number(dc.sell||0);
+                    const dTotal = (typeof r.decisions_total==='number')? r.decisions_total : (dBuy + dHold + dSell);
                     const lines = [title + ' ' + statusBadge,
                         `Winrate: ${r.winrate!=null?(r.winrate*100).toFixed(1)+'%':'N/A'}`,
                         `PLR: ${r.pl_ratio!=null?r.pl_ratio.toFixed(2):'N/A'}`,
@@ -847,6 +850,7 @@ P/L Ratio: ${plr}
                         `MaxDD: ${r.max_dd!=null?(r.max_dd*100).toFixed(1)+'%':'N/A'}`,
                         `PnL: ${roiPct!=null?roiPct.toFixed(2)+'%':'N/A'}`,
                         `Trades: ${r.trades!=null?r.trades:'N/A'}`,
+                        `Decisions: B=${dBuy} H=${dHold} S=${dSell} (total ${dTotal})`,
                         r.symbol? `Symbol: ${r.symbol}`: '',
                         r.days!=null? `Window: ${r.days}d`: ''
                     ].filter(Boolean);

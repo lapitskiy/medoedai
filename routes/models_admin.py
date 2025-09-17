@@ -379,6 +379,7 @@ def oos_test_model():
         entry_price = None
         entry_ts = None
         trades_details = []
+        decisions_counts = {'buy': 0, 'sell': 0, 'hold': 0}
 
         serving_url = os.environ.get('SERVING_URL', 'http://serving:8000/predict_ensemble')
         model_paths = []
@@ -586,6 +587,12 @@ def oos_test_model():
                     current_app.logger.info(f"[OOS] regime={regime} votes={votes} required={required} decision={decision}")
                 except Exception:
                     pass
+            # Копим сводку по решениям за окно
+            try:
+                if isinstance(decision, str) and decision in decisions_counts:
+                    decisions_counts[decision] += 1
+            except Exception:
+                pass
             # Итоговое решение есть — симулируем сделку
             price = float(closes[i])
             ts_ms = int(df.iloc[i]['timestamp']) if 'timestamp' in df.columns else None
@@ -764,7 +771,18 @@ def oos_test_model():
         except Exception:
             pass
         try:
+            current_app.logger.info(f"[OOS] decisions summary: {decisions_counts}")
             current_app.logger.info(f"[OOS] done symbol={symbol} days={days} trades={trades} winrate={winrate} pf={profit_factor} maxDD={max_dd} pnl={pnl_total}")
+        except Exception:
+            pass
+        # Добавляем сводку решений в ответ
+        try:
+            result_payload['result']['decisions_counts'] = {
+                'buy': int(decisions_counts.get('buy', 0)),
+                'hold': int(decisions_counts.get('hold', 0)),
+                'sell': int(decisions_counts.get('sell', 0)),
+            }
+            result_payload['result']['decisions_total'] = int(sum(int(v) for v in decisions_counts.values()))
         except Exception:
             pass
         return jsonify(result_payload)
