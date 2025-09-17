@@ -331,7 +331,23 @@ def oos_test_model():
         except Exception:
             pass
 
-        df = db_get_or_fetch_ohlcv(symbol_name=symbol, timeframe='5m', limit_candles=40000, exchange_id='bybit')
+        # Пользователь может указать биржу; по умолчанию bybit. При отсутствии данных делаем фолбэк на альтернативу
+        exchange_req = str(data.get('exchange') or 'bybit').lower().strip()
+        if exchange_req not in ('bybit', 'binance'):
+            exchange_req = 'bybit'
+        primary_exchange = exchange_req
+        fallback_exchange = 'binance' if primary_exchange == 'bybit' else 'bybit'
+        try:
+            current_app.logger.info(f"[OOS] using exchange={primary_exchange} (fallback={fallback_exchange}) for {symbol}")
+        except Exception:
+            pass
+        df = db_get_or_fetch_ohlcv(symbol_name=symbol, timeframe='5m', limit_candles=40000, exchange_id=primary_exchange)
+        if df is None or df.empty:
+            try:
+                current_app.logger.warning(f"[OOS] no candles from {primary_exchange} for {symbol}, trying {fallback_exchange}")
+            except Exception:
+                pass
+            df = db_get_or_fetch_ohlcv(symbol_name=symbol, timeframe='5m', limit_candles=40000, exchange_id=fallback_exchange)
         if df is None or df.empty:
             try:
                 current_app.logger.error(f"[OOS] no candles for {symbol}")

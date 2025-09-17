@@ -29,12 +29,13 @@ from agents.vdqn.v_train_model_optimized import train_model_optimized
 class HyperparameterOptimizer:
     """Класс для оптимизации гиперпараметров DQN модели"""
     
-    def __init__(self, dfs: Dict, base_config: vDqnConfig = None):
+    def __init__(self, dfs: Dict, base_config: vDqnConfig = None, symbol: str | None = None):
         self.dfs = dfs
         self.base_config = base_config or vDqnConfig()
         self.results = []
         self.best_config = None
         self.best_score = -np.inf
+        self.symbol = symbol
         
     def define_parameter_grid(self) -> List[Dict]:
         """Определяет сетку параметров для перебора"""
@@ -42,16 +43,15 @@ class HyperparameterOptimizer:
         # Основные параметры для оптимизации
         parameter_grid = [
             # Learning rate
-            {'learning_rate': 0.0001},
-            {'learning_rate': 0.0005},
-            {'learning_rate': 0.001},
-            {'learning_rate': 0.002},
+            {'lr': 0.0001},
+            {'lr': 0.0002},
+            {'lr': 0.0005},
+            {'lr': 0.001},
             
-            # Epsilon decay
-            {'eps_decay_rate': 0.995},
-            {'eps_decay_rate': 0.997},
-            {'eps_decay_rate': 0.999},
-            {'eps_decay_rate': 0.9995},
+            # Epsilon decay (число шагов затухания)
+            {'eps_decay_steps': 750_000},
+            {'eps_decay_steps': 1_500_000},
+            {'eps_decay_steps': 2_000_000},
             
             # Batch size
             {'batch_size': 32},
@@ -60,16 +60,15 @@ class HyperparameterOptimizer:
             {'batch_size': 256},
             
             # Memory size
-            {'memory_size': 10000},
-            {'memory_size': 20000},
-            {'memory_size': 50000},
-            {'memory_size': 100000},
+            {'memory_size': 100_000},
+            {'memory_size': 200_000},
+            {'memory_size': 500_000},
+            {'memory_size': 1_000_000},
             
             # Target update frequency
-            {'target_update_freq': 100},
-            {'target_update_freq': 200},
-            {'target_update_freq': 500},
             {'target_update_freq': 1000},
+            {'target_update_freq': 3000},
+            {'target_update_freq': 5000},
         ]
         
         # Комбинируем параметры
@@ -95,9 +94,18 @@ class HyperparameterOptimizer:
                 if hasattr(test_config, param):
                     setattr(test_config, param, value)
             
+            # Обеспечим наличие символа для применения symbol overrides, если задан
+            dfs_to_use = self.dfs
+            try:
+                if self.symbol and isinstance(self.dfs, dict) and 'symbol' not in self.dfs:
+                    dfs_to_use = dict(self.dfs)
+                    dfs_to_use['symbol'] = self.symbol
+            except Exception:
+                dfs_to_use = self.dfs
+
             # Запускаем обучение на небольшом количестве эпизодов
             results = train_model_optimized(
-                dfs=self.dfs,
+                dfs=dfs_to_use,
                 cfg=test_config,
                 episodes=episodes,
                 patience_limit=episodes // 2,  # Быстрая остановка для тестирования

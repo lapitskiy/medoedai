@@ -22,10 +22,12 @@ from __future__ import annotations
 from typing import Dict, Any
 
 from agents.vdqn.hyperparameter.ton_optimized_config import TON_OPTIMIZED_CONFIG
+from agents.vdqn.hyperparameter.bnb_optimized_config import BNB_OPTIMIZED_CONFIG
 
 
 SYMBOL_OVERRIDES: Dict[str, Dict[str, Any]] = {
     'TONUSDT': TON_OPTIMIZED_CONFIG,
+    'BNBUSDT': BNB_OPTIMIZED_CONFIG,
 }
 
 

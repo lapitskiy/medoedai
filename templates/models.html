@@ -788,7 +788,10 @@ P/L Ratio: ${plr}
                 gateScale = gateScale===''? null : Number(gateScale);
                 let startCapital = document.getElementById('oosStartCapital')?.value;
                 startCapital = startCapital===''? null : Number(startCapital);
-                const payloadBase = { filename:file, code:code, gate_disable: gateDisable, gate_scale: gateScale, start_capital: startCapital };
+                // Биржа: опционально из модалки, иначе bybit
+                const exchangeSel = document.getElementById('oosExchange');
+                const exchange = exchangeSel ? (exchangeSel.value||'bybit') : 'bybit';
+                const payloadBase = { filename:file, code:code, gate_disable: gateDisable, gate_scale: gateScale, start_capital: startCapital, exchange };
                 // Мульти‑окна: 30/60/90
                 const windows = [30,60,90];
                 const scales = multiRuns ? [0.0, 0.5, 1.0] : [null];
@@ -960,6 +963,14 @@ P/L Ratio: ${plr}
                         <h3 style="margin-top:0;">⚙️ Настройки OOS</h3>
                         <div class="form-group">
                             <label><input type="checkbox" id="oosGateDisable"> Отключить Q‑gate (T1/T2=0)</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Биржа для OOS</label>
+                            <select id="oosExchange" class="form-control">
+                                <option value="bybit" selected>Bybit</option>
+                                <option value="binance">Binance</option>
+                            </select>
+                            <div class="muted">Если выбранная биржа недоступна, используется авто‑фолбэк</div>
                         </div>
                         <div class="form-group">
                             <label>Снизить пороги Q‑gate на долю (0..1)</label>
