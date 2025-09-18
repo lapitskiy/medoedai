@@ -30,6 +30,31 @@ requests==2.32.3
 dill==0.3.8
 joblib==1.4.2
 
+# Web & Task Queue
+celery
+flask
+redis
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic==2.7.4
+
+# Database
+sqlalchemy
+psycopg2-binary
+alembic
+
+# Trading & Data
+ccxt
+binance_historical_data
+gymnasium
+
+# Monitoring & Logging
+wandb
+
+# Network
+PySocks
+docker
+
 # System dependencies
 absl-py==2.1.0
 astunparse==1.6.3
