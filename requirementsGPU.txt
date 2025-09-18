@@ -1,8 +1,8 @@
 # PyTorch with CUDA support
-torch==2.3.1+cu121
-torchvision==0.18.1+cu121
-torchaudio==2.3.1+cu121
---extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.3.1+cu122
+torchvision==0.18.1+cu122
+torchaudio==2.3.1+cu122
+--extra-index-url https://download.pytorch.org/whl/cu122
 
 # Core ML libraries
 numpy==1.26.4
