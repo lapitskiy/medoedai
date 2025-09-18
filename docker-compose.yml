@@ -105,8 +105,11 @@ services:
     # CPU-only воркер: GPU не требуется
 
   # Специализированный воркер для обучения, использует все CPU ядра
+
   celery-train:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
     container_name: celery-train
     depends_on:
       medoedai:
@@ -114,17 +117,26 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-all}   # 1,2,… или all
+              capabilities: [gpu]
+
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       PYTHONDONTWRITEBYTECODE: "1"
       DISABLE_TORCH_COMPILE: "true"
       FORCE_DISABLE_TORCH_COMPILE: "true"
-      CELERY_POOL: prefork
-      CELERY_CONCURRENCY: "1"  # один процесс, но максимум потоков внутри BLAS/Torch
-      CUDA_VISIBLE_DEVICES: ""
-      TRAIN_CPU_FRACTION: "0.9"  # доля CPU ядер, используемых обучением (по умолчанию 80%)
-      # Дополнительные настройки производительности
+      NVIDIA_VISIBLE_DEVICES: ${USE_GPU:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      CELERY_POOL: solo
+      CELERY_CONCURRENCY: "1"
+      TRAIN_CPU_FRACTION: "0.9"
       OMP_SCHEDULE: "dynamic"
       MKL_DYNAMIC: "true"
       MKL_INTERFACE_LAYER: "LP64"
@@ -133,32 +145,17 @@ services:
     volumes:
       - .:/workspace
     working_dir: /workspace
-    command: ['sh','-lc','NPROC=$$(nproc); THREADS=$$(python -c "import os,math; n=os.cpu_count() or 1; f=float(os.environ.get(\"TRAIN_CPU_FRACTION\", \"0.8\")); print(max(1,int(n*f)))"); export OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$THREADS} MKL_NUM_THREADS=$${MKL_NUM_THREADS:-$$THREADS} TORCH_NUM_THREADS=$${TORCH_NUM_THREADS:-$$THREADS} OMP_SCHEDULE=$${OMP_SCHEDULE:-dynamic} MKL_DYNAMIC=$${MKL_DYNAMIC:-true} MKL_INTERFACE_LAYER=$${MKL_INTERFACE_LAYER:-LP64}; echo "🚀 CPU Optimization: Using $$THREADS/$$NPROC threads (OMP=$$OMP_NUM_THREADS, MKL=$$MKL_NUM_THREADS, TORCH=$$TORCH_NUM_THREADS)"; exec celery -A tasks.celery_tasks worker -Q train -P $${CELERY_POOL:-prefork} -c $${CELERY_CONCURRENCY:-1} --loglevel=info']
 
-  celery-trade:
-    build: .
-    container_name: celery-trade
-    restart: unless-stopped
-    depends_on:
-      redis:
-        condition: service_healthy
-      serving:
-        condition: service_started
-    environment:
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/0
-      # Новые ключи Bybit: используем индексированные переменные
-      BYBIT_1_API_KEY: ${BYBIT_1_API_KEY:-}
-      BYBIT_1_SECRET_KEY: ${BYBIT_1_SECRET_KEY:-}
-      TRADING_MODE: ${TRADING_MODE:-sandbox}
-      PYTHONDONTWRITEBYTECODE: "1"
-      SERVING_URL: http://serving:8000/predict_ensemble
-    env_file:
-      - .env
-    volumes:
-      - .:/workspace
-    working_dir: /workspace
-    command: ["sh","-lc","celery -A tasks.celery_tasks worker -Q trade -P prefork -c 8 --loglevel=info"]
+    healthcheck:
+      test: ["CMD-SHELL", "nvidia-smi -L >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    command: ['sh','-lc','NPROC=$$(nproc); THREADS=$$(python -c "import os,math; n=os.cpu_count() or 1; f=float(os.environ.get(\\"TRAIN_CPU_FRACTION\\", \\"0.8\\")); print(max(1,int(n*f)))"); export OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$THREADS} MKL_NUM_THREADS=$${MKL_NUM_THREADS:-$$THREADS} TORCH_NUM_THREADS=$${TORCH_NUM_THREADS:-$$THREADS} OMP_SCHEDULE=$${OMP_SCHEDULE:-dynamic} MKL_DYNAMIC=$${MKL_DYNAMIC:-true} MKL_INTERFACE_LAYER=$${MKL_INTERFACE_LAYER:-LP64}; echo "🚀 CPU/GPU Optimization: Using $$THREADS/$$NPROC threads (OMP=$$OMP_NUM_THREADS, MKL=$$MKL_NUM_THREADS, TORCH=$$TORCH_NUM_THREADS)"; exec celery -A tasks.celery_tasks worker -Q train -P $${CELERY_POOL:-prefork} -c $${CELERY_CONCURRENCY:-1} --loglevel=info']
+
+
 
   celery-beat:
     build: .

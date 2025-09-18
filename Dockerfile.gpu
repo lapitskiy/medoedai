@@ -1,25 +1,22 @@
 # syntax=docker/dockerfile:1
-
-FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+FROM nvcr.io/nvidia/pytorch:24.02-py3
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    TORCH_CUDA_ARCH_LIST="All" \
-    CUDA_VISIBLE_DEVICES=all
+    TORCH_CUDA_ARCH_LIST=All
 
 WORKDIR /workspace
 
-# System deps (minimal)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates build-essential && \
-    rm -rf /var/lib/apt/lists/*
+# (Опционально) показать версии torch до установки requirements
+RUN python - << 'PY'
+import torch
+print("BASE torch:", torch.__version__, "cuda:", torch.version.cuda)
+PY
 
-# Copy reqs and install
 COPY requirementsGPU.txt /tmp/requirements.txt
+# ВАЖНО: requirements не должен содержать torch/torchvision/torchaudio
 RUN pip install --upgrade pip && \
-    pip install -r /tmp/requirements.txt
+    pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Copy project
 COPY . /workspace
 
-# Default command is set by compose (celery entrypoints)

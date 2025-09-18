@@ -1,53 +1,12 @@
 services:
-  medoedai:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    environment:
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    # device_requests не поддерживается вашей версией Compose — используем только deploy.reservations.devices
-
-  serving:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    environment:
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    # device_requests не поддерживается вашей версией Compose — используем только deploy.reservations.devices
-
   celery-train:
-    gpus:
-      - count: all
-        capabilities:
-          - gpu
     build:
       context: .
       dockerfile: Dockerfile.gpu
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    runtime: nvidia
     environment:
-      # Разрешаем видеть все GPU
       NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
-      # Разрешаем CUDA внутри контейнера
-      CUDA_VISIBLE_DEVICES: "all"
+      CUDA_VISIBLE_DEVICES: all
       GPU_COUNT: "1"
-      # torch.compile можно оставить выключенным для старых GPU (P100)
       DISABLE_TORCH_COMPILE: "${DISABLE_TORCH_COMPILE:-false}"
-    # device_requests не поддерживается вашей версией Compose — используем только deploy.reservations.devices
 

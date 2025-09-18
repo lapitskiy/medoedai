@@ -1,23 +1,14 @@
-# PyTorch with CUDA support
-torch==2.4.0+cu121
-torchvision==0.19.0+cu121
-torchaudio==2.4.0+cu121
---extra-index-url https://download.pytorch.org/whl/cu121
+# PyTorch with CUDA support (already in base image)
+# torch==2.4.0+cu121
+# torchvision==0.19.0+cu121
+# torchaudio==2.4.0+cu121
+# --extra-index-url https://download.pytorch.org/whl/cu121
 
 # Core ML libraries
 numpy==1.26.4
 pandas==2.2.2
 scikit-learn==1.5.0
 scipy==1.13.1
-
-# Deep Learning
-tensorflow-gpu==2.10.0
-keras==2.10.0
-tensorboard==2.10.1
-tensorboard-data-server==0.6.1
-tensorboard-plugin-wit==1.8.1
-tensorflow-estimator==2.10.0
-tensorflow-io-gcs-filesystem==0.31.0
 
 # Visualization
 matplotlib==3.9.0
