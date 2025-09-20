@@ -28,10 +28,10 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
     "tesla_p100": GPUConfig(
         name="Tesla P100",
         vram_gb=16.0,
-        batch_size=4096,
-        memory_size=150_000,  # Оптимальный размер: ~4.5GB VRAM (28% от 16GB)
+        batch_size=1024,  # Уменьшаем для ускорения
+        memory_size=300_000,  # Оптимальный размер: ~4.5GB VRAM (28% от 16GB)
         hidden_sizes=(2048, 1024, 512),
-        train_repeats=8,
+        train_repeats=4,  # Уменьшаем для ускорения
         use_amp=True,
         use_gpu_storage=True,
         learning_rate=0.0001,
