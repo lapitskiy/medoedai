@@ -1,4 +1,5 @@
 .vscode/
+.cursor/
 .idea/
 temp/
 training.log

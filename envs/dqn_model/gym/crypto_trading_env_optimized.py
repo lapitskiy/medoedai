@@ -344,42 +344,62 @@ class CryptoTradingEnvOptimized(gym.Env):
 
     def _calculate_normalization_stats(self):
         """
-        Рассчитывает статистики нормализации для всех данных
+        Рассчитывает статистики нормализации ТОЛЬКО по обучающим данным
+        для предотвращения look-ahead bias
         """
         print("Начинаю расчет статистик для нормализации...")
         
-        # 1. Собираем все цены OHLC из всех массивов
+        # ИСПРАВЛЕНИЕ: Используем параметр train_split_ratio для разделения данных
+        train_split_ratio = getattr(self.cfg, 'train_split_ratio', 0.8)  # По умолчанию 80% для обучения
+        
+        # Определяем точки разделения для каждого таймфрейма
+        split_5min = int(self.df_5min.shape[0] * train_split_ratio)
+        split_15min = int(self.df_15min.shape[0] * train_split_ratio)
+        split_1h = int(self.df_1h.shape[0] * train_split_ratio)
+        
+        # Сохраняем точки разделения для использования в других методах
+        self.train_split_points = {
+            '5min': split_5min,
+            '15min': split_15min,
+            '1h': split_1h
+        }
+        
+        print(f"Использую {train_split_ratio*100:.0f}% данных для расчета статистик (train split)")
+        print(f"Точки разделения: 5min={split_5min}, 15min={split_15min}, 1h={split_1h}")
+        
+        # 1. Собираем цены OHLC ТОЛЬКО из обучающих данных
         all_prices = np.concatenate([
-            self.df_5min[:, :4].flatten(),
-            self.df_15min[:, :4].flatten(),
-            self.df_1h[:, :4].flatten()
+            self.df_5min[:split_5min, :4].flatten(),
+            self.df_15min[:split_15min, :4].flatten(),
+            self.df_1h[:split_1h, :4].flatten()
         ]).astype(np.float32)
         
         self.price_mean = np.mean(all_prices)
         self.price_std = np.std(all_prices) + 1e-8
 
-        # 2. Собираем все объемы
+        # 2. Собираем объемы ТОЛЬКО из обучающих данных
         all_volumes = np.concatenate([
-            self.df_5min[:, 4].flatten(),
-            self.df_15min[:, 4].flatten(),
-            self.df_1h[:, 4].flatten()
+            self.df_5min[:split_5min, 4].flatten(),
+            self.df_15min[:split_15min, 4].flatten(),
+            self.df_1h[:split_1h, 4].flatten()
         ]).astype(np.float32)
         
         self.volume_mean = np.mean(all_volumes)
         self.volume_std = np.std(all_volumes) + 1e-8
 
-        # 3. Статистики для индикаторов
+        # 3. Статистики для индикаторов ТОЛЬКО из обучающих данных
         if self.indicators.size > 0:
-            self.indicator_means = np.mean(self.indicators, axis=0)
-            self.indicator_stds = np.std(self.indicators, axis=0) + 1e-8
+            train_indicators = self.indicators[:split_5min]  # Индикаторы синхронизированы с 5min данными
+            self.indicator_means = np.mean(train_indicators, axis=0)
+            self.indicator_stds = np.std(train_indicators, axis=0) + 1e-8
             self.indicator_stds[self.indicator_stds == 0] = 1e-8
         else:
             self.indicator_means = np.array([])
             self.indicator_stds = np.array([])
         
-        print(f"✅ Статистики нормализации рассчитаны")
-        print(f"💰 Price: mean={self.price_mean:.2f}, std={self.price_std:.2f}")
-        print(f"📊 Volume: mean={self.volume_mean:.2f}, std={self.volume_std:.2f}")
+        print(f"✅ Статистики нормализации рассчитаны (БЕЗ look-ahead bias)")
+        print(f"💰 Price (train): mean={self.price_mean:.2f}, std={self.price_std:.2f}")
+        print(f"📊 Volume (train): mean={self.volume_mean:.2f}, std={self.volume_std:.2f}")
 
     def _precompute_all_states(self):
         """

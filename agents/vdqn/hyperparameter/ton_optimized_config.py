@@ -51,7 +51,7 @@ TON_OPTIMIZED_CONFIG = {
     
     # Параметры среды
     'gym_config': {
-        'lookback_window': 30,  # Увеличиваем окно истории с 20 до 30
+        'lookback_window': 100,  # Увеличиваем окно истории с 20 до 30
         'step_minutes': 5,
         'funding_features': {
             'included': True,

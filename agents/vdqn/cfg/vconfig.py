@@ -3,6 +3,7 @@ from typing import Dict, Any
 import os
 import torch
 from datetime import datetime
+from .gpu_configs import get_optimal_config, apply_gpu_config_to_vconfig
    
 @dataclass
 class vDqnConfig:  
@@ -13,7 +14,7 @@ class vDqnConfig:
 
     # === replay‑buffer ===
     memory_size: int       = 200_000  # уменьшил для ускорения
-    batch_size: int        = 256      # уменьшил batch size для большего разнообразия
+    batch_size: int        = 4096     # максимальный batch size для Tesla P100 (16GB VRAM)
     prioritized: bool      = True     # Prioritized Experience Replay
     alpha: float           = 0.6      # приоритет для PER
     beta: float            = 0.4      # importance sampling для PER
@@ -38,7 +39,7 @@ class vDqnConfig:
     grad_clip: float       = 1.0      # градиентный клиппинг
     
     # === GPU оптимизации ===
-    device: str             = "cuda"      # GPU
+    device: str             = "cuda"      # GPU (быстрее, но DDR4 используется минимально)
     run_name: str           = "stable-dqn"
     use_gpu_storage: bool   = True        # Хранить replay buffer на GPU
     use_torch_compile: bool = True        # PyTorch 2.x compile для максимального ускорения
@@ -54,6 +55,33 @@ class vDqnConfig:
             self.use_torch_compile = False
             self.torch_compile_force_disable = True
             print("⚠️ torch.compile отключен через переменную окружения DISABLE_TORCH_COMPILE=true")
+        
+        # Автоматическое определение GPU и применение оптимальных настроек
+        self._apply_gpu_optimization()
+    
+    def _apply_gpu_optimization(self):
+        """Автоматически определяет GPU и применяет оптимальные настройки"""
+        try:
+            # Получаем оптимальную конфигурацию для текущей GPU
+            gpu_config = get_optimal_config()
+            
+            # Применяем настройки
+            gpu_settings = apply_gpu_config_to_vconfig(gpu_config)
+            
+            # Обновляем параметры
+            self.batch_size = gpu_settings['batch_size']
+            self.memory_size = gpu_settings['memory_size']
+            self.hidden_sizes = gpu_settings['hidden_sizes']
+            self.train_repeats = gpu_settings['train_repeats']
+            self.use_amp = gpu_settings['use_amp']
+            self.use_gpu_storage = gpu_settings['use_gpu_storage']
+            self.lr = gpu_settings['learning_rate']
+            
+            print(f"🚀 Применены оптимальные настройки для {gpu_config.name}")
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка применения GPU оптимизации: {e}")
+            print("🔄 Используем настройки по умолчанию")
     
     # === оптимизации скорости ===
     use_mixed_precision: bool = True   # Mixed Precision Training

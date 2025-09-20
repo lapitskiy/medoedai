@@ -2,140 +2,206 @@
 <html lang="ru">
 <head>
     <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <link rel="stylesheet" href="/static/css/tabs.css">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Агент — {{ symbol }}</title>
+    <style>
+        /* Увеличиваем высоту блока предсказаний в 3 раза */
+        .predictions-large {
+            max-height: 1200px !important;
+        }
+    </style>
 </head>
 <body>
+    <!-- Sidebar навигация -->
+    <nav class="sidebar">
+        <h3>📋 Навигация</h3>
+        <ul class="sidebar-nav">
+            <li><a href="#status-balance" onclick="scrollToSection('status-balance')">📊 Статус и баланс</a></li>
+            <li><a href="#db-history" onclick="scrollToSection('db-history')">📚 История (БД)</a></li>
+            <li><a href="#predictions" onclick="scrollToSection('predictions')">🧠 Предсказания ИИ</a></li>
+            <li><a href="#celery-results" onclick="scrollToSection('celery-results')">🔍 Результаты Celery</a></li>
+            <li><a href="#trading-history" onclick="scrollToSection('trading-history')">📈 История торговли</a></li>
+            <li><a href="#trade-stats" onclick="scrollToSection('trade-stats')">📊 Статистика сделок</a></li>
+        </ul>
+    </nav>
+
+    <!-- Кнопка мобильного меню -->
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
     <div class="container">
-        <div class="header">
-            <h1>🤖 Агент по символу: <code>{{ symbol }}</code></h1>
-            <p>Все данные и мониторинг — только для выбранного символа</p>
-        </div>
-
-        <div class="content">
-            <nav style="margin: 6px 0 14px 0; font-size: 14px; color:#555;">
-                <a href="/" class="back-link">Главная</a>
-                <span>›</span>
-                <a href="/trading_agent" class="back-link">Торговый агент</a>
-                <span>›</span>
-                <span style="font-weight:600;">{{ symbol }}</span>
-            </nav>
-            <a href="/trading_agent" class="btn back-btn">← Общая страница</a>
-            <div class="button-group" style="margin:10px 0;">
-                <a class="btn" href="/agent/BTCUSDT">BTC</a>
-                <a class="btn" href="/agent/ETHUSDT">ETH</a>
-                <a class="btn" href="/agent/SOLUSDT">SOL</a>
-                <a class="btn" href="/agent/TONUSDT">TON</a>
-                <a class="btn" href="/agent/BNBUSDT">BNB</a>
-                <a class="btn" href="/agent/ADAUSDT">ADA</a>
-                <a class="btn" href="/agent/XRPUSDT">XRP</a>
-                <span style="margin-left:10px; color:#666;">или</span>
-                <select id="symbolSelectQuick" class="form-control" style="width:auto; display:inline-block; margin-left:8px;" onchange="goSymbol(this.value)">
-                    <option value="BTCUSDT">BTCUSDT</option>
-                    <option value="ETHUSDT">ETHUSDT</option>
-                    <option value="SOLUSDT">SOLUSDT</option>
-                    <option value="TONUSDT">TONUSDT</option>
-                    <option value="BNBUSDT">BNBUSDT</option>
-                    <option value="ADAUSDT">ADAUSDT</option>
-                    <option value="XRPUSDT">XRPUSDT</option>
-                </select>
+        <div class="main-content">
+            <div class="header">
+                <h1>🤖 Агент по символу: <code>{{ symbol }}</code></h1>
+                <p>Все данные и мониторинг — только для выбранного символа</p>
             </div>
 
-            <div class="button-group" style="margin:10px 0;">
-                <button class="btn btn-info" onclick="startMonitoringSymbol('{{ symbol }}')">🔄 Запустить мониторинг ({{ symbol }})</button>
-                <button class="btn btn-warning" onclick="stopMonitoringSymbol()">⏸️ Остановить мониторинг</button>
-                <div id="monInfo" class="status info" style="display:none;">Мониторинг {{ symbol }} активен (обновление каждые 5 мин)</div>
-            </div>
+            <div class="content">
+            <div class="tabs" data-tabs="main">
+                <div class="tabs-nav">
+                    <button class="tab-btn active" data-tab-btn data-target="#status-balance">📊 Статус и баланс</button>
+                    <button class="tab-btn" data-tab-btn data-target="#db-history">📚 История (БД)</button>
+                    <button class="tab-btn" data-tab-btn data-target="#predictions">🧠 Предсказания ИИ</button>
+                    <button class="tab-btn" data-tab-btn data-target="#celery-results">🔍 Результаты Celery</button>
+                    <button class="tab-btn" data-tab-btn data-target="#trading-history">📈 История торговли</button>
+                    <button class="tab-btn" data-tab-btn data-target="#trade-stats">📊 Статистика сделок</button>
+                </div>
+                <div class="tabs-content">
+                    <!-- Панель навигации и управления -->
+                    <div class="tab-panel" data-tab-panel id="status-balance">
+                        <nav style="margin: 6px 0 14px 0; font-size: 14px; color:#555;">
+                            <a href="/" class="back-link">Главная</a>
+                            <span>›</span>
+                            <a href="/trading_agent" class="back-link">Торговый агент</a>
+                            <span>›</span>
+                            <span style="font-weight:600;">{{ symbol }}</span>
+                        </nav>
+                        <a href="/trading_agent" class="btn back-btn">← Общая страница</a>
+                        <div class="button-group" style="margin:10px 0;">
+                            <a class="btn" href="/agent/BTCUSDT">BTC</a>
+                            <a class="btn" href="/agent/ETHUSDT">ETH</a>
+                            <a class="btn" href="/agent/SOLUSDT">SOL</a>
+                            <a class="btn" href="/agent/TONUSDT">TON</a>
+                            <a class="btn" href="/agent/BNBUSDT">BNB</a>
+                            <a class="btn" href="/agent/ADAUSDT">ADA</a>
+                            <a class="btn" href="/agent/XRPUSDT">XRP</a>
+                            <span style="margin-left:10px; color:#666;">или</span>
+                            <select id="symbolSelectQuick" class="form-control" style="width:auto; display:inline-block; margin-left:8px;" onchange="goSymbol(this.value)">
+                                <option value="BTCUSDT">BTCUSDT</option>
+                                <option value="ETHUSDT">ETHUSDT</option>
+                                <option value="SOLUSDT">SOLUSDT</option>
+                                <option value="TONUSDT">TONUSDT</option>
+                                <option value="BNBUSDT">BNBUSDT</option>
+                                <option value="ADAUSDT">ADAUSDT</option>
+                                <option value="XRPUSDT">XRPUSDT</option>
+                            </select>
+                        </div>
 
-            <div class="section">
-                <h2>📊 Статус и баланс</h2>
-                <div class="button-group">
-                    <button class="btn btn-info" onclick="getTradingStatus('{{ symbol }}')">🔍 Статус</button>
-                    <button class="btn btn-info" onclick="getBalance()">💰 Баланс</button>
-                </div>
-                <div id="statusBox" class="trading-status" style="display:none;">
-                    <h3>📊 Статус</h3>
-                    <div id="statusContent"></div>
-                </div>
-                <div id="balanceBox" class="trading-status" style="display:none;">
-                    <h3>💰 Баланс</h3>
-                    <div id="balanceContent"></div>
-                </div>
-            </div>
+                        <div class="button-group" style="margin:10px 0;">
+                            <button class="btn btn-info" onclick="startMonitoringSymbol('{{ symbol }}')">🔄 Запустить мониторинг ({{ symbol }})</button>
+                            <button class="btn btn-warning" onclick="stopMonitoringSymbol()">⏸️ Остановить мониторинг</button>
+                            <div id="monInfo" class="status info" style="display:none;">Мониторинг {{ symbol }} активен (обновление каждые 5 мин)</div>
+                        </div>
+
+                        <div class="section">
+                            <h2>📊 Статус и баланс</h2>
+                            <div class="button-group">
+                                <button class="btn btn-info" onclick="getTradingStatus('{{ symbol }}')">🔍 Статус</button>
+                                <button class="btn btn-info" onclick="getBalance()">💰 Баланс</button>
+                            </div>
+                            <div id="statusBox" class="trading-status" style="display:none;">
+                                <h3>📊 Статус</h3>
+                                <div id="statusContent"></div>
+                            </div>
+                            <div id="balanceBox" class="trading-status" style="display:none;">
+                                <h3>💰 Баланс</h3>
+                                <div id="balanceContent"></div>
+                            </div>
+                        </div>
+                    </div><!-- /status-balance tab-panel -->
 
             
 
-            <!-- Отдельный блок: История сделок из базы (всегда на виду) -->
-            <div class="section">
-                <h2>📚 История сделок (База данных)</h2>
-                <p>Отдельный блок для контроля сопоставления BUY → SELL по данным из БД</p>
-                <div class="button-group">
-                    <button class="btn btn-primary" onclick="refreshDbTradeHistory('{{ symbol }}')">🔄 Обновить историю (БД)</button>
-                </div>
-                <div id="dbTradeHistory" class="trading-history" style="display: none;">
-                    <h3>📚 История сделок (БД)</h3>
-                    <div id="dbTradeHistoryContent"></div>
-                </div>
-            </div>
+                    <!-- История сделок из базы -->
+                    <div class="tab-panel" data-tab-panel id="db-history">
+                        <div class="section">
+                            <h2>📚 История сделок (База данных)</h2>
+                            <p>Отдельный блок для контроля сопоставления BUY → SELL по данным из БД</p>
+                            <div class="button-group">
+                                <button class="btn btn-primary" onclick="refreshDbTradeHistory('{{ symbol }}')">🔄 Обновить историю (БД)</button>
+                            </div>
+                            <div id="dbTradeHistory" class="trading-history" style="display: none;">
+                                <h3>📚 История сделок (БД)</h3>
+                                <div id="dbTradeHistoryContent"></div>
+                            </div>
+                        </div>
+                    </div><!-- /db-history tab-panel -->
 
-            <div class="section">
-                <h2>🧠 Предсказания ИИ</h2>
-                <div class="button-group">
-                    <button class="btn btn-primary" onclick="loadPredictions('{{ symbol }}')">Загрузить предсказания</button>
-                    <button class="btn btn-primary" onclick="loadPredictionStats('{{ symbol }}')">Статистика предсказаний</button>
-                </div>
-                <div id="predictionsBox" class="trading-history" style="display:none;">
-                    <h3>🧠 Предсказания</h3>
-                    <div id="predictionsContent"></div>
-                </div>
-                <div id="predStatsBox" class="trading-history" style="display:none;">
-                    <h3>📊 Статистика предсказаний</h3>
-                    <div id="predStatsContent"></div>
-                </div>
-            </div>
+                    <!-- Предсказания ИИ -->
+                    <div class="tab-panel" data-tab-panel id="predictions">
+                        <div class="section">
+                            <h2>🧠 Предсказания ИИ</h2>
+                            <div class="button-group">
+                                <button class="btn btn-primary" onclick="loadPredictions('{{ symbol }}')">Загрузить предсказания</button>
+                                <button class="btn btn-primary" onclick="loadPredictionStats('{{ symbol }}')">Статистика предсказаний</button>
+                            </div>
+                            <div id="predictionsBox" class="trading-history predictions-large" style="display:none;">
+                                <h3>🧠 Предсказания</h3>
+                                <div id="predictionsContent"></div>
+                            </div>
+                            <div id="predStatsBox" class="trading-history" style="display:none;">
+                                <h3>📊 Статистика предсказаний</h3>
+                                <div id="predStatsContent"></div>
+                            </div>
+                        </div>
+                    </div><!-- /predictions tab-panel -->
 
-            <div class="section">
-                <h2>🔍 Результаты Celery</h2>
-                <div class="button-group">
-                    <button class="btn btn-primary" onclick="loadCeleryResults('{{ symbol }}', false)">Реальные сделки</button>
-                    <button class="btn btn-secondary" onclick="loadCeleryResults('{{ symbol }}', true)">Все результаты</button>
-                </div>
-                <div id="celeryBox" class="trading-history" style="display:none;">
-                    <h3 id="celeryTitle">📊 Результаты</h3>
-                    <div id="celeryContent"></div>
-                </div>
-            </div>
+                    <!-- Результаты Celery -->
+                    <div class="tab-panel" data-tab-panel id="celery-results">
+                        <div class="section">
+                            <h2>🔍 Результаты Celery</h2>
+                            <div class="button-group">
+                                <button class="btn btn-primary" onclick="loadCeleryResults('{{ symbol }}', false)">Реальные сделки</button>
+                                <button class="btn btn-secondary" onclick="loadCeleryResults('{{ symbol }}', true)">Все результаты</button>
+                            </div>
+                            <div id="celeryBox" class="trading-history" style="display:none;">
+                                <h3 id="celeryTitle">📊 Результаты</h3>
+                                <div id="celeryContent"></div>
+                            </div>
+                        </div>
+                    </div><!-- /celery-results tab-panel -->
 
-            <!-- Секция истории торговли -->
-            <div class="section">
-                <h2>📈 История торговли</h2>
-                <p>Детальная информация о всех сделках</p>
-                <div class="button-group">
-                    <button class="btn btn-primary" onclick="getTradingHistory()">📊 История сделок</button>
-                </div>
-                <div id="tradingHistory" class="trading-history" style="display: none;">
-                    <h3>📈 История сделок</h3>
-                    <div id="historyContent"></div>
-                </div>
-            </div>
+                    <!-- История торговли -->
+                    <div class="tab-panel" data-tab-panel id="trading-history">
+                        <div class="section">
+                            <h2>📈 История торговли</h2>
+                            <p>Детальная информация о всех сделках</p>
+                            <div class="button-group">
+                                <button class="btn btn-primary" onclick="getTradingHistory()">📊 История сделок</button>
+                            </div>
+                            <div id="tradingHistory" class="trading-history" style="display: none;">
+                                <h3>📈 История сделок</h3>
+                                <div id="historyContent"></div>
+                            </div>
+                        </div>
+                    </div><!-- /trading-history tab-panel -->
 
-            <!-- Секция статистики сделок -->
-            <div class="section">
-                <h2>📊 Статистика сделок</h2>
-                <div class="button-group">
-                    <button class="btn btn-primary" onclick="getTradeStatistics()">📊 Обновить статистику</button>
-                </div>
-                <div id="tradeStatistics" class="trading-history" style="display: none;">
-                    <h3>📊 Статистика сделок</h3>
-                    <div id="tradeStatisticsContent"></div>
-                </div>
+                    <!-- Статистика сделок -->
+                    <div class="tab-panel" data-tab-panel id="trade-stats">
+                        <div class="section">
+                            <h2>📊 Статистика сделок</h2>
+                            <div class="button-group">
+                                <button class="btn btn-primary" onclick="getTradeStatistics()">📊 Обновить статистику</button>
+                            </div>
+                            <div id="tradeStatistics" class="trading-history" style="display: none;">
+                                <h3>📊 Статистика сделок</h3>
+                                <div id="tradeStatisticsContent"></div>
+                            </div>
+                        </div>
+                    </div><!-- /trade-stats tab-panel -->
+                </div><!-- /tabs-content -->
+            </div><!-- /tabs -->
             </div>
-
         </div>
     </div>
 
 <script>
+// Связываем переход из сайдбара с активацией табов
+document.addEventListener('DOMContentLoaded', function(){
+    try{
+        document.querySelectorAll('.sidebar-nav a[href^="#"]').forEach(a => {
+            a.addEventListener('click', function(){
+                const href = a.getAttribute('href');
+                if(href){
+                    try{ window.__tabs && window.__tabs.activateTabByAnchor('[data-tabs="main"]', href); }catch(_){ }
+                }
+            });
+        });
+    }catch(_){ }
+});
+
 // Установим выбранный символ в селекте
 try{
   const sel = document.getElementById('symbolSelectQuick');
@@ -816,6 +882,8 @@ window.addEventListener('load', ()=>{
   startMonitoringSymbol(sym);
 });
 </script>
+<script src="/static/js/sidebar.js"></script>
+<script src="/static/js/tabs.js"></script>
 
 </body>
 </html>

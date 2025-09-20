@@ -2,6 +2,8 @@
 <html lang="ru">
 <head>
     <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <link rel="stylesheet" href="/static/css/tabs.css">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MedoedAI - Торговый агент</title>
@@ -57,18 +59,45 @@
     </style>
 </head>
 <body>
+    <!-- Sidebar навигация -->
+    <nav class="sidebar">
+        <h3>📋 Навигация</h3>
+        <ul class="sidebar-nav">
+            <li><a href="#agent-control" onclick="scrollToSection('agent-control')">🎯 Управление</a></li>
+            <li><a href="#symbol-navigation" onclick="scrollToSection('symbol-navigation')">🔀 Перейти к странице символа</a></li>
+        </ul>
+    </nav>
+
+    <!-- Кнопка мобильного меню -->
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
     <div class="container">
-        <div class="header">
-            <h1>💰 Торговый агент</h1>
-            <p>Управление торговлей на реальном рынке через обученную модель DQN</p>
-        </div>
-
-        <div class="content">
-            <!-- Кнопка возврата -->
-            <a href="/" class="btn back-btn">← Вернуться на главную</a>
-
-            <!-- Секция управления торговлей -->
-            <div class="section">
+        <div class="main-content">
+            <div class="header">
+                <h1>💰 Торговый агент</h1>
+                <p>Управление торговлей на реальном рынке через обученную модель DQN</p>
+            </div>
+            
+            <div class="content">
+            <div class="tabs" data-tabs="main">
+                <div class="tabs-nav">
+                    <button class="tab-btn active" data-tab-btn data-target="#agent-control">🎯 Управление</button>
+                    <button class="tab-btn" data-tab-btn data-target="#symbol-navigation">🔀 Страница символа</button>
+                    <button class="tab-btn" data-tab-btn data-target="#test-tab">🧪 Тест</button>
+                </div>
+                <div class="tabs-content">
+                    <!-- Панели совпадают по id с data-target -->
+                    <div class="tab-panel" data-tab-panel id="agent-control">
+                        <!-- Секция управления торговлей (перенос внутрь панели) -->
+                        
+                        <!-- Кнопка возврата -->
+                        <a href="/" class="btn back-btn">← Вернуться на главную</a>
+                        
+                        <!-- Секция управления торговлей -->
+                        <div class="section">
+                            <h2>🎯 Управление торговлей</h2>
+                            <p>Запуск и остановка торгового бота</p>
+            
                 <h2>🎯 Управление торговлей</h2>
                 <p>Запуск и остановка торгового бота</p>
                 
@@ -160,29 +189,7 @@
                     <div id="modelInfoContent"></div>
                 </div>
                 
-            <!-- Переход к странице символа (отдельный блок) -->
-            <div class="section">
-                <h2>🔀 Перейти к странице символа</h2>
-                <p>Быстрый переход на детальную страницу агента по выбранному символу</p>
-                <div class="form-group">
-                    <label style="font-weight:600;">Символ</label>
-                    <select id="agentSymbolSelect" class="form-control">
-                        <option value="BTCUSDT" selected>BTCUSDT</option>
-                        <option value="ETHUSDT">ETHUSDT</option>
-                        <option value="SOLUSDT">SOLUSDT</option>
-                        <option value="TONUSDT">TONUSDT</option>
-                        <option value="ADAUSDT">ADAUSDT</option>
-                        <option value="BNBUSDT">BNBUSDT</option>
-                        <option value="XRPUSDT">XRPUSDT</option>
-                    </select>
-                </div>
-                <div class="button-group">
-                    <button class="btn btn-primary" onclick="goToAgent()">Открыть страницу символа</button>
-                </div>
-            </div>
-
-            
-                <div class="button-group">
+                <div class="button-group" id="monitoring">
                     <button class="btn btn-success" onclick="startTrading()">
                         🚀 Запустить торговлю
                     </button>
@@ -193,14 +200,62 @@
                 
                 <div id="tradingResult" class="status" style="display: none;"></div>
             </div>
+            </div><!-- /agent-control tab-panel -->
+
+            <!-- Переход к странице символа как таб-панель -->
+            <div class="tab-panel" data-tab-panel id="symbol-navigation">
+                <div class="section">
+                    <h2>🔀 Перейти к странице символа</h2>
+                    <p>Быстрый переход на детальную страницу агента по выбранному символу</p>
+                    <div class="form-group">
+                        <label style="font-weight:600;">Символ</label>
+                        <select id="agentSymbolSelect" class="form-control">
+                            <option value="BTCUSDT" selected>BTCUSDT</option>
+                            <option value="ETHUSDT">ETHUSDT</option>
+                            <option value="SOLUSDT">SOLUSDT</option>
+                            <option value="TONUSDT">TONUSDT</option>
+                            <option value="ADAUSDT">ADAUSDT</option>
+                            <option value="BNBUSDT">BNBUSDT</option>
+                            <option value="XRPUSDT">XRPUSDT</option>
+                        </select>
+                    </div>
+                    <div class="button-group">
+                        <button class="btn btn-primary" onclick="goToAgent()">Открыть страницу символа</button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Тестовая панель -->
+            <div class="tab-panel" data-tab-panel id="test-tab">
+                <div class="section">
+                    <h2>🧪 Тестовая вкладка</h2>
+                    <p>Это тестовая вкладка для проверки работы табов.</p>
+                </div>
+            </div>
+            </div><!-- /tabs-content -->
+        </div><!-- /tabs -->
 
             
 
             
+            </div>
         </div>
     </div>
 
     <script>
+        // Связываем переход из сайдбара с активацией табов
+        document.addEventListener('DOMContentLoaded', function(){
+            try{
+                document.querySelectorAll('.sidebar-nav a[href^="#"]').forEach(a => {
+                    a.addEventListener('click', function(){
+                        const href = a.getAttribute('href');
+                        if(href){
+                            try{ window.__tabs && window.__tabs.activateTabByAnchor('[data-tabs="main"]', href); }catch(_){ }
+                        }
+                    });
+                });
+            }catch(_){ }
+        });
         let monitoringInterval = null;
 
         let modelsData = [];
@@ -1478,5 +1533,7 @@
             }
         }
     </script>
+    <script src="/static/js/sidebar.js"></script>
+    <script src="/static/js/tabs.js"></script>
 </body>
 </html>

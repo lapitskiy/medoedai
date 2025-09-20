@@ -874,10 +874,27 @@ class CryptoTradingEnv(gym.Env):
     def _calculate_normalization_stats(self):
         """
         Рассчитывает статистики нормализации (среднее и стандартное отклонение) для каждого признака
-        по всем историческим данным. Это критично для согласованного масштабирования.
+        ТОЛЬКО по обучающим данным для предотвращения look-ahead bias.
         """
         print("Начинаю расчет статистик для нормализации...")
 
+        # ИСПРАВЛЕНИЕ: Используем параметр train_split_ratio для разделения данных
+        train_split_ratio = getattr(self.cfg, 'train_split_ratio', 0.8)  # По умолчанию 80% для обучения
+        
+        # Определяем точки разделения для каждого таймфрейма
+        split_5min = int(len(self.df_5min) * train_split_ratio)
+        split_15min = int(len(self.df_15min) * train_split_ratio)
+        split_1h = int(len(self.df_1h) * train_split_ratio)
+        
+        # Сохраняем точки разделения для использования в других методах
+        self.train_split_points = {
+            '5min': split_5min,
+            '15min': split_15min,
+            '1h': split_1h
+        }
+        
+        print(f"Использую {train_split_ratio*100:.0f}% данных для расчета статистик (train split)")
+        print(f"Точки разделения: 5min={split_5min}, 15min={split_15min}, 1h={split_1h}")
 
         for df_name, df in zip(['5min', '15min', '1h'], [self.df_5min, self.df_15min, self.df_1h]):
             for col in ['open', 'high', 'low', 'close', 'volume']:
@@ -887,36 +904,36 @@ class CryptoTradingEnv(gym.Env):
         if self.indicators is None or len(self.indicators) == 0:
             raise ValueError("Индикаторы не инициализированы — self.indicators пустой или None")
 
-
-        # 1. Собираем все цены OHLC (open, high, low, close) из всех DF
+        # 1. Собираем цены OHLC ТОЛЬКО из обучающих данных
         all_prices = np.concatenate([
-            self.df_5min[['open', 'high', 'low', 'close']].values.flatten(),
-            self.df_15min[['open', 'high', 'low', 'close']].values.flatten(),
-            self.df_1h[['open', 'high', 'low', 'close']].values.flatten()
+            self.df_5min[['open', 'high', 'low', 'close']].iloc[:split_5min].values.flatten(),
+            self.df_15min[['open', 'high', 'low', 'close']].iloc[:split_15min].values.flatten(),
+            self.df_1h[['open', 'high', 'low', 'close']].iloc[:split_1h].values.flatten()
         ]).astype(np.float32)
         self.price_mean = np.mean(all_prices)
         self.price_std = np.std(all_prices) + 1e-8 # Добавляем эпсилон для стабильности
 
-        # 2. Собираем все объемы из всех DF
+        # 2. Собираем объемы ТОЛЬКО из обучающих данных
         all_volumes = np.concatenate([
-            self.df_5min['volume'].values.flatten(),
-            self.df_15min['volume'].values.flatten(),
-            self.df_1h['volume'].values.flatten()
+            self.df_5min['volume'].iloc[:split_5min].values.flatten(),
+            self.df_15min['volume'].iloc[:split_15min].values.flatten(),
+            self.df_1h['volume'].iloc[:split_1h].values.flatten()
         ]).astype(np.float32)
         self.volume_mean = np.mean(all_volumes)
         self.volume_std = np.std(all_volumes) + 1e-8
 
-        # 3. Собираем индикаторы (предполагая self.indicators имеет форму (количество_строк, 3))
-        # Каждый столбец индикаторов нормализуется отдельно.
-        self.indicator_means = np.mean(self.indicators, axis=0) # Среднее для каждого из 3 индикаторов
-        self.indicator_stds = np.std(self.indicators, axis=0) + 1e-8
+        # 3. Собираем индикаторы ТОЛЬКО из обучающих данных
+        # Индикаторы рассчитаны для 5min данных
+        train_indicators = self.indicators[:split_5min]
+        self.indicator_means = np.mean(train_indicators, axis=0)
+        self.indicator_stds = np.std(train_indicators, axis=0) + 1e-8
         # Обработка нулевого стандартного отклонения
         self.indicator_stds[self.indicator_stds == 0] = 1e-8 
         
-        print("Расчет статистик для нормализации завершен.")
-        print(f"Средняя цена: {self.price_mean:.4f}, std: {self.price_std:.4f}")
-        print(f"Средний объем: {self.volume_mean:.4f}, std: {self.volume_std:.4f}")
-        print(f"Индикаторы: среднее {self.indicator_means}, std {self.indicator_stds}")
+        print("Расчет статистик для нормализации завершен (БЕЗ look-ahead bias).")
+        print(f"Средняя цена (train): {self.price_mean:.4f}, std: {self.price_std:.4f}")
+        print(f"Средний объем (train): {self.volume_mean:.4f}, std: {self.volume_std:.4f}")
+        print(f"Индикаторы (train): среднее {self.indicator_means}, std {self.indicator_stds}")
 
     @property
     def can_log(self) -> bool:

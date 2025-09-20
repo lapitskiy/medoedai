@@ -93,23 +93,42 @@ class AdaptiveNormalizer:
                 'take_profit': 0.08,
             }
     
-    def analyze_market_conditions(self, df: pd.DataFrame) -> Dict:
+    def analyze_market_conditions(self, df: pd.DataFrame, train_split_point: int = None) -> Dict:
         """
-        Анализирует рыночные условия для адаптации параметров
+        Анализирует рыночные условия для адаптации параметров.
+        
+        Args:
+            df: DataFrame с историческими данными
+            train_split_point: Точка разделения train/test данных
         """
         try:
+            # ИСПРАВЛЕНИЕ: Используем только обучающие данные для анализа
+            if train_split_point is not None:
+                analysis_df = df.iloc[:train_split_point]
+            else:
+                analysis_df = df
+            
+            # Проверяем минимальное количество данных
+            if len(analysis_df) < 20:
+                # Возвращаем дефолтные значения для коротких данных
+                return self._get_default_market_conditions()
+            
             # Волатильность (стандартное отклонение returns)
-            returns = df['close'].pct_change().dropna()
-            volatility = returns.std()
+            returns = analysis_df['close'].pct_change().dropna()
+            volatility = returns.std() if len(returns) > 0 else 0.02
             
             # Объем (средний объем за последние N баров)
-            volume_ma = df['volume'].rolling(20).mean()
-            current_volume = df['volume'].iloc[-1]
-            volume_ratio = current_volume / volume_ma.iloc[-1] if not pd.isna(volume_ma.iloc[-1]) else 1.0
+            volume_window = min(20, len(analysis_df) - 1)
+            volume_ma = analysis_df['volume'].rolling(volume_window).mean()
+            current_volume = analysis_df['volume'].iloc[-1]
+            volume_ratio = current_volume / volume_ma.iloc[-1] if not pd.isna(volume_ma.iloc[-1]) and volume_ma.iloc[-1] > 0 else 1.0
             
-            # Тренд (наклон линии тренда)
-            price_trend = np.polyfit(range(len(df)), df['close'], 1)[0]
-            trend_strength = abs(price_trend) / df['close'].mean()
+            # Тренд (наклон линии тренда) - только по доступным данным
+            if len(analysis_df) > 2:
+                price_trend = np.polyfit(range(len(analysis_df)), analysis_df['close'], 1)[0]
+                trend_strength = abs(price_trend) / analysis_df['close'].mean()
+            else:
+                trend_strength = 0.001
             
             # Рыночные условия
             market_conditions = {
@@ -125,24 +144,33 @@ class AdaptiveNormalizer:
             
         except Exception as e:
             logger.error(f"Ошибка анализа рыночных условий: {e}")
-            return {
-                'volatility': 0.02,
-                'volume_ratio': 1.0,
-                'trend_strength': 0.001,
-                'is_high_volatility': False,
-                'is_high_volume': False,
-                'is_strong_trend': False,
-            }
+            return self._get_default_market_conditions()
     
-    def adapt_parameters(self, symbol: str, df: pd.DataFrame) -> Dict:
+    def _get_default_market_conditions(self) -> Dict:
+        """Возвращает дефолтные рыночные условия"""
+        return {
+            'volatility': 0.02,
+            'volume_ratio': 1.0,
+            'trend_strength': 0.001,
+            'is_high_volatility': False,
+            'is_high_volume': False,
+            'is_strong_trend': False,
+        }
+    
+    def adapt_parameters(self, symbol: str, df: pd.DataFrame, train_split_point: int = None) -> Dict:
         """
-        Адаптирует параметры под конкретную криптовалюту и рыночные условия
+        Адаптирует параметры под конкретную криптовалюту и рыночные условия.
+        
+        Args:
+            symbol: Символ криптовалюты
+            df: DataFrame с историческими данными
+            train_split_point: Точка разделения train/test данных
         """
         # Базовый профиль
         profile = self.get_crypto_profile(symbol)
         
-        # Анализ рыночных условий
-        market_conditions = self.analyze_market_conditions(df)
+        # Анализ рыночных условий ТОЛЬКО по обучающим данным
+        market_conditions = self.analyze_market_conditions(df, train_split_point)
         
         # Адаптация параметров
         adapted_params = profile.copy()
@@ -190,13 +218,18 @@ class AdaptiveNormalizer:
         
         return adapted_params
     
-    def normalize_features(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    def normalize_features(self, df: pd.DataFrame, symbol: str, train_split_point: int = None) -> pd.DataFrame:
         """
-        Нормализует признаки с учетом профиля криптовалюты
+        Нормализует признаки с учетом профиля криптовалюты.
+        
+        Args:
+            df: DataFrame с данными для нормализации
+            symbol: Символ криптовалюты
+            train_split_point: Точка разделения train/test данных
         """
         try:
-            # Получаем адаптированные параметры
-            params = self.adapt_parameters(symbol, df)
+            # Получаем адаптированные параметры ТОЛЬКО по обучающим данным
+            params = self.adapt_parameters(symbol, df, train_split_point)
             
             # Копируем DataFrame
             normalized_df = df.copy()
@@ -245,11 +278,16 @@ class AdaptiveNormalizer:
             logger.error(f"Ошибка нормализации для {symbol}: {e}")
             return df
     
-    def get_trading_params(self, symbol: str, df: pd.DataFrame) -> Dict:
+    def get_trading_params(self, symbol: str, df: pd.DataFrame, train_split_point: int = None) -> Dict:
         """
-        Возвращает адаптированные торговые параметры
+        Возвращает адаптированные торговые параметры.
+        
+        Args:
+            symbol: Символ криптовалюты
+            df: DataFrame с историческими данными
+            train_split_point: Точка разделения train/test данных
         """
-        params = self.adapt_parameters(symbol, df)
+        params = self.adapt_parameters(symbol, df, train_split_point)
         
         return {
             'min_hold_steps': int(params['min_hold_time']),

@@ -2,6 +2,9 @@ from flask import Blueprint, jsonify, request, current_app
 from pathlib import Path
 import os
 import json
+from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized
+from envs.dqn_model.gym.indicators_optimized import preprocess_dataframes
+from agents.vdqn.cfg.vconfig import vDqnConfig
 
 models_admin_bp = Blueprint('models_admin', __name__)
 
@@ -365,58 +368,60 @@ def oos_test_model():
         if df is None or df.empty:
             return jsonify({'success': False, 'error': 'no oos window'}), 400
 
-        # Подготовка состояния (как в trade): последние 100 OHLCV нормализованных
-        ohlcv_cols = ['open','high','low','close','volume']
-        pnl_total = 0.0  # суммарный PnL NET (с учётом комиссий)
-        wins = 0
-        losses = 0
-        trades = 0
-        peak = float(start_capital)
-        equity = float(start_capital)
-        max_dd = 0.0
-        last_action = 'hold'
-        position = None
-        entry_price = None
-        entry_ts = None
-        trades_details = []
-        decisions_counts = {'buy': 0, 'sell': 0, 'hold': 0}
+        # Один раз готовим полные данные для env
+        df_5min = df.copy().reset_index(drop=True)
 
+        df_15min = df_5min.resample('15min', on='dt').agg({
+            'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+        }).dropna().reset_index()
+
+        df_1h = df_5min.resample('1h', on='dt').agg({
+            'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+        }).dropna().reset_index()
+
+        # Конвертируем в NumPy
+        ohlcv_cols = ['open', 'high', 'low', 'close', 'volume']
+        df_5min_np = df_5min[ohlcv_cols].values.astype(np.float32)
+        df_15min_np = df_15min[ohlcv_cols].values.astype(np.float32)
+        df_1h_np = df_1h[ohlcv_cols].values.astype(np.float32)
+
+        # Индикаторы
+        indicators_config = {
+            'rsi': {'length': 14},
+            'ema': {'lengths': [100, 200]},
+            'ema_cross': {'pairs': [(100, 200)], 'include_cross_signal': True},
+            'sma': {'length': 14}
+        }
+        indicators = preprocess_dataframes(df_5min_np, df_15min_np, df_1h_np, indicators_config)
+
+        # Создаём env ОДИН РАЗ
+        cfg = vDqnConfig()
+        env = CryptoTradingEnvOptimized(dfs={'df_5min': df_5min, 'df_15min': df_15min, 'df_1h': df_1h, 'symbol': symbol}, cfg=cfg, lookback_window=20)
+
+        # === ВОССТАНАВЛИВАЕМ ИНИЦИАЛИЗАЦИЮ ПЕРЕМЕННЫХ, КОТОРЫЕ НУЖНЫ ДАЛЬШЕ ===
+        from pathlib import Path as _Path
         serving_url = os.environ.get('SERVING_URL', 'http://serving:8000/predict_ensemble')
+
+        # Путь к модели (или пытаемся найти в result/ по run-коду)
         model_paths = []
         if filename:
             model_paths = [filename]
         else:
-            # Попытаемся найти файл по коду в result/
-            p = Path('result')/f'dqn_model_{code}.pth'
-            if p.exists():
-                model_paths = [str(p)]
+            cand = _Path('result')/symbol.replace('USDT','')/'runs'/code/'model.pth'
+            if cand.exists():
+                model_paths = [str(cand)]
         if not model_paths:
-            try:
-                current_app.logger.error(f"[OOS] model file not found for code='{code}' filename='{filename}'")
-            except Exception:
-                pass
             return jsonify({'success': False, 'error': 'model file not found'}), 400
+        # Абсолютные пути
+        abs_list = []
+        for mp in model_paths:
+            pp = _Path(str(mp).replace('\\','/'))
+            if not pp.is_absolute():
+                pp = (_Path.cwd()/pp).resolve()
+            abs_list.append(str(pp))
+        model_paths = abs_list
 
-        # Преобразуем пути моделей в абсолютные пути внутри контейнера (например, /workspace/result/...)
-        try:
-            from pathlib import Path as _Path
-            abs_list = []
-            for mp in model_paths:
-                pp = _Path(str(mp).replace('\\','/'))
-                if not pp.is_absolute():
-                    pp = (_Path.cwd() / pp).resolve()
-                else:
-                    pp = pp.resolve()
-                abs_list.append(str(pp))
-            model_paths = abs_list
-            current_app.logger.info(f"[OOS] model_paths resolved → {model_paths}")
-        except Exception as _res_err:
-            try:
-                current_app.logger.warning(f"[OOS] model_paths resolve error: {_res_err}")
-            except Exception:
-                pass
-
-        # Загрузим консенсус и настройки Q‑gate как в бою
+        # Читаем consensus из Redis (как в бою)
         consensus_cfg = None
         try:
             from redis import Redis as _Redis
@@ -428,7 +433,7 @@ def oos_test_model():
         except Exception:
             consensus_cfg = None
 
-        # Порог Q‑gate (как в execute_trade)
+        # Q-gate базовые пороги
         try:
             T1 = float(os.environ.get('QGATE_T1', '0.35'))
         except Exception:
@@ -437,23 +442,27 @@ def oos_test_model():
             T2 = float(os.environ.get('QGATE_T2', '0.25'))
         except Exception:
             T2 = 0.25
-        # Фактор для флэта
         try:
             flat_factor = float(os.environ.get('QGATE_FLAT', '1.0'))
         except Exception:
             flat_factor = 1.0
-        # Применим пользовательский скейл/выключение
         if gate_disable:
             T1_user = 0.0; T2_user = 0.0
         else:
-            if isinstance(gate_scale, (int, float)) and gate_scale >= 0:
-                # Уменьшаем пороги на gate_scale * 100% (например, 0.5 → вдвое ниже)
-                T1_user = max(0.0, T1 * (1.0 - float(gate_scale)))
-                T2_user = max(0.0, T2 * (1.0 - float(gate_scale)))
+            if isinstance(gate_scale, (int,float)) and gate_scale>=0:
+                T1_user = max(0.0, T1*(1.0-float(gate_scale)))
+                T2_user = max(0.0, T2*(1.0-float(gate_scale)))
             else:
                 T1_user = T1; T2_user = T2
 
-        # Простейший расчёт режима рынка (из последних закрытых свечей)
+        # Счётчики результата
+        pnl_total = 0.0; wins=0; losses=0; trades=0
+        peak = float(start_capital); equity = float(start_capital); max_dd=0.0
+        position=None; entry_price=None; entry_ts=None
+        trades_details = []
+        decisions_counts = {'buy':0,'sell':0,'hold':0}
+
+        # Локальная функция: определяем режим рынка из последних свечей
         def _compute_regime_local(df_prices: pd.DataFrame):
             try:
                 closes_full = df_prices['close'].astype(float).values
@@ -478,29 +487,25 @@ def oos_test_model():
                         labels.append('downtrend')
                     else:
                         labels.append('flat')
-                # Majority
                 counts = {'flat': labels.count('flat'), 'uptrend': labels.count('uptrend'), 'downtrend': labels.count('downtrend')}
                 winner = max(counts, key=counts.get)
                 return winner, {'windows':windows,'labels':labels,'weights':weights,'voting':'majority','tie_break':'flat'}
             except Exception:
                 return 'flat', {'windows':[60,180,300],'labels':['flat','flat','flat'],'weights':[1,1,1],'voting':'majority','tie_break':'flat'}
 
-        def _state_from_tail(tail_df):
-            arr = tail_df[ohlcv_cols].values.astype('float32')
-            max_vals = np.maximum(arr.max(axis=0), 1e-9)
-            norm = (arr / max_vals).flatten()
-            if norm.size < 500:
-                norm = np.pad(norm, (0, 500 - norm.size))
-            elif norm.size > 500:
-                norm = norm[:500]
-            return norm.tolist()
-
         closes = df['close'].astype(float).values
         for i in range(120, len(df)):
-            tail = df.iloc[i-100:i]
-            if tail.shape[0] < 20:
+            try:
+                env.current_step = i
+                state = env._get_state()
+                if state is None:
+                    continue
+                import numpy as _np
+                state = _np.nan_to_num(state, nan=0.0, posinf=0.0, neginf=0.0).tolist()  # Конвертируем в list без NaN/Inf
+            except Exception as e:
+                current_app.logger.error(f"[OOS] state get error at step {i}: {e}")
                 continue
-            state = _state_from_tail(tail)
+
             # Вычислим режим рынка и применим q‑gate факторы
             regime, regime_details = _compute_regime_local(df.iloc[:i])
             base_T1 = T1_user
@@ -508,25 +513,32 @@ def oos_test_model():
             eff_T1 = base_T1 * (flat_factor if (regime == 'flat') else 1.0)
             eff_T2 = base_T2 * (flat_factor if (regime == 'flat') else 1.0)
             payload = {"state": state, "model_paths": model_paths, "symbol": symbol, "consensus": (consensus_cfg or {}), "market_regime": regime, "market_regime_details": regime_details}
+            
             try:
                 resp = requests.post(serving_url, json=payload, timeout=15)
                 if not resp.ok:
-                    try:
-                        current_app.logger.error(f"[OOS] serving 500 status={resp.status_code} body={resp.text[:400]}")
-                    except Exception:
-                        pass
-                pj = resp.json() if resp.ok else {"success": False}
-            except Exception as _srv_err:
-                try:
-                    current_app.logger.error(f"[OOS] serving request error: {_srv_err}")
-                except Exception:
-                    pass
-                pj = {"success": False}
+                    current_app.logger.error(f"[OOS] serving error status={resp.status_code} body={resp.text[:400]}")
+                    continue
+                pj = resp.json()
+            except Exception as srv_err:
+                current_app.logger.error(f"[OOS] serving request error: {srv_err}")
+                continue
+
             if not pj.get('success'):
                 continue
             # Применим тот же консенсус и Q‑gate, что и в бою (упрощённо)
             decision = pj.get('decision') or 'hold'
             preds_list = pj.get('predictions') or []
+            
+            # Диагностика: логируем сырое предсказание модели
+            if preds_list and len(preds_list) > 0:
+                for idx, p in enumerate(preds_list):
+                    raw_action = p.get('action', 'hold')
+                    raw_qv = p.get('q_values', [])
+                    try:
+                        current_app.logger.info(f"[OOS] RAW model[{idx}] prediction: action={raw_action} q_values={raw_qv}")
+                    except Exception:
+                        pass
             if preds_list:
                 # Пер‑модельный Q‑gate и голоса
                 votes = {'buy':0,'sell':0,'hold':0}
@@ -573,8 +585,13 @@ def oos_test_model():
                         req_flat = int(max(1, int(np.ceil(total_sel * (float(perc.get('flat'))/100.0)))))
                     if req_trend is None and isinstance(perc.get('trend'), (int,float)):
                         req_trend = int(max(1, int(np.ceil(total_sel * (float(perc.get('trend'))/100.0)))))
-                if req_flat is None: req_flat = total_sel
-                if req_trend is None: req_trend = total_sel
+                # Для OOS тестирования с одной моделью не требуем консенсус
+                if total_sel == 1:
+                    req_flat = 1
+                    req_trend = 1
+                else:
+                    if req_flat is None: req_flat = total_sel
+                    if req_trend is None: req_trend = total_sel
                 required = req_trend if regime in ('uptrend','downtrend') else req_flat
                 if votes['buy'] >= required and votes['buy'] > votes['sell']:
                     decision = 'buy'

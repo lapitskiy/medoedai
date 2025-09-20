@@ -1514,7 +1514,7 @@ class TradingAgent:
                 preprocess_dataframes(df_5min, df_15min, df_1h, indicators_config)
             
             # Создаем состояние как в окружении
-            lookback_window = 20  # Как в обучении
+            lookback_window = 100  # Как в обучении
             current_step = len(df_5min_clean)
             
             if current_step < lookback_window:

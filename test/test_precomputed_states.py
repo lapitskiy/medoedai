@@ -62,7 +62,7 @@ def test_precomputed_states():
         env = CryptoTradingEnvOptimized(
             dfs=dfs,
             cfg=cfg,
-            lookback_window=20,
+            lookback_window=100,
             indicators_config=None
         )
         

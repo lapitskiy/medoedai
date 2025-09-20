@@ -1,0 +1,51 @@
+/* Общие стили табов */
+.tabs {
+  display: block;
+  margin: 10px 0 16px 0;
+}
+
+.tabs-nav {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.tab-btn {
+  appearance: none;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-bottom: none;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: #374151;
+  cursor: pointer;
+}
+
+.tab-btn.active {
+  background: #ffffff;
+  color: #111827;
+  border-color: #d1d5db;
+  font-weight: 600;
+}
+
+.tabs-content {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 14px;
+}
+
+/* Прячем только если JS инициализирован (навешивает .tabs-initialized на body) */
+.tab-panel { 
+  display: block; 
+  min-height: 200px; /* Минимальная высота для видимости */
+}
+.tabs-initialized .tab-panel { display: none; }
+.tabs-initialized .tab-panel.active { 
+  display: block !important; 
+  min-height: 200px; /* Минимальная высота для активной панели */
+}
+
+

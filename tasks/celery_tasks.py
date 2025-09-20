@@ -1044,17 +1044,30 @@ def start_trading_task(self, symbols, model_path=None):
     if (not model_path) and isinstance(model_paths, list) and len(model_paths) > 0:
         model_path = model_paths[0]
 
-    # Если моделей нет — снимаем лок и выходим без постановки задачи в trade
+    # Если моделей нет — пробуем использовать дефолтную модель
     if not model_paths:
+        # Fallback: используем дефолтную модель если Redis пуст после рестарта
+        default_model_path = '/workspace/models/btc/ensemble-a/current/dqn_model.pth'
         try:
+            import os
+            if os.path.exists(default_model_path):
+                model_paths = [default_model_path]
+                model_path = default_model_path
+                print(f"🔄 Используем дефолтную модель: {default_model_path}")
+            else:
+                # Снять лок, чтобы не блокировать следующий запуск
+                if '_rc_lock' in locals():
+                    lock_symbol = (symbols[0] if (symbols and len(symbols) > 0) else 'ALL')
+                    lock_key = f'trading:agent_lock:{lock_symbol}'
+                    _rc_lock.delete(lock_key)
+                return {"success": False, "skipped": True, "reason": "no_model_paths"}
+        except Exception:
             # Снять лок, чтобы не блокировать следующий запуск
             if '_rc_lock' in locals():
                 lock_symbol = (symbols[0] if (symbols and len(symbols) > 0) else 'ALL')
                 lock_key = f'trading:agent_lock:{lock_symbol}'
                 _rc_lock.delete(lock_key)
-        except Exception:
-            pass
-        return {"success": False, "skipped": True, "reason": "no_model_paths"}
+            return {"success": False, "skipped": True, "reason": "no_model_paths"}
 
     # Промежуточный статус в Redis для UI
     try:
@@ -1085,9 +1098,15 @@ def start_trading_task(self, symbols, model_path=None):
         try:
             if model_paths:
                 _rc.set('trading:last_model_paths', _json.dumps(model_paths, ensure_ascii=False))
+                # Если использовали дефолтную модель - сохраняем её как основную
+                if not _rc.get('trading:model_paths'):
+                    _rc.set('trading:model_paths', _json.dumps(model_paths, ensure_ascii=False))
             cons_raw = _rc.get('trading:consensus')
             if cons_raw:
                 _rc.set('trading:last_consensus', cons_raw)
+            # Сохраняем символы если их нет
+            if not _rc.get('trading:symbols'):
+                _rc.set('trading:symbols', _json.dumps(symbols, ensure_ascii=False))
         except Exception:
             pass
     except Exception:

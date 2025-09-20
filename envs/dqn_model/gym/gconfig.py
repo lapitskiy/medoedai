@@ -12,7 +12,7 @@ class GymConfig:
     trade_fee_percent: float = 0.00075   # 0.075 %
 
     # --- окно состояния -------------------------------------------------------
-    lookback_window: int = 20            # 5‑мин свечей в history‑stack
+    lookback_window: int = 100            # 5‑мин свечей в history‑stack
 
     # --- торговый риск‑менеджмент --------------------------------------------
     position_fraction: float = 0.30      # % баланса входа «по умолчанию»
@@ -56,6 +56,9 @@ class GymConfig:
     # --- Multi-step Learning параметры ---
     n_step: int = 3              # Количество шагов для n-step learning
     gamma: float = 0.99          # Discount factor для n-step returns
+    
+    # --- Параметры разделения данных для предотвращения look-ahead bias ---
+    train_split_ratio: float = 0.8  # Доля данных для обучения (80% по умолчанию)
 
  
      

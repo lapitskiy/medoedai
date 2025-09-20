@@ -22,6 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from agents.vdqn.dqnsolver import DQNSolver
 from agents.vdqn.cfg.vconfig import vDqnConfig
 from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized
+from envs.dqn_model.gym.gconfig import GymConfig
 from agents.vdqn.hyperparameter.symbol_overrides import get_symbol_override
 
 
@@ -245,10 +246,12 @@ def train_model_optimized(
             if override and 'indicators_config' in override:
                 indicators_config = override['indicators_config']
 
+            # Создаем GymConfig для получения значения по умолчанию
+            gym_cfg = GymConfig()
             env = CryptoTradingEnvOptimized(
                 dfs=dfs,
                 cfg=cfg,
-                lookback_window=override.get('gym_config', {}).get('lookback_window', 20) if override else 20,
+                lookback_window=override.get('gym_config', {}).get('lookback_window', gym_cfg.lookback_window) if override else gym_cfg.lookback_window,
                 indicators_config=indicators_config
             )
 

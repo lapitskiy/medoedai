@@ -30,10 +30,28 @@ def process_data(df, current_window, current_threshold, current_period, config):
     df['bullish_volume'] = df['volume'] * (df['close'] > df['open'])
     df['bearish_volume'] = df['volume'] * (df['close'] < df['open'])
     df[config.numeric] = df[config.numeric].astype(np.float32)
+    
+    # ИСПРАВЛЕНИЕ: Разделяем данные на train/test для предотвращения look-ahead bias
+    train_split_ratio = getattr(config, 'train_split_ratio', 0.8)  # По умолчанию 80% для обучения
+    split_point = int(len(df) * train_split_ratio)
+    
+    # Создаем и обучаем скалер ТОЛЬКО на обучающих данных
     scaler = MinMaxScaler()
+    train_data = df[config.numeric].iloc[:split_point]
+    scaler.fit(train_data)  # Обучаем только на train данных
+    
+    # Применяем скалер ко всем данным
     df_scaled = df.copy()
-    df_scaled[config.numeric] = scaler.fit_transform(df_scaled[config.numeric])
-    joblib.dump(scaler, f'temp/{config.ii_path}/scaler/scaler_ct{current_threshold}_cw{current_window}_cp{current_period}.gz')
+    df_scaled[config.numeric] = scaler.transform(df[config.numeric])
+    
+    # Сохраняем скалер и информацию о разделении
+    scaler_info = {
+        'scaler': scaler,
+        'train_split_point': split_point,
+        'train_split_ratio': train_split_ratio
+    }
+    joblib.dump(scaler_info, f'temp/{config.ii_path}/scaler/scaler_ct{current_threshold}_cw{current_window}_cp{current_period}.gz')
+    
     x_path, y_path, num_samples, hash_value = create_rolling_windows(df, df_scaled, current_threshold, current_window, config)
     try:
         with open(f'temp/{config.ii_path}/roll_win/roll_path_ct{current_threshold}_cw{current_window}_cp{current_period}.txt', 'w') as f:

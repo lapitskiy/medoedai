@@ -59,7 +59,7 @@ BNB_OPTIMIZED_CONFIG = {
 
     # Конфигурация среды
     'gym_config': {
-        'lookback_window': 20,
+        'lookback_window': 100,
         'step_minutes': 5,
         'funding_features': {'included': True},
     },
