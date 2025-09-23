@@ -2,204 +2,276 @@
 <html lang="ru">
 <head>
     <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <link rel="stylesheet" href="/static/css/tabs.css">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MedoedAI - DQN Trading Bot</title>
-    <!-- Styles moved to /static/css/styles.css -->
 </head>
 <body>
+    <!-- Sidebar навигация -->
+    <nav class="sidebar">
+        <h3>📋 Навигация</h3>
+        <ul class="sidebar-nav">
+            <li><a href="#trading-agent" onclick="scrollToSection('trading-agent')">💰 Торговый агент</a></li>
+            <li><a href="#analytics" onclick="scrollToSection('analytics')">📊 Аналитика</a></li>
+            <li><a href="#models" onclick="scrollToSection('models')">🤖 Модели</a></li>
+            <li><a href="#data-management" onclick="scrollToSection('data-management')">📥 Данные</a></li>
+            <li><a href="#system" onclick="scrollToSection('system')">🔧 Система</a></li>
+        </ul>
+    </nav>
+
+    <!-- Кнопка мобильного меню -->
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
     <div class="container">
-        <div class="header">
-            <h1>🚀 MedoedAI - DQN Trading Bot</h1>
-            <p>Интеллектуальная система торговли криптовалютами</p>
-        </div>
-        
-        <div class="content">
+        <div class="main-content">
+            <div class="header">
+                <h1>🚀 MedoedAI - DQN Trading Bot</h1>
+                <p>Интеллектуальная система торговли криптовалютами</p>
+            </div>
+            
+            <div class="content">
+            <div class="tabs" data-tabs="main">
+                <div class="tabs-nav">
+                    <button class="tab-btn active" data-tab-btn data-target="#trading-agent">💰 Торговый агент</button>
+                    <button class="tab-btn" data-tab-btn data-target="#analytics">📊 Аналитика</button>
+                    <button class="tab-btn" data-tab-btn data-target="#models">🤖 Модели</button>
+                    <button class="tab-btn" data-tab-btn data-target="#data-management">📥 Данные</button>
+                    <button class="tab-btn" data-tab-btn data-target="#system">🔧 Система</button>
+                </div>
+                <div class="tabs-content">
             
 
-            <!-- Секция торгового агента -->
-            <div class="section">
-                <h2>💰 Торговый агент</h2>
-                <p>Управление торговлей на реальном рынке через обученную модель</p>
-                
-                <div class="button-group">
-                    <a href="/trading_agent" class="btn btn-primary">
-                        🚀 Торговый агент
-                    </a>
-                </div>
-                
-                <!-- Мониторинг статуса агента -->
-                <div class="card">
-                    <div class="card-header">
-                        <h5>📊 Статус торгового агента</h5>
+                    <!-- Панель торгового агента -->
+                    <div class="tab-panel" data-tab-panel id="trading-agent">
+                        <div class="section">
+                            <h2>💰 Торговый агент</h2>
+                            <p>Управление торговлей на реальном рынке через обученную модель</p>
+                            
+                            <div class="button-group">
+                                <a href="/trading_agent" class="btn btn-primary">
+                                    🚀 Торговый агент
+                                </a>
+                            </div>
+                            
+                            <!-- Мониторинг статуса агента -->
+                            <div class="card">
+                                <div class="card-header">
+                                    <h5>📊 Статус торгового агента</h5>
+                                </div>
+                                <div id="agentStatus" class="status info">
+                                    🔄 Загрузка статуса...
+                                </div>
+                                <div id="agentDetails" style="display: none;">
+                                    <div class="form-group">
+                                        <label>🎯 Текущая пара:</label>
+                                        <div id="currentSymbol" class="status info">-</div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>💰 Баланс USDT:</label>
+                                        <div id="currentBalance" class="status info">-</div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>📊 Количество для торговли:</label>
+                                        <div id="currentAmount" class="status info">-</div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>📈 Последнее предсказание:</label>
+                                        <div id="lastPrediction" class="status info">-</div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>🕒 Время последнего обновления:</label>
+                                        <div id="lastUpdate" class="status info">-</div>
+                                    </div>
+                                </div>
+                                <div class="button-group">
+                                    <button id="refreshAgentStatus" class="btn btn-info" onclick="refreshAgentStatus()">
+                                        🔄 Обновить статус
+                                    </button>
+                                    <button id="startAgentMonitoring" class="btn btn-success" onclick="startAgentMonitoring()">
+                                        📡 Запустить мониторинг
+                                    </button>
+                                    <button id="stopAgentMonitoring" class="btn btn-warning" onclick="stopAgentMonitoring()" style="display: none;">
+                                        ⏹️ Остановить мониторинг
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                    <div id="agentStatus" class="status info">
-                        🔄 Загрузка статуса...
+
+                    <!-- Панель аналитики -->
+                    <div class="tab-panel" data-tab-panel id="analytics">
+                        <div class="section">
+                            <h2>📊 Аналитика результатов</h2>
+                            <p>Выберите символ и run (result/<SYMBOL>/runs/<run_id>)</p>
+                            <div class="form-group">
+                                <label>Символ</label>
+                                <select id="indexSymbolSelect"></select>
+                            </div>
+                            <div class="form-group">
+                                <label>Run (UUID)</label>
+                                <select id="indexRunSelect"></select>
+                            </div>
+                            <div class="button-group">
+                                <button id="listResultsBtn" class="btn btn-info" onclick="loadIndexSymbols()">📋 Обновить список</button>
+                                <button id="analyzeResultsBtn" class="btn btn-primary" onclick="analyzeTrainingResultsSelected()">📈 Анализ результатов</button>
+                                <button id="analyzeBadTradesBtn" class="btn btn-warning" onclick="analyzeBadTradesSelected()">🔍 Плохие сделки</button>
+                            </div>
+                            <div id="indexRunInfo" class="status info" style="display:none; white-space: pre-line;"></div>
+                            <div id="analysisStatus" class="status" style="display: none;"></div>
+                            <div id="analysisResults" class="results" style="display: none;"></div>
+                            <div id="filesList" class="results" style="display: none;"></div>
+                            <div id="badTradesStatus" class="status" style="display: none;"></div>
+                            <div id="badTradesResults" class="results" style="display: none;"></div>
+                            <div id="badTradesSummary" class="results" style="display: none;"></div>
+                        </div>
                     </div>
-                    <div id="agentDetails" style="display: none;">
-                        <div class="form-group">
-                            <label>🎯 Текущая пара:</label>
-                            <div id="currentSymbol" class="status info">-</div>
-                        </div>
-                        <div class="form-group">
-                            <label>💰 Баланс USDT:</label>
-                            <div id="currentBalance" class="status info">-</div>
-                        </div>
-                        <div class="form-group">
-                            <label>📊 Количество для торговли:</label>
-                            <div id="currentAmount" class="status info">-</div>
-                        </div>
-                        <div class="form-group">
-                            <label>📈 Последнее предсказание:</label>
-                            <div id="lastPrediction" class="status info">-</div>
-                        </div>
-                        <div class="form-group">
-                            <label>🕒 Время последнего обновления:</label>
-                            <div id="lastUpdate" class="status info">-</div>
+
+                    <!-- Панель моделей -->
+                    <div class="tab-panel" data-tab-panel id="models">
+                        <div class="section">
+                            <h2>🤖 Управление моделями</h2>
+                            <p>Версионирование и управление обученными моделями DQN</p>
+                            
+                            <div class="button-group">
+                                <a href="/models" class="btn btn-success">
+                                    🚀 Управление моделями DQN
+                                </a>
+                                <a href="/cnn_training" class="btn btn-primary">
+                                    🧠 Обучение CNN моделей
+                                </a>
+                            </div>
+                            
+                            <!-- Информация о CNN -->
+                            <div class="card" style="margin-top: 20px;">
+                                <div class="card-header">
+                                    <h5>🧠 CNN для анализа паттернов</h5>
+                                </div>
+                                <div class="card-body">
+                                    <p>Новая функциональность для обучения CNN моделей на исторических данных криптовалют и извлечения признаков для DQN агента.</p>
+                                    <ul>
+                                        <li>📊 Анализ торговых паттернов на нескольких временных фреймах</li>
+                                        <li>🎯 Обучение CNN на предсказание движения цены</li>
+                                        <li>🔧 Извлечение латентных признаков для DQN</li>
+                                        <li>📈 Улучшение качества торговых решений</li>
+                                    </ul>
+                                </div>
+                            </div>
                         </div>
                     </div>
-                    <div class="button-group">
-                        <button id="refreshAgentStatus" class="btn btn-info" onclick="refreshAgentStatus()">
-                            🔄 Обновить статус
-                        </button>
-                        <button id="startAgentMonitoring" class="btn btn-success" onclick="startAgentMonitoring()">
-                            📡 Запустить мониторинг
-                        </button>
-                        <button id="stopAgentMonitoring" class="btn btn-warning" onclick="stopAgentMonitoring()" style="display: none;">
-                            ⏹️ Остановить мониторинг
-                        </button>
+
+
+
+                    <!-- Панель управления данными -->
+                    <div class="tab-panel" data-tab-panel id="data-management">
+                        <div class="section">
+                            <h2>📥 Управление данными</h2>
+                            <p>Скачивание и очистка данных для обучения</p>
+                            <div class="button-group">
+                                <a href="/data" class="btn btn-info">📂 Открыть страницу управления данными</a>
+                            </div>
+                        </div>
                     </div>
-                </div>
-            </div>
 
-            <!-- Объединенная секция анализа -->
-            <div class="section">
-                <h2>📊 Аналитика результатов</h2>
-                <p>Выберите символ и run (result/<SYMBOL>/runs/<run_id>)</p>
-                <div class="form-group">
-                    <label>Символ</label>
-                    <select id="indexSymbolSelect"></select>
-                </div>
-                <div class="form-group">
-                    <label>Run (UUID)</label>
-                    <select id="indexRunSelect"></select>
-                </div>
-                <div class="button-group">
-                    <button id="listResultsBtn" class="btn btn-info" onclick="loadIndexSymbols()">📋 Обновить список</button>
-                    <button id="analyzeResultsBtn" class="btn btn-primary" onclick="analyzeTrainingResultsSelected()">📈 Анализ результатов</button>
-                    <button id="analyzeBadTradesBtn" class="btn btn-warning" onclick="analyzeBadTradesSelected()">🔍 Плохие сделки</button>
-                </div>
-                <div id="indexRunInfo" class="status info" style="display:none; white-space: pre-line;"></div>
-                <div id="analysisStatus" class="status" style="display: none;"></div>
-                <div id="analysisResults" class="results" style="display: none;"></div>
-                <div id="filesList" class="results" style="display: none;"></div>
-                <div id="badTradesStatus" class="status" style="display: none;"></div>
-                <div id="badTradesResults" class="results" style="display: none;"></div>
-                <div id="badTradesSummary" class="results" style="display: none;"></div>
-            </div>
+                    <!-- Панель системы -->
+                    <div class="tab-panel" data-tab-panel id="system">
+                        <!-- Секция очистки -->
+                        <div class="section">
+                            <h2>🧹 Очистка данных</h2>
+                            <p>Очистка базы данных от некорректных данных</p>
+                            
+                            <div class="button-group">
+                                <form action="/clean_data" method="post" style="display: inline;">
+                                    <input type="hidden" name="query" value="test_query">
+                                    <button type="submit" class="btn btn-warning">
+                                        🧹 Очистить от пиков
+                                    </button>
+                                </form>
+                                
+                                <form action="/clean_db" method="post" style="display: inline;">
+                                    <input type="hidden" name="query" value="test_query">
+                                    <button type="submit" class="btn btn-danger">
+                                        🗑️ Очистить от свечей
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
 
-            <!-- Секция управления моделями -->
-            <div class="section">
-                <h2>🤖 Управление моделями</h2>
-                <p>Версионирование и управление обученными моделями DQN</p>
-                
-                <div class="button-group">
-                    <a href="/models" class="btn btn-success">
-                        🚀 Управление моделями
-                    </a>
-                </div>
-            </div>
+                        <!-- Секция RandomSearch -->
+                        <div class="section">
+                            <h2>🔍 RandomSearch</h2>
+                            <p>Запуск поиска оптимальных параметров</p>
+                            
+                            <div class="button-group">
+                                <form action="/task-start-search" method="post" style="display: inline;">
+                                    <input type="hidden" name="query" value="test_query">
+                                    <button type="submit" class="btn btn-primary">
+                                        🔍 Запустить RandomSearch
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
 
+                        <!-- Секция управления системой -->
+                        <div class="section">
+                            <h2>🔧 Управление системой</h2>
+                            <p>Системные операции и мониторинг</p>
+                            
+                            <div class="button-group">
+                                <button class="btn btn-warning" onclick="clearRedis()">
+                                    🧹 Очистить Redis
+                                </button>
+                            </div>
+                            
+                            <div id="clearRedisResult" class="status" style="display: none;"></div>
+                        </div>
 
-
-            <!-- Секция данных (ссылка на отдельную страницу) -->
-            <div class="section">
-                <h2>📥 Управление данными</h2>
-                <p>Скачивание и очистка данных для обучения</p>
-                <div class="button-group">
-                    <a href="/data" class="btn btn-info">📂 Открыть страницу управления данными</a>
-                </div>
-            </div>
-
-            <!-- Секция очистки -->
-            <div class="section">
-                <h2>🧹 Очистка данных</h2>
-                <p>Очистка базы данных от некорректных данных</p>
-                
-                <div class="button-group">
-                    <form action="/clean_data" method="post" style="display: inline;">
-                        <input type="hidden" name="query" value="test_query">
-                        <button type="submit" class="btn btn-warning">
-                            🧹 Очистить от пиков
-                        </button>
-                    </form>
-                    
-                    <form action="/clean_db" method="post" style="display: inline;">
-                        <input type="hidden" name="query" value="test_query">
-                        <button type="submit" class="btn btn-danger">
-                            🗑️ Очистить от свечей
-                        </button>
-                    </form>
-                </div>
-            </div>
-
-            <!-- Секция RandomSearch -->
-            <div class="section">
-                <h2>🔍 RandomSearch</h2>
-                <p>Запуск поиска оптимальных параметров</p>
-                
-                <div class="button-group">
-                    <form action="/task-start-search" method="post" style="display: inline;">
-                        <input type="hidden" name="query" value="test_query">
-                        <button type="submit" class="btn btn-primary">
-                            🔍 Запустить RandomSearch
-                        </button>
-                    </form>
-                </div>
-            </div>
-
-            <!-- Секция управления системой -->
-            <div class="section">
-                <h2>🔧 Управление системой</h2>
-                <p>Системные операции и мониторинг</p>
-                
-                <div class="button-group">
-                    <button class="btn btn-warning" onclick="clearRedis()">
-                        🧹 Очистить Redis
-                    </button>
-                </div>
-                
-                <div id="clearRedisResult" class="status" style="display: none;"></div>
-            </div>
-
-            <!-- Секция статуса задач -->
-            <div class="section">
-                <h2>📋 Статус задач</h2>
-                <p>Мониторинг выполнения задач Celery</p>
-                
-                <table class="tasks-table">
-                    <thead>
-                        <tr>
-                            <th>Task ID</th>
-                            <th>State</th>
-                            <th>Result</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for task in tasks %}
-                        <tr>
-                            <td>{{ task.task_id }}</td>
-                            <td>{{ task.state }}</td>
-                            <td>{{ task.result if task.result else "Выполняется..." }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+                        <!-- Секция статуса задач -->
+                        <div class="section">
+                            <h2>📋 Статус задач</h2>
+                            <p>Мониторинг выполнения задач Celery</p>
+                            
+                            <table class="tasks-table">
+                                <thead>
+                                    <tr>
+                                        <th>Task ID</th>
+                                        <th>State</th>
+                                        <th>Result</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for task in tasks %}
+                                    <tr>
+                                        <td>{{ task.task_id }}</td>
+                                        <td>{{ task.state }}</td>
+                                        <td>{{ task.result if task.result else "Выполняется..." }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div><!-- /tabs-content -->
+            </div><!-- /tabs -->
             </div>
         </div>
     </div>
 
     <script>
+        // Связываем переход из сайдбара с активацией табов
+        document.addEventListener('DOMContentLoaded', function(){
+            try{
+                document.querySelectorAll('.sidebar-nav a[href^="#"]').forEach(a => {
+                    a.addEventListener('click', function(){
+                        const href = a.getAttribute('href');
+                        if(href){
+                            try{ window.__tabs && window.__tabs.activateTabByAnchor('[data-tabs="main"]', href); }catch(_){ }
+                        }
+                    });
+                });
+            }catch(_){ }
+        });
         // Функция для мультивалютного скачивания
         async function startMultiCryptoDownload() {
             const downloadBtn = document.querySelector('form[action="/parser_multi_crypto"] button');
@@ -922,6 +994,8 @@ P/L Ratio: ${plr}
             }
         }
     </script>
+    <script src="/static/js/sidebar.js"></script>
+    <script src="/static/js/tabs.js"></script>
 </body>
 </html>
 

@@ -63,6 +63,8 @@
     <nav class="sidebar">
         <h3>📋 Навигация</h3>
         <ul class="sidebar-nav">
+            <li><a href="/" class="back-link">← На главную</a></li>
+            <li><a href="javascript:history.back()">← Назад</a></li>
             <li><a href="#agent-control" onclick="scrollToSection('agent-control')">🎯 Управление</a></li>
             <li><a href="#symbol-navigation" onclick="scrollToSection('symbol-navigation')">🔀 Перейти к странице символа</a></li>
         </ul>
@@ -158,19 +160,25 @@
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px; margin-bottom:15px;">
                         <div>
                             <label style="font-weight:500; margin-bottom:5px; display:block;">Боковик (flat/range)</label>
-                            <div class="range-inline">
-                                <input type="range" id="flatConsensusCount" class="count-range" min="1" max="1" value="1" style="flex:1;">
-                                <span id="flatConsensusCountValue" class="range-badge">1 модель</span>
-                            </div>
+                            <select id="flatConsensusCount" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:4px; background:white;">
+                                <option value="1">1 модель</option>
+                                <option value="2">2 модели</option>
+                                <option value="3">3 модели</option>
+                                <option value="4">4 модели</option>
+                                <option value="5">5 моделей</option>
+                            </select>
                             <small id="flatConsensusPercentHint" style="color:#666; display:block; margin-top:6px;">≈ 100% от выбранных</small>
                         </div>
                         
                         <div>
                             <label style="font-weight:500; margin-bottom:5px; display:block;">Тренд (сильный ап/даун)</label>
-                            <div class="range-inline">
-                                <input type="range" id="trendConsensusCount" class="count-range" min="1" max="1" value="1" style="flex:1;">
-                                <span id="trendConsensusCountValue" class="range-badge">1 модель</span>
-                            </div>
+                            <select id="trendConsensusCount" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:4px; background:white;">
+                                <option value="1">1 модель</option>
+                                <option value="2">2 модели</option>
+                                <option value="3">3 модели</option>
+                                <option value="4">4 модели</option>
+                                <option value="5">5 моделей</option>
+                            </select>
                             <small id="trendConsensusPercentHint" style="color:#666; display:block; margin-top:6px;">≈ 100% от выбранных</small>
                         </div>
                     </div>
@@ -180,6 +188,51 @@
                             <strong>Текущие настройки:</strong><br>
                             • Боковик: <span id="flatConsensusDisplay">—</span><br>
                             • Тренд: <span id="trendConsensusDisplay">—</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Настройки риск-менеджмента -->
+                <div class="form-group" style="margin-top:20px; padding:15px; background:#fff3cd; border-radius:8px; border:1px solid #ffeaa7;">
+                    <label style="font-weight:600; margin-bottom:10px; display:block;">🛡️ Риск-менеджмент</label>
+                    
+                    <!-- Способ управления рисками -->
+                    <div style="margin-bottom:15px;">
+                        <label style="font-weight:500; margin-bottom:5px; display:block;">Способ управления рисками</label>
+                        <select id="riskManagementType" class="form-control" onchange="updateRiskManagementDisplay()">
+                            <option value="exchange_orders" selected>📋 Ордера на бирже (рекомендуется)</option>
+                            <option value="bot_monitoring">🤖 Мониторинг ботом</option>
+                            <option value="both">🔄 Оба способа</option>
+                        </select>
+                        <small style="color:#666; display:block; margin-top:4px;">Ордера на бирже работают мгновенно и 24/7</small>
+                    </div>
+                    
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px; margin-bottom:15px;">
+                        <div>
+                            <label style="font-weight:500; margin-bottom:5px; display:block;">Тейк-профит (%)</label>
+                            <div class="range-inline">
+                                <input type="range" id="takeProfitPct" class="count-range" min="1" max="20" value="5" step="0.5" style="flex:1;" oninput="updateRiskManagementDisplay()">
+                                <span id="takeProfitPctValue" class="range-badge">5.0%</span>
+                            </div>
+                            <small style="color:#666; display:block; margin-top:6px;">Автоматическая продажа при достижении прибыли</small>
+                        </div>
+                        
+                        <div>
+                            <label style="font-weight:500; margin-bottom:5px; display:block;">Стоп-лосс (%)</label>
+                            <div class="range-inline">
+                                <input type="range" id="stopLossPct" class="count-range" min="1" max="10" value="3" step="0.5" style="flex:1;" oninput="updateRiskManagementDisplay()">
+                                <span id="stopLossPctValue" class="range-badge">-3.0%</span>
+                            </div>
+                            <small style="color:#666; display:block; margin-top:6px;">Автоматическая продажа при убытке</small>
+                        </div>
+                    </div>
+                    
+                    <div style="background:white; padding:10px; border-radius:6px; border:1px solid #dee2e6;">
+                        <div style="font-size:14px; color:#495057;">
+                            <strong>Текущие настройки риск-менеджмента:</strong><br>
+                            • Способ: <span id="riskTypeDisplay">Ордера на бирже</span><br>
+                            • Тейк-профит: <span id="takeProfitDisplay">5.0%</span><br>
+                            • Стоп-лосс: <span id="stopLossDisplay">-3.0%</span>
                         </div>
                     </div>
                 </div>
@@ -199,6 +252,12 @@
                 </div>
                 
                 <div id="tradingResult" class="status" style="display: none;"></div>
+                
+                <!-- Активные агенты -->
+                <div class="section" style="margin-top:18px;">
+                    <h2>🌐 Активные агенты</h2>
+                    <div id="agentsTable"></div>
+                </div>
             </div>
             </div><!-- /agent-control tab-panel -->
 
@@ -257,7 +316,7 @@
             }catch(_){ }
         });
         let monitoringInterval = null;
-
+        let previousSymbol = 'BTCUSDT'; // Отслеживаем предыдущий символ
         let modelsData = [];
         
         // Форматирование даты/времени в московском часовом поясе
@@ -309,10 +368,122 @@
             }
         }
 
+        // Получить предыдущий символ
+        function getPreviousSymbol() {
+            return previousSymbol;
+        }
+
+        // Сохранить настройки консенсуса для символа
+        function saveConsensusSettingsForSymbol(symbol) {
+            if (!symbol) return;
+            
+            try {
+                const flatCount = parseInt(document.getElementById('flatConsensusCount')?.value || '1', 10);
+                const trendCount = parseInt(document.getElementById('trendConsensusCount')?.value || '1', 10);
+                const selectedPaths = Array.from(document.querySelectorAll('.verCheck:checked')).map(i => i.value).filter(Boolean);
+                
+                const settings = {
+                    flatCount: flatCount,
+                    trendCount: trendCount,
+                    selectedPaths: selectedPaths,
+                    timestamp: Date.now()
+                };
+                
+                localStorage.setItem(`consensus_${symbol}`, JSON.stringify(settings));
+                console.log(`Сохранены настройки консенсуса для ${symbol}:`, settings);
+            } catch (e) {
+                console.error('Ошибка сохранения настроек консенсуса:', e);
+            }
+        }
+
+        // Загрузить настройки консенсуса для символа
+        function loadConsensusSettingsForSymbol(symbol) {
+            if (!symbol) return;
+            
+            try {
+                const saved = localStorage.getItem(`consensus_${symbol}`);
+                if (saved) {
+                    const settings = JSON.parse(saved);
+                    
+                    // Восстанавливаем настройки select'ов
+                    const flatSelect = document.getElementById('flatConsensusCount');
+                    const trendSelect = document.getElementById('trendConsensusCount');
+                    
+                    if (flatSelect && typeof settings.flatCount === 'number') {
+                        flatSelect.value = settings.flatCount;
+                    }
+                    if (trendSelect && typeof settings.trendCount === 'number') {
+                        trendSelect.value = settings.trendCount;
+                    }
+                    
+                    // Восстанавливаем выбранные модели после небольшой задержки
+                    // (чтобы DOM успел обновиться после renderEnsembleVersions)
+                    setTimeout(() => {
+                        if (settings.selectedPaths && Array.isArray(settings.selectedPaths)) {
+                            // Снимаем все галочки
+                            document.querySelectorAll('.verCheck').forEach(checkbox => {
+                                checkbox.checked = false;
+                            });
+                            
+                            // Ставим галочки для сохраненных путей
+                            settings.selectedPaths.forEach(path => {
+                                const checkbox = document.querySelector(`.verCheck[value="${path}"]`);
+                                if (checkbox) {
+                                    checkbox.checked = true;
+                                }
+                            });
+                            
+                            // Обновляем отображение консенсуса БЕЗ отправки в Redis
+                            // (чтобы не перезаписать правильные значения дефолтными)
+                            syncConsensusSelectsMax();
+                            const selectedCount = Math.max(1, Array.from(document.querySelectorAll('.verCheck:checked')).length);
+                            const flatSelect = document.getElementById('flatConsensusCount');
+                            const trendSelect = document.getElementById('trendConsensusCount');
+                            if (!flatSelect || !trendSelect) return;
+                            const flatCount = parseInt(flatSelect.value || '1', 10);
+                            const trendCount = parseInt(trendSelect.value || '1', 10);
+                            const toPct = (count) => Math.round((count / selectedCount) * 100);
+                            const flatPct = toPct(flatCount);
+                            const trendPct = toPct(trendCount);
+                            
+                            // Обновляем UI без отправки в Redis
+                            const plural = (n) => (n === 1 ? 'модель' : (n >= 2 && n <= 4 ? 'модели' : 'моделей'));
+                            const flatBadge = document.getElementById('flatConsensusCountValue');
+                            const trendBadge = document.getElementById('trendConsensusCountValue');
+                            if (flatBadge) flatBadge.textContent = `${flatCount} ${plural(flatCount)}`;
+                            if (trendBadge) trendBadge.textContent = `${trendCount} ${plural(trendCount)}`;
+                            
+                            const flatHint = document.getElementById('flatConsensusPercentHint');
+                            const trendHint = document.getElementById('trendConsensusPercentHint');
+                            if (flatHint) flatHint.textContent = `≈ ${flatPct}% от выбранных`;
+                            if (trendHint) trendHint.textContent = `≈ ${trendPct}% от выбранных`;
+                            
+                            const flatDisp = document.getElementById('flatConsensusDisplay');
+                            const trendDisp = document.getElementById('trendConsensusDisplay');
+                            if (flatDisp) flatDisp.textContent = `${flatCount} из ${selectedCount} моделей (${flatPct}%)`;
+                            if (trendDisp) trendDisp.textContent = `${trendCount} из ${selectedCount} моделей (${trendPct}%)`;
+                            
+                            console.log(`UI обновлен для ${symbol}: flat=${flatCount}, trend=${trendCount}, selected=${selectedCount}`);
+                            
+                            // НЕ отправляем данные в Redis при загрузке - только обновляем UI
+                        }
+                    }, 100);
+                    
+                    console.log(`Загружены настройки консенсуса для ${symbol}:`, settings);
+                }
+            } catch (e) {
+                console.error('Ошибка загрузки настроек консенсуса:', e);
+            }
+        }
+
         // Загрузка ансамблей и версий
         async function onEnsembleSymbolChange() {
             const symSel = document.getElementById('ensembleSymbolSelect');
             const symbol = symSel ? (symSel.value || 'BTCUSDT') : 'BTCUSDT';
+            
+            // Сохраняем текущие настройки консенсуса для предыдущего символа
+            saveConsensusSettingsForSymbol(getPreviousSymbol());
+            
             try {
                 const resp = await fetch('/list_ensembles?symbol=' + encodeURIComponent(symbol));
                 const data = await resp.json();
@@ -328,7 +499,14 @@
                 ensSel.innerHTML = names.length ? names.map(n => `<option value="${n}">${n}</option>`).join('') : '<option value="">Нет ансамблей</option>';
                 ensSel.value = names[0] || 'ensemble-a';
                 ensSel.dataset.payload = JSON.stringify(data.ensembles || {});
+                
+                // Загружаем настройки консенсуса для нового символа
+                loadConsensusSettingsForSymbol(symbol);
+                
                 renderEnsembleVersions();
+                
+                // Обновляем предыдущий символ
+                previousSymbol = symbol;
             } catch (e) {
                 console.error('Ошибка списка ансамблей', e);
             }
@@ -362,11 +540,15 @@
                     const winrate = (typeof stats.winrate === 'number') ? (stats.winrate * 100).toFixed(1) + '%' : '—';
                     const plr = (typeof stats.pl_ratio === 'number') ? stats.pl_ratio.toFixed(2) : '—';
                     const trades = (typeof stats.trades_count === 'number') ? stats.trades_count : '—';
+                    
+                    // Используем ID модели из манифеста, если доступен, иначе имя файла
+                    const modelDisplay = (v.manifest_id && v.manifest_id !== '') ? v.manifest_id : (modelFile || '—');
+                    
                     return `
                         <div class=\"vt-row\">
-                            <div class=\"c-check\"><input type=\"checkbox\" class=\"verCheck\" value=\"${path}\" data-version=\"${v.version}\" onchange=\"updateConsensusDisplay()\"></div>
+                            <div class=\"c-check\"><input type=\"checkbox\" class=\"verCheck\" value=\"${path}\" data-version=\"${v.version}\" onchange=\"updateConsensusDisplay(); saveConsensusSettingsForSymbol(document.getElementById('ensembleSymbolSelect')?.value || 'BTCUSDT')\"></div>
                             <div><span style=\"font-weight:600;\">${v.version}</span></div>
-                            <div><code>${modelFile || '—'}</code></div>
+                            <div><code>${modelDisplay}</code></div>
                             <div style=\"font-size:12px;color:#555;\">Winrate: ${winrate} · P/L: ${plr} · Trades: ${trades}</div>
                         </div>`;
                 }).join('');
@@ -387,8 +569,33 @@
         async function startTrading() {
             const symbol = (document.getElementById('ensembleSymbolSelect')?.value) || 'BTCUSDT';
             const selectedSymbols = [symbol];
+            
             // Собираем выбранные версии из чекбоксов
             const selectedPaths = Array.from(document.querySelectorAll('.verCheck:checked')).map(i => i.value).filter(Boolean);
+            
+            // Сохраняем текущие настройки консенсуса перед запуском
+            saveConsensusSettingsForSymbol(symbol);
+            
+            // Отправляем данные консенсуса в Redis перед запуском торговли
+            try {
+                const consensusSettings = getConsensusSettings();
+                console.log('[UI] Sending to Redis on START:', { 
+                    symbols: [symbol],
+                    model_paths: selectedPaths,
+                    consensus: consensusSettings
+                });
+                await fetch('/api/trading/save_config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        symbols: [symbol],
+                        model_paths: selectedPaths,
+                        consensus: consensusSettings
+                    })
+                });
+            } catch (e) {
+                console.error('Ошибка сохранения консенсуса в Redis:', e);
+            }
             if (selectedPaths.length === 0) {
                 showStatus('tradingResult', 'error', 'Выберите хотя бы одну версию для голосования');
                 return;
@@ -399,10 +606,15 @@
                 return;
             }
             
-            // Получаем настройки консенсуса
+            // Получаем настройки консенсуса для отправки в /api/trading/start
             const consensusSettings = getConsensusSettings();
             const accountSel = document.getElementById('bybitAccountSelect');
             const accountId = accountSel ? (accountSel.value || '') : '';
+            
+            // Получаем параметры риск-менеджмента
+            const takeProfitPct = parseFloat(document.getElementById('takeProfitPct')?.value || '5');
+            const stopLossPct = parseFloat(document.getElementById('stopLossPct')?.value || '3');
+            const riskType = document.getElementById('riskManagementType')?.value || 'exchange_orders';
             
             try {
                 const response = await fetch('/api/trading/start', {
@@ -414,7 +626,10 @@
                         symbols: selectedSymbols,
                         model_paths: selectedPaths,
                         consensus: consensusSettings,
-                        account_id: accountId
+                        account_id: accountId,
+                        take_profit_pct: takeProfitPct,
+                        stop_loss_pct: stopLossPct,
+                        risk_management_type: riskType
                     })
                 });
                 
@@ -422,9 +637,16 @@
                 showStatus('tradingResult', result.success ? 'success' : 'error', 
                     result.success ? result.message : result.error);
                 
+                // Обновляем таблицу активных агентов после успешного запуска
+                if (result.success) {
+                    setTimeout(loadAgents, 1000);
+                }
+                
                 if (result.success) {
                     // Автоматически получаем статус после запуска
                     setTimeout(getTradingStatus, 1000);
+                    // И обновляем список активных агентов
+                    try { setTimeout(loadAgents, 800); } catch(_) {}
                 }
             } catch (error) {
                 showStatus('tradingResult', 'error', 'Ошибка при запуске торговли: ' + error.message);
@@ -434,20 +656,16 @@
         // Остановка торговли
         async function stopTrading() {
             try {
-                const response = await fetch('/api/trading/stop', {
+                const symbol = (document.getElementById('ensembleSymbolSelect')?.value) || 'BTCUSDT';
+                const response = await fetch('/api/trading/stop_symbol', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    }
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol })
                 });
-                
                 const result = await response.json();
-                showStatus('tradingResult', result.success ? 'success' : 'error', 
-                    result.success ? result.message : result.error);
-                
+                showStatus('tradingResult', result.success ? 'success' : 'error', result.success ? 'Торговля остановлена' : (result.error||'Ошибка'));
                 if (result.success) {
-                    // Автоматически получаем статус после остановки
-                    setTimeout(getTradingStatus, 1000);
+                    setTimeout(()=>{ getTradingStatus(); loadAgents(); }, 800);
                 }
             } catch (error) {
                 showStatus('tradingResult', 'error', 'Ошибка при остановке торговли: ' + error.message);
@@ -1410,38 +1628,46 @@
         }
         
         // Обработчики и логика для слайдеров консенсуса (по количеству моделей)
-        function syncConsensusSlidersMax() {
+        function syncConsensusSelectsMax() {
             const selectedCount = Math.max(1, Array.from(document.querySelectorAll('.verCheck:checked')).length);
-            const flatSlider = document.getElementById('flatConsensusCount');
-            const trendSlider = document.getElementById('trendConsensusCount');
-            if (!flatSlider || !trendSlider) return;
-            // Обновляем max и подгоняем value в диапазон
-            flatSlider.max = String(selectedCount);
-            trendSlider.max = String(selectedCount);
-            if (parseInt(flatSlider.value || '1', 10) > selectedCount) flatSlider.value = String(selectedCount);
-            if (parseInt(trendSlider.value || '1', 10) > selectedCount) trendSlider.value = String(selectedCount);
+            const flatSelect = document.getElementById('flatConsensusCount');
+            const trendSelect = document.getElementById('trendConsensusCount');
+            if (!flatSelect || !trendSelect) return;
+            
+            // Обновляем опции в select'ах
+            [flatSelect, trendSelect].forEach(select => {
+                const currentValue = select.value;
+                select.innerHTML = '';
+                for (let i = 1; i <= Math.max(selectedCount, 1); i++) {
+                    const option = document.createElement('option');
+                    option.value = i;
+                    option.textContent = `${i} ${i === 1 ? 'модель' : (i >= 2 && i <= 4 ? 'модели' : 'моделей')}`;
+                    select.appendChild(option);
+                }
+                // Восстанавливаем выбранное значение если оно валидно
+                if (currentValue && parseInt(currentValue) <= selectedCount) {
+                    select.value = currentValue;
+                } else {
+                    select.value = Math.min(selectedCount, 1);
+                }
+            });
         }
 
         function updateConsensusDisplay() {
-            syncConsensusSlidersMax();
+            syncConsensusSelectsMax();
             const selectedCount = Math.max(1, Array.from(document.querySelectorAll('.verCheck:checked')).length);
-            const flatSlider = document.getElementById('flatConsensusCount');
-            const trendSlider = document.getElementById('trendConsensusCount');
-            if (!flatSlider || !trendSlider) return;
-            const flatCount = parseInt(flatSlider.value || '1', 10);
-            const trendCount = parseInt(trendSlider.value || '1', 10);
+            const flatSelect = document.getElementById('flatConsensusCount');
+            const trendSelect = document.getElementById('trendConsensusCount');
+            if (!flatSelect || !trendSelect) return;
+            const flatCount = parseInt(flatSelect.value || '1', 10);
+            const trendCount = parseInt(trendSelect.value || '1', 10);
+            
             // Вычисляем приблизительный процент (для подсказки)
             const toPct = (count) => Math.round((count / selectedCount) * 100);
             const flatPct = toPct(flatCount);
             const trendPct = toPct(trendCount);
 
-            // Обновляем бейджи и подписи
-            const plural = (n) => (n === 1 ? 'модель' : (n >= 2 && n <= 4 ? 'модели' : 'моделей'));
-            const flatBadge = document.getElementById('flatConsensusCountValue');
-            const trendBadge = document.getElementById('trendConsensusCountValue');
-            if (flatBadge) flatBadge.textContent = `${flatCount} ${plural(flatCount)}`;
-            if (trendBadge) trendBadge.textContent = `${trendCount} ${plural(trendCount)}`;
-
+            // Обновляем подсказки с процентами
             const flatHint = document.getElementById('flatConsensusPercentHint');
             const trendHint = document.getElementById('trendConsensusPercentHint');
             if (flatHint) flatHint.textContent = `≈ ${flatPct}% от выбранных`;
@@ -1452,37 +1678,125 @@
             const trendDisp = document.getElementById('trendConsensusDisplay');
             if (flatDisp) flatDisp.textContent = `${flatCount} из ${selectedCount} моделей (${flatPct}%)`;
             if (trendDisp) trendDisp.textContent = `${trendCount} из ${selectedCount} моделей (${trendPct}%)`;
+            
+            // Автосохранение в localStorage (БЕЗ отправки в Redis)
+            const currentSymbol = document.getElementById('ensembleSymbolSelect')?.value || 'BTCUSDT';
+            saveConsensusSettingsForSymbol(currentSymbol);
         }
 
-        function initConsensusSliders() {
-            const flatSlider = document.getElementById('flatConsensusCount');
-            const trendSlider = document.getElementById('trendConsensusCount');
-            if (flatSlider) flatSlider.addEventListener('input', updateConsensusDisplay);
-            if (trendSlider) trendSlider.addEventListener('input', updateConsensusDisplay);
+        function initConsensusSelects() {
+            const flatSelect = document.getElementById('flatConsensusCount');
+            const trendSelect = document.getElementById('trendConsensusCount');
+            if (flatSelect) flatSelect.addEventListener('change', updateConsensusDisplay);
+            if (trendSelect) trendSelect.addEventListener('change', updateConsensusDisplay);
             updateConsensusDisplay();
         }
 
         // Автосохранение выбора моделей и консенсуса в Redis
+        // Обработчики для тейк-профита и стоп-лосса
+        function updateRiskManagementDisplay() {
+            const takeProfitSlider = document.getElementById('takeProfitPct');
+            const stopLossSlider = document.getElementById('stopLossPct');
+            const riskTypeSelect = document.getElementById('riskManagementType');
+            
+            if (takeProfitSlider) {
+                const value = parseFloat(takeProfitSlider.value);
+                const badge = document.getElementById('takeProfitPctValue');
+                const display = document.getElementById('takeProfitDisplay');
+                if (badge) badge.textContent = `${value.toFixed(1)}%`;
+                if (display) display.textContent = `${value.toFixed(1)}%`;
+            }
+            
+            if (stopLossSlider) {
+                const value = parseFloat(stopLossSlider.value);
+                const badge = document.getElementById('stopLossPctValue');
+                const display = document.getElementById('stopLossDisplay');
+                if (badge) badge.textContent = `-${value.toFixed(1)}%`;
+                if (display) display.textContent = `-${value.toFixed(1)}%`;
+            }
+            
+            if (riskTypeSelect) {
+                const typeDisplay = document.getElementById('riskTypeDisplay');
+                const typeMap = {
+                    'exchange_orders': 'Ордера на бирже',
+                    'bot_monitoring': 'Мониторинг ботом',
+                    'both': 'Оба способа'
+                };
+                if (typeDisplay) typeDisplay.textContent = typeMap[riskTypeSelect.value] || 'Неизвестно';
+            }
+            
+            // НЕ автосохранение при инициализации - только при изменении пользователем
+        }
+
+        function initRiskManagementSliders() {
+            const takeProfitSlider = document.getElementById('takeProfitPct');
+            const stopLossSlider = document.getElementById('stopLossPct');
+            const riskTypeSelect = document.getElementById('riskManagementType');
+            
+            if (takeProfitSlider) {
+                takeProfitSlider.addEventListener('input', () => {
+                    updateRiskManagementDisplay();
+                    autoSaveTradingConfig();
+                });
+            }
+            if (stopLossSlider) {
+                stopLossSlider.addEventListener('input', () => {
+                    updateRiskManagementDisplay();
+                    autoSaveTradingConfig();
+                });
+            }
+            if (riskTypeSelect) {
+                riskTypeSelect.addEventListener('change', () => {
+                    updateRiskManagementDisplay();
+                    autoSaveTradingConfig();
+                });
+            }
+            
+            updateRiskManagementDisplay();
+        }
+
         async function autoSaveTradingConfig(){
             try{
                 const symbol = (document.getElementById('ensembleSymbolSelect')?.value) || 'BTCUSDT';
                 const selectedPaths = Array.from(document.querySelectorAll('.verCheck:checked')).map(i => i.value).filter(Boolean);
                 const consensusSettings = getConsensusSettings();
+                
+                // Добавляем параметры риск-менеджмента
+                const takeProfitPct = parseFloat(document.getElementById('takeProfitPct')?.value || '5');
+                const stopLossPct = parseFloat(document.getElementById('stopLossPct')?.value || '3');
+                const riskType = document.getElementById('riskManagementType')?.value || 'exchange_orders';
+                
+                // Сохраняем в Redis через API
                 await fetch('/api/trading/save_config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ symbols: [symbol], model_paths: selectedPaths, consensus: consensusSettings })
+                    body: JSON.stringify({ 
+                        symbols: [symbol], 
+                        model_paths: selectedPaths, 
+                        consensus: consensusSettings,
+                        take_profit_pct: takeProfitPct,
+                        stop_loss_pct: stopLossPct,
+                        risk_management_type: riskType
+                    })
                 });
-            }catch(_){ }
+                
+                console.log(`Автосохранение настроек для ${symbol}:`, {
+                    consensus: consensusSettings,
+                    models: selectedPaths.length,
+                    risk: { takeProfitPct, stopLossPct, riskType }
+                });
+            }catch(e){ 
+                console.error('Ошибка автосохранения:', e);
+            }
         }
 
         // Получение настроек консенсуса (и в штуках, и в процентах)
         function getConsensusSettings() {
-            const selectedCount = Math.max(1, Array.from(document.querySelectorAll('.verCheck:checked')).length);
+            const selectedCount = Array.from(document.querySelectorAll('.verCheck:checked')).length;
             const flatCount = parseInt(document.getElementById('flatConsensusCount').value || '1', 10);
             const trendCount = parseInt(document.getElementById('trendConsensusCount').value || '1', 10);
-            const toPct = (count) => Math.round((count / selectedCount) * 100);
-            return {
+            const toPct = (count) => selectedCount > 0 ? Math.round((count / selectedCount) * 100) : 0;
+            const result = {
                 counts: {
                     flat: flatCount,
                     trend: trendCount,
@@ -1493,6 +1807,8 @@
                     trend: toPct(trendCount)
                 }
             };
+            console.log('[UI] getConsensusSettings result:', result);
+            return result;
         }
         
         // Автоматически получаем статус при загрузке страницы
@@ -1500,9 +1816,59 @@
             onEnsembleSymbolChange();
             getTradingStatus();
             getBalance();
-            initConsensusSliders();
+            loadAgents();
+            initConsensusSelects();
+            initRiskManagementSliders(); // Добавить эту строку
             loadBybitAccounts();
+            
+            // Загружаем настройки консенсуса для BTCUSDT по умолчанию
+            loadConsensusSettingsForSymbol('BTCUSDT');
         });
+
+        async function loadAgents(){
+            try{
+                const box = document.getElementById('agentsTable'); if(!box) return;
+                const r = await fetch('/api/trading/agents');
+                const j = await r.json();
+                if(!j.success){ box.innerHTML = '<div class="status error">❌ Ошибка загрузки</div>'; return; }
+                const agents = Array.isArray(j.agents)? j.agents: [];
+                if(agents.length===0){ box.innerHTML = '<div class="status info">📭 Нет данных</div>'; return; }
+                const rows = agents.filter(a=>a.active).map(a=>{
+                    const c = a.consensus||{}; const counts = c.counts||{};
+                    const regime = (a.status&&a.status.market_regime) || 'flat';
+                    return `
+                    <div class="trade-item" style="border-left:4px solid ${a.active?'#28a745':'#6c757d'};">
+                        <div class="trade-header">
+                            <span class="trade-action ${a.active?'success':'hold'}">${a.symbol}</span>
+                            <span>${a.active? '🟢 Активен' : '🔴 Остановлен'}</span>
+                        </div>
+                        <div class="trade-details" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">
+                            <div class="trade-detail"><div class="label">Режим</div><div class="value">${regime}</div></div>
+                            <div class="trade-detail"><div class="label">Моделей</div><div class="value">${a.total_models}</div></div>
+                            <div class="trade-detail"><div class="label">Требуется</div><div class="value">${a.required} (${a.required_type})</div></div>
+                            <div class="trade-detail"><div class="label">Консенсус</div><div class="value">flat=${counts.flat??'—'}, trend=${counts.trend??'—'}</div></div>
+                            <div class="trade-detail"><div class="label">BUY/SELL/HOLD</div><div class="value">—</div></div>
+                            <div class="trade-detail"><div class="label">TTL лок</div><div class="value">${a.lock_ttl??'—'}</div></div>
+                        </div>
+                        <div style="text-align:right;margin-top:8px;">
+                            <button class="btn btn-danger" onclick="stopAgent('${a.symbol}')">🛑 Стоп</button>
+                        </div>
+                    </div>`;
+                }).join('');
+                box.innerHTML = rows || '<div class="status info">Нет активных агентов</div>';
+            }catch(e){
+                const box = document.getElementById('agentsTable'); if(box) box.innerHTML = '<div class="status error">❌ Ошибка: '+e.message+'</div>';
+            }
+        }
+
+        async function stopAgent(symbol){
+            try{
+                const r = await fetch('/api/trading/stop_symbol', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({symbol})});
+                const j = await r.json();
+                showStatus('tradingResult', j.success?'success':'error', j.success?'Остановлен '+symbol : (j.error||'Ошибка'));
+                if(j.success){ loadAgents(); getTradingStatus(); }
+            }catch(e){ showStatus('tradingResult','error','Сеть: '+e.message); }
+        }
 
         async function loadBybitAccounts(){
             try{

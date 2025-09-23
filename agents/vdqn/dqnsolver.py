@@ -212,7 +212,10 @@ class DQNSolver:
                 action_space, 
                 self.cfg.hidden_sizes,
                 dropout_rate=self.cfg.dropout_rate,
-                layer_norm=self.cfg.layer_norm
+                layer_norm=self.cfg.layer_norm,
+                activation=self.cfg.activation,
+                use_residual=self.cfg.use_residual_blocks,
+                use_swiglu=self.cfg.use_swiglu_gate
             ).to(self.cfg.device)
             
             self.target_model = NoisyDuelingDQN(
@@ -220,7 +223,10 @@ class DQNSolver:
                 action_space, 
                 self.cfg.hidden_sizes,
                 dropout_rate=self.cfg.dropout_rate,
-                layer_norm=self.cfg.layer_norm
+                layer_norm=self.cfg.layer_norm,
+                activation=self.cfg.activation,
+                use_residual=self.cfg.use_residual_blocks,
+                use_swiglu=self.cfg.use_swiglu_gate
             ).to(self.cfg.device)
             
             print("🔀 Используем Noisy Dueling DQN для лучшего exploration")
@@ -232,6 +238,9 @@ class DQNSolver:
                 self.cfg.hidden_sizes,
                 dropout_rate=self.cfg.dropout_rate,
                 layer_norm=self.cfg.layer_norm,
+                activation=self.cfg.activation,
+                use_residual=self.cfg.use_residual_blocks,
+                use_swiglu=self.cfg.use_swiglu_gate,
                 dueling=self.cfg.dueling_dqn
             ).to(self.cfg.device)
             
@@ -241,6 +250,9 @@ class DQNSolver:
                 self.cfg.hidden_sizes,
                 dropout_rate=self.cfg.dropout_rate,
                 layer_norm=self.cfg.layer_norm,
+                activation=self.cfg.activation,
+                use_residual=self.cfg.use_residual_blocks,
+                use_swiglu=self.cfg.use_swiglu_gate,
                 dueling=self.cfg.dueling_dqn
             ).to(self.cfg.device)
         

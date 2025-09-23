@@ -20,6 +20,9 @@
         #resultModelsTable .truncate { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
         #resultModelsSection .button-group { margin-bottom: 10px; }
         #resultModelsSection .btn.btn-danger { font-size: 12px; padding: 6px 10px; }
+        #resultModelsSection .btn { font-size: 11px; padding: 4px 8px; margin: 1px; white-space: nowrap; }
+        #resultModelsSection .btn-group { display: flex; gap: 2px; flex-wrap: nowrap; justify-content: flex-end; }
+        #resultModelsSection .btn-group .btn { margin: 0; }
     </style>
 
 </head>
@@ -28,6 +31,8 @@
     <nav class="sidebar">
         <h3>📋 Навигация</h3>
         <ul class="sidebar-nav">
+            <li><a href="/" class="back-link">← На главную</a></li>
+            <li><a href="javascript:history.back()">← Назад</a></li>
             <li><a href="#create-model" onclick="scrollToSection('create-model')">📦 Создать версию</a></li>
             <li><a href="#training" onclick="scrollToSection('training')">🎯 Обучение DQN</a></li>
             <li><a href="#continue-training" onclick="scrollToSection('continue-training')">🔁 Дообучить модель</a></li>
@@ -54,9 +59,15 @@
                 <h2>📦 Создать новую версию модели</h2>
                 <p>Скопирует веса/буфер/результаты из <code>result/</code> в <code>models/&lt;symbol&gt;/ensemble-a/vN</code> (с <code>manifest.yaml</code> и ссылкой <code>current</code>)</p>
                 <div class="form-group">
+                    <label>Символ</label>
+                    <select id="resultSymbolSelect" class="form-control" onchange="loadResultFilesForCreate()">
+                        <option value="">Загрузка символов...</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label>Выберите модель из папки result</label>
                     <select id="resultFileSelect" class="form-control">
-                        <option value="">Загрузка списка...</option>
+                        <option value="">Сначала выберите символ...</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -146,7 +157,7 @@
     <script>
         // Загрузить список моделей при загрузке страницы
         document.addEventListener('DOMContentLoaded', function() {
-            loadResultFiles();
+            try{ loadResultSymbolsForCreate(); }catch(_){ }
             loadContinueModels();
             loadRunsSymbols();
         });
@@ -156,7 +167,9 @@
             const statusDiv = document.getElementById('createStatus');
             const button = event.target;
             const fileSelect = document.getElementById('resultFileSelect');
+            const symbolSelect = document.getElementById('resultSymbolSelect');
             const selectedFile = fileSelect ? fileSelect.value : '';
+            const selectedSymbol = symbolSelect ? symbolSelect.value : '';
             const ensSelect = document.getElementById('resultEnsembleSelect');
             const selectedEns = ensSelect ? ensSelect.value : 'ensemble-a';
             
@@ -175,7 +188,7 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ file: selectedFile, ensemble: selectedEns })
+                    body: JSON.stringify({ file: selectedFile, symbol: selectedSymbol, ensemble: selectedEns })
                 });
                 
                 const result = await response.json();
@@ -253,42 +266,43 @@
         // Глобально храним среднее время за эпизод (сек)
         let avgTimePerEpisodeSec = null;
 
-        // Загрузка списка доступных результатов обучения из result/
-        async function loadResultFiles() {
-            const select = document.getElementById('resultFileSelect');
-            if (!select) return;
-            
-            try {
-                const resp = await fetch('/list_training_results');
+        // Загрузка символов для секции создания версии
+        async function loadResultSymbolsForCreate(){
+            const sel = document.getElementById('resultSymbolSelect');
+            if(!sel) return;
+            try{
+                const resp = await fetch('/api/runs/symbols');
                 const data = await resp.json();
-                
-                if (!data.success) {
-                    select.innerHTML = '<option value="">Файлы не найдены</option>';
-                    return;
+                if(!data.success){ sel.innerHTML = '<option value="">Ошибка</option>'; return; }
+                const list = Array.isArray(data.symbols)? data.symbols: [];
+                if(list.length===0){ sel.innerHTML = '<option value="">Нет символов</option>'; return; }
+                sel.innerHTML = list.map(s=>`<option value="${s}">${s}</option>`).join('');
+                try{ loadResultFilesForCreate(); }catch(_){ }
+            }catch(e){ sel.innerHTML = '<option value="">Ошибка загрузки</option>'; }
+        }
+
+        // Загрузка моделей (весов) для выбранного символа из структуры runs
+        async function loadResultFilesForCreate(){
+            const sym = (document.getElementById('resultSymbolSelect')?.value||'').trim();
+            const select = document.getElementById('resultFileSelect');
+            if(!select) return;
+            if(!sym){ select.innerHTML = '<option value="">Сначала выберите символ...</option>'; return; }
+            try{
+                const resp = await fetch('/api/runs/list?symbol='+encodeURIComponent(sym));
+                const data = await resp.json();
+                if(!data.success){ select.innerHTML = '<option value="">Ошибка загрузки</option>'; return; }
+                const runs = Array.isArray(data.runs)? data.runs: [];
+                const options = [];
+                for(const r of runs){
+                    const path = r.model_path || '';
+                    if(path && path.toLowerCase().endsWith('.pth')){
+                        const fname = path.split('/').pop().split('\\').pop();
+                        const label = `${r.run_id || 'run'} — ${fname}`;
+                        options.push(`<option value="${path}">${label}</option>`);
+                    }
                 }
-                
-                if (!data.files || data.files.length === 0) {
-                    select.innerHTML = '<option value="">Нет доступных файлов</option>';
-                    return;
-                }
-                
-                // Показываем только train_result_btc_*
-                const onlyBtc = (data.files || []).filter(f => {
-                    const fn = (f.filename || '').toLowerCase();
-                    return fn.includes('train_result_btc_');
-                });
-                if (onlyBtc.length === 0) {
-                    select.innerHTML = '<option value="">Нет файлов train_result_btc_*</option>';
-                    return;
-                }
-                // Генерируем опции: показываем только имя файла без пути
-                select.innerHTML = onlyBtc.map(f => {
-                    const filename = (f.filename || '').split('/').pop().split('\\').pop();
-                    return `<option value="${f.filename}">${filename}</option>`;
-                }).join('');
-            } catch (e) {
-                select.innerHTML = '<option value="">Ошибка загрузки списка</option>';
-            }
+                select.innerHTML = options.length? options.join('') : '<option value="">Нет обученных моделей</option>';
+            }catch(e){ select.innerHTML = '<option value="">Ошибка загрузки</option>'; }
         }
 
         // Загрузка списка весов для дообучения (все dqn_model_*.pth)
@@ -537,8 +551,19 @@ P/L Ratio: ${plr}
                         // Построим дерево parent->children
                         const idToNode = {}; const idToChildren = {};
                         runs.forEach(x=>{ idToNode[x.run_id]=x; idToChildren[x.run_id]=[]; });
-                        runs.forEach(x=>{ if(x.parent_run_id && idToChildren[x.parent_run_id]) idToChildren[x.parent_run_id].push(x.run_id); });
-                        const roots = runs.filter(x=>!x.parent_run_id).map(x=>x.run_id);
+                        runs.forEach(x=>{ 
+                            if(x.parent_run_id) {
+                                // Если родитель существует в списке runs, добавляем как дочерний
+                                if(idToChildren[x.parent_run_id]) {
+                                    idToChildren[x.parent_run_id].push(x.run_id);
+                                } else {
+                                    // Если родитель не найден, добавляем как корневой элемент
+                                    // (родитель был удален)
+                                }
+                            }
+                        });
+                        // Корни: элементы без родителя ИЛИ с удаленным родителем
+                        const roots = runs.filter(x=>!x.parent_run_id || !idToNode[x.parent_run_id]).map(x=>x.run_id);
 
                         async function renderRunRow(runId, depth){
                             const run = idToNode[runId]; if(!run) return;
@@ -564,9 +589,11 @@ P/L Ratio: ${plr}
                             }catch(_){ }
                             const indent = `<span style=\"display:inline-block; width:${depth*16}px;\"></span>`;
                             const label = `${depth>0?'▸ ':''}${run.run_id}`;
-                            const parent = run.parent_run_id || '—';
-                            const oosBtn = run.model_path ? `<button class="btn btn-info" style="margin-right:6px;" onclick="runOOSTest('${run.run_id}','${run.model_path}')">Test</button>` : '';
+                            const parent = (run.parent_run_id && idToNode[run.parent_run_id]) ? run.parent_run_id : '—';
+                            const oosBtn = run.model_path ? `<button class="btn btn-info" onclick="runOOSTest('${run.run_id}','${run.model_path}')">Test</button>` : '';
+                            const showResultsBtn = `<button class="btn btn-secondary" onclick="showOOSResults('${s}','${run.run_id}')">Result</button>`;
                             const delBtn = `<button class="btn btn-danger" onclick="deleteRun('${s}','${run.run_id}')\">✖</button>`;
+                            const buttonsHtml = `<div class="btn-group">${oosBtn}${showResultsBtn}${delBtn}</div>`;
                             const rowStyle = isBad ? 'style="background-color: #fef2f2; border-left: 3px solid #ef4444;"' : '';
                             rows.push(`
                                 <tr ${rowStyle}>
@@ -576,7 +603,7 @@ P/L Ratio: ${plr}
                                     <td class="nowrap">${win}</td>
                                     <td class="nowrap">${plr}</td>
                                     <td class="nowrap">${episodes}</td>
-                                    <td class="nowrap" style="text-align:right;">${oosBtn}${delBtn}</td>
+                                    <td class="nowrap" style="text-align:right;">${buttonsHtml}</td>
                                 </tr>
                             `);
                             const children = idToChildren[runId]||[];
@@ -594,7 +621,7 @@ P/L Ratio: ${plr}
                             <th class="nowrap">Winrate</th>
                             <th class="nowrap">P/L Ratio</th>
                             <th class="nowrap">Эпизоды</th>
-                            <th class="nowrap" style="width:160px; text-align:right;">Действия</th>
+                            <th class="nowrap" style="width:240px; text-align:right;">Действия</th>
                         </tr>
                     </thead>`;
                 listDiv.innerHTML = rows.length>0 ? `<table id="resultModelsTable">${header}<tbody>${rows.join('')}</tbody></table>` : '<div class="status info">📭 Пусто</div>';
@@ -665,6 +692,98 @@ P/L Ratio: ${plr}
             }catch(e){ alert('Сеть: '+e.message); }
         }
 
+        async function showOOSResults(symbol, runId){
+            try{
+                const resp = await fetch(`/api/runs/oos_results?symbol=${encodeURIComponent(symbol)}&run_id=${encodeURIComponent(runId)}`);
+                const data = await resp.json();
+                if(!data.success){
+                    alert('❌ Ошибка загрузки результатов: ' + (data.error || 'Unknown'));
+                    return;
+                }
+                
+                const oosData = data.data;
+                const counters = oosData.counters || {};
+                const history = oosData.history || [];
+                
+                // Создаем панель результатов
+                ensureOOSPanel();
+                const wrap = document.getElementById('oosResults');
+                
+                // Очищаем предыдущие результаты
+                wrap.innerHTML = '';
+                
+                // Заголовок с общей статистикой
+                const totalTests = counters.good + counters.bad + counters.neutral;
+                const summaryHtml = `
+                    <div class="card" style="margin-bottom: 16px; border: 1px solid #e5e7eb;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                            <div class="mono" style="font-weight:600;">📊 История OOS тестов: ${symbol}/${runId}</div>
+                            <div class="muted">Всего тестов: ${totalTests}</div>
+                        </div>
+                        <div style="margin:8px 0; display:flex;gap:16px;">
+                            <span class="badge" style="background:#10b981;color:#fff;border-radius:4px;padding:4px 8px;">
+                                ✅ Хорошие: ${counters.good || 0}
+                            </span>
+                            <span class="badge" style="background:#ef4444;color:#fff;border-radius:4px;padding:4px 8px;">
+                                ❌ Плохие: ${counters.bad || 0}
+                            </span>
+                            <span class="badge" style="background:#6b7280;color:#fff;border-radius:4px;padding:4px 8px;">
+                                ⚠️ Средние: ${counters.neutral || 0}
+                            </span>
+                        </div>
+                    </div>
+                `;
+                
+                // Добавляем заголовок
+                wrap.insertAdjacentHTML('afterbegin', summaryHtml);
+                
+                // Добавляем карточки для каждого теста (от новых к старым)
+                const sortedHistory = [...history].reverse();
+                for(const test of sortedHistory){
+                    const metrics = test.metrics || {};
+                    const classification = test.classification || 'unknown';
+                    const ts = new Date(test.ts || '');
+                    const timeStr = ts.toLocaleString('ru-RU');
+                    
+                    // Определяем цвет карточки
+                    let cardStyle = 'border: 1px solid #e5e7eb;';
+                    if(classification === 'good'){
+                        cardStyle = 'border: 1px solid #10b981; box-shadow: 0 0 0 2px rgba(16,185,129,0.12);';
+                    } else if(classification === 'bad'){
+                        cardStyle = 'border: 1px solid #ef4444; box-shadow: 0 0 0 2px rgba(239,68,68,0.12);';
+                    }
+                    
+                    const roiPct = metrics.roi_pct != null ? metrics.roi_pct.toFixed(2) + '%' : 'N/A';
+                    const winrate = metrics.winrate != null ? (metrics.winrate * 100).toFixed(1) + '%' : 'N/A';
+                    const plr = metrics.pl_ratio != null ? metrics.pl_ratio.toFixed(2) : 'N/A';
+                    const pf = metrics.profit_factor != null ? metrics.profit_factor.toFixed(2) : 'N/A';
+                    const maxdd = metrics.max_dd != null ? (metrics.max_dd * 100).toFixed(1) + '%' : 'N/A';
+                    const trades = metrics.trades != null ? metrics.trades : 'N/A';
+                    
+                    const gateInfo = test.gate_disable ? 'Q-gate: отключен' : 
+                                   (test.gate_scale != null ? `Q-gate: ${((1-test.gate_scale)*100).toFixed(0)}%` : 'Q-gate: стандарт');
+                    
+                    const testCard = `
+                        <div class="card" style="${cardStyle}">
+                            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                                <div class="mono" style="font-weight:600;">${test.days}д ${gateInfo}</div>
+                                <div class="muted">${timeStr}</div>
+                            </div>
+                            <pre style="white-space:pre-wrap;margin:6px 0;">
+ROI: ${roiPct} | Winrate: ${winrate} | PLR: ${plr} | PF: ${pf} | MaxDD: ${maxdd} | Trades: ${trades}
+Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
+                            </pre>
+                        </div>
+                    `;
+                    wrap.insertAdjacentHTML('beforeend', testCard);
+                }
+                
+            }catch(e){
+                console.error('[OOS Results] error', e);
+                alert('❌ Ошибка загрузки результатов: ' + e.message);
+            }
+        }
+
         // Запуск OOS‑теста на 30 дней
         async function runOOSTest(code, filename){
             const file = filename || '';
@@ -700,6 +819,9 @@ P/L Ratio: ${plr}
                 // Выводим результат в панель (копируемый текст)
                 ensureOOSPanel();
                 const wrap = document.getElementById('oosResults');
+                
+                // Очищаем предыдущие результаты
+                wrap.innerHTML = '';
                 const first = (allResults[0]||{}).data || {success:false};
                 if(!first.success){
                     const err = '❌ OOS: '+(first.error||'ошибка');
@@ -831,6 +953,7 @@ P/L Ratio: ${plr}
                     <h2>📈 Результаты OOS (копируемые)</h2>
                     <div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
                         <button class="btn btn-info" onclick="openOOSModal()">⚙️ Настройки OOS</button>
+                        <button class="btn btn-secondary" onclick="clearOOSResults()">🗑️ Очистить результаты</button>
                         <div class="muted" style="font-size:12px;">
                             <strong>Критерии оценки:</strong><br>
                             ✅ <span style="color:#10b981;">Кандидат на дообучение</span>: ROI>10%, PF≥1.2, PLR>1.0, MaxDD<40%<br>
@@ -847,6 +970,13 @@ P/L Ratio: ${plr}
         async function copyText(t){
             try{ await navigator.clipboard.writeText(String(t||'')); }
             catch(_){ try{ prompt('Скопируйте вручную:', String(t||'')); }catch(__){} }
+        }
+
+        function clearOOSResults(){
+            const wrap = document.getElementById('oosResults');
+            if(wrap){
+                wrap.innerHTML = '<div class="status info">📭 Результаты очищены</div>';
+            }
         }
 
         // Простейшая модалка настроек OOS

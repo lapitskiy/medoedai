@@ -175,6 +175,25 @@ def api_runs_list():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@models_admin_bp.get('/api/runs/oos_results')
+def api_runs_oos_results():
+    try:
+        symbol = (request.args.get('symbol') or '').strip().upper()
+        run_id = (request.args.get('run_id') or '').strip()
+        if not symbol or not run_id:
+            return jsonify({'success': False, 'error': 'symbol and run_id required'}), 400
+        oos_file = Path('result') / symbol / 'runs' / run_id / 'oos_results.json'
+        if not oos_file.exists():
+            return jsonify({'success': False, 'error': 'oos_results.json not found'}), 404
+        try:
+            import json as _json
+            data = _json.loads(oos_file.read_text(encoding='utf-8'))
+            return jsonify({'success': True, 'data': data})
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Failed to parse oos_results.json: {e}'}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @models_admin_bp.post('/api/runs/delete')
 def api_runs_delete():
     try:
@@ -188,14 +207,17 @@ def api_runs_delete():
             return jsonify({'success': False, 'error': 'run directory not found'}), 404
         deleted = []
         errors = []
-        for fname in ['model.pth', 'replay.pkl', 'train_result.pkl', 'manifest.json']:
-            p = run_dir / fname
-            try:
-                if p.exists():
-                    os.remove(p)
-                    deleted.append(str(p))
-            except Exception as e:
-                errors.append(f'{fname}: {e}')
+        # Удаляем все файлы в директории run
+        try:
+            for p in run_dir.iterdir():
+                if p.is_file():
+                    try:
+                        os.remove(p)
+                        deleted.append(str(p))
+                    except Exception as e:
+                        errors.append(f'{p.name}: {e}')
+        except Exception as e:
+            errors.append(f'iterdir: {e}')
         # Пытаемся удалить директорию, если пуста
         removed_dir = False
         try:

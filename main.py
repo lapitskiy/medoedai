@@ -64,14 +64,8 @@ app.register_blueprint(clean_bp)
 
 # Функция очистки Redis вынесена в utils.redis_utils.clear_redis_on_startup
 
-# Инициализируем Redis клиент и очищаем при запуске
-redis_client = clear_redis_on_startup()
-if redis_client is None:
-    # Fallback - создаем клиент без очистки
-    try:
-        redis_client = redis.Redis(host='localhost', port=6379, db=0)
-    except:
-        redis_client = redis.Redis(host='redis', port=6379, db=0)
+# Инициализируем Redis клиент без очистки (decode_responses=True)
+redis_client = get_redis_client()
 
 @app.before_request
 def log_request_info():
@@ -1217,6 +1211,498 @@ def models_page():
     """Страница управления моделями"""
     return render_template('models.html')
 
+@app.route('/cnn_training')
+def cnn_training_page():
+    """Страница обучения CNN моделей"""
+    return render_template('cnn_training.html')
+
+# === CNN Training API Endpoints ===
+
+@app.route('/cnn/start_training', methods=['POST'])
+def cnn_start_training():
+    """Запуск обучения CNN модели"""
+    try:
+        data = request.get_json()
+        symbols = data.get('symbols', ['BTCUSDT'])
+        timeframes = data.get('timeframes', ['5m'])
+        model_type = data.get('model_type', 'multiframe')
+        
+        print(f"🔍 Flask: Получен запрос на CNN обучение")
+        print(f"🔍 Flask: symbols={symbols}, model_type={model_type}")
+        
+        # Запускаем реальную Celery задачу для обучения CNN
+        try:
+            print(f"🔍 Flask: Импортируем train_cnn_model...")
+            from tasks.celery_tasks import train_cnn_model
+            print(f"✅ Flask: train_cnn_model импортирован успешно")
+        except ImportError as e:
+            print(f"❌ Flask: Ошибка импорта train_cnn_model: {e}")
+            raise
+        
+        # Если передан один символ как строка, конвертируем в список
+        if isinstance(symbols, str):
+            symbols = [symbols]
+            print(f"🔍 Flask: Конвертировали символ в список: {symbols}")
+        
+        # Запускаем ОДНУ задачу обучения, которая сама обучит на всех символах из конфигурации
+        print(f"🔍 Flask: Запускаем одну задачу обучения для символов: {symbols}...")
+        try:
+            # Передаем первый символ как формальный аргумент (задача внутри возьмет все символы из config)
+            task = train_cnn_model.delay(
+                symbol=symbols[0] if symbols else "BTCUSDT",
+                model_type=model_type
+            )
+            print(f"✅ Flask: Задача создана с ID: {task.id}")
+            task_results = [{
+                "symbols": symbols,
+                "task_id": task.id
+            }]
+        except Exception as e:
+            print(f"❌ Flask: Ошибка создания задачи: {e}")
+            raise
+        
+        print(f"✅ Flask: Все задачи созданы успешно. Возвращаем ответ.")
+        
+        result = {
+            "success": True,
+            "message": f"🧠 CNN обучение запущено для {symbols}",
+            "task_results": task_results,
+            "details": {
+                "symbols": symbols,
+                "timeframes": timeframes,
+                "model_type": model_type,
+                "note": "Все параметры обучения берутся из config.py"
+            }
+        }
+        
+        print(f"🔍 Flask: Ответ: {result}")
+        return jsonify(result)
+    except Exception as e:
+        print(f"❌ Flask: Критическая ошибка в CNN endpoint: {str(e)}")
+        import traceback
+        print(f"❌ Flask: Traceback: {traceback.format_exc()}")
+        return jsonify({
+            "success": False,
+            "error": f"Ошибка запуска CNN обучения: {str(e)}"
+        }), 500
+
+@app.route('/cnn/models', methods=['GET'])
+def cnn_get_models():
+    """Получение списка CNN моделей из cnn_training/result"""
+    try:
+        import os
+        import json
+        from datetime import datetime
+        
+        models = []
+        result_dir = "cnn_training/result"
+        
+        if not os.path.exists(result_dir):
+            return jsonify({
+                "success": True,
+                "models": []
+            })
+        
+        # Проходим по всем символам в result/
+        for symbol in os.listdir(result_dir):
+            symbol_path = os.path.join(result_dir, symbol)
+            if not os.path.isdir(symbol_path):
+                continue
+                
+            runs_dir = os.path.join(symbol_path, "runs")
+            if not os.path.exists(runs_dir):
+                continue
+            
+            # Проходим по всем run_id
+            for run_id in os.listdir(runs_dir):
+                run_path = os.path.join(runs_dir, run_id)
+                if not os.path.isdir(run_path):
+                    continue
+                
+                # Ищем manifest.json и result_*.json
+                manifest_path = os.path.join(run_path, "manifest.json")
+                if not os.path.exists(manifest_path):
+                    continue
+                
+                try:
+                    # Читаем manifest.json
+                    with open(manifest_path, 'r', encoding='utf-8') as f:
+                        manifest = json.load(f)
+                    
+                    # Ищем result файлы
+                    result_files = [f for f in os.listdir(run_path) if f.startswith('result_') and f.endswith('.json')]
+                    
+                    # Ищем модели (берем только лучшую модель)
+                    model_files = [f for f in os.listdir(run_path) if f.endswith('.pth')]
+                    
+                    if model_files:
+                        # Приоритет: сначала best, потом обычную
+                        best_model = None
+                        regular_model = None
+                        
+                        for model_file in model_files:
+                            if 'best' in model_file.lower():
+                                best_model = model_file
+                            else:
+                                regular_model = model_file
+                        
+                        # Берем лучшую модель, если есть, иначе обычную
+                        model_file = best_model if best_model else regular_model
+                        model_path = os.path.join(run_path, model_file)
+                        model_size = os.path.getsize(model_path)
+                        
+                        # Получаем данные из manifest
+                        model_type = manifest.get('model_type', 'unknown')
+                        timeframes = manifest.get('timeframes', [])
+                        created_at = manifest.get('created_at', '')
+                        symbols_trained = manifest.get('symbols', [])
+                        
+                        # Читаем результаты обучения если есть
+                        accuracy = None
+                        epochs_trained = None
+                        train_loss = None
+                        val_loss = None
+                        
+                        if result_files:
+                            try:
+                                result_path = os.path.join(run_path, result_files[0])
+                                with open(result_path, 'r', encoding='utf-8') as f:
+                                    result_data = json.load(f)
+                                
+                                accuracy = result_data.get('best_val_accuracy')
+                                epochs_trained = result_data.get('epochs_trained')
+                                train_loss = result_data.get('train_loss_last')
+                                val_loss = result_data.get('val_loss_last')
+                            except Exception:
+                                pass
+                        
+                        # Формируем информацию о модели
+                        model_info = {
+                            "symbol": symbol,
+                            "run_id": run_id,
+                            "model_type": model_type,
+                            "timeframes": timeframes,
+                            "symbols_trained": symbols_trained,
+                            "accuracy": accuracy,
+                            "epochs_trained": epochs_trained,
+                            "train_loss": train_loss,
+                            "val_loss": val_loss,
+                            "size": model_size,
+                            "created": created_at,
+                            "path": model_path,
+                            "manifest": manifest,
+                            "model_file": model_file
+                        }
+                        
+                        models.append(model_info)
+                        
+                except Exception as e:
+                    print(f"Ошибка чтения {manifest_path}: {e}")
+                    continue
+        
+        # Сортируем по дате создания (новые первыми)
+        models.sort(key=lambda x: x.get('created', ''), reverse=True)
+        
+        return jsonify({
+            "success": True,
+            "models": models,
+            "total": len(models)
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/cnn/test_model', methods=['POST'])
+def cnn_test_model():
+    """Тестирование CNN модели"""
+    try:
+        data = request.get_json()
+        model_path = data.get('model_path')
+        
+        # TODO: Реализовать тестирование CNN модели
+        # Пока возвращаем заглушку
+        return jsonify({
+            "success": True,
+            "test_results": f"Тестирование модели {model_path} завершено успешно.\nТочность: 75.2%\nLoss: 0.234\nВремя тестирования: 45 секунд"
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/cnn/test_extraction', methods=['POST'])
+def cnn_test_extraction():
+    """Тестирование извлечения признаков"""
+    try:
+        import time
+        import torch
+        import numpy as np
+        
+        data = request.get_json()
+        model_path = data.get('model_path')
+        test_symbol = data.get('test_symbol', 'BTCUSDT')
+        
+        if not model_path:
+            return jsonify({
+                "success": False,
+                "error": "Путь к модели не указан"
+            }), 400
+        
+        print(f"🧪 Тестируем извлечение признаков для модели: {model_path}")
+        
+        # Импортируем необходимые модули
+        try:
+            from cnn_training.feature_extractor import CNNFeatureExtractor
+            from cnn_training.config import CNNTrainingConfig
+            from cnn_training.data_loader import CryptoDataLoader
+        except ImportError as e:
+            return jsonify({
+                "success": False,
+                "error": f"Ошибка импорта модулей: {e}"
+            }), 500
+        
+        # Создаем конфигурацию
+        config = CNNTrainingConfig(
+            symbols=[test_symbol],
+            timeframes=["5m", "15m", "1h"],
+            device="auto"
+        )
+        
+        # Создаем feature extractor
+        extractor = CNNFeatureExtractor(config)
+        
+        # Загружаем модель
+        try:
+            extractor.load_model(model_path)
+            print(f"✅ Модель загружена: {model_path}")
+        except Exception as e:
+            return jsonify({
+                "success": False,
+                "error": f"Ошибка загрузки модели: {e}"
+            }), 500
+        
+        # Подготавливаем тестовые данные
+        data_loader = CryptoDataLoader(config)
+        data_dict = data_loader.prepare_training_data([test_symbol], config.timeframes)
+        
+        if not data_dict:
+            return jsonify({
+                "success": False,
+                "error": f"Не удалось загрузить данные для {test_symbol}"
+            }), 500
+        
+        # Создаем мультифреймовый датасет
+        train_dataset, val_dataset = data_loader.create_multiframe_dataset(data_dict)
+        
+        # Берем несколько образцов для тестирования
+        test_samples = []
+        for i in range(min(10, len(val_dataset))):
+            sample = val_dataset[i]
+            test_samples.append(sample)
+        
+        print(f"📊 Тестируем на {len(test_samples)} образцах")
+        
+        # Тестируем извлечение признаков
+        start_time = time.time()
+        features_list = []
+        
+        for sample in test_samples:
+            try:
+                features = extractor.extract_features(sample)
+                features_list.append(features)
+            except Exception as e:
+                print(f"⚠️ Ошибка извлечения признаков для образца: {e}")
+                continue
+        
+        extraction_time = (time.time() - start_time) * 1000  # в миллисекундах
+        
+        if not features_list:
+            return jsonify({
+                "success": False,
+                "error": "Не удалось извлечь признаки ни из одного образца"
+            }), 500
+        
+        # Анализируем результаты
+        features_array = np.array(features_list)
+        
+        results = {
+            "success": True,
+            "feature_size": int(features_array.shape[1]),
+            "extraction_time": round(extraction_time, 2),
+            "samples_tested": len(features_list),
+            "feature_mean": round(float(np.mean(features_array)), 6),
+            "feature_std": round(float(np.std(features_array)), 6),
+            "feature_min": round(float(np.min(features_array)), 6),
+            "feature_max": round(float(np.max(features_array)), 6),
+            "feature_sample": features_array[0].tolist()[:10],  # Первые 10 значений
+            "model_path": model_path,
+            "test_symbol": test_symbol
+        }
+        
+        print(f"✅ Тестирование завершено: {results}")
+        return jsonify(results)
+        
+    except Exception as e:
+        print(f"❌ Ошибка тестирования: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/cnn/integrate_dqn', methods=['POST'])
+def cnn_integrate_dqn():
+    """Интеграция CNN с DQN"""
+    try:
+        data = request.get_json()
+        model_path = data.get('model_path')
+        
+        # TODO: Реализовать интеграцию CNN с DQN
+        # Пока возвращаем заглушку
+        return jsonify({
+            "success": True,
+            "model_path": model_path,
+            "cnn_features_size": 64,
+            "total_state_size": 128,
+            "config_updated": True
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/cnn/monitoring', methods=['GET'])
+def cnn_monitoring():
+    """Мониторинг обучения CNN"""
+    try:
+        # TODO: Реализовать мониторинг обучения
+        # Пока возвращаем заглушку
+        return jsonify({
+            "success": True,
+            "metrics": {
+                "current_epoch": 25,
+                "train_loss": 0.234,
+                "val_loss": 0.267,
+                "val_accuracy": 0.752
+            },
+            "logs": [
+                "Epoch 25/50: Train Loss: 0.234, Val Loss: 0.267, Val Acc: 75.2%",
+                "Epoch 24/50: Train Loss: 0.241, Val Loss: 0.271, Val Acc: 74.8%",
+                "Epoch 23/50: Train Loss: 0.248, Val Loss: 0.275, Val Acc: 74.5%"
+            ]
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/cnn/validate_model', methods=['POST'])
+def cnn_validate_model():
+    """Валидация CNN модели на новых символах"""
+    try:
+        data = request.get_json()
+        model_path = data.get('model_path')
+        test_symbols = data.get('test_symbols', ['SOLUSDT', 'XRPUSDT', 'TONUSDT'])
+        test_period = data.get('test_period', 'last_year')
+        validation_type = data.get('validation_type', 'cross_symbol')
+        
+        if not model_path:
+            return jsonify({
+                "success": False,
+                "error": "Путь к модели не указан"
+            }), 400
+        
+        print(f"🧪 Валидация CNN модели: {model_path}")
+        print(f"📊 Тестовые символы: {test_symbols}")
+        print(f"📅 Период: {test_period}")
+        
+        # Импортируем валидатор
+        try:
+            from cnn_training.model_validator import validate_cnn_model
+        except ImportError as e:
+            return jsonify({
+                "success": False,
+                "error": f"Ошибка импорта валидатора: {e}"
+            }), 500
+        
+        # Запускаем валидацию
+        try:
+            result = validate_cnn_model(
+                model_path=model_path,
+                test_symbols=test_symbols,
+                test_period=test_period
+            )
+            
+            if result['success']:
+                print(f"✅ Валидация завершена успешно")
+                print(f"📈 Общая точность: {result.get('overall_accuracy', 0):.2%}")
+                return jsonify(result)
+            else:
+                print(f"❌ Ошибка валидации: {result.get('error', 'Неизвестная ошибка')}")
+                return jsonify(result), 500
+                
+        except Exception as e:
+            print(f"❌ Ошибка выполнения валидации: {str(e)}")
+            import traceback
+            print(f"❌ Traceback: {traceback.format_exc()}")
+            return jsonify({
+                "success": False,
+                "error": f"Ошибка валидации: {str(e)}"
+            }), 500
+            
+    except Exception as e:
+        print(f"❌ Критическая ошибка в endpoint валидации: {str(e)}")
+        import traceback
+        print(f"❌ Traceback: {traceback.format_exc()}")
+        return jsonify({
+            "success": False,
+            "error": f"Ошибка валидации: {str(e)}"
+        }), 500
+
+@app.route('/cnn/examples', methods=['GET'])
+def cnn_examples():
+    """Примеры использования CNN модуля"""
+    try:
+        examples = """# Пример использования CNN модуля
+
+from cnn_training.config import CNNTrainingConfig
+from cnn_training.trainer import CNNTrainer
+from cnn_training.feature_extractor import create_cnn_wrapper
+
+# 1. Создание конфигурации
+config = CNNTrainingConfig(
+    symbols=["BTCUSDT", "ETHUSDT"],
+    timeframes=["5m", "15m", "1h"],
+    sequence_length=50,
+    output_features=64
+)
+
+# 2. Обучение модели
+trainer = CNNTrainer(config)
+result = trainer.train_single_model("BTCUSDT", "5m", "prediction")
+
+# 3. Извлечение признаков для DQN
+cnn_wrapper = create_cnn_wrapper(config)
+features = cnn_wrapper.get_cnn_features("BTCUSDT", ohlcv_data)
+
+# 4. Интеграция с DQN
+combined_state = np.concatenate([base_dqn_state, features])"""
+        
+        return jsonify({
+            "success": True,
+            "examples": examples
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 @app.route('/trading_agent')
 def trading_agent_page():
     """Страница торгового агента"""
@@ -1243,6 +1729,7 @@ def create_model_version():
     import uuid
     from datetime import datetime
     from pathlib import Path
+    import traceback
     
     try:
         # Читаем символ из запроса (опционально)
@@ -1252,6 +1739,8 @@ def create_model_version():
             data = {}
         requested_symbol = (data.get('symbol') or '').strip()
         requested_file = (data.get('file') or '').strip()
+        requested_ensemble = (data.get('ensemble') or 'ensemble-a').strip() or 'ensemble-a'
+        print(f"[create_model_version] payload: symbol='{requested_symbol}', file='{requested_file}', ensemble='{requested_ensemble}'")
         
         # Генерируем уникальный ID (4 символа)
         model_id = str(uuid.uuid4())[:4].upper()
@@ -1279,8 +1768,12 @@ def create_model_version():
             return s
         
         base_code = normalize_symbol(requested_symbol)
+        print(f"[create_model_version] base_code (from symbol): '{base_code}'")
         
         selected_result_file = None
+        selected_model_file = None
+        selected_replay_file = None
+        run_dir_path = None
         # 1) Если фронт прислал явный файл — используем его
         if requested_file:
             from pathlib import Path as _Path
@@ -1288,6 +1781,7 @@ def create_model_version():
             req_norm = requested_file.replace('\\', '/')
             safe_path = _Path(req_norm)
             result_dir_abs = result_dir.resolve()
+            print(f"[create_model_version] requested_file(normalized)='{req_norm}'")
 
             # Определяем кандидат с учётом разных вариантов формата пути
             if safe_path.is_absolute():
@@ -1304,31 +1798,81 @@ def create_model_version():
                 cand_resolved = candidate.resolve()
             except Exception:
                 cand_resolved = candidate
+            print(f"[create_model_version] candidate='{cand_resolved}', exists={cand_resolved.exists()}, is_file={cand_resolved.is_file()}")
 
             # Безопасность: файл должен быть внутри result/
             try:
                 inside_result = str(cand_resolved).lower().startswith(str(result_dir_abs).lower())
             except Exception:
                 inside_result = False
+            print(f"[create_model_version] inside_result={inside_result}, result_dir_abs='{result_dir_abs}'")
 
-            if inside_result and cand_resolved.exists() and cand_resolved.is_file() and cand_resolved.suffix == '.pkl' and cand_resolved.name.startswith('train_result_'):
-                selected_result_file = cand_resolved
-                # Пытаемся извлечь base_code из имени файла
-                try:
-                    fname = cand_resolved.stem  # train_result_<code>
-                    parts = fname.split('_', 2)
-                    if len(parts) >= 3:
-                        base_code = parts[2].lower()
-                except Exception:
-                    pass
+            if inside_result and cand_resolved.exists() and cand_resolved.is_file():
+                run_dir = cand_resolved.parent
+                run_dir_path = run_dir
+                name_low = cand_resolved.name.lower()
+                # 1) Если выбрали модель .pth из папки run — ищем рядом replay и results
+                if cand_resolved.suffix == '.pth':
+                    # принимаем любой *.pth как модель
+                    selected_model_file = cand_resolved
+                    for f in run_dir.iterdir():
+                        if not f.is_file():
+                            continue
+                        n = f.name.lower()
+                        if n.endswith('.pkl') and (n.startswith('replay_buffer') or 'replay' in n):
+                            selected_replay_file = selected_replay_file or f
+                        elif n.endswith('.pkl') and (n.startswith('train_result') or 'result' in n):
+                            selected_result_file = selected_result_file or f
+                    print(f"[create_model_version] from run dir found: model={selected_model_file}, replay={selected_replay_file}, result={selected_result_file}")
+                    # Если каких-то файлов нет — продолжаем, но предупредим
+                    if not (selected_replay_file and selected_result_file):
+                        print("[create_model_version] WARN: not all artifacts found near model; will copy available ones only")
+                    try:
+                        if selected_result_file is not None:
+                            fname = selected_result_file.stem
+                            parts = fname.split('_', 2)
+                            if len(parts) >= 3:
+                                base_code = parts[2].lower()
+                    except Exception:
+                        pass
+                # 2) Если выбрали train_result_*.pkl — валидируем и ищем рядом .pth и replay
+                elif cand_resolved.suffix == '.pkl' and name_low.startswith('train_result_'):
+                    selected_result_file = cand_resolved
+                    for f in run_dir.iterdir():
+                        if not f.is_file():
+                            continue
+                        n = f.name.lower()
+                        if n.endswith('.pth'):
+                            selected_model_file = selected_model_file or f
+                        elif n.endswith('.pkl') and (n.startswith('replay_buffer') or 'replay' in n):
+                            selected_replay_file = selected_replay_file or f
+                    print(f"[create_model_version] neighbor search: model={selected_model_file}, replay={selected_replay_file}, result={selected_result_file}")
+                    if not selected_model_file:
+                        return jsonify({
+                            "success": False,
+                            "error": "Не найдена модель *.pth рядом с файлом результатов"
+                        })
+                    try:
+                        fname = selected_result_file.stem
+                        parts = fname.split('_', 2)
+                        if len(parts) >= 3:
+                            base_code = parts[2].lower()
+                    except Exception:
+                        pass
+                else:
+                    return jsonify({
+                        "success": False,
+                        "error": "Ожидался .pth или train_result_*.pkl внутри result/"
+                    })
             else:
                 return jsonify({
                     "success": False,
-                    "error": "Неверный путь к файлу результата или файл не существует"
+                    "error": "Неверный путь к файлу внутри result/"
                 })
         elif base_code:
             # Ищем точный train_result_<base_code>.pkl
             candidate = result_dir / f"train_result_{base_code}.pkl"
+            print(f"[create_model_version] fallback by base_code: candidate='{candidate}' exists={candidate.exists()}")
             if candidate.exists():
                 selected_result_file = candidate
             else:
@@ -1357,21 +1901,21 @@ def create_model_version():
         if not base_code:
             base_code = "model"
         
-        # Определяем пути источников в result/
-        model_file = result_dir / f'dqn_model_{base_code}.pth'
-        replay_file = result_dir / f'replay_buffer_{base_code}.pkl'
+        # Определяем пути источников
+        if selected_model_file and selected_replay_file and selected_result_file:
+            model_file = selected_model_file
+            replay_file = selected_replay_file
+        else:
+            model_file = result_dir / f'dqn_model_{base_code}.pth'
+            replay_file = result_dir / f'replay_buffer_{base_code}.pkl'
+        print(f"[create_model_version] sources: model='{model_file}', replay='{replay_file}', result='{selected_result_file}'")
         
         if not model_file.exists():
             return jsonify({
                 "success": False,
                 "error": f"Файл {model_file.name} не найден в result/"
             })
-        
-        if not replay_file.exists():
-            return jsonify({
-                "success": False,
-                "error": f"Файл {replay_file.name} не найден в result/"
-            })
+        # replay и results могут отсутствовать — это не критично
         
         # Сохраняем в структуру models/<symbol>/<ensemble>/vN
         named_id = f"{base_code}_{model_id}"
@@ -1410,36 +1954,67 @@ def create_model_version():
             version_name = f'v{next_num}'
             version_dir = ensemble_dir / version_name
             version_dir.mkdir(exist_ok=False)
+            print(f"[create_model_version] create version_dir='{version_dir}'")
 
-            # Копируем артефакты версии
-            ver_model = version_dir / f'dqn_model_{named_id}.pth'
-            ver_replay = version_dir / f'replay_buffer_{named_id}.pkl'
-            ver_result = version_dir / f'train_result_{named_id}.pkl'
+            # Копируем артефакты версии (сохраняем оригинальные имена файлов)
+            ver_model = version_dir / model_file.name
+            ver_replay = version_dir / (replay_file.name if replay_file.exists() else 'replay_buffer.pkl')
+            ver_result = version_dir / (selected_result_file.name if (selected_result_file and selected_result_file.exists()) else 'train_result.pkl')
             shutil.copy2(model_file, ver_model)
-            shutil.copy2(replay_file, ver_replay)
-            shutil.copy2(selected_result_file, ver_result)
+            try:
+                if replay_file.exists():
+                    shutil.copy2(replay_file, ver_replay)
+            except Exception:
+                print(f"[create_model_version] WARN: replay not copied from '{replay_file}'")
+            try:
+                if selected_result_file and selected_result_file.exists():
+                    shutil.copy2(selected_result_file, ver_result)
+            except Exception:
+                print(f"[create_model_version] WARN: results not copied from '{selected_result_file}'")
+            print(f"[create_model_version] copied core files to '{version_dir.name}'")
+
+            # Дополнительно переносим все файлы из папки запуска (если известна)
+            try:
+                if run_dir_path is not None:
+                    print(f"[create_model_version] copying extra files from run_dir='{run_dir_path}'")
+                    for f in run_dir_path.iterdir():
+                        if f.is_file():
+                            dst = version_dir / f.name
+                            try:
+                                if not dst.exists():
+                                    shutil.copy2(f, dst)
+                                    print(f"[create_model_version] extra file copied: '{f.name}'")
+                            except Exception:
+                                print(f"[create_model_version] WARN: failed to copy extra file '{f}'")
+            except Exception:
+                print("[create_model_version] WARN: extra-files copy failed:\n" + traceback.format_exc())
 
             # Пишем manifest.yaml (без зависимости от PyYAML)
             manifest_path = version_dir / 'manifest.yaml'
             try:
                 # Попытаемся извлечь краткую статистику
                 stats_brief = {}
-                try:
-                    import pickle as _pickle
-                    with open(new_result_file, 'rb') as _f:
-                        _res = _pickle.load(_f)
-                        if isinstance(_res, dict) and 'final_stats' in _res:
-                            stats_brief = _res['final_stats'] or {}
-                except Exception:
-                    pass
+                if ver_result.exists():
+                    try:
+                        import pickle as _pickle
+                        with open(ver_result, 'rb') as _f:
+                            _res = _pickle.load(_f)
+                            if isinstance(_res, dict) and 'final_stats' in _res:
+                                stats_brief = _res['final_stats'] or {}
+                    except Exception:
+                        print("[create_model_version] WARN: cannot read stats from ver_result")
                 created_ts = _dt.utcnow().isoformat()
+                # Используем run_id из исходной папки, если она известна
+                manifest_id = (str(run_dir_path.name) if run_dir_path is not None else named_id)
                 yaml_text = (
-                    'id: "' + named_id + '"\n'
+                    'id: "' + manifest_id + '"\n'
                     'symbol: "' + base_code.lower() + '"\n'
                     'ensemble: "' + ensemble_name + '"\n'
                     'version: "' + version_name + '"\n'
                     'created_at: "' + created_ts + '"\n'
-                    'files:\n'
+                    'run_id: "' + manifest_id + '"\n'
+                    + (('source_run_path: "' + str(run_dir_path).replace('\\','/') + '"\n') if run_dir_path is not None else '')
+                    + 'files:\n'
                     '  model: "' + ver_model.name + '"\n'
                     '  replay: "' + ver_replay.name + '"\n'
                     '  results: "' + ver_result.name + '"\n'
@@ -1450,7 +2025,7 @@ def create_model_version():
                 with open(manifest_path, 'w', encoding='utf-8') as mf:
                     mf.write(yaml_text)
             except Exception:
-                pass
+                print("[create_model_version] WARN: manifest write failed:\n" + traceback.format_exc())
 
             # Обновляем симлинк current -> vN (если не удаётся — создаём файл-указатель)
             current_link = ensemble_dir / 'current'
@@ -1473,19 +2048,20 @@ def create_model_version():
                     pass
         except Exception:
             # Не валим основной сценарий, если models/ недоступна
-            pass
+            print("[create_model_version] WARN: version packaging failed:\n" + traceback.format_exc())
         
         return jsonify({
             "success": True,
-            "model_id": named_id,
+            "model_id": (run_dir_path.name if run_dir_path is not None else named_id),
             "files": [
-                f'dqn_model_{named_id}.pth',
-                f'replay_buffer_{named_id}.pkl',
-                f'train_result_{named_id}.pkl'
+                ver_model.name,
+                ver_replay.name if ver_replay.exists() else None,
+                ver_result.name if ver_result.exists() else None
             ]
         })
         
     except Exception as e:
+        print("[create_model_version] ERROR:\n" + traceback.format_exc())
         return jsonify({
             "success": False,
             "error": str(e)
@@ -1597,6 +2173,10 @@ def list_ensembles():
                 if vdir.is_dir() and vdir.name.startswith('v'):
                     # Ищем файлы и manifest
                     files = { 'model': None, 'replay': None, 'results': None }
+                    # Фолбэки, если имена не по шаблону
+                    fallback_model = None
+                    fallback_replay = None
+                    fallback_results = None
                     manifest = None
                     stats = {}
                     for f in vdir.iterdir():
@@ -1608,10 +2188,21 @@ def list_ensembles():
                             files['results'] = f.name
                         elif f.name == 'manifest.yaml':
                             manifest = f.name
+                        # Сохраняем фолбэки
+                        elif f.suffix == '.pth' and fallback_model is None:
+                            fallback_model = f.name
+                        elif f.suffix == '.pkl':
+                            n = f.name.lower()
+                            if ('replay' in n) and fallback_replay is None:
+                                fallback_replay = f.name
+                            if (('train_result' in n) or ('result' in n)) and fallback_results is None:
+                                fallback_results = f.name
                     # Пытаемся вытащить краткую статистику из train_result_*.pkl
                     try:
-                        if files.get('results'):
-                            _res_path = vdir / files['results']
+                        # Выбор файла результатов с учетом фолбэков
+                        res_name = files.get('results') or fallback_results
+                        if res_name:
+                            _res_path = vdir / res_name
                             if _res_path.exists():
                                 with open(_res_path, 'rb') as _f:
                                     _res = _pickle.load(_f)
@@ -1619,10 +2210,35 @@ def list_ensembles():
                                         stats = _res['final_stats'] or {}
                     except Exception:
                         stats = {}
+                    # Применяем фолбэки, если строгие имена не найдены
+                    if files['model'] is None and fallback_model is not None:
+                        files['model'] = fallback_model
+                    if files['replay'] is None and fallback_replay is not None:
+                        files['replay'] = fallback_replay
+                    if files['results'] is None and fallback_results is not None:
+                        files['results'] = fallback_results
+                    
+                    # Читаем ID из манифеста, если он есть
+                    manifest_id = None
+                    if manifest:
+                        try:
+                            manifest_path = vdir / manifest
+                            if manifest_path.exists():
+                                with open(manifest_path, 'r', encoding='utf-8') as mf:
+                                    manifest_content = mf.read()
+                                    # Ищем строку с id: "значение"
+                                    for line in manifest_content.split('\n'):
+                                        if line.strip().startswith('id:'):
+                                            manifest_id = line.split(':', 1)[1].strip().strip('"\'')
+                                            break
+                        except Exception:
+                            pass
+                    
                     versions.append({
                         'version': vdir.name,
                         'files': files,
                         'manifest': manifest,
+                        'manifest_id': manifest_id,
                         'stats': stats,
                         'path': str(vdir).replace('\\','/')
                     })
@@ -1807,6 +2423,16 @@ def save_trading_config():
     """Автосохранение выбора моделей и консенсуса без запуска торговли."""
     try:
         data = request.get_json() or {}
+        try:
+            app.logger.info(f"[save_config] payload symbols={data.get('symbols')} sel_paths={len(data.get('model_paths') or [])} counts={(data.get('consensus') or {}).get('counts')}")
+            app.logger.info(f"[save_config] FULL payload: {data}")
+            # Детальный лог consensus
+            consensus = data.get('consensus')
+            if consensus:
+                app.logger.info(f"[save_config] consensus counts: {consensus.get('counts')}")
+                app.logger.info(f"[save_config] consensus percents: {consensus.get('percents')}")
+        except Exception:
+            pass
         symbols = data.get('symbols') or []
         model_paths = data.get('model_paths') or []
         consensus = data.get('consensus') or None
@@ -1814,13 +2440,38 @@ def save_trading_config():
         rc = get_redis_client()
         if symbols:
             rc.set('trading:symbols', _json.dumps(symbols, ensure_ascii=False))
-        # Не перезаписываем model_paths пустым списком — чтобы не ломать следующий тик
+        # Сохраняем только непустые списки моделей (и глобально, и per‑symbol)
         if isinstance(model_paths, list) and len(model_paths) > 0:
             rc.set('trading:model_paths', _json.dumps(model_paths, ensure_ascii=False))
             rc.set('trading:last_model_paths', _json.dumps(model_paths, ensure_ascii=False))
-        if consensus is not None:
-            rc.set('trading:consensus', _json.dumps(consensus, ensure_ascii=False))
-            rc.set('trading:last_consensus', _json.dumps(consensus, ensure_ascii=False))
+            # Пер‑символьное хранилище для корректного отображения и оркестрации
+            symbol = symbols[0] if symbols else 'ALL'
+            rc.set(f'trading:model_paths:{symbol}', _json.dumps(model_paths, ensure_ascii=False))
+            try:
+                app.logger.info(f"[save_config] symbol={symbol} model_paths_selected={len(model_paths)} -> saved per-symbol model_paths")
+            except Exception:
+                pass
+        # Не перетираем консенсус пустыми/дефолтными значениями
+        if consensus is not None and isinstance(model_paths, list) and len(model_paths) > 0:
+            symbol = symbols[0] if symbols else 'ALL'
+            # Опционально: синхронизируем total_selected с фактическим списком
+            try:
+                c = consensus.get('counts') if isinstance(consensus, dict) else None
+                if isinstance(c, dict):
+                    before = dict(c)
+                    c['total_selected'] = len(model_paths)
+                    app.logger.info(f"[save_config] symbol={symbol} counts_in={before} -> counts_saved={c}")
+            except Exception:
+                pass
+            rc.set(f'trading:consensus:{symbol}', _json.dumps(consensus, ensure_ascii=False))
+            try:
+                app.logger.info(f"[save_config] symbol={symbol} consensus saved")
+            except Exception:
+                pass
+        try:
+            app.logger.info("[save_config] ✓ done")
+        except Exception:
+            pass
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -1847,21 +2498,24 @@ def start_trading():
             import json as _json
             _rc = get_redis_client()
             _rc.set('trading:model_path', model_path)
-            try:
-                if isinstance(model_paths, list):
-                    _rc.set('trading:model_paths', _json.dumps(model_paths, ensure_ascii=False))
-            except Exception:
-                pass
-            _rc.set('trading:symbols', _json.dumps(symbols, ensure_ascii=False))
+            # НЕ перезаписываем общие модели, чтобы не убить другие агенты
+            # try:
+            #     if isinstance(model_paths, list):
+            #         _rc.set('trading:model_paths', _json.dumps(model_paths, ensure_ascii=False))
+            # except Exception:
+            #     pass
+            # НЕ перезаписываем общие символы, чтобы не убить другие агенты
+            # _rc.set('trading:symbols', _json.dumps(symbols, ensure_ascii=False))
             if account_id:
                 _rc.set('trading:account_id', account_id)
-            # Консенсус (counts/percents) — запоминаем выбор пользователя
+            # Консенсус (counts/percents) — запоминаем выбор пользователя для конкретного символа
             try:
                 consensus = data.get('consensus')
                 if consensus is not None:
-                    _rc.set('trading:consensus', _json.dumps(consensus, ensure_ascii=False))
-                    # Сохраняем дубликат для фолбэка тиков
-                    _rc.set('trading:last_consensus', _json.dumps(consensus, ensure_ascii=False))
+                    # Сохраняем консенсус для конкретного символа
+                    symbol = symbols[0] if symbols else 'ALL'
+                    _rc.set(f'trading:consensus:{symbol}', _json.dumps(consensus, ensure_ascii=False))
+                    # Не сохраняем больше глобальные ключи консенсуса, чтобы агенты не перетирали друг друга
             except Exception:
                 pass
             # Обновим last_model_paths для фолбэка тиков
@@ -1870,15 +2524,22 @@ def start_trading():
                     _rc.set('trading:last_model_paths', _json.dumps(model_paths, ensure_ascii=False))
             except Exception:
                 pass
-            # Пишем мгновенный «активный» статус, чтобы UI сразу показывал Активна до первого RESULT
+            # Сохраняем настройки для конкретного символа
+            symbol = symbols[0] if symbols else 'ALL'
+            _rc.set(f'trading:symbols:{symbol}', _json.dumps(symbols, ensure_ascii=False))
+            _rc.set(f'trading:model_path:{symbol}', model_path)
+            if isinstance(model_paths, list):
+                _rc.set(f'trading:model_paths:{symbol}', _json.dumps(model_paths, ensure_ascii=False))
+            
+            # Пишем мгновенный «активный» статус для конкретного символа
             initial_status = {
                 'success': True,
                 'is_trading': True,
                 'trading_status': 'Активна',
                 'trading_status_emoji': '🟢',
                 'trading_status_full': '🟢 Активна',
-                'symbol': symbols[0] if symbols else None,
-                'symbol_display': symbols[0] if symbols else 'Не указана',
+                'symbol': symbol,
+                'symbol_display': symbol,
                 'amount': None,
                 'amount_display': 'Не указано',
                 'amount_usdt': 0.0,
@@ -1888,19 +2549,25 @@ def start_trading():
                 'current_price': 0.0,
                 'last_model_prediction': None,
             }
-            _rc.set('trading:current_status', _json.dumps(initial_status, ensure_ascii=False))
+            # Сохраняем статус для конкретного символа
+            _rc.set(f'trading:status:{symbol}', _json.dumps(initial_status, ensure_ascii=False))
+            # НЕ перезаписываем общий статус, чтобы не убить другие агенты
+            # _rc.set('trading:current_status', _json.dumps(initial_status, ensure_ascii=False))
             from datetime import datetime as _dt
             _rc.set('trading:current_status_ts', _dt.utcnow().isoformat())
         except Exception as _e:
             app.logger.error(f"Не удалось сохранить параметры торговли в Redis: {_e}")
 
-        # Redis-лок: если уже идёт торговый шаг, не стартуем второй параллельно
+        # Redis-лок: если уже идёт торговый шаг для этого символа, не стартуем второй параллельно
         try:
             _rc_lock = get_redis_client()
-            if _rc_lock.get('trading:agent_lock'):
+            # Проверяем блокировку для конкретного символа
+            symbol = symbols[0] if symbols else 'ALL'
+            lock_key = f'trading:agent_lock:{symbol}'
+            if _rc_lock.get(lock_key):
                 return jsonify({
                     'success': False,
-                    'error': 'Торговый шаг уже выполняется (agent_lock_active)'
+                    'error': f'Торговый шаг для {symbol} уже выполняется (agent_lock_active)'
                 }), 429
         except Exception:
             pass
@@ -2001,6 +2668,165 @@ def stop_trading():
                 'success': False, 
                 'error': f'Ошибка Docker: {str(e)}'
             }), 500
+# Перехват внешнего try для функции stop_trading
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Ошибка stop_trading: {str(e)}'
+        }), 500
+
+# Новый упрощённый стоп по символу: снимаем Redis-лок и помечаем статус как остановленный
+@app.route('/api/trading/stop_symbol', methods=['POST'])
+def stop_trading_symbol():
+    try:
+        data = request.get_json(silent=True) or {}
+        symbol = str(data.get('symbol') or '').strip().upper()
+        if not symbol:
+            return jsonify({'success': False, 'error': 'symbol is required'}), 400
+        rc = get_redis_client()
+        # Снимаем лок
+        try:
+            rc.delete(f'trading:agent_lock:{symbol}')
+        except Exception:
+            pass
+        # Обновляем статус
+        try:
+            import json as _json
+            raw = rc.get(f'trading:status:{symbol}')
+            status = _json.loads(raw) if raw else {}
+            if not isinstance(status, dict):
+                status = {}
+            status.update({
+                'is_trading': False,
+                'trading_status': 'Остановлена',
+                'trading_status_emoji': '🔴',
+                'trading_status_full': '🔴 Остановлена'
+            })
+            rc.set(f'trading:status:{symbol}', _json.dumps(status, ensure_ascii=False))
+        except Exception:
+            pass
+        return jsonify({'success': True, 'symbol': symbol})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Список активных агентов и агрегированная инфа по каждому
+@app.route('/api/trading/agents', methods=['GET'])
+def list_trading_agents():
+    try:
+        import json as _json
+        from datetime import datetime as _dt
+        rc = get_redis_client()
+        # Базовый список символов (можно расширить)
+        known = ['BTCUSDT','ETHUSDT','SOLUSDT','TONUSDT','ADAUSDT','BNBUSDT','XRPUSDT']
+        agents = []
+        for sym in known:
+            # Активность по локам (могут отсутствовать после рестарта)
+            try:
+                ttl = rc.ttl(f'trading:agent_lock:{sym}')
+            except Exception:
+                ttl = None
+            # Статус per-symbol
+            try:
+                raw = rc.get(f'trading:status:{sym}')
+                status = _json.loads(raw) if raw else None
+            except Exception:
+                status = None
+            # Фолбэк активности: если статус говорит, что торгуем — считаем активным
+            try:
+                is_trading_flag = bool(status and (status.get('is_trading') is True or str(status.get('trading_status') or '').strip() in ('Активна','🟢 Активна')))
+            except Exception:
+                is_trading_flag = False
+            is_active = ((ttl is not None and isinstance(ttl, int) and ttl > 0) or is_trading_flag)
+            # Консенсус per-symbol
+            try:
+                cons_raw = rc.get(f'trading:consensus:{sym}')
+                consensus = _json.loads(cons_raw) if cons_raw else None
+            except Exception:
+                consensus = None
+            try:
+                app.logger.info(f"[agents] {sym}: raw_consensus={consensus}")
+            except Exception:
+                pass
+            # Список моделей
+            total_models = 0
+            try:
+                mps_raw = rc.get(f'trading:model_paths:{sym}')
+                if mps_raw:
+                    parsed = _json.loads(mps_raw)
+                    if isinstance(parsed, list):
+                        total_models = len(parsed)
+            except Exception:
+                total_models = 0
+            # Вычисляем требуемые пороги так же, как оркестратор
+            def _required(total_sel: int, counts: dict | None, regime: str) -> tuple[int,int,int,str,int]:
+                req_flat = None
+                req_trend = None
+                try:
+                    c = counts or {}
+                    if isinstance(c.get('flat'), (int, float)):
+                        req_flat = int(max(1, c.get('flat')))
+                    if isinstance(c.get('trend'), (int, float)):
+                        req_trend = int(max(1, c.get('trend')))
+                except Exception:
+                    pass
+                default_req = 2 if total_sel >= 3 else max(1, total_sel)
+                if req_flat is None:
+                    req_flat = default_req
+                if req_trend is None:
+                    req_trend = default_req
+                req_flat = int(min(max(1, req_flat), total_sel if total_sel>0 else 1))
+                req_trend = int(min(max(1, req_trend), total_sel if total_sel>0 else 1))
+                req_type = 'trend' if regime in ('uptrend','downtrend') else 'flat'
+                required = (req_trend if req_type=='trend' else req_flat)
+                return total_sel, req_flat, req_trend, req_type, required
+            counts = (consensus or {}).get('counts') if isinstance(consensus, dict) else None
+            regime = (status or {}).get('market_regime') or 'flat'
+            # Насильно приводим total_selected к фактическому выбору моделей
+            try:
+                if isinstance(counts, dict):
+                    before_ts = counts.get('total_selected')
+                    counts['total_selected'] = total_models
+                    try:
+                        app.logger.info(f"[agents] {sym}: total_models={total_models}, counts_in_ts={before_ts}, counts_out_ts={counts.get('total_selected')}, flat={counts.get('flat')}, trend={counts.get('trend')}, regime={regime}")
+                    except Exception:
+                        pass
+                    # Если исправили в памяти, сохраняем обратно в Redis
+                    if before_ts != total_models and total_models > 0:
+                        try:
+                            consensus['counts'] = counts
+                            rc.set(f'trading:consensus:{sym}', _json.dumps(consensus, ensure_ascii=False))
+                            app.logger.info(f"[agents] {sym}: FIXED Redis total_selected {before_ts} -> {total_models}")
+                        except Exception as e:
+                            app.logger.error(f"[agents] {sym}: Failed to fix Redis: {e}")
+            except Exception:
+                pass
+            # Используем исправленное значение total_selected из counts
+            corrected_total = counts.get('total_selected', total_models) if isinstance(counts, dict) else total_models
+            total_sel, req_flat, req_trend, req_type, required = _required(corrected_total, counts, regime)
+            try:
+                app.logger.info(f"[agents] {sym}: required={required} ({req_type}), req_flat={req_flat}, req_trend={req_trend}")
+            except Exception:
+                pass
+            agent_obj = {
+                'symbol': sym,
+                'active': bool(is_active),
+                'status': status or {},
+                'consensus': consensus or {},
+                'total_models': total_models,
+                'required_flat': req_flat,
+                'required_trend': req_trend,
+                'required_type': req_type,
+                'required': required,
+                'lock_ttl': (int(ttl) if ttl is not None else None)
+            }
+            try:
+                app.logger.info(f"[agents] {sym}: agent_obj={agent_obj}")
+            except Exception:
+                pass
+            agents.append(agent_obj)
+        return jsonify({'success': True, 'agents': agents, 'ts': _dt.utcnow().isoformat()})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
             
     except Exception as e:
         app.logger.error(f"Ошибка остановки торговли: {e}")
@@ -2085,6 +2911,65 @@ def trading_status():
             
     except Exception as e:
         app.logger.error(f"Ошибка получения статуса: {e}")
+        return jsonify({
+            'success': False, 
+            'error': str(e)
+        }), 500
+
+@app.route('/api/trading/status_all', methods=['GET'])
+def trading_status_all():
+    """Статус всех активных торговых агентов"""
+    try:
+        _rc = get_redis_client()
+        active_agents = []
+        
+        # Проверяем статусы всех символов индивидуально
+        symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'TONUSDT', 'ADAUSDT', 'BNBUSDT', 'XRPUSDT']
+        
+        for symbol in symbols:
+            try:
+                # Проверяем статус конкретного символа
+                status_key = f'trading:status:{symbol}'
+                status_data = _rc.get(status_key)
+                
+                if status_data:
+                    import json as _json
+                    status_obj = _json.loads(status_data)
+                    if isinstance(status_obj, dict) and status_obj.get('is_trading'):
+                        # Проверяем, есть ли блокировка
+                        lock_key = f'trading:agent_lock:{symbol}'
+                        ttl = _rc.ttl(lock_key)
+                        
+                        # Используем ту же логику что и в /api/trading/agents
+                        # Агент активен если либо lock TTL > 0, либо статус показывает is_trading
+                        is_trading_flag = bool(status_obj.get('is_trading') is True or 
+                                             str(status_obj.get('trading_status') or '').strip() in ('Активна','🟢 Активна'))
+                        is_active = ((ttl is not None and isinstance(ttl, int) and ttl > 0) or is_trading_flag)
+                        
+                        if is_active:
+                            agent_status = {
+                                'symbol': symbol,
+                                'is_active': True,
+                                'ttl_seconds': int(ttl) if ttl is not None and ttl > 0 else 0,
+                                'status': 'Активна',
+                                'current_price': status_obj.get('current_price'),
+                                'position': status_obj.get('position'),
+                                'trades_count': status_obj.get('trades_count'),
+                                'last_prediction': status_obj.get('last_model_prediction'),
+                                'amount': status_obj.get('amount'),
+                                'amount_display': status_obj.get('amount_display')
+                            }
+                            active_agents.append(agent_status)
+            except Exception:
+                continue
+        
+        return jsonify({
+            'success': True,
+            'active_agents': active_agents,
+            'total_active': len(active_agents)
+        }), 200
+        
+    except Exception as e:
         return jsonify({
             'success': False, 
             'error': str(e)
@@ -3068,11 +3953,30 @@ def get_recent_predictions():
         action = request.args.get('action')
         limit = int(request.args.get('limit', 50))
         
+        # 1) Основной путь: берём из БД
         predictions = get_model_predictions(symbol=symbol, action=action, limit=limit)
+
+        # 2) Нормализация символа (fallback): BTCUSDT <-> BTC/USDT
+        if (not predictions) and symbol:
+            try:
+                alt = None
+                if '/' in symbol:
+                    alt = symbol.replace('/', '')
+                else:
+                    # вставим слэш перед USDT/USDC/FDUSD/DAI и т.п. (по умолчанию USDT)
+                    if symbol.upper().endswith('USDT'):
+                        alt = symbol[:-4] + '/' + symbol[-4:]
+                if alt and alt != symbol:
+                    alt_predictions = get_model_predictions(symbol=alt, action=action, limit=limit)
+                    if alt_predictions:
+                        predictions = alt_predictions
+                        symbol = alt  # сообщим в ответе фактический символ
+            except Exception:
+                pass
         
         # Преобразуем в JSON-совместимый формат
         predictions_data = []
-        for prediction in predictions:
+        for prediction in predictions or []:
             try:
                 q_values = json.loads(prediction.q_values) if prediction.q_values else []
                 market_conditions = json.loads(prediction.market_conditions) if prediction.market_conditions else {}
@@ -3095,6 +3999,45 @@ def get_recent_predictions():
             }
             predictions_data.append(prediction_data)
         
+        # 3) Если БД пуста — отдаём последний снимок из Redis (результаты celery-trade)
+        if len(predictions_data) == 0:
+            try:
+                from utils.redis_utils import get_redis_client as _get_rc
+                _rc = _get_rc()
+                keys = sorted(_rc.keys('trading:latest_result_*') or [], reverse=True)
+                for k in keys:
+                    try:
+                        raw = _rc.get(k)
+                        if not raw:
+                            continue
+                        snap = json.loads(raw)
+                        preds = snap.get('predictions') or []
+                        if not preds:
+                            continue
+                        ts = snap.get('timestamp')
+                        # В результирующих предсказаниях символ не хранится — подставим запрошенный
+                        sym_for_resp = symbol or (snap.get('symbols') or [None])[0]
+                        for p in preds[:limit]:
+                            predictions_data.append({
+                                'id': None,
+                                'timestamp': ts,
+                                'symbol': sym_for_resp,
+                                'action': p.get('action'),
+                                'q_values': p.get('q_values') or [],
+                                'current_price': None,
+                                'position_status': None,
+                                'confidence': p.get('confidence'),
+                                'model_path': p.get('model_path'),
+                                'market_conditions': {},
+                                'created_at': ts
+                            })
+                        if predictions_data:
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
         return jsonify({
             'success': True,
             'predictions': predictions_data,

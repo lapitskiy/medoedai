@@ -46,14 +46,6 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       PYTHONDONTWRITEBYTECODE: "1"
       FLASK_DEBUG: "False"
-      # Оптимизация для многопоточности
-      OMP_NUM_THREADS: "4"  # OpenMP потоки для веб-сервера
-      MKL_NUM_THREADS: "4"  # Intel MKL потоки
-      TORCH_NUM_THREADS: "4"  # PyTorch потоки
-      # Дополнительные настройки производительности
-      OMP_SCHEDULE: "dynamic"
-      MKL_DYNAMIC: "true"
-      MKL_INTERFACE_LAYER: "LP64"
     env_file:
       - .env
     volumes:
@@ -62,8 +54,10 @@ services:
     command: >
       sh -c "
         echo '🧹 Очищаю Redis перед запуском...' &&
-        python clear_redis.py &&
-        echo '✅ Redis очищен, запускаю Flask...' &&
+        python utils/redis/clear_redis.py &&
+        echo '🧹 Очищаю старые задачи Celery...' &&
+        python utils/redis/cleanup_celery_tasks.py &&
+        echo '✅ Redis готов, запускаю Flask...' &&
         python main.py
       "
     # CPU-only по умолчанию. GPU добавляется через docker-compose.gpu.yml
@@ -116,7 +110,6 @@ services:
         condition: service_started
       redis:
         condition: service_healthy
-    restart: unless-stopped
 
     deploy:
       resources:
@@ -145,14 +138,6 @@ services:
     volumes:
       - .:/workspace
     working_dir: /workspace
-
-    healthcheck:
-      test: ["CMD-SHELL", "nvidia-smi -L >/dev/null 2>&1 || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-
     command: ['sh','-lc','NPROC=$$(nproc); THREADS=$$(python -c "import os,math; n=os.cpu_count() or 1; f=float(os.environ.get(\\"TRAIN_CPU_FRACTION\\", \\"0.8\\")); print(max(1,int(n*f)))"); export OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$THREADS} MKL_NUM_THREADS=$${MKL_NUM_THREADS:-$$THREADS} TORCH_NUM_THREADS=$${TORCH_NUM_THREADS:-$$THREADS} OMP_SCHEDULE=$${OMP_SCHEDULE:-dynamic} MKL_DYNAMIC=$${MKL_DYNAMIC:-true} MKL_INTERFACE_LAYER=$${MKL_INTERFACE_LAYER:-LP64}; echo "🚀 CPU/GPU Optimization: Using $$THREADS/$$NPROC threads (OMP=$$OMP_NUM_THREADS, MKL=$$MKL_NUM_THREADS, TORCH=$$TORCH_NUM_THREADS)"; exec celery -A tasks.celery_tasks worker -Q train -P $${CELERY_POOL:-prefork} -c $${CELERY_CONCURRENCY:-1} --loglevel=info']
 
 

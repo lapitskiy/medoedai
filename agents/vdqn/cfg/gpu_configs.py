@@ -24,18 +24,18 @@ class GPUConfig:
 
 # Конфигурации для разных GPU
 GPU_CONFIGS: Dict[str, GPUConfig] = {
-    # Tesla P100 - максимальная производительность
+    # Tesla P100 - максимальная скорость эпизодов
     "tesla_p100": GPUConfig(
         name="Tesla P100",
         vram_gb=16.0,
-        batch_size=1024,  # Уменьшаем для ускорения
-        memory_size=300_000,  # Оптимальный размер: ~4.5GB VRAM (28% от 16GB)
-        hidden_sizes=(2048, 1024, 512),
-        train_repeats=4,  # Уменьшаем для ускорения
+        batch_size=4096,  # Максимальный батч для Tesla P100 (используем все 8 ядер CPU)
+        memory_size=400_000,  # Увеличиваем для стабильности: ~7.5GB VRAM (47% от 16GB)
+        hidden_sizes=(1024, 512, 256),  # Сбалансированная архитектура
+        train_repeats=4,  # Увеличиваем для лучшего обучения
         use_amp=True,
-        use_gpu_storage=True,
-        learning_rate=0.0001,
-        description="Максимальная производительность для Tesla P100"
+        use_gpu_storage=True,  # Включаем для стабильности
+        learning_rate=0.0002,  # Уменьшаем для стабильности с большим батчем
+        description="Максимальная скорость эпизодов для Tesla P100 (используем все CPU ядра)"
     ),
     
     # Tesla V100 - еще быстрее с Tensor Cores

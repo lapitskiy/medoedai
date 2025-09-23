@@ -25,7 +25,7 @@ class vDqnConfig:
     gamma: float           = 0.99     # discount factor
     soft_tau: float        = 5e-3     # уменьшил для более стабильного обновления
     soft_update_every: int = 4        # обновляем реже для стабильности
-    hidden_sizes: tuple    = (512, 256, 128)  # увеличил размеры для лучшей способности обучения
+    hidden_sizes: tuple    = (1024, 512, 256, 128)  # увеличил размеры для лучшей способности обучения
     target_update_freq: int = 5_000   # увеличил для более стабильного обучения
     train_repeats: int     = 1        # уменьшил количество тренировок
     
@@ -34,6 +34,9 @@ class vDqnConfig:
     layer_norm: bool       = True     # Layer Normalization
     double_dqn: bool       = True     # Double DQN
     dueling_dqn: bool      = True     # Dueling DQN
+    activation: str        = 'silu'    # Activation for MLP feature blocks
+    use_residual_blocks: bool = True  # Residual skip connections inside MLP
+    use_swiglu_gate: bool  = True     # SwiGLU gating inside MLP blocks
     
     # === градиентный клиппинг ===
     grad_clip: float       = 1.0      # градиентный клиппинг

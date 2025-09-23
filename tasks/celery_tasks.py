@@ -66,6 +66,13 @@ celery = Celery(
     backend="redis://redis:6379/0"
 )
 
+# Настройки для автоматической очистки результатов задач
+celery.conf.result_expires = 3600 * 24 * 7  # 7 дней TTL для результатов задач
+celery.conf.result_backend_transport_options = {
+    'master_name': 'mymaster',
+    'visibility_timeout': 3600 * 24 * 7,  # 7 дней
+}
+
 # Определяем очереди и маршрутизацию задач:
 # По умолчанию все задачи идут в очередь 'celery',
 # а тренировочные задачи направляем в отдельную очередь 'train'.
@@ -97,24 +104,42 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
 
         if (not symbols) and rc is not None:
             try:
+                # Пробуем взять из общего списка символов
                 _sym_raw = rc.get('trading:symbols')
                 if _sym_raw:
                     _sym = json.loads(_sym_raw)
                     if isinstance(_sym, list) and _sym:
                         symbols = _sym
+                else:
+                    # Если общий список пуст, берем из статусов активных агентов
+                    all_symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'TONUSDT', 'ADAUSDT', 'BNBUSDT', 'XRPUSDT']
+                    for sym in all_symbols:
+                        status_key = f'trading:status:{sym}'
+                        if rc.get(status_key):
+                            symbols = [sym]
+                            break
             except Exception:
                 pass
         if not symbols:
             symbols = ['BTCUSDT']
 
-        # Если не передали model_paths аргументом — читаем из Redis
+        # Если не передали model_paths аргументом — читаем из Redis для конкретного символа
         if model_paths is None and rc is not None:
             try:
-                _mps = rc.get('trading:model_paths')
+                symbol = symbols[0] if symbols else 'BTCUSDT'
+                # Читаем модели для конкретного символа
+                _mps = rc.get(f'trading:model_paths:{symbol}')
                 if _mps:
                     parsed = json.loads(_mps)
                     if isinstance(parsed, list) and parsed:
                         model_paths = parsed
+                else:
+                    # Фолбэк на общие модели
+                    _mps = rc.get('trading:model_paths')
+                    if _mps:
+                        parsed = json.loads(_mps)
+                        if isinstance(parsed, list) and parsed:
+                            model_paths = parsed
             except Exception:
                 model_paths = None
         if (model_paths is None or not model_paths) and model_path:
@@ -127,15 +152,22 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 seen = set()
                 for p in model_paths:
                     try:
-                        pn = str(p)
-                        if pn in seen:
+                        pn_raw = str(p)
+                        # Нормализуем путь: делаем его абсолютным относительно /workspace,
+                        # чтобы относительные 'models/...'
+                        # корректно находились внутри контейнера
+                        pn_norm = pn_raw.replace('\\', '/')
+                        pn_abs = pn_norm if pn_norm.startswith('/') else ('/workspace/' + pn_norm.lstrip('/'))
+                        # Дедупликация по абсолютному пути
+                        if pn_abs in seen:
                             continue
-                        seen.add(pn)
-                        # Если это папка current без имени файла — пропускаем
-                        if _os.path.isdir(pn):
+                        seen.add(pn_abs)
+                        # Пропускаем директории
+                        if _os.path.isdir(pn_abs):
                             continue
-                        if _os.path.exists(pn):
-                            mp_clean.append(pn)
+                        # Добавляем только реально существующие файлы
+                        if _os.path.exists(pn_abs):
+                            mp_clean.append(pn_abs)
                     except Exception:
                         continue
                 model_paths = mp_clean
@@ -288,13 +320,17 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         market_regime, market_regime_details = _compute_regime(df_5m)
 
         # 3) Вызов serving (+ передаём настройки консенсуса, если заданы)
-        # Читаем консенсус из Redis: {'counts': {flat, trend, total_selected}, 'percents': {flat, trend}}
+        # Читаем консенсус из Redis для конкретного символа: {'counts': {flat, trend, total_selected}, 'percents': {flat, trend}}
         consensus_cfg = None
         try:
             if rc is not None:
-                _c = rc.get('trading:consensus')
+                # Определяем символ для чтения консенсуса
+                symbol = symbols[0] if symbols else 'BTCUSDT'
+                # Сначала пробуем для конкретного символа
+                _c = rc.get(f'trading:consensus:{symbol}')
                 if _c:
                     consensus_cfg = json.loads(_c)
+                # Не используем больше глобальный фолбэк, чтобы BNB не перетирал BTC
         except Exception:
             consensus_cfg = None
 
@@ -599,7 +635,11 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     'trade_result': trade_result,
                 }
                 rc.setex(f'trading:latest_result_{datetime.now().strftime("%Y%m%d_%H%M%S")}', 3600, json.dumps(result_data, default=str))
-                rc.set('trading:current_status', json.dumps(status_after, default=str))
+                # Сохраняем статус для конкретного символа
+                symbol = symbols[0] if symbols else 'ALL'
+                rc.set(f'trading:status:{symbol}', json.dumps(status_after, default=str))
+                # НЕ перезаписываем общий статус, чтобы не убить другие агенты
+                # rc.set('trading:current_status', json.dumps(status_after, default=str))
                 rc.set('trading:current_status_ts', datetime.utcnow().isoformat())
         except Exception:
             pass
@@ -978,21 +1018,39 @@ def start_trading_task(self, symbols, model_path=None):
         if not lock_symbol:
             lock_symbol = 'ALL'
         lock_key = f'trading:agent_lock:{lock_symbol}'
-        # TTL 240с (4 минуты) — чтобы следующий тик в 5 минут не срезался из-за ручного запуска
-        got_lock = _rc_lock.set(lock_key, self.request.id, nx=True, ex=240)
+        # TTL 600с (10 минут) — чтобы агент не терял lock во время работы
+        got_lock = _rc_lock.set(lock_key, self.request.id, nx=True, ex=600)
         if not got_lock:
             return {"success": False, "skipped": True, "reason": "agent_lock_active"}
     except Exception:
         pass
 
-    # Если параметры не передали — пробуем взять их из Redis
+    # Если параметры не передали — пробуем взять их из Redis для конкретного символа
     try:
         if (not symbols) or model_path is None:
             from redis import Redis
             _r = Redis(host='redis', port=6379, db=0, decode_responses=True)
-            if (not symbols):
+            
+            # Определяем символ для чтения настроек
+            symbol = symbols[0] if symbols else None
+            if not symbol:
+                # Пробуем взять из общего списка символов
                 try:
                     _sym_raw = _r.get('trading:symbols')
+                    if _sym_raw:
+                        import json as _json
+                        _sym = _json.loads(_sym_raw)
+                        if isinstance(_sym, list) and _sym:
+                            symbol = _sym[0]
+                            symbols = _sym
+                except Exception:
+                    symbol = 'BTCUSDT'
+                    symbols = ['BTCUSDT']
+            
+            # Читаем настройки для конкретного символа
+            if (not symbols):
+                try:
+                    _sym_raw = _r.get(f'trading:symbols:{symbol}')
                     if _sym_raw:
                         import json as _json
                         _sym = _json.loads(_sym_raw)
@@ -1002,9 +1060,15 @@ def start_trading_task(self, symbols, model_path=None):
                     pass
             if model_path is None:
                 try:
-                    _mp = _r.get('trading:model_path')
+                    # Сначала пробуем для конкретного символа
+                    _mp = _r.get(f'trading:model_path:{symbol}')
                     if _mp:
                         model_path = _mp
+                    else:
+                        # Фолбэк на общий
+                        _mp = _r.get('trading:model_path')
+                        if _mp:
+                            model_path = _mp
                 except Exception:
                     pass
     except Exception:
@@ -1017,17 +1081,32 @@ def start_trading_task(self, symbols, model_path=None):
     print(f"🚀 Оркестрация торговли: symbols={symbols} | model_path={model_path if model_path else 'default'}")
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
 
-    # Получаем список путей моделей (предпочтительно из Redis), иначе из model_path
+    # Получаем список путей моделей для конкретного символа
     model_paths = None
     try:
         from redis import Redis as _Redis
         _r2 = _Redis(host='redis', port=6379, db=0, decode_responses=True)
-        _mps = _r2.get('trading:model_paths')
+        
+        # Определяем символ для чтения моделей
+        symbol = symbols[0] if symbols else 'BTCUSDT'
+        
+        # Читаем модели для конкретного символа
+        _mps = _r2.get(f'trading:model_paths:{symbol}')
         if _mps:
             import json as _json
             parsed = _json.loads(_mps)
             if isinstance(parsed, list) and parsed:
                 model_paths = parsed
+        
+        # Фолбэк: если не нашли для символа — пробуем общие
+        if (model_paths is None or not model_paths):
+            _mps = _r2.get('trading:model_paths')
+            if _mps:
+                import json as _json
+                parsed = _json.loads(_mps)
+                if isinstance(parsed, list) and parsed:
+                    model_paths = parsed
+        
         # Фолбэк: если не нашли актуальные пути — попробуем последние сохранённые
         if (model_paths is None or not model_paths):
             _last = _r2.get('trading:last_model_paths')
@@ -1091,7 +1170,11 @@ def start_trading_task(self, symbols, model_path=None):
             'last_model_prediction': None,
         }
         _rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
-        _rc.set('trading:current_status', _json.dumps(provisional, ensure_ascii=False))
+        # Сохраняем статус для конкретного символа
+        symbol = symbols[0] if symbols else 'ALL'
+        _rc.set(f'trading:status:{symbol}', _json.dumps(provisional, ensure_ascii=False))
+        # НЕ перезаписываем общий статус, чтобы не убить другие агенты
+        # _rc.set('trading:current_status', _json.dumps(provisional, ensure_ascii=False))
         from datetime import datetime as _dt
         _rc.set('trading:current_status_ts', _dt.utcnow().isoformat())
         # Обновим last_* для фолбэка следующего тика
@@ -1101,9 +1184,7 @@ def start_trading_task(self, symbols, model_path=None):
                 # Если использовали дефолтную модель - сохраняем её как основную
                 if not _rc.get('trading:model_paths'):
                     _rc.set('trading:model_paths', _json.dumps(model_paths, ensure_ascii=False))
-            cons_raw = _rc.get('trading:consensus')
-            if cons_raw:
-                _rc.set('trading:last_consensus', cons_raw)
+            # last_consensus больше не ведём глобально, чтобы не перетирать per‑symbol
             # Сохраняем символы если их нет
             if not _rc.get('trading:symbols'):
                 _rc.set('trading:symbols', _json.dumps(symbols, ensure_ascii=False))
@@ -1219,11 +1300,122 @@ def refresh_trading_status(self):
         except Exception:
             pass
 
-        rc.set('trading:current_status', _json.dumps(status, ensure_ascii=False))
+        # Обновляем статус для конкретного символа
+        rc.set(f'trading:status:{sym}', _json.dumps(status, ensure_ascii=False))
+        
+        # Обновляем общий статус только если это единственный активный агент
+        # или если общий статус устарел/отсутствует
+        try:
+            # Проверяем, есть ли другие активные агенты
+            other_active = False
+            all_symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'TONUSDT', 'ADAUSDT', 'BNBUSDT', 'XRPUSDT']
+            for other_sym in all_symbols:
+                if other_sym != sym:
+                    other_lock_key = f'trading:agent_lock:{other_sym}'
+                    other_ttl = rc.ttl(other_lock_key)
+                    if other_ttl is not None and int(other_ttl) > 0:
+                        other_active = True
+                        break
+            
+            # Обновляем общий статус только если нет других активных агентов
+            # или если общий статус устарел
+            if not other_active or not cached or not is_fresh:
+                rc.set('trading:current_status', _json.dumps(status, ensure_ascii=False))
+        except Exception:
+            # В случае ошибки обновляем общий статус для безопасности
+            rc.set('trading:current_status', _json.dumps(status, ensure_ascii=False))
+        
         rc.set('trading:current_status_ts', _dt.utcnow().isoformat())
         return {"success": True, "updated": True}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# --- CNN Training Task ---
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
+def train_cnn_model(self, symbol: str, model_type: str = "multiframe", 
+                   seed: int = None):
+    """Обучение CNN модели для анализа паттернов криптовалют"""
+    
+    self.update_state(state="IN_PROGRESS", meta={"progress": 0, "symbol": symbol})
+    
+    try:
+        print(f"🧠 Начинаю обучение CNN модели для {symbol}")
+        
+        # Импортируем CNN модули
+        try:
+            from cnn_training.config import CNNTrainingConfig
+            from cnn_training.trainer import CNNTrainer
+        except ImportError as ie:
+            print(f"❌ Ошибка импорта CNN модулей: {ie}")
+            raise Exception(f"CNN модули не найдены: {ie}")
+        
+        # Создаем конфигурацию (все параметры из config.py)
+        config = CNNTrainingConfig(
+            symbols=["BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT"],  # Используем все символы из конфига
+            timeframes=["5m", "15m", "1h"],
+            device="auto"
+        )
+        
+        # Создаем тренер
+        trainer = CNNTrainer(config)
+        
+        self.update_state(state="IN_PROGRESS", meta={"progress": 20, "message": "CNN тренер создан"})
+        
+        # Обучаем модель prediction типа (рекомендуется)
+        print(f"🎯 Обучение CNN модели {model_type} для всех символов: {config.symbols}")
+        
+        if model_type == "multiframe":
+            # Обучаем мультифреймовую модель на всех символах
+            result = trainer.train_multiframe_model(config.symbols)
+        else:
+            # Обучаем отдельную модель для 5m фрейма (основной для DQN)
+            result = trainer.train_single_model(symbol, "5m", model_type)
+
+        # Подготовим сериализуемый ответ (без PyTorch-моделей и прочих несериализуемых объектов)
+        safe_result = None
+        try:
+            if isinstance(result, dict):
+                best_val_accuracy = result.get('best_val_accuracy')
+                safe_result = {
+                    "best_val_accuracy": float(best_val_accuracy) if best_val_accuracy is not None else None,
+                    "train_steps": int(len(result.get('train_losses', []) or [])),
+                    "val_steps": int(len(result.get('val_losses', []) or [])),
+                }
+        except Exception:
+            safe_result = {"best_val_accuracy": None, "train_steps": 0, "val_steps": 0}
+
+        self.update_state(state="SUCCESS", meta={
+            "progress": 100,
+            "message": f"CNN обучение завершено для {symbol}",
+            "result": safe_result
+        })
+
+        return {
+            "success": True,
+            "message": f"CNN обучение завершено для {symbol}",
+            "symbol": symbol,
+            "model_type": model_type,
+            "result": safe_result
+        }
+        
+    except Exception as e:
+        error_msg = f"❌ Ошибка обучения CNN для {symbol}: {str(e)}"
+        print(error_msg)
+        import traceback
+        print(traceback.format_exc())
+        
+        self.update_state(state="FAILURE", meta={
+            "progress": 0,
+            "error": error_msg
+        })
+        
+        return {
+            "success": False,
+            "error": error_msg,
+            "symbol": symbol
+        }
+
 
 # keep beat schedule extension together with trading beat
 if os.environ.get('ENABLE_TRADING_BEAT', '0').lower() in ('1', 'true', 'yes', 'on'):

@@ -53,7 +53,9 @@ services:
     command: >
       sh -c "
         echo '🧹 Очищаю Redis перед запуском...' &&
-        python clear_redis.py &&
+        python utils/redis/clear_redis.py &&
+        echo '🧹 Очищаю старые задачи Celery...' &&
+        python utils/redis/cleanup_celery_tasks.py &&
         echo '✅ Redis очищен, запускаю Flask...' &&
         python main.py
       "

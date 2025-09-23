@@ -19,6 +19,8 @@
     <nav class="sidebar">
         <h3>📋 Навигация</h3>
         <ul class="sidebar-nav">
+            <li><a href="/" class="back-link">← На главную</a></li>
+            <li><a href="javascript:history.back()">← Назад</a></li>
             <li><a href="#status-balance" onclick="scrollToSection('status-balance')">📊 Статус и баланс</a></li>
             <li><a href="#db-history" onclick="scrollToSection('db-history')">📚 История (БД)</a></li>
             <li><a href="#predictions" onclick="scrollToSection('predictions')">🧠 Предсказания ИИ</a></li>
@@ -59,25 +61,6 @@
                             <span style="font-weight:600;">{{ symbol }}</span>
                         </nav>
                         <a href="/trading_agent" class="btn back-btn">← Общая страница</a>
-                        <div class="button-group" style="margin:10px 0;">
-                            <a class="btn" href="/agent/BTCUSDT">BTC</a>
-                            <a class="btn" href="/agent/ETHUSDT">ETH</a>
-                            <a class="btn" href="/agent/SOLUSDT">SOL</a>
-                            <a class="btn" href="/agent/TONUSDT">TON</a>
-                            <a class="btn" href="/agent/BNBUSDT">BNB</a>
-                            <a class="btn" href="/agent/ADAUSDT">ADA</a>
-                            <a class="btn" href="/agent/XRPUSDT">XRP</a>
-                            <span style="margin-left:10px; color:#666;">или</span>
-                            <select id="symbolSelectQuick" class="form-control" style="width:auto; display:inline-block; margin-left:8px;" onchange="goSymbol(this.value)">
-                                <option value="BTCUSDT">BTCUSDT</option>
-                                <option value="ETHUSDT">ETHUSDT</option>
-                                <option value="SOLUSDT">SOLUSDT</option>
-                                <option value="TONUSDT">TONUSDT</option>
-                                <option value="BNBUSDT">BNBUSDT</option>
-                                <option value="ADAUSDT">ADAUSDT</option>
-                                <option value="XRPUSDT">XRPUSDT</option>
-                            </select>
-                        </div>
 
                         <div class="button-group" style="margin:10px 0;">
                             <button class="btn btn-info" onclick="startMonitoringSymbol('{{ symbol }}')">🔄 Запустить мониторинг ({{ symbol }})</button>
@@ -88,12 +71,17 @@
                         <div class="section">
                             <h2>📊 Статус и баланс</h2>
                             <div class="button-group">
-                                <button class="btn btn-info" onclick="getTradingStatus('{{ symbol }}')">🔍 Статус</button>
+                                <button class="btn btn-info" onclick="getTradingStatus('{{ symbol }}')">🔍 Статус {{ symbol }}</button>
+                                <button class="btn btn-info" onclick="getAllTradingStatus()">🌐 Все активные агенты</button>
                                 <button class="btn btn-info" onclick="getBalance()">💰 Баланс</button>
                             </div>
                             <div id="statusBox" class="trading-status" style="display:none;">
-                                <h3>📊 Статус</h3>
+                                <h3>📊 Статус {{ symbol }}</h3>
                                 <div id="statusContent"></div>
+                            </div>
+                            <div id="allStatusBox" class="trading-status" style="display:none;">
+                                <h3>🌐 Все активные агенты</h3>
+                                <div id="allStatusContent"></div>
                             </div>
                             <div id="balanceBox" class="trading-status" style="display:none;">
                                 <h3>💰 Баланс</h3>
@@ -122,17 +110,17 @@
                     <!-- Предсказания ИИ -->
                     <div class="tab-panel" data-tab-panel id="predictions">
                         <div class="section">
-                            <h2>🧠 Предсказания ИИ</h2>
+                            <h2>🧠 Предсказания ИИ - {{ symbol }}</h2>
                             <div class="button-group">
                                 <button class="btn btn-primary" onclick="loadPredictions('{{ symbol }}')">Загрузить предсказания</button>
                                 <button class="btn btn-primary" onclick="loadPredictionStats('{{ symbol }}')">Статистика предсказаний</button>
                             </div>
                             <div id="predictionsBox" class="trading-history predictions-large" style="display:none;">
-                                <h3>🧠 Предсказания</h3>
+                                <h3>🧠 Предсказания для {{ symbol }}</h3>
                                 <div id="predictionsContent"></div>
                             </div>
                             <div id="predStatsBox" class="trading-history" style="display:none;">
-                                <h3>📊 Статистика предсказаний</h3>
+                                <h3>📊 Статистика предсказаний для {{ symbol }}</h3>
                                 <div id="predStatsContent"></div>
                             </div>
                         </div>
@@ -202,11 +190,6 @@ document.addEventListener('DOMContentLoaded', function(){
     }catch(_){ }
 });
 
-// Установим выбранный символ в селекте
-try{
-  const sel = document.getElementById('symbolSelectQuick');
-  if(sel){ sel.value = '{{ symbol }}'; }
-}catch(_){ }
 
 // Форматирование даты/времени в московском часовом поясе
 function formatMoscowDateTime(value) {
@@ -234,10 +217,6 @@ function formatMoscowDateTime(value) {
   });
 }
 
-function goSymbol(sym){
-  if(!sym) return;
-  window.location.href = '/agent/' + encodeURIComponent(sym);
-}
 async function getTradingStatus(symbol){
   try{
     const resp = await fetch('/api/trading/status');
@@ -320,6 +299,94 @@ async function getTradingStatus(symbol){
     try{
       const box = document.getElementById('statusBox');
       const el = document.getElementById('statusContent');
+      el.innerHTML = `<p>❌ Ошибка сети</p><pre style="white-space:pre-wrap; font-size:12px; color:#666;">${String(e && e.message || e)}</pre>`;
+      box.style.display='block';
+    }catch(_){ }
+  }
+}
+
+async function getAllTradingStatus(){
+  try{
+    const resp = await fetch('/api/trading/status_all');
+    const data = await resp.json();
+    const box = document.getElementById('allStatusBox');
+    const el = document.getElementById('allStatusContent');
+    
+    if(!data.success){
+      el.innerHTML = '<p>❌ Ошибка получения статуса</p>';
+      box.style.display='block';
+      return;
+    }
+    
+    const activeAgents = data.active_agents || [];
+    const totalActive = data.total_active || 0;
+    
+    if(totalActive === 0){
+      el.innerHTML = '<p>📊 Нет активных торговых агентов</p><p><em>Все агенты остановлены</em></p>';
+      box.style.display='block';
+      return;
+    }
+    
+    let statusHTML = `<p><strong>Всего активных агентов:</strong> ${totalActive}</p>`;
+    
+    activeAgents.forEach(agent => {
+      const symbol = agent.symbol;
+      const ttl = agent.ttl_seconds;
+      const minutes = Math.floor(ttl / 60);
+      const seconds = ttl % 60;
+      const timeRemaining = `${minutes}м ${seconds}с`;
+      
+      const currentPrice = agent.current_price ? `$${Number(agent.current_price).toFixed(4)}` : 'N/A';
+      const tradesCount = agent.trades_count || 0;
+      const lastPrediction = agent.last_prediction || 'N/A';
+      const hasPosition = agent.position && agent.position.amount > 0;
+      const amountDisplay = agent.amount_display || agent.amount || 'N/A';
+      
+      statusHTML += `
+        <div class="trade-item" style="border-left: 4px solid #28a745; margin-top: 10px;">
+          <div class="trade-header">
+            <span class="trade-action buy">🟢 ${symbol}</span>
+            <span>Активен ${timeRemaining}</span>
+          </div>
+          <div class="trade-details">
+            <div class="trade-detail">
+              <div class="label">Цена</div>
+              <div class="value">${currentPrice}</div>
+            </div>
+            <div class="trade-detail">
+              <div class="label">Объём</div>
+              <div class="value">${amountDisplay}</div>
+            </div>
+            <div class="trade-detail">
+              <div class="label">Позиция</div>
+              <div class="value">${hasPosition ? 'Открыта' : 'Нет'}</div>
+            </div>
+            <div class="trade-detail">
+              <div class="label">Сделок</div>
+              <div class="value">${tradesCount}</div>
+            </div>
+            <div class="trade-detail">
+              <div class="label">Последнее решение</div>
+              <div class="value">${lastPrediction}</div>
+            </div>
+            <div class="trade-detail">
+              <div class="label">Действия</div>
+              <div class="value">
+                <a href="/agent/${symbol}" class="btn btn-sm" style="padding: 4px 8px; font-size: 12px;">📊 Перейти к статистике</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+    
+    el.innerHTML = statusHTML;
+    box.style.display='block';
+  }catch(e){
+    console.error(e);
+    try{
+      const box = document.getElementById('allStatusBox');
+      const el = document.getElementById('allStatusContent');
       el.innerHTML = `<p>❌ Ошибка сети</p><pre style="white-space:pre-wrap; font-size:12px; color:#666;">${String(e && e.message || e)}</pre>`;
       box.style.display='block';
     }catch(_){ }
@@ -460,7 +527,7 @@ async function loadPredictions(symbol){
     if(!data.success){ el.innerHTML='❌ Ошибка получения предсказаний'; box.style.display='block'; return; }
     const preds = Array.isArray(data.predictions)? data.predictions : [];
     if(preds.length === 0){
-      el.innerHTML = '<p>🧠 Предсказания модели пока отсутствуют</p><p><em>Данные появятся после выполнения торговых операций</em></p>';
+      el.innerHTML = `<p>🧠 Предсказания модели для ${symbol} пока отсутствуют</p><p><em>Данные появятся после выполнения торговых операций</em></p>`;
       box.style.display='block';
       return;
     }
@@ -706,10 +773,29 @@ async function loadPredictionStats(symbol){
     const data = await resp.json();
     const box = document.getElementById('predStatsBox');
     const el = document.getElementById('predStatsContent');
-    if(!data.success){ el.innerHTML='❌ Ошибка'; box.style.display='block'; return; }
-    el.innerHTML = JSON.stringify(data.statistics);
+    if(!data.success){ 
+      el.innerHTML=`❌ Ошибка получения статистики для ${symbol}`; 
+      box.style.display='block'; 
+      return; 
+    }
+    
+    const stats = data.statistics || {};
+    const statsHTML = `
+      <p><strong>Статистика предсказаний для ${symbol}:</strong></p>
+      <div style="margin-top: 10px;">
+        <pre style="background: #f8f9fa; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 12px;">${JSON.stringify(stats, null, 2)}</pre>
+      </div>
+    `;
+    
+    el.innerHTML = statsHTML;
     box.style.display='block';
-  }catch(e){console.error(e)}
+  }catch(e){
+    console.error(e);
+    const box = document.getElementById('predStatsBox');
+    const el = document.getElementById('predStatsContent');
+    if(el) el.innerHTML = `❌ Ошибка сети при получении статистики для ${symbol}`;
+    if(box) box.style.display='block';
+  }
 }
 
 // Получение статистики сделок
@@ -821,6 +907,7 @@ let monitoringTimer = null;
 function startMonitoringSymbol(symbol){
   try{ stopMonitoringSymbol(); }catch(_){ }
   getTradingStatus(symbol);
+  getAllTradingStatus();
   getBalance();
   loadDbHistory(symbol);
   refreshDbTradeHistory(symbol);
@@ -831,6 +918,7 @@ function startMonitoringSymbol(symbol){
   getTradeStatistics();
   monitoringTimer = setInterval(()=>{
     getTradingStatus(symbol);
+    getAllTradingStatus();
     getBalance();
     loadDbHistory(symbol);
     refreshDbTradeHistory(symbol);
