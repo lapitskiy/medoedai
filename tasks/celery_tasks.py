@@ -366,6 +366,16 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
 
         # Подготовим пороги Q-gate один раз (если serving их не передал — дефолт)
         qgate_cfg = pred_json.get('qgate') or {}
+
+        def _env_float(name: str, default: float = None):
+            raw = os.environ.get(name)
+            if raw is None:
+                return default
+            try:
+                return float(raw)
+            except Exception:
+                return default
+
         try:
             T1 = float(qgate_cfg.get('T1', pred_json.get('qgate_T1', 0.35)))
         except Exception:
@@ -374,23 +384,27 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             T2 = float(qgate_cfg.get('T2', pred_json.get('qgate_T2', 0.25)))
         except Exception:
             T2 = 0.25
-        # Смягчение/усиление порогов для flat через переменную окружения QGATE_FLAT (например, 1.2)
-        try:
-            if market_regime == 'flat':
-                import os as _os
-                factor_flat = float(_os.environ.get('QGATE_FLAT', '1.0') or '1.0')
-                if factor_flat != 1.0:
-                    T1 *= factor_flat
-                    T2 *= factor_flat
-        except Exception:
-            pass
-        # Фактор ужесточения для флэта (env QGATE_FLAT, по умолчанию 1.0)
+
+        env_t1 = _env_float('QGATE_MAXQ')
+        env_t2 = _env_float('QGATE_GAPQ')
+        if env_t1 is not None:
+            T1 = env_t1
+        if env_t2 is not None:
+            T2 = env_t2
+
         try:
             flat_factor = float(os.environ.get('QGATE_FLAT', '1.0'))
         except Exception:
             flat_factor = 1.0
-        eff_T1 = T1 * (flat_factor if (market_regime == 'flat') else 1.0)
-        eff_T2 = T2 * (flat_factor if (market_regime == 'flat') else 1.0)
+        if market_regime == 'flat' and flat_factor and flat_factor != 1.0:
+            T1 *= flat_factor
+            T2 *= flat_factor
+
+        eff_T1 = T1
+        eff_T2 = T2
+
+        pred_json['qgate_T1'] = eff_T1
+        pred_json['qgate_T2'] = eff_T2
 
         # 3.1) Консенсус по ансамблю на стороне оркестратора
         preds_list = pred_json.get('predictions') or []

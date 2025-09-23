@@ -630,7 +630,19 @@ async function loadPredictions(symbol){
           if (va !== vb) return va - vb;
           return String(a.model_path||'').localeCompare(String(b.model_path||''));
         });
-        const chips = siblings.map(pp => {
+        // Дедупликация моделей (иногда приходят дубликаты от разных источников)
+        const seenKeys = new Set();
+        const uniqSiblings = [];
+        for (const pp of siblings) {
+          try {
+            const key = `${pp.model_path||''}|${(pp.action||'').toLowerCase()}|${Array.isArray(pp.q_values)?pp.q_values.map(v=>Number(v).toFixed(3)).join(','):''}`;
+            if (seenKeys.has(key)) continue;
+            seenKeys.add(key);
+            uniqSiblings.push(pp);
+          } catch(_) {}
+        }
+
+        const chips = uniqSiblings.map(pp => {
           try{
             const act = (pp.action||'hold').toLowerCase();
             const gateBlocked = !!(pp.market_conditions && pp.market_conditions.qgate_filtered);
@@ -647,9 +659,9 @@ async function loadPredictions(symbol){
           }catch(__){ return ''; }
         }).filter(Boolean);
         if(chips.length){ modelsLine = chips.join(' / '); }
-        // Сформируем строки с Q-Values и статусом gate по каждой модели
+        // Сформируем строки с Q-Values и статусом gate по каждой модели (по уникальным записям)
         try{
-          const rows = siblings.map(pp => {
+          const rows = uniqSiblings.map(pp => {
             try{
               const mp = String(pp.model_path||'');
               let ver = '';
