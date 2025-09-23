@@ -628,6 +628,13 @@ class DQNSolver:
     def load_model(self):
         """Загружает модель с проверкой совместимости архитектуры"""
         if os.path.exists(self.cfg.model_path):
+            # Явно логируем путь к модели и буферу перед загрузкой
+            try:
+                print(f"🧾 Пытаюсь загрузить модель из: {self.cfg.model_path}")
+                if hasattr(self.cfg, 'buffer_path'):
+                    print(f"🧾 Путь к replay buffer: {self.cfg.buffer_path}")
+            except Exception:
+                pass
             try:
                 checkpoint = torch.load(self.cfg.model_path, map_location=self.cfg.device)
                 
@@ -672,6 +679,7 @@ class DQNSolver:
                     # Обрабатываем torch.compile префикс
                     try:
                         # Пробуем загрузить как есть
+                        # Строгая загрузка по умолчанию
                         self.model.load_state_dict(checkpoint['model_state_dict'])
                         self.target_model.load_state_dict(checkpoint['model_state_dict'])
                         print("✅ Модель загружена без обработки префикса")
@@ -713,7 +721,7 @@ class DQNSolver:
                                 self.target_model.load_state_dict(adjusted_state_dict)
                                 print("✅ Модель загружена с обработкой префикса")
                         else:
-                            print(f"❌ Ошибка не связана с torch.compile префиксом: {compile_error}")
+                            print(f"❌ Ошибка не связана с torch.compile префиксом при загрузке {self.cfg.model_path}: {compile_error}")
                             raise compile_error
                     
                     # Загружаем остальные параметры если они есть
@@ -729,7 +737,7 @@ class DQNSolver:
                     print(f"⚠️ Неверный формат checkpoint в {self.cfg.model_path}")
                     
             except Exception as e:
-                print(f"❌ Ошибка при загрузке модели: {e}")
+                print(f"❌ Ошибка при загрузке модели из {self.cfg.model_path}: {e}")
                 print("🔄 Создаем новую модель")
         else:
             print(f"📝 Файл модели {self.cfg.model_path} не найден, создаем новую модель")
