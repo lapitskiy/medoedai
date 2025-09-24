@@ -26,9 +26,15 @@ except ImportError:
 class CryptoTradingEnvOptimized(gym.Env):
     metadata = {'render.modes': ['human']}
     
-    def __init__(self, dfs: Dict, cfg: Optional[GymConfig] = None, lookback_window: int = 20, indicators_config=None):        
+    def __init__(self, dfs: Dict, cfg: Optional[GymConfig] = None, lookback_window: int = 20, indicators_config=None, episode_length: Optional[int] = None):        
         super(CryptoTradingEnvOptimized, self).__init__() 
         self.cfg = cfg or GymConfig()
+        
+        # Устанавливаем длину эпизода
+        self.episode_length = episode_length or getattr(self.cfg, 'episode_length', 10000) # Fallback на 10000 шагов
+        if self.episode_length < 100:
+            print(f"⚠️ Длина эпизода {self.episode_length} слишком мала, устанавливаю 10000")
+            self.episode_length = 10000
         
         self.vol_scaled = 0
         self.epsilon = 1.0
@@ -653,10 +659,9 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.action_counts = {0: 0, 1: 0, 2: 0}
         
         # Выбор случайной начальной точки с учетом длины эпизода
-        episode_length = getattr(self.cfg, 'episode_length')
         if self._can_log:
-            print(f"🌀 episode_length = {episode_length} шагов (≈ {episode_length*5/60:.1f} часов)")
-        max_start = self.total_steps - episode_length
+            print(f"🌀 episode_length = {self.episode_length} шагов (≈ {self.episode_length*5/60:.1f} часов)")
+        max_start = self.total_steps - self.episode_length
         min_start = self.min_valid_start_step
         
         if max_start <= min_start:
@@ -850,9 +855,8 @@ class CryptoTradingEnvOptimized(gym.Env):
                         self.current_step += 1
                         
                         # Проверяем завершение эпизода
-                        episode_length = getattr(self.cfg, 'episode_length', 1000)
                         done = (
-                            self.current_step >= self.start_step + episode_length or
+                            self.current_step >= self.start_step + self.episode_length or
                             self.current_step >= self.total_steps
                         )
                         

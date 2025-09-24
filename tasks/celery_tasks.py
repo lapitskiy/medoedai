@@ -186,7 +186,7 @@ def train_dqn(self, seed: int | None = None):
     return {"message": result}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
-def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None = None):
+def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None = None, episode_length: int = 2000):
     """Обучение DQN для одного символа (BTCUSDT/ETHUSDT/...)
 
     Загружает данные из БД, готовит 5m/15m/1h, запускает train_model_optimized.
@@ -266,6 +266,13 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
             episodes = int(os.getenv('DEFAULT_EPISODES', 5))
         print(f"🎯 Количество эпизодов: {episodes}")
 
+        # Получаем длину эпизода из аргумента или GConfig
+        if episode_length is None:
+            # Берем из GConfig по умолчанию
+            from envs.dqn_model.gym.gconfig import GConfig
+            episode_length = GConfig.episode_length
+        print(f"📏 Длина эпизода: {episode_length}")
+
         # Прокидываем пути для продолжения обучения из ENV/Redis если заданы
         load_model_path = os.environ.get('CONTINUE_MODEL_PATH')
         load_buffer_path = os.environ.get('CONTINUE_BUFFER_PATH')
@@ -322,7 +329,8 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
             load_buffer_path=load_buffer_path,
             seed=seed,
             parent_run_id=parent_run_id,
-            root_id=root_run_id
+            root_id=root_run_id,
+            episode_length=episode_length
         )
         return {"message": f"✅ Обучение {symbol} завершено: {result}"}
     except Exception as e:
@@ -331,7 +339,7 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
         return {"message": f"❌ Ошибка обучения {symbol}: {str(e)}"}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
-def train_dqn_multi_crypto(self, seed: int | None = None):
+def train_dqn_multi_crypto(self, episodes: int | None = None, seed: int | None = None, episode_length: int = 2000):
     """Задача для мультивалютного обучения DQN"""
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
     # Сид из аргумента/ENV
@@ -349,10 +357,17 @@ def train_dqn_multi_crypto(self, seed: int | None = None):
         # Получаем количество эпизодов из переменной окружения
         episodes = int(os.getenv('DEFAULT_EPISODES', 10001))
         print(f"🎯 Количество эпизодов для мульти-обучения: {episodes}")
+
+        # Получаем длину эпизода из аргумента или GConfig
+        if episode_length is None:
+            # Берем из GConfig по умолчанию
+            from envs.dqn_model.gym.gconfig import GConfig
+            episode_length = GConfig.episode_length
+        print(f"📏 Длина эпизода для мульти-обучения: {episode_length}")
         
         result = train_multi(symbols=[
             'BTCUSDT','TONUSDT','ETHUSDT','SOLUSDT','ADAUSDT','BNBUSDT'
-        ], episodes=episodes)
+        ], episodes=episodes, episode_length=episode_length)
         return {"message": f"Мультивалютное обучение завершено: {result}"}
     except Exception as e:
         import traceback

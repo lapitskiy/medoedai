@@ -159,6 +159,7 @@ def train_model_optimized(
     run_id: Optional[str] = None,
     parent_run_id: Optional[str] = None,
     root_id: Optional[str] = None,
+    episode_length: Optional[int] = None,
 ) -> str:
     """
     Оптимизированная функция тренировки модели без pandas в hot-path
@@ -211,7 +212,7 @@ def train_model_optimized(
         if is_multi_crypto:
             # Используем мультивалютное окружение
             from envs.dqn_model.gym.crypto_trading_env_multi import MultiCryptoTradingEnv
-            env = MultiCryptoTradingEnv(dfs=dfs, cfg=cfg)
+            env = MultiCryptoTradingEnv(dfs=dfs, cfg=cfg, episode_length=episode_length)
             print(f"✅ Создано мультивалютное окружение для {len(dfs)} криптовалют")
         else:
             # Используем обычное окружение для одной криптовалюты
@@ -252,7 +253,8 @@ def train_model_optimized(
                 dfs=dfs,
                 cfg=gym_cfg,
                 lookback_window=override.get('gym_config', {}).get('lookback_window', gym_cfg.lookback_window) if override else gym_cfg.lookback_window,
-                indicators_config=indicators_config
+                indicators_config=indicators_config,
+                episode_length=episode_length or gym_cfg.episode_length
             )
 
             # risk_management в env
@@ -296,6 +298,7 @@ def train_model_optimized(
                 'lookback_window': getattr(env, 'lookback_window', None),
                 'indicators_config': getattr(env, 'indicators_config', None),
                 'reward_scale': getattr(env.cfg, 'reward_scale', 1.0),
+                'episode_length': getattr(env, 'episode_length', None),
                 'funding_features': {
                     'present_in_input_df': funding_present,
                     'included': bool(funding_present),
@@ -1067,6 +1070,7 @@ def train_model_optimized(
             'episodes_with_trade_ratio': (episodes_with_trade_count / float(episodes)) if episodes > 0 else 0.0,
             'avg_minutes_between_buys': ( (total_steps_processed * 5.0) / float(action_counts_total.get(1, 0) or 1) ) if (action_counts_total.get(1, 0) or 0) > 0 else None,
             'total_steps_processed': total_steps_processed,
+            'episode_length': episode_length, # Добавляем длину эпизода
         }
         
         # Создаем папку если не существует (используем структурированный run_dir)

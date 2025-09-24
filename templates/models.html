@@ -92,6 +92,10 @@
                     <input id="episodesInput" class="form-control" type="number" min="1" step="1" value="1000">
                 </div>
                 <div class="form-group">
+                    <label>Длина эпизода (количество свечей)</label>
+                    <input id="episodeLengthInput" class="form-control" type="number" min="1" step="1" value="2000">
+                </div>
+                <div class="form-group">
                     <label>Seed (если пусто — сгенерируем случайный)</label>
                     <input id="trainSeedInput" class="form-control" type="number" min="1" step="1" placeholder="например, 42">
                 </div>
@@ -459,6 +463,7 @@ P/L Ratio: ${plr}
         // Запуск обучения с выбранным количеством эпизодов
         async function startTrainingForSymbol(symbol) {
             const episodes = document.getElementById('episodesInput').value || 1000;
+            const episodeLength = document.getElementById('episodeLengthInput').value || 2000;
             const seedVal = (document.getElementById('trainSeedInput')?.value || '').trim();
             const statusDiv = document.getElementById('trainStatus');
             statusDiv.innerHTML = '<div class="status info">⏳ Запуск обучения ' + symbol + '...</div>';
@@ -466,7 +471,7 @@ P/L Ratio: ${plr}
                 const resp = await fetch('/training/train_dqn_symbol', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                    body: JSON.stringify({ symbol, episodes, seed: seedVal })
+                    body: JSON.stringify({ symbol, episodes, episode_length: episodeLength, seed: seedVal })
                 });
                 const data = await resp.json().catch(() => null);
                 if (data && data.success) {
@@ -486,11 +491,15 @@ P/L Ratio: ${plr}
 
         async function startTrainingMulti() {
             const statusDiv = document.getElementById('trainStatus');
+            const episodes = document.getElementById('episodesInput').value || 1000;
+            const episodeLength = document.getElementById('episodeLengthInput').value || 2000;
+            const seedVal = (document.getElementById('trainSeedInput')?.value || '').trim();
             if (statusDiv) statusDiv.innerHTML = '<div class="status info">⏳ Запуск мультивалютного обучения...</div>';
             try {
                 const resp = await fetch('/training/train_dqn_multi_crypto', {
                     method: 'POST',
-                    headers: { 'Accept': 'application/json' }
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ episodes, episode_length: episodeLength, seed: seedVal })
                 });
                 const data = await resp.json().catch(() => null);
                 if (data && data.success) {

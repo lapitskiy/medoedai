@@ -17,7 +17,30 @@ logger = logging.getLogger(__name__)
 @training_bp.route('/train_dqn_multi_crypto', methods=['POST'])
 def train_multi_crypto():
     """Запускает мультивалютное обучение DQN"""
-    task = train_dqn_multi_crypto.apply_async(queue="train")
+    data = request.get_json(silent=True) or {}
+    episodes_str = data.get('episodes') or request.form.get('episodes')
+    episodes = None
+    try:
+        if episodes_str is not None and str(episodes_str).strip() != '':
+            episodes = int(episodes_str)
+    except Exception:
+        episodes = None
+    episode_length_str = data.get('episode_length') or request.form.get('episode_length')
+    episode_length = None
+    try:
+        if episode_length_str is not None and str(episode_length_str).strip() != '':
+            episode_length = int(episode_length_str)
+    except Exception:
+        episode_length = None
+
+    seed_raw = (data.get('seed') or request.form.get('seed') or '').strip()
+    seed = None
+    try:
+        if seed_raw != '':
+            seed = int(seed_raw)
+    except Exception:
+        seed = None
+    task = train_dqn_multi_crypto.apply_async(kwargs={'episodes': episodes, 'episode_length': episode_length, 'seed': seed}, queue="train")
     try:
         wants_json = request.is_json or 'application/json' in (request.headers.get('Accept') or '')
     except Exception:
@@ -46,8 +69,13 @@ def train_dqn_symbol_route():
             seed = int(seed_raw)
     except Exception:
         seed = None
-    # Очередь per-symbol
-    queue_name = f"train_{symbol.lower()}"
+    episode_length_str = data.get('episode_length') or request.form.get('episode_length')
+    episode_length = None
+    try:
+        if episode_length_str is not None and str(episode_length_str).strip() != '':
+            episode_length = int(episode_length_str)
+    except Exception:
+        episode_length = None
 
     # Проверка активной задачи per-symbol в Redis + Celery
     running_key = f"celery:train:task:{symbol.upper()}"
@@ -81,7 +109,7 @@ def train_dqn_symbol_route():
         seed = _rnd.randint(1, 2**31 - 1)
         logger.info(f"[train_dqn_symbol] generated random seed={seed}")
 
-    task = train_dqn_symbol.apply_async(args=[symbol, episodes, seed], queue="train")
+    task = train_dqn_symbol.apply_async(args=[symbol, episodes, seed, episode_length], queue="train")
     logger.info(f"/train_dqn_symbol queued symbol={symbol} queue=train task_id={task.id}")
     # Сохраняем task_id для отображения на главной и отметку per-symbol
     try:

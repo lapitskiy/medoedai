@@ -22,7 +22,7 @@ def _build_dfs_for_symbol(symbol: str, limit: int = 100000):
         'candle_count': len(df_5min)
     }
 
-def train_multi(symbols: list[str], episodes: int = 10001):
+def train_multi(symbols: list[str], episodes: int = 10001, episode_length: int = 2000):
     all_dfs = {}
     for s in symbols:
         dfs = _build_dfs_for_symbol(s)
@@ -31,6 +31,6 @@ def train_multi(symbols: list[str], episodes: int = 10001):
     if not all_dfs:
         return "Нет данных ни для одного символа"
     # Передаём сразу словарь all_dfs как в оптимизированной функции
-    return train_model_optimized(dfs=all_dfs, episodes=episodes, use_wandb=False)
+    return train_model_optimized(dfs=all_dfs, episodes=episodes, use_wandb=False, episode_length=episode_length)
 
 
