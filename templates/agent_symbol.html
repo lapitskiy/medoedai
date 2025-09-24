@@ -65,19 +65,15 @@
                         <div class="button-group" style="margin:10px 0;">
                             <button class="btn btn-info" onclick="startMonitoringSymbol('{{ symbol }}')">🔄 Запустить мониторинг ({{ symbol }})</button>
                             <button class="btn btn-warning" onclick="stopMonitoringSymbol()">⏸️ Остановить мониторинг</button>
+                            <button class="btn btn-success" onclick="manualPeriodicTrading()">🚀 Эмулировать периодический таск</button>
                             <div id="monInfo" class="status info" style="display:none;">Мониторинг {{ symbol }} активен (обновление каждые 5 мин)</div>
                         </div>
 
                         <div class="section">
                             <h2>📊 Статус и баланс</h2>
                             <div class="button-group">
-                                <button class="btn btn-info" onclick="getTradingStatus('{{ symbol }}')">🔍 Статус {{ symbol }}</button>
                                 <button class="btn btn-info" onclick="getAllTradingStatus()">🌐 Все активные агенты</button>
                                 <button class="btn btn-info" onclick="getBalance()">💰 Баланс</button>
-                            </div>
-                            <div id="statusBox" class="trading-status" style="display:none;">
-                                <h3>📊 Статус {{ symbol }}</h3>
-                                <div id="statusContent"></div>
                             </div>
                             <div id="allStatusBox" class="trading-status" style="display:none;">
                                 <h3>🌐 Все активные агенты</h3>
@@ -531,9 +527,46 @@ async function loadPredictions(symbol){
       box.style.display='block';
       return;
     }
-    let predictionsHTML = `<p><strong>Всего предсказаний:</strong> ${data.total_predictions}</p>`;
+    
+    const errorPredictions = preds.filter(p => {
+      const action = (p.action || '').toLowerCase();
+      const mc = p.market_conditions || {};
+      return action === 'error' || Boolean(mc.error);
+    });
+    const validPredictions = preds.filter(p => !errorPredictions.includes(p));
+
+    let predictionsHTML = '';
+    if(errorPredictions.length > 0){
+      predictionsHTML += `<p><strong>❌ Ошибки предсказаний:</strong></p>`;
+      errorPredictions.forEach(pred => {
+        const errorTime = formatMoscowDateTime(pred.timestamp);
+        const mc = pred.market_conditions || {};
+      const errorMsg = mc.error || mc.error_detail || pred.error || pred.message || 'Неизвестная ошибка';
+        predictionsHTML += `
+          <div class="trade-item" style="border-left: 4px solid #dc3545; margin-top: 10px;">
+            <div class="trade-header">
+              <span class="trade-action error">❌ ОШИБКА</span>
+              <span>${errorTime}</span>
+            </div>
+            <div class="trade-details">
+              <div class="trade-detail"><div class="label">Символ</div><div class="value">${pred.symbol || symbol}</div></div>
+              <div class="trade-detail"><div class="label">Ошибка</div><div class="value" style="color: #dc3545;">${errorMsg}</div></div>
+              ${pred.details ? `<div class="trade-detail"><div class="label">Детали</div><div class="value">${pred.details}</div></div>` : ''}
+            </div>
+          </div>
+        `;
+      });
+    }
+
+    if(validPredictions.length === 0){
+      el.innerHTML = predictionsHTML || '<p>❌ Предсказания недоступны</p>';
+      box.style.display='block';
+      return;
+    }
+
+    predictionsHTML += `<p><strong>Всего предсказаний:</strong> ${data.total_predictions}</p>`;
     const seenGroups = new Set();
-    for(const prediction of preds){
+    for(const prediction of validPredictions){
       const predictionTime = formatMoscowDateTime(prediction.timestamp);
       const action = (prediction.action||'hold').toLowerCase();
       const actionClass = action === 'buy' ? 'buy' : action === 'sell' ? 'sell' : 'hold';
@@ -981,6 +1014,27 @@ window.addEventListener('load', ()=>{
   }catch(_){ }
   startMonitoringSymbol(sym);
 });
+
+async function manualPeriodicTrading(){
+  try{
+    const resp = await fetch('/api/trading/manual_periodic', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    });
+    const data = await resp.json();
+    if(data.success){
+      alert('Периодическая торговая задача запущена');
+      startMonitoringSymbol('{{ symbol }}'); // Обновляем статус после запуска
+    } else {
+      alert('Ошибка при запуске задачи: ' + (data.error || 'Неизвестная ошибка'));
+    }
+  }catch(e){
+    console.error(e);
+    alert('Ошибка сети при запуске задачи');
+  }
+}
 </script>
 <script src="/static/js/sidebar.js"></script>
 <script src="/static/js/tabs.js"></script>

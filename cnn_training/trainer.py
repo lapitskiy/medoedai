@@ -522,12 +522,30 @@ class CNNTrainer:
 
         # Сохранение manifest и результатов в стиле DQN
         try:
+            # Вытягиваем профиль GPU, если есть
+            try:
+                from agents.vdqn.cfg.gpu_configs import get_gpu_config
+                gpu_cfg = get_gpu_config(None)
+                gpu_profile = {
+                    'gpu_name': gpu_cfg.name,
+                    'vram_gb': gpu_cfg.vram_gb,
+                    'batch_size': gpu_cfg.batch_size,
+                    'memory_size': gpu_cfg.memory_size,
+                    'hidden_sizes': list(gpu_cfg.hidden_sizes),
+                    'train_repeats': gpu_cfg.train_repeats,
+                    'use_amp': gpu_cfg.use_amp,
+                    'use_gpu_storage': gpu_cfg.use_gpu_storage,
+                    'learning_rate': gpu_cfg.learning_rate,
+                }
+            except Exception:
+                gpu_profile = None
+
             manifest_path = self.config.save_manifest(
                 symbol='multi',
                 run_id=self.run_id,
                 model_type='multiframe',
                 timeframes=self.config.timeframes,
-                config_dict=self.config.to_dict(),
+                config_dict={**self.config.to_dict(), **({'gpu_profile': gpu_profile} if gpu_profile else {})},
                 symbols=self.config.symbols
             )
             results_payload = {
@@ -535,6 +553,14 @@ class CNNTrainer:
                 'epochs_trained': int(len(self.train_losses)),
                 'train_loss_last': float(self.train_losses[-1]) if self.train_losses else None,
                 'val_loss_last': float(self.val_losses[-1]) if self.val_losses else None,
+                'gpu_profile': gpu_profile,
+                'training_params': {
+                    'batch_size': getattr(self.config, 'batch_size', None),
+                    'learning_rate': getattr(self.config, 'learning_rate', None),
+                    'hidden_sizes': getattr(self.config, 'hidden_channels', None),
+                    'sequence_length': getattr(self.config, 'sequence_length', None),
+                    'timeframes': self.config.timeframes,
+                }
             }
             results_path = self.config.save_results('multi', self.run_id, results_payload, filename='result_multiframe.json')
             self.logger.info(f"📝 Manifest: {manifest_path}")

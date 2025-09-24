@@ -95,8 +95,40 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /workspace
     # Исключаем очередь train из общего воркера, чтобы не конкурировать за CPU
-    command: ["sh","-lc","celery -A tasks.celery_tasks worker -Q celery -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-6} --loglevel=info"]
+    command: ["sh","-lc","celery -A tasks worker -Q celery -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-6} --loglevel=info"]
     # CPU-only воркер: GPU не требуется
+
+  # Специализированный воркер для торговли
+  celery-trade:
+    build: .
+    container_name: celery-trade
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      serving:
+        condition: service_started
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      # Новые ключи Bybit: используем индексированные переменные
+      BYBIT_1_API_KEY: ${BYBIT_1_API_KEY:-}
+      BYBIT_1_SECRET_KEY: ${BYBIT_1_SECRET_KEY:-}
+      TRADING_MODE: ${TRADING_MODE:-sandbox}
+      PYTHONDONTWRITEBYTECODE: "1"
+      SERVING_URL: http://serving:8000/predict_ensemble
+    env_file:
+      - .env
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    command: >
+      sh -c "
+        echo '🧹 Очищаю Redis-блокировки для торговых агентов...' &&
+        redis-cli -h redis -p 6379 keys 'trading:agent_lock:*' | xargs -r redis-cli -h redis -p 6379 DEL &&
+        echo '✅ Redis-блокировки удалены, запускаю Celery-воркер...' &&
+        celery -A tasks worker -Q trade -P prefork -c 8 --loglevel=info
+      "
 
   # Специализированный воркер для обучения, использует все CPU ядра
 
@@ -138,14 +170,14 @@ services:
     volumes:
       - .:/workspace
     working_dir: /workspace
-    command: ['sh','-lc','NPROC=$$(nproc); THREADS=$$(python -c "import os,math; n=os.cpu_count() or 1; f=float(os.environ.get(\\"TRAIN_CPU_FRACTION\\", \\"0.8\\")); print(max(1,int(n*f)))"); export OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$THREADS} MKL_NUM_THREADS=$${MKL_NUM_THREADS:-$$THREADS} TORCH_NUM_THREADS=$${TORCH_NUM_THREADS:-$$THREADS} OMP_SCHEDULE=$${OMP_SCHEDULE:-dynamic} MKL_DYNAMIC=$${MKL_DYNAMIC:-true} MKL_INTERFACE_LAYER=$${MKL_INTERFACE_LAYER:-LP64}; echo "🚀 CPU/GPU Optimization: Using $$THREADS/$$NPROC threads (OMP=$$OMP_NUM_THREADS, MKL=$$MKL_NUM_THREADS, TORCH=$$TORCH_NUM_THREADS)"; exec celery -A tasks.celery_tasks worker -Q train -P $${CELERY_POOL:-prefork} -c $${CELERY_CONCURRENCY:-1} --loglevel=info']
+    command: ['sh','-lc','NPROC=$$(nproc); THREADS=$$(python -c "import os,math; n=os.cpu_count() or 1; f=float(os.environ.get(\\"TRAIN_CPU_FRACTION\\", \\"0.8\\")); print(max(1,int(n*f)))"); export OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$THREADS} MKL_NUM_THREADS=$${MKL_NUM_THREADS:-$$THREADS} TORCH_NUM_THREADS=$${TORCH_NUM_THREADS:-$$THREADS} OMP_SCHEDULE=$${OMP_SCHEDULE:-dynamic} MKL_DYNAMIC=$${MKL_DYNAMIC:-true} MKL_INTERFACE_LAYER=$${MKL_INTERFACE_LAYER:-LP64}; echo "🚀 CPU/GPU Optimization: Using $$THREADS/$$NPROC threads (OMP=$$OMP_NUM_THREADS, MKL=$$MKL_NUM_THREADS, TORCH=$$TORCH_NUM_THREADS)"; exec celery -A tasks worker -Q train -P $${CELERY_POOL:-prefork} -c $${CELERY_CONCURRENCY:-1} --loglevel=info']
 
 
 
   celery-beat:
     build: .
     container_name: celery-beat
-    command: ["celery", "-A", "tasks.celery_tasks", "beat", "--loglevel=info"]
+    command: ["celery", "-A", "tasks", "beat", "--loglevel=info"]
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0

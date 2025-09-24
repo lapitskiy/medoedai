@@ -54,7 +54,7 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.position_confidence_threshold = 0.7  # Порог уверенности для увеличения позиции
 
         # Константы окружения
-        self.trade_fee_percent = 0.00075 # Комиссия 0.075%
+        self.trade_fee_percent = 0.00055 # Комиссия 0.055%
         
         # Адаптивные параметры риск-менеджмента
         # Корректно извлекаем символ из dfs (dict) или объекта
@@ -630,6 +630,7 @@ class CryptoTradingEnvOptimized(gym.Env):
         initial_balance = getattr(self.cfg, 'initial_balance', 10000.0)  # По умолчанию 10000
         self.balance = initial_balance
         self.crypto_held = 0.0
+        self.fee_entry = 0.0  # Инициализируем fee_entry
         self.last_buy_price = None
         self.last_buy_step = None
         self.trailing_stop_counter = 0
@@ -652,7 +653,9 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.action_counts = {0: 0, 1: 0, 2: 0}
         
         # Выбор случайной начальной точки с учетом длины эпизода
-        episode_length = getattr(self.cfg, 'episode_length', 1000)  # По умолчанию 1000 шагов
+        episode_length = getattr(self.cfg, 'episode_length')
+        if self._can_log:
+            print(f"🌀 episode_length = {episode_length} шагов (≈ {episode_length*5/60:.1f} часов)")
         max_start = self.total_steps - episode_length
         min_start = self.min_valid_start_step
         
@@ -674,6 +677,8 @@ class CryptoTradingEnvOptimized(gym.Env):
         """
         Выполнение действия в окружении
         """
+        # Коэффициент масштабирования награды
+        reward_scale = float(getattr(self.cfg, 'reward_scale', 1.0))
         # Получаем текущую цену
         current_price = self.df_5min[self.current_step - 1, 3]  # Close price
         
@@ -709,11 +714,13 @@ class CryptoTradingEnvOptimized(gym.Env):
                         if self._can_log:
                             print(f"🎯 Низкая уверенность ({entry_confidence:.2f}): уменьшаем позицию до {self.position_fraction:.1%}")
                     
-                    # Покупаем с динамическим размером позиции
+                    # Покупаем с учётом комиссии
                     buy_amount = self.balance * self.position_fraction
-                    crypto_to_buy = buy_amount / current_price
+                    self.fee_entry = buy_amount * self.trade_fee_percent
+                    crypto_to_buy = (buy_amount - self.fee_entry) / current_price
                     self.crypto_held = crypto_to_buy
-                    self.balance -= buy_amount
+                    self.balance -= buy_amount  # списываем всю сумму, комиссия учтена в купленной крипте
+                    reward -= self.fee_entry / max(self.balance, 1e-9)  # мелкий штраф за комиссию
                     self.last_buy_price = current_price
                     self.last_buy_step = self.current_step
                     
@@ -738,14 +745,17 @@ class CryptoTradingEnvOptimized(gym.Env):
                         # Штраф за слишком раннюю продажу
                         reward = -0.02
                         #self._log(f"[{self.current_step}] ⚠️ Слишком ранняя продажа: {hold_time} шагов < {self.min_hold_steps}")
+                        # Масштабируем награду перед возвратом
+                        reward = reward * reward_scale
                         return self._get_state(), reward, False, {}
                 
                 # Продаем
                 sell_amount = self.crypto_held * current_price
-                self.balance += sell_amount
+                fee_exit = sell_amount * self.trade_fee_percent
+                self.balance += (sell_amount - fee_exit)
                 
                 # Рассчитываем прибыль/убыток
-                pnl = (current_price - self.last_buy_price) / self.last_buy_price
+                pnl = ((current_price - self.last_buy_price) / self.last_buy_price) - (self.fee_entry + fee_exit)/max(self.last_buy_price * self.crypto_held,1e-9)
                 net_profit_loss = sell_amount - (self.crypto_held * self.last_buy_price)
                 
                 # Награда за продажу (как в оригинале)
@@ -850,8 +860,10 @@ class CryptoTradingEnvOptimized(gym.Env):
                             "current_balance": self.balance,
                             "current_price": current_price,
                             "total_profit": (self.balance + self.crypto_held * current_price) - getattr(self.cfg, 'initial_balance', 10000.0),
-                            "reward": reward
                         })
+                        # Масштабируем награду перед возвратом
+                        reward = reward * reward_scale
+                        info["reward"] = reward
                         return self._get_state(), reward, done, info
                 
                 # --- Take Profit / Stop Loss (как в оригинале) ---
@@ -903,7 +915,7 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.current_step += 1
         
         # Проверяем завершение эпизода
-        episode_length = getattr(self.cfg, 'episode_length', 1000)  # По умолчанию 1000 шагов
+        episode_length = getattr(self.cfg, 'episode_length')
         
         done = (
             self.current_step >= self.start_step + episode_length or  # Ограничение длины эпизода
@@ -950,6 +962,9 @@ class CryptoTradingEnvOptimized(gym.Env):
                 transition['next_state'] = self._get_state()
         
         # Отладочная информация        
+        # Масштабируем награду перед возвратом
+        reward = reward * reward_scale
+        info["reward"] = reward
         return self._get_state(), reward, done, info
 
     def _check_buy_filters(self) -> bool:

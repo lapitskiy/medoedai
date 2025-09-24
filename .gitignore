@@ -66,3 +66,4 @@ result/
 .env.*.local
 .env.example
 plots/
+env.json

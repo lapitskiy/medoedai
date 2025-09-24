@@ -1,4 +1,5 @@
 import os
+from utils.config_loader import get_config_value
 import time
 import logging
 import json
@@ -1625,7 +1626,7 @@ class TradingAgent:
             in_cd = False
             cd_mult = 1.0
             try:
-                candles = int(os.environ.get('FLIP_COOLDOWN_CANDLES', '1'))
+                candles = int(get_config_value('FLIP_COOLDOWN_CANDLES', '1'))
             except Exception:
                 candles = 1
             if candles > 0 and self._last_trade_side == 'sell':
@@ -1638,15 +1639,15 @@ class TradingAgent:
                     in_cd = False
             # Q-gate по порогам из окружения (опционально)
             try:
-                t1 = float(os.environ.get('QGATE_MAXQ', 'nan'))
-                t2 = float(os.environ.get('QGATE_GAPQ', 'nan'))
+                t1 = float(get_config_value('QGATE_MAXQ', 'nan'))
+                t2 = float(get_config_value('QGATE_GAPQ', 'nan'))
             except Exception:
                 t1 = float('nan'); t2 = float('nan')
 
             if in_cd:
                 # Множитель порогов: FLIP_COOLDOWN_Q_MULT (по умолчанию 1.2)
                 try:
-                    cd_mult = float(os.environ.get('FLIP_COOLDOWN_Q_MULT', '1.2'))
+                    cd_mult = float(get_config_value('FLIP_COOLDOWN_Q_MULT', '1.2'))
                 except Exception:
                     cd_mult = 1.2
                 if not (isinstance(cd_mult, (int, float)) and cd_mult > 0):
@@ -1834,8 +1835,8 @@ class TradingAgent:
         try:
             # Q-gate по порогам из окружения (опционально)
             try:
-                t1 = float(os.environ.get('QGATE_SELL_MAXQ', 'nan'))
-                t2 = float(os.environ.get('QGATE_SELL_GAPQ', 'nan'))
+                t1 = float(get_config_value('QGATE_SELL_MAXQ', 'nan'))
+                t2 = float(get_config_value('QGATE_SELL_GAPQ', 'nan'))
             except Exception:
                 t1 = float('nan'); t2 = float('nan')
 

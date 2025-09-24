@@ -19,4 +19,7 @@ RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 # Копируем проект
 COPY . .
 
+# Убеждаемся что env.json доступен
+COPY env.json /app/env.json
+
 CMD ["python", "main.py"]

@@ -107,7 +107,8 @@ def db_get_or_fetch_ohlcv(
     exchange_id: str = 'binance',
     max_retries: int = 3,
     csv_file_path: str ='./temp/binance_data/bigdata_5m_klines.csv',
-    dry_run: bool = False # Если True, только загружает, но не сохраняет в БД
+    dry_run: bool = False, # Если True, только загружает, но не сохраняет в БД
+    include_error: bool = False
                         ) -> pd.DataFrame:
     """
     Загружает OHLCV данные из базы данных. Если данных недостаточно или есть разрывы,
@@ -129,9 +130,13 @@ def db_get_or_fetch_ohlcv(
     session = next(get_db_session())
     df = pd.DataFrame()
     exchange = None # Инициализируем exchange вне try-блока
+    error_reason: str | None = None
 
     # Управление подробностью логов внутри этой функции
     detailed_logs = False
+
+    def _wrap_result(result_df: pd.DataFrame):
+        return (result_df, error_reason) if include_error else result_df
 
     try:
         # Получаем или создаем запись символа в БД в формате БЕЗ слеша (TONUSDT)
@@ -278,6 +283,9 @@ def db_get_or_fetch_ohlcv(
                 logging.info(f"Биржа {exchange_id} успешно инициализирована.")
         except Exception as e:
             logging.error(f"Не удалось инициализировать биржу {exchange_id}: {e}")
+            error_reason = f"exchange_init_failed: {exchange_id}: {e}"
+            if include_error:
+                return _wrap_result(pd.DataFrame())
             return pd.DataFrame()
 
 
@@ -349,6 +357,7 @@ def db_get_or_fetch_ohlcv(
                 time.sleep(5)
                 if retries > max_retries:
                     logging.error("Максимум попыток превышен, прекращаем докачку.")
+                    error_reason = f"exchange_fetch_failed: {exchange_id}: {e}"
                     break
 
         # Если есть новые данные — добавляем в БД
@@ -498,7 +507,7 @@ def db_get_or_fetch_ohlcv(
         # Единый финальный лог
         #logging.info(f"✅ Все необходимые свечи для {symbol_name} {timeframe} загружены (доступно {len(df)}).")
 
-        return df
+        return _wrap_result(df)
 
     except Exception as e:
         logging.error(f"Критическая ошибка в db_get_or_fetch_ohlcv: {e}", exc_info=True)

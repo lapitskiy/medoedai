@@ -1,10 +1,17 @@
 from flask import Blueprint, jsonify, request, current_app
 from pathlib import Path
 import os
+from utils.config_loader import get_config_value
 import json
 from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized
 from envs.dqn_model.gym.indicators_optimized import preprocess_dataframes
 from agents.vdqn.cfg.vconfig import vDqnConfig
+import pickle
+import numpy as np
+import pandas as pd
+import requests
+from redis import Redis
+from datetime import datetime
 
 models_admin_bp = Blueprint('models_admin', __name__)
 
@@ -56,13 +63,13 @@ def api_strategy_save():
         stg_file = run_dir / 'oos_results.json'
         payload = {
             'label': label,
-            'created_at': __import__('datetime').datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'created_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
             'params': params,
             'metrics': metrics,
             'symbol': str(symbol),
             'run_id': str(run_id),
         }
-        stg_id = f"stg_{__import__('datetime').datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        stg_id = f"stg_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
         # Читаем/пишем файл oos_results.json
         doc = {'version': 1, 'counters': {'good':0,'bad':0,'neutral':0}, 'history': [], 'strategies': {'current': None, 'items': {}}}
         if stg_file.exists():
@@ -117,8 +124,7 @@ def api_strategy_apply():
         stg_file.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding='utf-8')
         # Применим qgate в Redis (если доступен)
         try:
-            from redis import Redis as _Redis
-            rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+            rc = Redis(host='redis', port=6379, db=0, decode_responses=True)
             params = item.get('params') or {}
             t1 = float(params.get('t1_base') or 0)
             t2 = float(params.get('t2_base') or 0)
@@ -148,13 +154,25 @@ def api_runs_list():
             mf = rd / 'manifest.json'
             if mf.exists():
                 try:
-                    import json as _json
-                    manifest = _json.loads(mf.read_text(encoding='utf-8'))
+                    manifest = json.loads(mf.read_text(encoding='utf-8'))
                 except Exception:
                     manifest = {}
             model_path = str(rd / 'model.pth') if (rd / 'model.pth').exists() else None
             replay_path = str(rd / 'replay.pkl') if (rd / 'replay.pkl').exists() else None
             result_path = str(rd / 'train_result.pkl') if (rd / 'train_result.pkl').exists() else None
+            # Попытаемся извлечь краткую статистику
+            winrate = None; pl_ratio = None; episodes = None
+            if result_path:
+                try:
+                    import pickle as _pkl
+                    with open(result_path,'rb') as _f:
+                        _res = _pkl.load(_f)
+                    _fs = _res.get('final_stats') or {}
+                    winrate = _fs.get('winrate')
+                    pl_ratio = _fs.get('pl_ratio')
+                    episodes = _res.get('actual_episodes', _res.get('episodes'))
+                except Exception:
+                    pass
             runs.append({
                 'run_id': run_id,
                 'parent_run_id': manifest.get('parent_run_id'),
@@ -165,6 +183,9 @@ def api_runs_list():
                 'model_path': model_path,
                 'replay_path': replay_path,
                 'result_path': result_path,
+                'winrate': winrate,
+                'pl_ratio': pl_ratio,
+                'episodes': episodes,
             })
         # Простая сортировка по created_at, затем по run_id
         try:
@@ -186,8 +207,7 @@ def api_runs_oos_results():
         if not oos_file.exists():
             return jsonify({'success': False, 'error': 'oos_results.json not found'}), 404
         try:
-            import json as _json
-            data = _json.loads(oos_file.read_text(encoding='utf-8'))
+            data = json.loads(oos_file.read_text(encoding='utf-8'))
             return jsonify({'success': True, 'data': data})
         except Exception as e:
             return jsonify({'success': False, 'error': f'Failed to parse oos_results.json: {e}'}), 500
@@ -239,7 +259,7 @@ def oos_test_model():
         days = int(data.get('days') or 30)
         # Стартовый капитал для расчёта эквити/просадки
         try:
-            start_capital = float(data.get('start_capital') or os.environ.get('OOS_START_CAPITAL', 10000))
+            start_capital = float(data.get('start_capital') or get_config_value('OOS_START_CAPITAL', 10000))
         except Exception:
             start_capital = 10000.0
 
@@ -283,10 +303,6 @@ def oos_test_model():
         # Прямой синхронный расчёт простого OOS (без Celery, чтобы быстрее показать результат)
         # Используем логику, схожую с execute_trade: готовим state по БД и дергаем serving последовательно.
         from utils.db_utils import db_get_or_fetch_ohlcv
-        import numpy as np
-        import pandas as pd
-        import json
-        import requests
 
         # Определяем символ максимально надёжно
         symbol = 'BTCUSDT'
@@ -294,8 +310,7 @@ def oos_test_model():
         try:
             # 1) Если передан путь runs/.../model.pth — читаем symbol из manifest.json рядом
             if filename:
-                from pathlib import Path as _Path
-                p = _Path(filename.replace('\\', '/'))
+                p = Path(filename.replace('\\', '/'))
                 try:
                     p = p.resolve()
                 except Exception:
@@ -305,8 +320,7 @@ def oos_test_model():
                     # 1a) Пытаемся взять из manifest.json
                     try:
                         if manifest_path.exists():
-                            import json as _json
-                            mf = _json.loads(manifest_path.read_text(encoding='utf-8'))
+                            mf = json.loads(manifest_path.read_text(encoding='utf-8'))
                             base = str((mf.get('symbol') or '')).upper().replace('/', '')
                             if base:
                                 symbol = base if base.endswith('USDT') else (base + 'USDT')
@@ -334,8 +348,7 @@ def oos_test_model():
             #    попробуем найти run по коду и взять символ из каталога result/<SYMBOL>/runs/<code>
             if (not symbol_resolved) and code:
                 try:
-                    from pathlib import Path as _Path
-                    runs_root = _Path('result')
+                    runs_root = Path('result')
                     if runs_root.exists():
                         for sym_dir in runs_root.iterdir():
                             try:
@@ -379,6 +392,26 @@ def oos_test_model():
             except Exception:
                 pass
             return jsonify({'success': False, 'error': f'no candles for {symbol}'}), 400
+        # === Читаем train_result.pkl для получения config, lookback, indicators ===
+        train_result_path = None
+        if filename:
+            p = Path(filename.replace('\\','/')).resolve()
+            if p.name == 'model.pth' and 'runs' in p.parts:
+                train_result_path = p.parent / 'train_result.pkl'
+        
+        gym_config_from_train = None
+        vdqn_config_from_train = None
+        adaptive_normalization_params = None
+        if train_result_path and train_result_path.exists():
+            try:
+                with open(train_result_path, 'rb') as f:
+                    train_data = pickle.load(f)
+                    gym_config_from_train = train_data.get('gym_snapshot')
+                    vdqn_config_from_train = train_data.get('cfg_snapshot')
+                    adaptive_normalization_params = train_data.get('adaptive_normalization')
+            except Exception as e:
+                current_app.logger.warning(f"[OOS] failed to load train_result.pkl for {filename}: {e}")
+
         # Берём последние N дней (до предыдущей закрытой свечи)
         try:
             df['dt'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -407,21 +440,68 @@ def oos_test_model():
         df_15min_np = df_15min[ohlcv_cols].values.astype(np.float32)
         df_1h_np = df_1h[ohlcv_cols].values.astype(np.float32)
 
-        # Индикаторы
-        indicators_config = {
-            'rsi': {'length': 14},
-            'ema': {'lengths': [100, 200]},
-            'ema_cross': {'pairs': [(100, 200)], 'include_cross_signal': True},
-            'sma': {'length': 14}
-        }
+        # Индикаторы из train_result.pkl, если есть
+        if gym_config_from_train and gym_config_from_train.get('indicators_config'):
+            indicators_config = gym_config_from_train['indicators_config']
+        else:
+            indicators_config = {
+                'rsi': {'length': 14},
+                'ema': {'lengths': [100, 200]},
+                'ema_cross': {'pairs': [(100, 200)], 'include_cross_signal': True},
+                'sma': {'length': 14}
+            }
         indicators = preprocess_dataframes(df_5min_np, df_15min_np, df_1h_np, indicators_config)
 
-        # Создаём env ОДИН РАЗ
-        cfg = vDqnConfig()
-        env = CryptoTradingEnvOptimized(dfs={'df_5min': df_5min, 'df_15min': df_15min, 'df_1h': df_1h, 'symbol': symbol}, cfg=cfg, lookback_window=20)
+        # --- Диагностика индикаторов: проверяем NaN / Inf ------------------
+        n_nan = 0
+        n_inf = 0
+        try:
+            import numpy as _np
+            n_nan = int(_np.isnan(indicators).sum())
+            n_inf = int(_np.isinf(indicators).sum())
+            if n_nan or n_inf:
+                current_app.logger.warning(f"[OOS] ⚠️ indicators NaN={n_nan} Inf={n_inf}")
+                # Не бросаем исключение, просто логируем
+            else:
+                current_app.logger.info("[OOS] ✅ indicators: no NaN/Inf")
+        except Exception as diag_err:
+            try:
+                current_app.logger.warning(f"[OOS] indicator diagnostics failed: {diag_err}")
+            except Exception:
+                pass
+        # --------------------------------------------------------------------
 
+        # Создаём env ОДИН РАЗ
+        # Используем cfg_snapshot из train_result, если есть
+        if vdqn_config_from_train:
+            # Создаем экземпляр vDqnConfig и обновляем его атрибуты
+            cfg = vDqnConfig()
+            for k, v in vdqn_config_from_train.items():
+                if hasattr(cfg, k):
+                    setattr(cfg, k, v)
+        else:
+            cfg = vDqnConfig() # Fallback к дефолтному конфигу
+        
+        # lookback_window из train_result.pkl, если есть
+        lookback_window = 20 # Дефолт, если не найдем
+        if gym_config_from_train and gym_config_from_train.get('lookback_window'):
+            lookback_window = gym_config_from_train['lookback_window']
+        
+        env = CryptoTradingEnvOptimized(dfs={'df_5min': df_5min, 'df_15min': df_15min, 'df_1h': df_1h, 'symbol': symbol}, cfg=cfg, lookback_window=lookback_window)
+
+        # Применяем adaptive_normalization, если она была в обучении
+        if adaptive_normalization_params:
+            if 'base_profile' in adaptive_normalization_params and hasattr(env, 'risk_management'):
+                # Обновляем параметры risk_management в cfg.gym_env
+                for k, v in adaptive_normalization_params['base_profile'].items():
+                    if hasattr(env.risk_management, k):
+                        setattr(env.risk_management, k, v)
+            if 'adapted_params' in adaptive_normalization_params and hasattr(env, 'risk_management'):
+                for k, v in adaptive_normalization_params['adapted_params'].items():
+                    if hasattr(env.risk_management, k):
+                        setattr(env.risk_management, k, v)
+        
         # === ВОССТАНАВЛИВАЕМ ИНИЦИАЛИЗАЦИЮ ПЕРЕМЕННЫХ, КОТОРЫЕ НУЖНЫ ДАЛЬШЕ ===
-        from pathlib import Path as _Path
         serving_url = os.environ.get('SERVING_URL', 'http://serving:8000/predict_ensemble')
 
         # Путь к модели (или пытаемся найти в result/ по run-коду)
@@ -429,7 +509,7 @@ def oos_test_model():
         if filename:
             model_paths = [filename]
         else:
-            cand = _Path('result')/symbol.replace('USDT','')/'runs'/code/'model.pth'
+            cand = Path('result')/symbol.replace('USDT','')/'runs'/code/'model.pth'
             if cand.exists():
                 model_paths = [str(cand)]
         if not model_paths:
@@ -437,21 +517,19 @@ def oos_test_model():
         # Абсолютные пути
         abs_list = []
         for mp in model_paths:
-            pp = _Path(str(mp).replace('\\','/'))
+            pp = Path(str(mp).replace('\\','/'))
             if not pp.is_absolute():
-                pp = (_Path.cwd()/pp).resolve()
+                pp = (Path.cwd()/pp).resolve()
             abs_list.append(str(pp))
         model_paths = abs_list
 
         # Читаем consensus из Redis (как в бою)
         consensus_cfg = None
         try:
-            from redis import Redis as _Redis
-            rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+            rc = Redis(host='redis', port=6379, db=0, decode_responses=True)
             raw = rc.get('trading:consensus')
             if raw:
-                import json as _json
-                consensus_cfg = _json.loads(raw)
+                consensus_cfg = json.loads(raw)
         except Exception:
             consensus_cfg = None
 
@@ -511,7 +589,7 @@ def oos_test_model():
                         labels.append('flat')
                 counts = {'flat': labels.count('flat'), 'uptrend': labels.count('uptrend'), 'downtrend': labels.count('downtrend')}
                 winner = max(counts, key=counts.get)
-                return winner, {'windows':windows,'labels':labels,'weights':weights,'voting':'majority','tie_break':'flat'}
+                return winner, {'windows':windows,'labels':labels,'weights':[1,1,1],'voting':'majority','tie_break':'flat'}
             except Exception:
                 return 'flat', {'windows':[60,180,300],'labels':['flat','flat','flat'],'weights':[1,1,1],'voting':'majority','tie_break':'flat'}
 
@@ -522,8 +600,7 @@ def oos_test_model():
                 state = env._get_state()
                 if state is None:
                     continue
-                import numpy as _np
-                state = _np.nan_to_num(state, nan=0.0, posinf=0.0, neginf=0.0).tolist()  # Конвертируем в list без NaN/Inf
+                state = np.nan_to_num(state, nan=0.0, posinf=0.0, neginf=0.0).tolist()  # Конвертируем в list без NaN/Inf
             except Exception as e:
                 current_app.logger.error(f"[OOS] state get error at step {i}: {e}")
                 continue
@@ -636,7 +713,7 @@ def oos_test_model():
             price = float(closes[i])
             ts_ms = int(df.iloc[i]['timestamp']) if 'timestamp' in df.columns else None
             try:
-                ts_iso = pd.to_datetime(ts_ms, unit='ms').isoformat() if ts_ms else None
+                ts_iso = datetime.fromtimestamp(ts_ms / 1000).isoformat() if ts_ms else None
             except Exception:
                 ts_iso = None
             # Простая симуляция: buy -> открыть лонг; sell -> закрыть, если был лонг (profit/loss)
@@ -724,6 +801,8 @@ def oos_test_model():
             or (isinstance(max_dd, (int, float)) and max_dd > 0.70)
         classification = 'good' if is_good else ('bad' if is_bad else 'neutral')
 
+        nan_count = n_nan
+        inf_count = n_inf
         result_payload = {
             'success': True,
             'result': {
@@ -743,26 +822,26 @@ def oos_test_model():
                 'start_capital': float(start_capital),
                 'equity_end': float(equity),
                 'classification': classification,
+                'nan_indicators': nan_count,
+                'inf_indicators': inf_count,
             }
         }
         # Автосохранение в oos_results.json (суммируем счётчики и пишем историю)
         try:
-            from pathlib import Path as _Path
-            import json as _json
             run_dir = None
             if filename:
-                pth = _Path(str(filename).replace('\\','/')).resolve()
+                pth = Path(str(filename).replace('\\','/')).resolve()
                 if pth.name == 'model.pth' and 'runs' in pth.parts:
                     runs_idx = list(pth.parts).index('runs')
                     _run_id = pth.parts[runs_idx+1] if runs_idx+1 < len(pth.parts) else None
                     _symbol = pth.parts[runs_idx-1] if runs_idx-1 >= 0 else None
-                    run_dir = _Path('result')/str(_symbol)/'runs'/str(_run_id)
+                    run_dir = Path('result')/str(_symbol)/'runs'/str(_run_id)
             if run_dir and run_dir.exists():
                 oos_file = run_dir / 'oos_results.json'
                 doc = {'version': 1, 'counters': {'good': 0, 'bad': 0, 'neutral': 0}, 'history': []}
                 if oos_file.exists():
                     try:
-                        doc = _json.loads(oos_file.read_text(encoding='utf-8'))
+                        doc = json.loads(oos_file.read_text(encoding='utf-8'))
                         if not isinstance(doc, dict):
                             doc = {'version': 1, 'counters': {'good': 0, 'bad': 0, 'neutral': 0}, 'history': []}
                     except Exception:
@@ -776,8 +855,7 @@ def oos_test_model():
                 doc['counters'] = counters
                 # Добавляем запись истории
                 try:
-                    from datetime import datetime as _dt
-                    ts_utc = _dt.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+                    ts_utc = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
                 except Exception:
                     ts_utc = None
                 history = doc.get('history') or []
@@ -797,6 +875,8 @@ def oos_test_model():
                         'trades': trades,
                         'start_capital': float(start_capital),
                         'roi_pct': roi_pct,
+                        'nan_indicators': nan_count,
+                        'inf_indicators': inf_count,
                     },
                     'classification': classification,
                     'symbol': symbol,
@@ -806,7 +886,7 @@ def oos_test_model():
                     history = history[-500:]
                 doc['history'] = history
                 oos_file.parent.mkdir(parents=True, exist_ok=True)
-                oos_file.write_text(_json.dumps(doc, ensure_ascii=False, indent=2), encoding='utf-8')
+                oos_file.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding='utf-8')
         except Exception:
             pass
         try:

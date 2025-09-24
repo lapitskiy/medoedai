@@ -463,7 +463,7 @@ P/L Ratio: ${plr}
             const statusDiv = document.getElementById('trainStatus');
             statusDiv.innerHTML = '<div class="status info">⏳ Запуск обучения ' + symbol + '...</div>';
             try {
-                const resp = await fetch('/train_dqn_symbol', {
+                const resp = await fetch('/training/train_dqn_symbol', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                     body: JSON.stringify({ symbol, episodes, seed: seedVal })
@@ -488,7 +488,7 @@ P/L Ratio: ${plr}
             const statusDiv = document.getElementById('trainStatus');
             if (statusDiv) statusDiv.innerHTML = '<div class="status info">⏳ Запуск мультивалютного обучения...</div>';
             try {
-                const resp = await fetch('/train_dqn_multi_crypto', {
+                const resp = await fetch('/training/train_dqn_multi_crypto', {
                     method: 'POST',
                     headers: { 'Accept': 'application/json' }
                 });
@@ -569,25 +569,16 @@ P/L Ratio: ${plr}
                             const run = idToNode[runId]; if(!run) return;
                             let win = 'N/A', plr = 'N/A', episodes = 'N/A';
                             let isBad = false;
-                            try{
-                                if(run.model_path){
-                                    const infoResp = await fetch('/get_result_model_info', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ filename: run.model_path })});
-                                    const info = await infoResp.json();
-                                    if(info && info.success){
-                                        const st = info.stats||{};
-                                        if(typeof st.winrate==='number') {
-                                            win = (st.winrate*100).toFixed(1)+'%';
-                                            if(st.winrate < 0.5) isBad = true;
-                                        }
-                                        if(typeof st.pl_ratio==='number') {
-                                            plr = st.pl_ratio.toFixed(2);
-                                            if(st.pl_ratio < 1.0) isBad = true;
-                                        }
-                                        if(info.episodes!=null) episodes = info.episodes;
-                                    }
-                                }
-                            }catch(_){ }
-                            const indent = `<span style=\"display:inline-block; width:${depth*16}px;\"></span>`;
+                            if(typeof run.winrate === 'number') {
+                                win = (run.winrate * 100).toFixed(1) + '%';
+                                if(run.winrate < 0.5) isBad = true;
+                            }
+                            if(typeof run.pl_ratio === 'number') {
+                                plr = run.pl_ratio.toFixed(2);
+                                if(run.pl_ratio < 1.0) isBad = true;
+                            }
+                            if(run.episodes != null) episodes = run.episodes;
+                            const indent = `<span style="display:inline-block; width:${depth*16}px;"></span>`;
                             const label = `${depth>0?'▸ ':''}${run.run_id}`;
                             const parent = (run.parent_run_id && idToNode[run.parent_run_id]) ? run.parent_run_id : '—';
                             const oosBtn = run.model_path ? `<button class="btn btn-info" onclick="runOOSTest('${run.run_id}','${run.model_path}')">Test</button>` : '';
@@ -856,6 +847,8 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                     const dc = (r.decisions_counts||{});
                     const dBuy = Number(dc.buy||0), dHold = Number(dc.hold||0), dSell = Number(dc.sell||0);
                     const dTotal = (typeof r.decisions_total==='number')? r.decisions_total : (dBuy + dHold + dSell);
+                    const ni = (r.nan_indicators!=null)? r.nan_indicators: '—';
+                    const ii = (r.inf_indicators!=null)? r.inf_indicators: '—';
                     const lines = [title + ' ' + statusBadge,
                         `Winrate: ${r.winrate!=null?(r.winrate*100).toFixed(1)+'%':'N/A'}`,
                         `PLR: ${r.pl_ratio!=null?r.pl_ratio.toFixed(2):'N/A'}`,
@@ -864,6 +857,7 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                         `PnL: ${roiPct!=null?roiPct.toFixed(2)+'%':'N/A'}`,
                         `Trades: ${r.trades!=null?r.trades:'N/A'}`,
                         `Decisions: B=${dBuy} H=${dHold} S=${dSell} (total ${dTotal})`,
+                        `Indicators NaN: ${ni} / Inf: ${ii}`,
                         r.symbol? `Symbol: ${r.symbol}`: '',
                         r.days!=null? `Window: ${r.days}d`: ''
                     ].filter(Boolean);

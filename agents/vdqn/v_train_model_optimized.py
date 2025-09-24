@@ -250,7 +250,7 @@ def train_model_optimized(
             gym_cfg = GymConfig()
             env = CryptoTradingEnvOptimized(
                 dfs=dfs,
-                cfg=cfg,
+                cfg=gym_cfg,
                 lookback_window=override.get('gym_config', {}).get('lookback_window', gym_cfg.lookback_window) if override else gym_cfg.lookback_window,
                 indicators_config=indicators_config
             )
@@ -295,6 +295,7 @@ def train_model_optimized(
                 'symbol': getattr(env, 'symbol', None),
                 'lookback_window': getattr(env, 'lookback_window', None),
                 'indicators_config': getattr(env, 'indicators_config', None),
+                'reward_scale': getattr(env.cfg, 'reward_scale', 1.0),
                 'funding_features': {
                     'present_in_input_df': funding_present,
                     'included': bool(funding_present),
@@ -539,17 +540,8 @@ def train_model_optimized(
                 
             print("🚀 CUDA оптимизации включены: cudnn.benchmark, TF32")
         
-        # Загружаем МОДЕЛЬ если есть (либо из указанных путей, либо по дефолту)
-        dqn_solver.load_model()
-        # Загружаем replay buffer, если был передан путь и файл существует
-        try:
-            if load_buffer_path and isinstance(load_buffer_path, str) and os.path.exists(load_buffer_path):
-                print(f"🧠 Загружаю replay buffer из {load_buffer_path}")
-                dqn_solver.load_state()
-            else:
-                print("ℹ️ Replay buffer не передан или файл отсутствует — начнем с пустой памяти")
-        except Exception as _e:
-            print(f"⚠️ Не удалось загрузить replay buffer: {_e}")
+        # Автоподгрузка моделей/буфера отключена: старт всегда с нуля.
+        print("🛑 Автоматическая загрузка старых весов и replay buffer отключена — начинаем с нуля")
 
         # После загрузки переназначаем пути сохранения на НОВЫЕ в result/<symbol>_<id>
         # Обновляем пути сохранения на структурированные независимо от наличия внешней cfg
@@ -1064,6 +1056,7 @@ def train_model_optimized(
             'symbol': training_name,
             'model_id': short_id,
             'early_stopping_triggered': episode < episodes,  # True если early stopping сработал
+            'reward_scale': float(getattr(env.cfg, 'reward_scale', 1.0)),
             # --- Новые агрегаты для анализа поведения ---
             'action_counts_total': action_counts_total,
             'buy_attempts_total': buy_attempts_total,

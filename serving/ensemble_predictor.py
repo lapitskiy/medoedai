@@ -37,9 +37,11 @@ class EnsemblePredictor:
         key = f"{os.path.abspath(resolved)}|obs={obs_dim or 'NA'}"
         with self._model_cache_lock:
             if key in self._model_cache:
+                print(f"[ensemble_predictor] Model '{resolved}' loaded from cache.")
                 return self._model_cache[key]
             if not os.path.exists(resolved):
                 raise FileNotFoundError(f"Model file not found: {resolved}")
+            print(f"[ensemble_predictor] Loading model state_dict from '{resolved}'")
             ckpt = torch.load(resolved, map_location=self._device)
             # Случай: сохранена целая модель
             if isinstance(ckpt, torch.nn.Module):

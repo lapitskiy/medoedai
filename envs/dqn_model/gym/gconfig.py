@@ -7,7 +7,7 @@ from typing import Dict, Any
 @dataclass
 class GymConfig:            
     # --- базовые параметры обучения / эпизода ---------------------------------
-    episode_length: int = 1_000          # шагов (5‑мин свечей) в эпизоде
+    episode_length: int = 10_000          # шагов (5‑мин свечей) в эпизоде
     initial_balance: float = 1_000.0     # USDT
     trade_fee_percent: float = 0.00075   # 0.075 %
 
@@ -41,6 +41,9 @@ class GymConfig:
     
     window288 = 288          # 24 часа при 5‑мин свечке
     step_minutes = 5
+    
+    # --- масштабирование награды ---------------------------------------------
+    reward_scale: float = 1.0  # коэффициент масштабирования reward (например, 10.0)
     
     #
     comission_kappa = 2_000.0
