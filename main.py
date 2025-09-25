@@ -11,6 +11,7 @@
 import requests
 from flask import Flask, request, jsonify, render_template
 from flask import redirect, url_for
+from pathlib import Path
 
 import redis
 
@@ -48,6 +49,7 @@ import time
 
 import glob
 import os
+import pickle
 
 import docker
 
@@ -357,8 +359,18 @@ def get_result_model_info():
                     info['avg_time_per_episode_sec'] = info['total_training_time'] / info['episodes']
                 else:
                     info['avg_time_per_episode_sec'] = None
+                
+                # Добавляем длину эпизода, если она сохранена в gym_snapshot
+                gym_snapshot = results.get('gym_snapshot', {}) or {}
+                if 'episode_length' in gym_snapshot:
+                    info['episode_length'] = gym_snapshot['episode_length']
+                # Вторая попытка: может быть в cfg_snapshot
+                elif 'cfg_snapshot' in results and 'episode_length' in (results['cfg_snapshot'] or {}):
+                    info['episode_length'] = results['cfg_snapshot']['episode_length']
+
             except Exception as e:
                 app.logger.warning(f"get_result_model_info: не удалось загрузить train_file {train_file}: {e}")
+                app.logger.warning(f"get_result_model_info: Путь к train_file: {train_file.resolve()}")
 
         return jsonify(info)
     except Exception as e:

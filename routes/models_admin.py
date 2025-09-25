@@ -487,7 +487,38 @@ def oos_test_model():
         if gym_config_from_train and gym_config_from_train.get('lookback_window'):
             lookback_window = gym_config_from_train['lookback_window']
         
-        env = CryptoTradingEnvOptimized(dfs={'df_5min': df_5min, 'df_15min': df_15min, 'df_1h': df_1h, 'symbol': symbol}, cfg=cfg, lookback_window=lookback_window)
+        # Загружаем normalization_stats из train_result.pkl, если есть
+        normalization_stats = None
+        try:
+            if train_result and isinstance(train_result, dict):
+                # Попытка извлечь из best_model или model чекпойнта, если он был включён в результаты
+                # В базовой версии train_result не содержит нормализацию, поэтому используем из самого чекпойнта модели
+                ckpt_path = None
+                # Если filename задан, используем его
+                if filename:
+                    ckpt_path = filename
+                else:
+                    # попытка найти model.pth рядом (уже вычислено ниже, но нам нужно раньше)
+                    cand = Path('result')/symbol.replace('USDT','')/'runs'/code/'model.pth'
+                    if cand.exists():
+                        ckpt_path = str(cand)
+                if ckpt_path and os.path.exists(ckpt_path):
+                    try:
+                        import torch
+                        ckpt = torch.load(ckpt_path, map_location='cpu')
+                        if isinstance(ckpt, dict) and 'normalization_stats' in ckpt:
+                            normalization_stats = ckpt.get('normalization_stats')
+                    except Exception:
+                        normalization_stats = None
+        except Exception:
+            normalization_stats = None
+
+        env = CryptoTradingEnvOptimized(
+            dfs={'df_5min': df_5min, 'df_15min': df_15min, 'df_1h': df_1h, 'symbol': symbol},
+            cfg=cfg,
+            lookback_window=lookback_window,
+            normalization_stats=normalization_stats
+        )
 
         # Применяем adaptive_normalization, если она была в обучении
         if adaptive_normalization_params:

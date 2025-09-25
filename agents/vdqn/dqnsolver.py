@@ -585,8 +585,11 @@ class DQNSolver:
         
         return stats
 
-    def save(self):
-        """Сохраняет модель и replay buffer (полное сохранение)"""
+    def save(self, normalization_stats: dict | None = None):
+        """Сохраняет модель и replay buffer (полное сохранение)
+        Args:
+            normalization_stats: статистики нормализации env (единый препроцессинг)
+        """
         # Обрабатываем torch.compile префикс при сохранении
         model_state_dict = self.model.state_dict()
         target_state_dict = self.target_model.state_dict()
@@ -609,14 +612,20 @@ class DQNSolver:
             else:
                 cleaned_target_state[key] = value
         
-        torch.save({
+        payload = {
             'model_state_dict': cleaned_model_state,
             'target_model_state_dict': cleaned_target_state,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'epsilon': self.epsilon,
             'cfg': self.cfg
-        }, self.cfg.model_path)
+        }
+        if normalization_stats is not None:
+            try:
+                payload['normalization_stats'] = normalization_stats
+            except Exception:
+                pass
+        torch.save(payload, self.cfg.model_path)
         
         # Сохраняем replay buffer
         with open(self.cfg.buffer_path, 'wb') as f:

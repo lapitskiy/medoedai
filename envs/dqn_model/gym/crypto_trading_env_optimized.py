@@ -26,7 +26,7 @@ except ImportError:
 class CryptoTradingEnvOptimized(gym.Env):
     metadata = {'render.modes': ['human']}
     
-    def __init__(self, dfs: Dict, cfg: Optional[GymConfig] = None, lookback_window: int = 20, indicators_config=None, episode_length: Optional[int] = None):        
+    def __init__(self, dfs: Dict, cfg: Optional[GymConfig] = None, lookback_window: int = 20, indicators_config=None, episode_length: Optional[int] = None, normalization_stats: Optional[Dict] = None):        
         super(CryptoTradingEnvOptimized, self).__init__() 
         self.cfg = cfg or GymConfig()
         
@@ -302,8 +302,16 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.trailing_stop_counter = 0
         self.max_price_during_hold = None
         
-        # Предварительно рассчитываем статистики нормализации
-        self._calculate_normalization_stats()
+        # Предварительно рассчитываем/устанавливаем статистики нормализации
+        if normalization_stats is not None:
+            try:
+                self._apply_normalization_stats(normalization_stats)
+                print("✅ Приняты внешние статистики нормализации (train) — единый препроцессинг train/val/serving")
+            except Exception as e:
+                print(f"⚠️ Не удалось применить внешние статистики нормализации: {e}. Пересчитываю по train split")
+                self._calculate_normalization_stats()
+        else:
+            self._calculate_normalization_stats()
         
         # Инициализируем скалеры для баланса и криптовалюты
         self.balance_scaler = StandardScaler()
@@ -406,6 +414,38 @@ class CryptoTradingEnvOptimized(gym.Env):
         print(f"✅ Статистики нормализации рассчитаны (БЕЗ look-ahead bias)")
         print(f"💰 Price (train): mean={self.price_mean:.2f}, std={self.price_std:.2f}")
         print(f"📊 Volume (train): mean={self.volume_mean:.2f}, std={self.volume_std:.2f}")
+
+    def _apply_normalization_stats(self, stats: Dict):
+        """
+        Устанавливает статистики нормализации, полученные при обучении.
+        Ожидаемые ключи: price_mean, price_std, volume_mean, volume_std, indicator_means, indicator_stds
+        """
+        self.price_mean = float(stats.get('price_mean'))
+        self.price_std = float(stats.get('price_std')) + 1e-8
+        self.volume_mean = float(stats.get('volume_mean'))
+        self.volume_std = float(stats.get('volume_std')) + 1e-8
+        # Индикаторы могут отсутствовать
+        im = stats.get('indicator_means')
+        istd = stats.get('indicator_stds')
+        if im is None or istd is None:
+            self.indicator_means = np.array([])
+            self.indicator_stds = np.array([])
+        else:
+            self.indicator_means = np.array(im, dtype=np.float32)
+            self.indicator_stds = np.array(istd, dtype=np.float32)
+            # защита от нулевых std
+            self.indicator_stds[self.indicator_stds == 0] = 1e-8
+
+    def export_normalization_stats(self) -> Dict:
+        """Возвращает текущие статистики нормализации для сохранения в чекпойнт."""
+        return {
+            'price_mean': float(getattr(self, 'price_mean', 0.0)),
+            'price_std': float(getattr(self, 'price_std', 1.0)),
+            'volume_mean': float(getattr(self, 'volume_mean', 0.0)),
+            'volume_std': float(getattr(self, 'volume_std', 1.0)),
+            'indicator_means': (getattr(self, 'indicator_means', np.array([])).astype(float).tolist() if hasattr(self, 'indicator_means') else []),
+            'indicator_stds': (getattr(self, 'indicator_stds', np.array([])).astype(float).tolist() if hasattr(self, 'indicator_stds') else []),
+        }
 
     def _precompute_all_states(self):
         """

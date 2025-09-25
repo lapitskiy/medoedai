@@ -387,12 +387,18 @@ Winrate: ${winrate}
 P/L Ratio: ${plr}
 Сделок: ${trades}
 Эпизодов: ${episodes}
+Длина эпизода: ${result.episode_length != null ? result.episode_length : 'N/A'}
 Буфер: ${result.replay_exists ? '✅ есть' : '❌ нет'}
 Результаты обучения: ${result.train_result_exists ? '✅ есть' : '❌ нет'}
 Среднее время за эпизод: ${fmtSec(avgTime)}
 Общее время обучения: ${totalTime ? fmtSec(totalTime) : 'N/A'}
 `;
                 infoDiv.style.display = 'block';
+                // Автоматически устанавливаем длину эпизода
+                const continueEpisodeLengthInput = document.getElementById('continueEpisodeLengthInput');
+                if (continueEpisodeLengthInput && result.episode_length != null) {
+                    continueEpisodeLengthInput.value = result.episode_length;
+                }
                 // Обновим подсказку времени после выбора модели
                 try { updateEstimatedTime(); } catch(_) {}
             } catch (e) {
@@ -441,13 +447,14 @@ P/L Ratio: ${plr}
                 statusDiv.innerHTML = '<div class="status error">❌ Сначала выберите веса dqn_model_*.pth</div>';
                 return;
             }
+            const episodeLength = document.getElementById('continueEpisodeLengthInput').value;
 
             statusDiv.innerHTML = '<div class="status info">⏳ Запуск дообучения...</div>';
             try {
                 const resp = await fetch('/continue_training', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ model: selectedFile, episodes, seed: seedVal })
+                    body: JSON.stringify({ model: selectedFile, episodes, episode_length: episodeLength, seed: seedVal })
                 });
                 const result = await resp.json();
                 if (result.success) {

@@ -4,6 +4,7 @@ from tasks.celery_tasks import celery, train_dqn_multi_crypto, train_dqn_symbol
 from utils.redis_utils import get_redis_client
 import os
 import logging
+from pathlib import Path as _Path
 
 # Инициализируем Redis клиент
 redis_client = get_redis_client()
@@ -109,7 +110,7 @@ def train_dqn_symbol_route():
         seed = _rnd.randint(1, 2**31 - 1)
         logger.info(f"[train_dqn_symbol] generated random seed={seed}")
 
-    task = train_dqn_symbol.apply_async(args=[symbol, episodes, seed, episode_length], queue="train")
+    task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length}, queue="train")
     logger.info(f"/train_dqn_symbol queued symbol={symbol} queue=train task_id={task.id}")
     # Сохраняем task_id для отображения на главной и отметку per-symbol
     try:
@@ -157,8 +158,14 @@ def continue_training_route():
                 seed = int(seed_raw)
         except Exception:
             seed = None
+        episode_length_str = data.get('episode_length') or request.form.get('episode_length')
+        episode_length = None
+        try:
+            if episode_length_str is not None and str(episode_length_str).strip() != '':
+                episode_length = int(episode_length_str)
+        except Exception:
+            episode_length = None
 
-        from pathlib import Path as _Path
         result_dir = _Path('result')
         if not result_dir.exists():
             return jsonify({"success": False, "error": "Папка result не найдена"}), 400
@@ -254,7 +261,7 @@ def continue_training_route():
             seed = _rnd.randint(1, 2**31 - 1)
             logger.info(f"[continue_training] generated random seed={seed}")
 
-        task = train_dqn_symbol.apply_async(args=[symbol_guess, episodes, seed], queue='train')
+        task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol_guess, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length}, queue='train')
 
         # Прокинем пути через ENV переменные для этого процесса воркера (если он читает их)
         # Если воркер в другом процессе, используем Redis как источник — уже сохранено выше.

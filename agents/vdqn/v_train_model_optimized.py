@@ -1020,7 +1020,14 @@ def train_model_optimized(
         
         # Финальное сохранение модели и replay buffer
         print("\n💾 Финальное сохранение модели и replay buffer")
-        dqn_solver.save()
+        # Единый препроцессинг: сохраняем статистики нормализации env в чекпойнт
+        norm_stats = None
+        try:
+            if hasattr(env, 'export_normalization_stats'):
+                norm_stats = env.export_normalization_stats()
+        except Exception:
+            norm_stats = None
+        dqn_solver.save(normalization_stats=norm_stats)
         # Финальный last_model снапшот
         try:
             import shutil as _sh

@@ -151,6 +151,8 @@ services:
               count: ${GPU_COUNT:-all}   # 1,2,… или all
               capabilities: [gpu]
 
+    stop_grace_period: 10s
+    restart: on-failure
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
