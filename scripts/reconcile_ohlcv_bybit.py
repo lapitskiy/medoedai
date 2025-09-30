@@ -31,8 +31,10 @@ def create_exchange(exchange_id: str, default_type: str | None = None) -> ccxt.E
         'enableRateLimit': True,
         'timeout': 30000,
     }
-    if exchange_id == 'bybit' and default_type in ('swap', 'spot'):
-        opts['options'] = {'defaultType': default_type}
+    if exchange_id == 'bybit':
+        # Для Bybit используем linear (perpetual futures) по умолчанию
+        market_type = default_type or 'linear'
+        opts['options'] = {'defaultType': market_type}
     ex = ex_class(opts)
     ex.load_markets()
     return ex
@@ -106,12 +108,12 @@ def reconcile_symbol_timeframe(symbol: str, timeframe: str, exchange_id: str, fr
     """
     Если from_days задан — берём now-from_days..now. Иначе — от MIN(timestamp в БД)..now.
     """
-    # Жёстко работаем в Bybit swap, без fallback
+    # Жёстко работаем в Bybit linear, без fallback
     if (exchange_id or 'bybit').lower().strip() == 'bybit':
-        ex = create_exchange(exchange_id, default_type='swap')
+        ex = create_exchange(exchange_id, default_type='linear')
         uni = map_symbol_on_exchange(ex, symbol)
         if uni not in getattr(ex, 'symbols', []):
-            raise ValueError(f"{uni} not found in Bybit swap (fallback to spot is disabled)")
+            raise ValueError(f"{uni} not found in Bybit linear (fallback to spot is disabled)")
     else:
         ex = create_exchange(exchange_id)
         uni = map_symbol_on_exchange(ex, symbol)
@@ -187,10 +189,10 @@ def reconcile_symbol_timeframe(symbol: str, timeframe: str, exchange_id: str, fr
 def reconcile_range_ohlcv(symbol: str, timeframe: str, exchange_id: str, since_ms: int, until_ms: int, verbose: bool = False) -> None:
     """Сверяет и обновляет OHLCV в БД с биржей в заданном диапазоне [since_ms..until_ms]."""
     if (exchange_id or 'bybit').lower().strip() == 'bybit':
-        ex = create_exchange(exchange_id, default_type='swap')
+        ex = create_exchange(exchange_id, default_type='linear')
         uni = map_symbol_on_exchange(ex, symbol)
         if uni not in getattr(ex, 'symbols', []):
-            raise ValueError(f"[RANGE] {uni} not found in Bybit swap (fallback to spot is disabled)")
+            raise ValueError(f"[RANGE] {uni} not found in Bybit linear (fallback to spot is disabled)")
     else:
         ex = create_exchange(exchange_id)
         uni = map_symbol_on_exchange(ex, symbol)

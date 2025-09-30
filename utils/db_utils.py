@@ -196,8 +196,8 @@ def db_get_or_fetch_ohlcv(
                             'recvWindow': 20000,
                             'adjustForTimeDifference': True,
                             'timeDifference': True,
-                            # для унификации (не критично для OHLCV)
-                            'defaultType': 'swap',
+                            # Для Bybit: linear = perpetual futures (swap), не spot
+                            'defaultType': 'linear',
                         }
                     })
                 else:
@@ -210,7 +210,8 @@ def db_get_or_fetch_ohlcv(
                             'recvWindow': 20000,
                             'adjustForTimeDifference': True,
                             'timeDifference': True,
-                            'defaultType': 'swap',
+                            # Для Bybit: linear = perpetual futures (swap), не spot
+                            'defaultType': 'linear',
                         }
                     })
             else:
@@ -227,9 +228,9 @@ def db_get_or_fetch_ohlcv(
             except Exception as _te:
                 if detailed_logs:
                     logging.warning(f"Не удалось синхронизировать время с биржей {exchange_id}: {_te}")
-            # Если на Bybit не найден символ в текущем типе рынка (по умолчанию swap) — пробуем spot
+            # Если на Bybit не найден символ в текущем типе рынка (по умолчанию linear) — пробуем spot
             if symbol_cctx not in getattr(exchange, 'symbols', []):
-                # Без fallback на spot: работаем строго в swap
+                # Без fallback на spot: работаем строго в linear
                 markets = getattr(exchange, 'markets', {}) or {}
                 symbol_fetch = None
                 try:
@@ -247,7 +248,7 @@ def db_get_or_fetch_ohlcv(
                 except Exception:
                     symbol_fetch = None
                 if not symbol_fetch:
-                    raise ValueError(f"Символ {symbol_cctx} не найден в Bybit swap (fallback на spot отключён).")
+                    raise ValueError(f"Символ {symbol_cctx} не найден в Bybit linear (fallback на spot отключён).")
             else:
                 # Символ найден как unified
                 markets = getattr(exchange, 'markets', {}) or {}
