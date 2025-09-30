@@ -494,6 +494,123 @@ def db_get_or_fetch_ohlcv(
                 if detailed_logs:
                     logging.info(f"Dry run: {len(new_data_df)} свечей не сохранены в БД.")
 
+        # --- ДОКАЧКА ИЗ ПРОШЛОГО: гарантируем минимальный объём истории в БД ---
+        try:
+            try:
+                min_needed = int(limit_candles) if limit_candles is not None else 0
+            except Exception:
+                min_needed = 0
+            if timeframe == '5m':
+                min_needed = max(min_needed, 100000)
+            else:
+                min_needed = max(min_needed, 1000)
+
+            current_count = session.query(OHLCV).filter_by(
+                symbol_id=symbol_obj.id,
+                timeframe=timeframe
+            ).count()
+
+            if current_count < min_needed:
+                if detailed_logs:
+                    logging.info(f"Недостаточно свечей в БД: {current_count} < {min_needed}. Докачиваем из прошлого.")
+
+                earliest_row = session.query(OHLCV).filter_by(
+                    symbol_id=symbol_obj.id,
+                    timeframe=timeframe
+                ).order_by(OHLCV.timestamp.asc()).first()
+
+                if earliest_row is not None:
+                    earliest_ts = int(earliest_row.timestamp)
+                    safety_iter = 0
+                    while current_count < min_needed:
+                        safety_iter += 1
+                        limit_fetch = min(getattr(exchange, 'options', {}).get('fetchOHLCVLimit', 1000), 1000)
+                        back_since = max(0, earliest_ts - limit_fetch * tf_ms)
+                        _sym_to_use = symbol_fetch or symbol_cctx
+                        print(f"[DB_OHLCV] Backfilling older {limit_fetch} candles for {_sym_to_use} {timeframe} since {datetime.fromtimestamp(back_since/1000)}")
+                        raw_older = []
+                        try:
+                            raw_older = exchange.fetch_ohlcv(_sym_to_use, timeframe, since=back_since, limit=limit_fetch)
+                        except Exception as _be:
+                            logging.warning(f"Ошибка обратной докачки: {_be}")
+                            break
+
+                        if not raw_older:
+                            if detailed_logs:
+                                logging.info("Биржа не вернула более старые данные. Останавливаем обратную догрузку.")
+                            break
+
+                        older_df = pd.DataFrame(raw_older, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                        # Оставляем только свечи строго старше самой ранней имеющейся
+                        older_df = older_df[older_df['timestamp'] < earliest_ts]
+
+                        if older_df.empty:
+                            if detailed_logs:
+                                logging.info("Нет более старых свечей (после фильтрации). Останавливаем обратную догрузку.")
+                            break
+
+                        # Апсертим только те, которых ещё нет
+                        existing_ts_older = set(
+                            r[0] for r in session.query(OHLCV.timestamp).filter_by(
+                                symbol_id=symbol_obj.id,
+                                timeframe=timeframe
+                            ).filter(OHLCV.timestamp.in_(older_df['timestamp'].tolist())).all()
+                        )
+                        older_records = [
+                            {
+                                'symbol_id': symbol_obj.id,
+                                'timeframe': timeframe,
+                                'timestamp': int(row['timestamp']),
+                                'open': row['open'],
+                                'high': row['high'],
+                                'low': row['low'],
+                                'close': row['close'],
+                                'volume': row['volume']
+                            }
+                            for _, row in older_df.iterrows() if int(row['timestamp']) not in existing_ts_older
+                        ]
+
+                        if older_records:
+                            stmt = insert(OHLCV).values(older_records)
+                            stmt = stmt.on_conflict_do_update(
+                                index_elements=['symbol_id', 'timeframe', 'timestamp'],
+                                set_={
+                                    'open': stmt.excluded.open,
+                                    'high': stmt.excluded.high,
+                                    'low': stmt.excluded.low,
+                                    'close': stmt.excluded.close,
+                                    'volume': stmt.excluded.volume
+                                }
+                            )
+                            session.execute(stmt)
+                            session.commit()
+                            if detailed_logs:
+                                logging.info(f"Обратно добавлено {len(older_records)} старых свечей {timeframe} для {symbol_name}.")
+
+                            # Обновляем опорные значения
+                            earliest_ts_new = int(older_df['timestamp'].min())
+                            if earliest_ts_new >= earliest_ts:
+                                logging.warning("Не удалось продвинуться к более старым данным (earliest не изменился). Прерываем.")
+                                break
+                            earliest_ts = earliest_ts_new
+                            current_count = session.query(OHLCV).filter_by(
+                                symbol_id=symbol_obj.id,
+                                timeframe=timeframe
+                            ).count()
+                        else:
+                            if detailed_logs:
+                                logging.info("Все загруженные старые свечи уже есть в БД. Продвижения нет.")
+                            break
+
+                        # Пауза согласно rateLimit
+                        time.sleep(getattr(exchange, 'rateLimit', 1000) / 1000)
+
+                        if safety_iter > 200:
+                            logging.warning("Достигнут лимит итераций обратной докачки. Останавливаемся, чтобы избежать бесконечного цикла.")
+                            break
+        except Exception as _bf:
+            logging.warning(f"Ошибка процедуры обратной докачки: {_bf}")
+
         # В итоге загружаем из БД последние limit_candles свечей
         db_candles = session.query(OHLCV).filter_by(
             symbol_id=symbol_obj.id,
