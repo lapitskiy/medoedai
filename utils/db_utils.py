@@ -22,6 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 import math # Для isclose
 import time
+import json # Для логирования сырых данных
 # --- Helpers: Bybit API keys discovery (supports BYBIT_<N>_API_KEY only) ---
 def _discover_bybit_api_keys() -> tuple[str | None, str | None]:
     try:
@@ -133,7 +134,7 @@ def db_get_or_fetch_ohlcv(
     error_reason: str | None = None
 
     # Управление подробностью логов внутри этой функции
-    detailed_logs = False
+    detailed_logs = True
 
     def _wrap_result(result_df: pd.DataFrame):
         return (result_df, error_reason) if include_error else result_df
@@ -312,7 +313,14 @@ def db_get_or_fetch_ohlcv(
                 limit_fetch = min(exchange.options.get('fetchOHLCVLimit', 1000), 1000)
                 # Используем symbol_fetch (unified) если он определён, иначе fallback к symbol_cctx
                 _sym_to_use = symbol_fetch or symbol_cctx
-                ohlcv = exchange.fetch_ohlcv(_sym_to_use, timeframe, since=since_ms, limit=limit_fetch)
+                print(f"[DB_OHLCV] Fetching {limit_fetch} candles for {_sym_to_use} {timeframe} since {datetime.fromtimestamp(since_ms/1000)}")
+                raw_ohlcv = exchange.fetch_ohlcv(_sym_to_use, timeframe, since=since_ms, limit=limit_fetch)
+
+                if detailed_logs and raw_ohlcv:
+                    # Логируем только последние 10-20 свечей, чтобы не перегружать логи
+                    print(f"[DB_OHLCV] Raw OHLCV (last 20) for {_sym_to_use} {timeframe}: {json.dumps(raw_ohlcv[-20:], ensure_ascii=False)}")
+
+                ohlcv = raw_ohlcv
 
                 if not ohlcv:
                     if detailed_logs:

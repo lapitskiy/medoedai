@@ -490,7 +490,7 @@ def oos_test_model():
         # Загружаем normalization_stats из train_result.pkl, если есть
         normalization_stats = None
         try:
-            if train_result and isinstance(train_result, dict):
+            if train_result_path and isinstance(train_data, dict):
                 # Попытка извлечь из best_model или model чекпойнта, если он был включён в результаты
                 # В базовой версии train_result не содержит нормализацию, поэтому используем из самого чекпойнта модели
                 ckpt_path = None
@@ -508,9 +508,14 @@ def oos_test_model():
                         ckpt = torch.load(ckpt_path, map_location='cpu')
                         if isinstance(ckpt, dict) and 'normalization_stats' in ckpt:
                             normalization_stats = ckpt.get('normalization_stats')
-                    except Exception:
+                            current_app.logger.info(f"[OOS] Loaded normalization_stats from checkpoint.")
+                        else:
+                            current_app.logger.info(f"[OOS] normalization_stats not found in checkpoint.")
+                    except Exception as e:
+                        current_app.logger.warning(f"[OOS] Failed to load normalization_stats from checkpoint {ckpt_path}: {e}")
                         normalization_stats = None
-        except Exception:
+        except Exception as e:
+            current_app.logger.warning(f"[OOS] Failed to attempt loading normalization_stats: {e}")
             normalization_stats = None
 
         env = CryptoTradingEnvOptimized(
@@ -631,7 +636,9 @@ def oos_test_model():
                 state = env._get_state()
                 if state is None:
                     continue
+                current_app.logger.info(f"[OOS] Raw state at step {i}: {state.tolist()[:10]}...") # Логируем первые 10 элементов для краткости
                 state = np.nan_to_num(state, nan=0.0, posinf=0.0, neginf=0.0).tolist()  # Конвертируем в list без NaN/Inf
+                current_app.logger.info(f"[OOS] Processed state at step {i}: {state[:10]}...") # Логируем первые 10 элементов обработанного state
             except Exception as e:
                 current_app.logger.error(f"[OOS] state get error at step {i}: {e}")
                 continue
@@ -787,6 +794,43 @@ def oos_test_model():
                 dd = (peak - equity) / peak
                 max_dd = max(max_dd, dd)
 
+        # !!! Добавляем логику принудительного закрытия позиции в конце OOS-окна !!!
+        if position == 'long':
+            # Закрываем по последней цене доступной свечи
+            final_price = float(closes[-1])
+            final_ts_ms = int(df.iloc[len(df)-1]['timestamp']) if 'timestamp' in df.columns else None
+            try:
+                final_ts_iso = datetime.fromtimestamp(final_ts_ms / 1000).isoformat() if final_ts_ms else None
+            except Exception:
+                final_ts_iso = None
+
+            pl_gross = final_price - float(entry_price)
+            fee_entry = (float(entry_price) * fee_rate) if fee_enabled else 0.0
+            fee_exit = (float(final_price) * fee_rate) if fee_enabled else 0.0
+            pl_net = pl_gross - fee_entry - fee_exit
+
+            pnl_total += pl_net
+            trades += 1
+            wins += 1 if pl_net > 0 else 0
+            losses += 1 if pl_net <= 0 else 0
+
+            try:
+                trade_rec = {
+                    'entry_ts': entry_ts,
+                    'entry_price': float(entry_price),
+                    'exit_ts': final_ts_iso,
+                    'exit_price': float(final_price),
+                    'pnl_gross': float(pl_gross),
+                    'fee_entry': float(fee_entry),
+                    'fee_exit': float(fee_exit),
+                    'pnl': float(pl_net)
+                }
+                trades_details.append(trade_rec)
+                current_app.logger.info(f"[OOS] FORCED SELL close ts={final_ts_iso} price={final_price} pnl_net={pl_net} (gross={pl_gross} fee_in={fee_entry} fee_out={fee_exit})")
+            except Exception:
+                pass
+        # Конец логики принудительного закрытия
+
         winrate = (wins / trades) if trades > 0 else None
         pl_ratio = None
         try:
@@ -845,7 +889,6 @@ def oos_test_model():
                 'trades': trades,
                 'symbol': symbol,
                 'days': days,
-                'trades_details': trades_details,
                 'gate_disable': bool(gate_disable),
                 'gate_scale': (float(gate_scale) if isinstance(gate_scale, (int, float)) else None),
                 't1_base': float(T1_user),
@@ -857,17 +900,65 @@ def oos_test_model():
                 'inf_indicators': inf_count,
             }
         }
+        # Определяем run_id для сохранения trades_details и oos_results
+        _run_id = None
+        _symbol_for_run_dir = symbol.replace('USDT','') # Используем символ без USDT для пути
+        # Попробуем извлечь из filename
+        if filename:
+            pth = Path(str(filename).replace('\\','/')).resolve()
+            if pth.name == 'model.pth' and 'runs' in pth.parts:
+                runs_idx = list(pth.parts).index('runs')
+                _run_id = pth.parts[runs_idx+1] if runs_idx+1 < len(pth.parts) else None
+                # Предпочтем символ из пути, если он есть
+                try:
+                    _symbol_from_path = pth.parts[runs_idx-1] if runs_idx-1 >= 0 else None
+                    if _symbol_from_path:
+                        _symbol_for_run_dir = str(_symbol_from_path)
+                except Exception:
+                    pass
+        # Если filename не дал run_id, возьмем из code
+        if (not _run_id) and code:
+            _run_id = str(code)
+        # Если символ/папка все еще не ясны, попробуем найти по run_id среди result/*/runs/<run_id>
+        if _run_id:
+            try:
+                runs_root = Path('result')
+                if runs_root.exists():
+                    for sym_dir in runs_root.iterdir():
+                        rdir = sym_dir / 'runs' / _run_id
+                        if rdir.exists():
+                            _symbol_for_run_dir = sym_dir.name
+                            break
+            except Exception:
+                pass
+        
+        trades_file_path = None
+        if _run_id:
+            run_dir = Path('result') / _symbol_for_run_dir / 'runs' / _run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            trade_ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            trades_file_name = f'oos_trades_{trade_ts}.json'
+            trades_file_path = run_dir / trades_file_name
+            try:
+                # Сохраняем trades_details в отдельный файл
+                with open(trades_file_path, 'w', encoding='utf-8') as f:
+                    json.dump({'trades': trades_details}, f, ensure_ascii=False, indent=2)
+                result_payload['result']['trades_file'] = str(trades_file_path.name)
+                current_app.logger.info(f"[OOS] trades details saved to {trades_file_path}")
+            except Exception as e:
+                current_app.logger.error(f"[OOS] failed to save trades details to {trades_file_path}: {e}")
+        
+        # Удаляем trades_details из основного payload
+        result_payload['result'].pop('trades_details', None)
+
         # Автосохранение в oos_results.json (суммируем счётчики и пишем историю)
         try:
             run_dir = None
-            if filename:
-                pth = Path(str(filename).replace('\\','/')).resolve()
-                if pth.name == 'model.pth' and 'runs' in pth.parts:
-                    runs_idx = list(pth.parts).index('runs')
-                    _run_id = pth.parts[runs_idx+1] if runs_idx+1 < len(pth.parts) else None
-                    _symbol = pth.parts[runs_idx-1] if runs_idx-1 >= 0 else None
-                    run_dir = Path('result')/str(_symbol)/'runs'/str(_run_id)
-            if run_dir and run_dir.exists():
+            if _run_id:
+                run_dir = Path('result') / _symbol_for_run_dir / 'runs' / _run_id
+
+            if run_dir:
+                run_dir.mkdir(parents=True, exist_ok=True) # Убедимся, что директория существует
                 oos_file = run_dir / 'oos_results.json'
                 doc = {'version': 1, 'counters': {'good': 0, 'bad': 0, 'neutral': 0}, 'history': []}
                 if oos_file.exists():
@@ -875,7 +966,8 @@ def oos_test_model():
                         doc = json.loads(oos_file.read_text(encoding='utf-8'))
                         if not isinstance(doc, dict):
                             doc = {'version': 1, 'counters': {'good': 0, 'bad': 0, 'neutral': 0}, 'history': []}
-                    except Exception:
+                    except Exception as e: # Добавляем логирование ошибки
+                        current_app.logger.error(f"[OOS] Failed to parse existing oos_results.json: {e}")
                         doc = {'version': 1, 'counters': {'good': 0, 'bad': 0, 'neutral': 0}, 'history': []}
                 # Обновляем счётчики
                 counters = doc.get('counters') or {}
@@ -908,6 +1000,7 @@ def oos_test_model():
                         'roi_pct': roi_pct,
                         'nan_indicators': nan_count,
                         'inf_indicators': inf_count,
+                        'trades_file': (str(trades_file_path.name) if trades_file_path else None),
                     },
                     'classification': classification,
                     'symbol': symbol,
@@ -917,9 +1010,36 @@ def oos_test_model():
                     history = history[-500:]
                 doc['history'] = history
                 oos_file.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    last = history[-1] if history else None
+                    current_app.logger.info(
+                        f"[OOS] saving oos_results.json run_id={_run_id} symbol_dir={_symbol_for_run_dir} path={oos_file}"
+                    )
+                    try:
+                        current_app.logger.info(
+                            f"[OOS] counters={doc.get('counters')} history_len={len(history)} "
+                            f"last_class={last.get('classification') if isinstance(last, dict) else None} "
+                            f"last_trades={(last.get('metrics') or {}).get('trades') if isinstance(last, dict) else None} "
+                            f"last_roi={(last.get('metrics') or {}).get('roi_pct') if isinstance(last, dict) else None}"
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                 oos_file.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding='utf-8')
-        except Exception:
-            pass
+                try:
+                    fsize = os.path.getsize(oos_file)
+                    current_app.logger.info(
+                        f"[OOS] oos_results.json saved ok path={oos_file} size={fsize}B history_len={len(history)}"
+                    )
+                except Exception:
+                    current_app.logger.info(f"[OOS] oos_results.json saved to {oos_file} (size unknown)")
+            else:
+                current_app.logger.error(
+                    f"[OOS] cannot resolve run_dir to save oos_results.json: run_id={_run_id} symbol_dir={_symbol_for_run_dir} filename={filename} code={code}"
+                )
+        except Exception as e: # Добавляем логирование ошибки для всего блока сохранения
+            current_app.logger.error(f"[OOS] Failed to save oos_results.json: {e}")
         try:
             current_app.logger.info(f"[OOS] decisions summary: {decisions_counts}")
             current_app.logger.info(f"[OOS] done symbol={symbol} days={days} trades={trades} winrate={winrate} pf={profit_factor} maxDD={max_dd} pnl={pnl_total}")
@@ -935,7 +1055,44 @@ def oos_test_model():
             result_payload['result']['decisions_total'] = int(sum(int(v) for v in decisions_counts.values()))
         except Exception:
             pass
+
+        # Добавляем данные OHLCV и run_id в result_payload
+        try:
+            # Ограничиваем количество свечей для графика (например, последние 500)
+            ohlcv_data_for_chart = df[['dt', 'open', 'high', 'low', 'close']].tail(500).copy()
+            ohlcv_data_for_chart['dt'] = ohlcv_data_for_chart['dt'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+            result_payload['ohlcv_data'] = ohlcv_data_for_chart.to_dict(orient='records')
+            result_payload['run_id'] = _run_id # Добавляем run_id
+        except Exception as e:
+            current_app.logger.error(f"[OOS] Failed to add OHLCV data to payload: {e}")
+            result_payload['ohlcv_data'] = []
+
         return jsonify(result_payload)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@models_admin_bp.get('/api/runs/trades')
+def api_runs_trades():
+    try:
+        symbol = (request.args.get('symbol') or '').strip().upper()
+        run_id = (request.args.get('run_id') or '').strip()
+        trades_filename = (request.args.get('trades_file') or '').strip()
+
+        if not symbol or not run_id or not trades_filename:
+            return jsonify({'success': False, 'error': 'symbol, run_id and trades_file required'}), 400
+        
+        trades_file_path = Path('result') / symbol / 'runs' / run_id / trades_filename.split('/')[-1] # Принимаем относительный путь, но берем только имя файла
+        
+        if not trades_file_path.exists():
+            return jsonify({'success': False, 'error': 'trades file not found'}), 404
+        
+        try:
+            with open(trades_file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return jsonify({'success': True, 'trades': data.get('trades', [])})
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Failed to parse trades file: {e}'}), 500
+            
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

@@ -6,6 +6,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>!Управление моделями DQN</title>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.umd.js"></script>
     <style>
         /* Компактная таблица для секции "Модели в result (удаление)" */
         #resultModelsSection { font-size: 12px; }
@@ -21,7 +22,7 @@
         #resultModelsSection .button-group { margin-bottom: 10px; }
         #resultModelsSection .btn.btn-danger { font-size: 12px; padding: 6px 10px; }
         #resultModelsSection .btn { font-size: 11px; padding: 4px 8px; margin: 1px; white-space: nowrap; }
-        #resultModelsSection .btn-group { display: flex; gap: 2px; flex-wrap: nowrap; justify-content: flex-end; }
+        #resultModelsSection .btn-group { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
         #resultModelsSection .btn-group .btn { margin: 0; }
     </style>
 
@@ -599,8 +600,9 @@ P/L Ratio: ${plr}
                             const parent = (run.parent_run_id && idToNode[run.parent_run_id]) ? run.parent_run_id : '—';
                             const oosBtn = run.model_path ? `<button class="btn btn-info" onclick="runOOSTest('${run.run_id}','${run.model_path}')">Test</button>` : '';
                             const showResultsBtn = `<button class="btn btn-secondary" onclick="showOOSResults('${s}','${run.run_id}')">Result</button>`;
+                            const graphBtn = `<a class="btn btn-secondary" target="_blank" href="/oos_graph?symbol=${encodeURIComponent(s)}&run=${encodeURIComponent(run.run_id)}">Graph</a>`;
                             const delBtn = `<button class="btn btn-danger" onclick="deleteRun('${s}','${run.run_id}')\">✖</button>`;
-                            const buttonsHtml = `<div class="btn-group">${oosBtn}${showResultsBtn}${delBtn}</div>`;
+                            const buttonsHtml = `<div class="btn-group">${oosBtn}${showResultsBtn}${graphBtn}${delBtn}</div>`;
                             const rowStyle = isBad ? 'style="background-color: #fef2f2; border-left: 3px solid #ef4444;"' : '';
                             rows.push(`
                                 <tr ${rowStyle}>
@@ -628,7 +630,7 @@ P/L Ratio: ${plr}
                             <th class="nowrap">Winrate</th>
                             <th class="nowrap">P/L Ratio</th>
                             <th class="nowrap">Эпизоды</th>
-                            <th class="nowrap" style="width:240px; text-align:right;">Действия</th>
+                            <th class="nowrap" style="width:300px; text-align:right;">Действия</th>
                         </tr>
                     </thead>`;
                 listDiv.innerHTML = rows.length>0 ? `<table id="resultModelsTable">${header}<tbody>${rows.join('')}</tbody></table>` : '<div class="status info">📭 Пусто</div>';
@@ -830,6 +832,11 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                 // Очищаем предыдущие результаты
                 wrap.innerHTML = '';
                 const first = (allResults[0]||{}).data || {success:false};
+
+                // Очищаем график перед построением нового
+                const chartDiv = document.getElementById('oosChart');
+                if (chartDiv) { chartDiv.innerHTML = ''; }
+
                 if(!first.success){
                     const err = '❌ OOS: '+(first.error||'ошибка');
                     if (wrap){
@@ -883,6 +890,16 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                     else if(isBad){ item.style.border = '1px solid #ef4444'; item.style.boxShadow = '0 0 0 2px rgba(239,68,68,0.12)'; }
                     const ts = new Date(); const hh = String(ts.getHours()).padStart(2,'0'); const mm = String(ts.getMinutes()).padStart(2,'0');
                     const detailsId = 'oosd_'+Math.random().toString(36).slice(2);
+                    const tradesFile = r.trades_file || ''; // Получаем путь к файлу сделок
+                    const symbolForChart = r.symbol || '';
+                    const runIdForChart = res.run_id || '';
+
+                    let tradesButton = '';
+                    if (tradesFile && symbolForChart && runIdForChart) {
+                        const q = `symbol=${encodeURIComponent(symbolForChart)}&run=${encodeURIComponent(runIdForChart)}&trades=${encodeURIComponent(tradesFile)}`;
+                        tradesButton = `<a class="btn btn-info" target="_blank" title="Открыть график" href="/oos_graph?${q}">График</a>`;
+                    }
+
                     item.innerHTML = `
                         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><div class="mono" style="font-weight:600;">${name}</div><div class="muted">${hh}:${mm}</div></div>
                         <pre style="white-space:pre-wrap;margin:6px 0;">${text}</pre>
@@ -890,7 +907,7 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                             <pre style="white-space:pre-wrap;margin:6px 0;max-height:240px;overflow:auto;">${details.map((t,idx)=>{
                                 const e=t.entry_ts||''; const x=t.exit_ts||''; const ep=(t.entry_price!=null)? Number(t.entry_price).toFixed(2):'N/A'; const xp=(t.exit_price!=null)? Number(t.exit_price).toFixed(2):'N/A'; const pnl=(t.pnl!=null)? Number(t.pnl).toFixed(2):'N/A'; return `${idx+1}) ${e} @ ${ep} → ${x} @ ${xp} | PnL ${pnl}`;}).join('\n')}</pre>
                         </details>
-                        <div style="text-align:right;display:flex;gap:8px;justify-content:flex-end;"><button class="btn" data-text="${text.replace(/&/g,'&amp;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" onclick="copyText(this.getAttribute('data-text'))">Сохранить</button></div>`;
+                        <div style="text-align:right;display:flex;gap:8px;justify-content:flex-end;"><button class="btn" data-text="${text.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" onclick="copyText(this.getAttribute('data-text'))">Сохранить</button>${tradesButton}</div>`;
                     return item;
                 }
                 // Рендерим все карточки: сперва 30д, потом 60, потом 90
@@ -898,6 +915,17 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                 const groups = {30:[],60:[],90:[]};
                 for(const r of allResults){ if(r.data&&r.data.success) groups[r.days].push(r); }
                 
+                // Если есть данные OHLCV и trades_file, то строим график
+                const firstResult = allResults.find(r => r.data && r.data.success)?.data?.result || {};
+                const ohlcvData = allResults.find(r => r.data && r.data.success)?.data?.ohlcv_data || [];
+                const tradesFilePath = allResults.find(r => r.data && r.data.success)?.data?.result?.trades_file || '';
+                const runId = allResults.find(r => r.data && r.data.success)?.data?.run_id || '';
+                const symbol = firstResult.symbol || '';
+
+                if (ohlcvData.length > 0 && tradesFilePath && runId && symbol) {
+                    await loadAndRenderTradesChart(symbol, runId, tradesFilePath, ohlcvData);
+                }
+
                 // Подсчитываем статистику OOS результатов
                 let stats = {good: 0, bad: 0, neutral: 0};
                 for(const r of allResults){
@@ -955,6 +983,115 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
             }catch(e){ console.error('[OOS] error', e); alert('❌ OOS сеть: '+e.message); }
         }
 
+        // Загрузка сделок и рендеринг графика
+        async function loadAndRenderTradesChart(symbol, runId, tradesFilePath, ohlcvData = []) {
+            const chartDiv = document.getElementById('oosChart');
+            if (!chartDiv) { console.error('oosChart div not found'); return; }
+
+            try {
+                // Загружаем данные о сделках
+                const resp = await fetch(`/api/runs/trades?symbol=${encodeURIComponent(symbol)}&run_id=${encodeURIComponent(runId)}&trades_file=${encodeURIComponent(tradesFilePath)}`);
+                const data = await resp.json();
+
+                if (!data.success) {
+                    console.error('Failed to load trades data:', data.error);
+                    chartDiv.innerHTML = `<div class="status error">❌ Ошибка загрузки данных о сделках: ${data.error}</div>`;
+                    return;
+                }
+                const trades = Array.isArray(data.trades) ? data.trades : [];
+                renderChart(ohlcvData, trades);
+
+            } catch (e) {
+                console.error('[OOS Chart] error loading trades', e);
+                chartDiv.innerHTML = `<div class="status error">❌ Ошибка загрузки данных о сделках: ${e.message}</div>`;
+            }
+        }
+
+        // Рендеринг графика
+        let currentChart = null; // Для хранения экземпляра графика
+
+        function renderChart(ohlcvData, trades) {
+            const chartDiv = document.getElementById('oosChart');
+            if (!chartDiv) return;
+
+            // Очищаем предыдущий график
+            if (currentChart) {
+                currentChart.remove();
+                currentChart = null;
+            }
+            chartDiv.innerHTML = ''; // Очищаем контейнер
+
+            const chart = LightweightCharts.createChart(chartDiv, {
+                width: chartDiv.clientWidth,
+                height: 400,
+                layout: {
+                    backgroundColor: '#ffffff',
+                    textColor: '#333',
+                },
+                grid: {
+                    vertLines: { color: '#e1e2e4' },
+                    horzLines: { color: '#e1e2e4' },
+                },
+                timeScale: {
+                    timeVisible: true,
+                    secondsVisible: false,
+                },
+            });
+            currentChart = chart;
+
+            const candlestickSeries = chart.addCandlestickSeries({
+                upColor: '#4CAF50',
+                downColor: '#F44336',
+                borderVisible: false,
+                wickUpColor: '#4CAF50',
+                wickDownColor: '#F44336',
+            });
+
+            const chartData = ohlcvData.map(d => ({
+                time: d.dt, // Используем 'dt' из бэкенда
+                open: d.open,
+                high: d.high,
+                low: d.low,
+                close: d.close,
+            }));
+            candlestickSeries.setData(chartData);
+
+            // Добавляем маркеры для сделок (ограничим до 50 последних)
+            const markers = trades.slice(-50).map(trade => {
+                const entryTime = trade.entry_ts;
+                const exitTime = trade.exit_ts;
+                const entryPrice = trade.entry_price;
+                const exitPrice = trade.exit_price;
+
+                const entryMarker = {
+                    time: entryTime,
+                    position: 'aboveBar',
+                    color: '#2196F3',
+                    shape: 'arrowUp',
+                    text: `Buy @ ${entryPrice.toFixed(2)}`,
+                };
+                const exitMarker = {
+                    time: exitTime,
+                    position: 'belowBar',
+                    color: '#FF9800',
+                    shape: 'arrowDown',
+                    text: `Sell @ ${exitPrice.toFixed(2)} | PnL ${trade.pnl.toFixed(2)}`,
+                };
+                return [entryMarker, exitMarker];
+            }).flat();
+
+            candlestickSeries.setMarkers(markers);
+
+            // Адаптируем размер графика при изменении размера окна
+            new ResizeObserver(entries => {
+                if (entries.length === 0 || entries[0].target.id !== 'oosChart') { return; }
+                const newRect = entries[0].contentRect;
+                chart.applyOptions({ width: newRect.width });
+            }).observe(chartDiv);
+
+            chart.timeScale().fitContent();
+        }
+
         function ensureOOSPanel(){
             if (document.getElementById('oos-results')) return;
             const content = document.querySelector('.content'); if(!content) return;
@@ -971,6 +1108,7 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                             ⚠️ <span style="color:#6b7280;">Требует анализа</span>: средние показатели
                         </div>
                     </div>
+                    <div id="oosChart" style="height: 400px; margin-bottom: 20px;"></div>
                     <div id="oosResults"></div>
                 </div>
             `;

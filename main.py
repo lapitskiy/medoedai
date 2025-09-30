@@ -19,6 +19,7 @@ from tasks.celery_tasks import celery
 from routes.bybit import bybit_bp
 from routes.trading import trading_bp, get_matched_full_trades
 from routes.models_admin import models_admin_bp
+from routes.oos import oos_bp
 from routes.training import training_bp
 from utils.redis_utils import get_redis_client, clear_redis_on_startup
 
@@ -66,6 +67,7 @@ app.register_blueprint(models_admin_bp)
 app.register_blueprint(training_bp, url_prefix='/training')
 from routes.clean import clean_bp
 app.register_blueprint(clean_bp)
+app.register_blueprint(oos_bp)
 
 # Функция очистки Redis вынесена в utils.redis_utils.clear_redis_on_startup
 

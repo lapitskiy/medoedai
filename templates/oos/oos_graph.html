@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OOS График</title>
+    <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline' 'unsafe-eval'; object-src 'none';">
+    <script src="/static/js/lightweight-charts.standalone.production.js"></script>
+    <style>
+        body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+        .topbar { padding: 8px 12px; border-bottom: 1px solid #e5e7eb; display:flex; gap:12px; align-items:center; flex-wrap: wrap; }
+        .muted { color: #6b7280; }
+        .container { height: calc(100vh - 50px); }
+        #chart { width: 100%; height: 100%; }
+        select, input { padding: 4px 6px; }
+        .btn { padding: 6px 10px; border: 1px solid #e5e7eb; background:#fff; cursor:pointer; }
+        .btn:hover { background:#f9fafb; }
+    </style>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="topbar">
+        <a href="/models" class="btn">← Назад</a>
+        <div class="muted">OOS график: полноэкранный режим</div>
+        <div>
+            <label>Символ: <input id="sym" value="BTCUSDT" onchange="loadTradesFiles()"></label>
+        </div>
+        <div>
+            <label>Run ID: <input id="run" placeholder="например, 0ca8" onchange="loadTradesFiles()"></label>
+        </div>
+        <div>
+            <label>Trades file: <select id="trf"><option value="">Выберите файл...</option></select></label>
+        </div>
+        <div>
+            <label>Дней: <input id="days" type="number" value="90" min="1"></label>
+        </div>
+        <button class="btn" onclick="loadAll()">Загрузить</button>
+        <div id="status" class="muted"></div>
+    </div>
+    <div class="container">
+        <div id="chart"></div>
+    </div>
+
+    <script>
+        let chart, candle;
+        function initChart(){
+            try {
+                const el = document.getElementById('chart');
+                if(chart){ chart.remove(); chart=null; }
+                chart = LightweightCharts.createChart(el, {
+                    width: el.clientWidth,
+                    height: el.clientHeight,
+                    layout: { backgroundColor: '#ffffff', textColor: '#333' },
+                    grid: { vertLines: { color: '#e1e2e4' }, horzLines: { color: '#e1e2e4' } },
+                    timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 5, fixLeftEdge: false, fixRightEdge: false, lockVisibleTimeRangeOnResize: false, borderVisible: true, barSpacing: 8, minBarSpacing: 5 },
+                    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+                    handleScale: { axisPressedMouseMove: { time: true, price: true }, mouseWheel: true, pinch: true }
+                });
+                const candleOptions = {
+                    upColor: '#4CAF50', downColor: '#F44336', borderVisible: false,
+                    wickUpColor: '#4CAF50', wickDownColor: '#F44336'
+                };
+                if (typeof chart.addCandlestickSeries === 'function') {
+                    candle = chart.addCandlestickSeries(candleOptions);
+                } else if (typeof chart.addSeries === 'function' && LightweightCharts && LightweightCharts.CandlestickSeries) {
+                    // Fallback for builds exposing generic addSeries API with type descriptor
+                    candle = chart.addSeries(LightweightCharts.CandlestickSeries, candleOptions);
+                } else {
+                    throw new Error('Series API is not available');
+                }
+                new ResizeObserver(entries=>{
+                    if(!entries.length) return; const r=entries[0].contentRect; chart.applyOptions({width:r.width, height:r.height});
+                }).observe(el);
+                return true;
+            } catch(e) {
+                console.error('[FRONTEND] Error initializing chart:', e);
+                setStatus('Ошибка инициализации графика: ' + e.message);
+                return false;
+            }
+        }
+
+        async function fetchJSON(url){
+            const r = await fetch(url); return await r.json();
+        }
+
+        function setStatus(t){
+            const s=document.getElementById('status'); s.textContent=t||'';
+        }
+
+        function toUnix(ts){
+            if (!ts) return 0;
+            const str = /Z$/.test(ts) ? ts : ts + 'Z';
+            const ms = Date.parse(str);
+            return Number.isFinite(ms) ? Math.floor(ms/1000) : 0;
+        }
+
+        function sanitizeOHLCV(arr){
+            // 1) Приведение типов и вычищение NaN/null
+            const cleaned = [];
+            const seen = new Map(); // time -> index в cleaned
+            for (const d of arr){
+                const t = Number(d.time);
+                let o = Number(d.open), h = Number(d.high), l = Number(d.low), c = Number(d.close);
+                if (!Number.isFinite(t) || !Number.isFinite(o) || !Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(c)) continue;
+                // 2) Нормализация high/low относительно open/close
+                const maxv = Math.max(o, h, l, c);
+                const minv = Math.min(o, h, l, c);
+                h = maxv; l = minv;
+                const rec = { time: t, open: o, high: h, low: l, close: c };
+                // 3) Дедупликация по времени (берём последнюю запись)
+                if (seen.has(t)) {
+                    cleaned[seen.get(t)] = rec;
+                } else {
+                    seen.set(t, cleaned.length);
+                    cleaned.push(rec);
+                }
+            }
+            // 4) Сортировка по возрастанию времени
+            cleaned.sort((a,b)=>a.time-b.time);
+            return cleaned;
+        }
+
+        function iso(t){ try { return new Date(t*1000).toISOString().replace('.000',''); } catch(e){ return String(t); } }
+
+        function adjustBarSpacingForDay(){
+            try{
+                const el = document.getElementById('chart');
+                if(!el || !chart) return;
+                const barsInDay = 24*60/5; // 288 баров по 5 минут
+                const pxPerBar = Math.max(4, el.clientWidth / barsInDay * 0.9);
+                chart.timeScale().applyOptions({ barSpacing: pxPerBar, minBarSpacing: Math.min(8, pxPerBar*0.6) });
+            }catch(e){ /* noop */ }
+        }
+
+        function debugCandles(raw, data){
+            try{
+                const lastRaw = raw.slice(-150);
+                const lastData = data.slice(-150);
+                const mapRaw = new Map(lastRaw.map(r=>[r.time, r]));
+                const rows = [];
+                let zeroSpread=0, fixedHL=0, missingRaw=0, dupTimes=0, nanRows=0;
+                // duplicate check on raw
+                const seenTimes = new Set();
+                for (const r of lastRaw){ if (seenTimes.has(r.time)) dupTimes++; else seenTimes.add(r.time); }
+                for (const d of lastData){
+                    const r = mapRaw.get(d.time);
+                    if(!r){ missingRaw++; continue; }
+                    const spread = Number(d.high-d.low);
+                    const changed = (r.high!==d.high || r.low!==d.low);
+                    if (spread === 0) zeroSpread++;
+                    if (changed) fixedHL++;
+                    const anyNaN = [r.open,r.high,r.low,r.close,d.open,d.high,d.low,d.close].some(x=>!Number.isFinite(x));
+                    if (anyNaN) nanRows++;
+                    rows.push({
+                        t: iso(d.time),
+                        ro: r.open, rh: r.high, rl: r.low, rc: r.close,
+                        so: d.open, sh: d.high, sl: d.low, sc: d.close,
+                        spread: spread,
+                        fixed: changed ? '✔' : ''
+                    });
+                }
+                // Покажем последние 100 строк
+                const table = rows.slice(-100);
+                console.group('[DEBUG] OHLCV last 100 (raw vs sanitized)');
+                console.log(JSON.stringify(table, null, 2));
+                console.log('[DEBUG] Stats:', { lastCount: lastData.length, dupTimes, missingRaw, zeroSpread, fixedHL, nanRows });
+                console.groupEnd();
+                setStatus(`Свечей: ${data.length}. Δfixed=${fixedHL}, zero=${zeroSpread}, dup=${dupTimes}`);
+            }catch(e){ console.warn('[DEBUG] analyze error:', e); }
+        }
+
+        async function loadTradesFiles(){
+            const symbol = document.getElementById('sym').value.trim().toUpperCase();
+            const runId = document.getElementById('run').value.trim();
+            const select = document.getElementById('trf');
+            
+            if(!symbol || !runId){
+                select.innerHTML = '<option value="">Введите символ и Run ID</option>';
+                return;
+            }
+            
+            try{
+                setStatus('Загрузка списка файлов...');
+                const url = `/api/runs/trades_files?symbol=${encodeURIComponent(symbol)}&run_id=${encodeURIComponent(runId)}`;
+                
+                const resp = await fetch(url);
+                
+                const j = await resp.json();
+                
+                select.innerHTML = '<option value="">Выберите файл...</option>';
+                
+                if(j.success && j.files && j.files.length > 0){
+                    j.files.forEach(file => {
+                        const option = document.createElement('option');
+                        option.value = file.file;
+                        option.textContent = `${file.file} (${file.days}д)`;
+                        if(file.classification === 'bad') option.style.color = '#dc3545';
+                        else if(file.classification === 'good') option.style.color = '#28a745';
+                        select.appendChild(option);
+                    });
+                    setStatus(`Найдено ${j.files.length} файлов сделок`);
+                } else {
+                    select.innerHTML = '<option value="">Файлы не найдены</option>';
+                    setStatus('Файлы сделок не найдены: ' + (j.error || 'unknown error'));
+                }
+            } catch(e){
+                select.innerHTML = '<option value="">Ошибка загрузки</option>';
+                setStatus('Ошибка загрузки файлов: ' + e.message);
+            }
+        }
+
+        async function loadAll(){
+            try{
+                setStatus('Загрузка...');
+                const symbol = document.getElementById('sym').value.trim().toUpperCase();
+                const runId = document.getElementById('run').value.trim();
+                const tradesFile = document.getElementById('trf').value.trim();
+                const days = parseInt(document.getElementById('days').value||'90',10);
+                
+                // Обновляем график перед загрузкой новых данных
+                initChart();
+
+                const ohlcv = await fetchJSON(`/api/runs/ohlcv?symbol=${encodeURIComponent(symbol)}&days=${days}&exchange=bybit`);
+                if(!ohlcv.success){ setStatus('Ошибка OHLCV: '+(ohlcv.error||'unknown')); return; }
+                const raw = (ohlcv.data||[]).map(d=>({ time: toUnix(d.dt), open:Number(d.open), high:Number(d.high), low:Number(d.low), close:Number(d.close) }));
+                const data = sanitizeOHLCV(raw);
+                debugCandles(raw, data);
+                candle.setData(data);
+                // Показать окно последнего дня (24h) по 5m, с возможностью прокрутки
+                if (data.length) {
+                    const lastT = data[data.length - 1].time;
+                    const fromT = Math.max(data[0].time, lastT - 24*60*60);
+                    chart.timeScale().setVisibleRange({ from: fromT, to: lastT });
+                    adjustBarSpacingForDay();
+                }
+
+                if(symbol && runId && tradesFile){
+                    const resp = await fetch(`/api/runs/trades?symbol=${encodeURIComponent(symbol)}&run_id=${encodeURIComponent(runId)}&trades_file=${encodeURIComponent(tradesFile)}`);
+                    const j = await resp.json();
+                    if(j.success){
+                        const trades = j.trades||[];
+                        const markers = trades.slice(-200).flatMap(tr=>{
+                            const e = toUnix(tr.entry_ts), x = toUnix(tr.exit_ts);
+                            const ep = Number(tr.entry_price), xp = Number(tr.exit_price);
+                            const pnl = Number(tr.pnl);
+                            const arr = [];
+                            if (e) arr.push({ time:e, position:'aboveBar', color:'#2196F3', shape:'arrowUp', text:`Buy @ ${ep.toFixed(2)}` });
+                            if (x) arr.push({ time:x, position:'belowBar', color:'#FF9800', shape:'arrowDown', text:`Sell @ ${xp.toFixed(2)} | PnL ${pnl.toFixed(2)}` });
+                            return arr;
+                        });
+                        if (typeof candle.setMarkers === 'function') {
+                            candle.setMarkers(markers);
+                        } else if (LightweightCharts && typeof LightweightCharts.createSeriesMarkers === 'function') {
+                            LightweightCharts.createSeriesMarkers(candle, markers);
+                        }
+                        if (data.length) {
+                            const lastT = data[data.length - 1].time;
+                            const fromT = Math.max(data[0].time, lastT - 24*60*60);
+                            chart.timeScale().setVisibleRange({ from: fromT, to: lastT });
+                            adjustBarSpacingForDay();
+                        }
+                        setStatus(`Свечей: ${data.length} | Сделок: ${trades.length}`);
+                    } else {
+                        setStatus('Ошибка сделок: ' + (j.error || 'unknown'));
+                    }
+                } else {
+                    setStatus(`Свечей: ${data.length}`);
+                }
+            }catch(e){ console.error('[FRONTEND] Error in loadAll:', e); setStatus('Ошибка: ' + e.message); }
+        }
+
+        // автозагрузка, если параметры переданы в query
+        (function(){
+            const params = new URLSearchParams(location.search);
+            const s = params.get('symbol'); const r = params.get('run'); const f = params.get('trades'); const d = params.get('days');
+            
+            if(s) document.getElementById('sym').value = s.toUpperCase();
+            if(r) document.getElementById('run').value = r;
+            if(d) document.getElementById('days').value = d;
+            
+            initChart();
+            
+            if(s && r){
+                loadTradesFiles().then(() => {
+                    if(f) document.getElementById('trf').value = f;
+                    if(s && r && f){ 
+                        loadAll(); 
+                    }
+                });
+            }
+        })();
+    </script>
+</body>
+</html>
+
+
