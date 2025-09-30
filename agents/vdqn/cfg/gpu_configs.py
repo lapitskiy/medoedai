@@ -42,12 +42,12 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
     "tesla_v100": GPUConfig(
         name="Tesla V100",
         vram_gb=16.0,
-        batch_size=6144,
-        memory_size=3_000_000,
+        batch_size=2048,
+        memory_size=300_000,
         hidden_sizes=(3072, 1536, 768),
-        train_repeats=12,
+        train_repeats=2,
         use_amp=True,
-        use_gpu_storage=True,
+        use_gpu_storage=False,
         learning_rate=0.0001,
         description="Максимальная производительность для Tesla V100 с Tensor Cores"
     ),
