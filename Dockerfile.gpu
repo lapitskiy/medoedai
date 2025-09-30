@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-FROM nvcr.io/nvidia/pytorch:24.02-py3
+# Совместимый с драйвером 535.x образ (24.02 требует >=545)
+FROM nvcr.io/nvidia/pytorch:23.10-py3
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
