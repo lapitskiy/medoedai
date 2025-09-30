@@ -172,7 +172,7 @@ def db_get_or_fetch_ohlcv(
         else:
             last_db_timestamp = None
             if detailed_logs:
-                logging.info(f"Свечей в базе для {symbol_name}, {timeframe} нет. Начинаем загрузку с нуля (30 дней назад).")
+                logging.info(f"Свечей в базе для {symbol_name}, {timeframe} нет. Начинаем загрузку с нуля.")
 
         # Инициализация биржи
         try:            
@@ -264,15 +264,29 @@ def db_get_or_fetch_ohlcv(
 
 
         tf_ms = exchange.parse_timeframe(timeframe) * 1000
+        # Текущее время биржи (нужно раньше, чтобы рассчитать старт при пустой БД)
+        now_ms = exchange.milliseconds()
 
         # Определяем from какого момента качать данные
         if last_db_timestamp:
             since_ms = last_db_timestamp + tf_ms
         else:
-            since_ms = int((datetime.now() - timedelta(days=30)).timestamp() * 1000)
-            
+            # При пустой БД: для 5m загружаем минимум 100000 свечей (или больше, если limit_candles больше)
+            try:
+                desired_candles = int(limit_candles) if limit_candles is not None else 0
+            except Exception:
+                desired_candles = 0
+            if timeframe == '5m':
+                desired_candles = max(desired_candles, 100000)
+            else:
+                desired_candles = max(desired_candles, 1000)
+            since_ms = max(0, now_ms - desired_candles * tf_ms)
+            if detailed_logs:
+                logging.info(
+                    f"Свечей в базе для {symbol_name}, {timeframe} нет. Начинаем загрузку с нуля (цель ~{desired_candles} свечей, с {datetime.fromtimestamp(since_ms/1000)})."
+                )
+        
         # Если since_ms в будущем — корректируем
-        now_ms = exchange.milliseconds()
         if since_ms > now_ms:
             if detailed_logs:
                 logging.warning("Начальная дата больше текущей. Сбрасываем на текущий момент.")
