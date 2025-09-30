@@ -430,7 +430,19 @@ def db_get_or_fetch_ohlcv(
                     logging.warning(f"Сверка диапазона не выполнена: {_re}")
 
                 if new_records:
-                    session.bulk_insert_mappings(OHLCV, new_records)
+                    # Используем ON CONFLICT DO UPDATE для обработки дубликатов
+                    stmt = insert(OHLCV).values(new_records)
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=['symbol_id', 'timeframe', 'timestamp'],
+                        set_={
+                            'open': stmt.excluded.open,
+                            'high': stmt.excluded.high,
+                            'low': stmt.excluded.low,
+                            'close': stmt.excluded.close,
+                            'volume': stmt.excluded.volume
+                        }
+                    )
+                    session.execute(stmt)
                     session.commit()
                     if audit_enabled and audit_ts_list:
                         # читаем обратно и сравниваем

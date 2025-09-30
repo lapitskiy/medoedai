@@ -139,6 +139,7 @@ class CryptoDataLoader:
                 symbol_name=symbol,
                 timeframe=timeframe,
                 limit_candles=candles_limit,
+                exchange_id='bybit', # Указываем Bybit как источник данных
                 dry_run=False
             )
             if isinstance(df, pd.DataFrame) and not df.empty:
