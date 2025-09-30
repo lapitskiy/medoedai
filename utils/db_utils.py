@@ -132,9 +132,12 @@ def db_get_or_fetch_ohlcv(
     df = pd.DataFrame()
     exchange = None # Инициализируем exchange вне try-блока
     error_reason: str | None = None
-
+ 
     # Управление подробностью логов внутри этой функции
     detailed_logs = True
+    #audit_enabled = str(os.getenv('OHLCV_AUDIT', '0')).lower() in ('1','true','yes','on')
+    audit_enabled = True
+    
 
     def _wrap_result(result_df: pd.DataFrame):
         return (result_df, error_reason) if include_error else result_df
@@ -226,38 +229,7 @@ def db_get_or_fetch_ohlcv(
                     logging.warning(f"Не удалось синхронизировать время с биржей {exchange_id}: {_te}")
             # Если на Bybit не найден символ в текущем типе рынка (по умолчанию swap) — пробуем spot
             if symbol_cctx not in getattr(exchange, 'symbols', []):
-                if exchange_id == 'bybit':
-                    if detailed_logs:
-                        logging.info(f"{symbol_cctx} не найден в текущем типе рынка, пробую spot...")
-                    # Переинициализация под spot
-                    if api_key and secret_key:
-                        exchange = exchange_class({
-                            'apiKey': api_key,
-                            'secret': secret_key,
-                            'enableRateLimit': True,
-                            'timeout': 30000,
-                            'options': {
-                                'recv_window': 20000,
-                                'recvWindow': 20000,
-                                'adjustForTimeDifference': True,
-                                'timeDifference': True,
-                                'defaultType': 'spot',
-                            }
-                        })
-                    else:
-                        exchange = exchange_class({
-                            'enableRateLimit': True,
-                            'timeout': 30000,
-                            'options': {
-                                'recv_window': 20000,
-                                'recvWindow': 20000,
-                                'adjustForTimeDifference': True,
-                                'timeDifference': True,
-                                'defaultType': 'spot',
-                            }
-                        })
-                    exchange.load_markets()
-                # Финальная проверка доступности символа: учитываем как unified-символы, так и id без слеша
+                # Без fallback на spot: работаем строго в swap
                 markets = getattr(exchange, 'markets', {}) or {}
                 symbol_fetch = None
                 try:
@@ -275,7 +247,7 @@ def db_get_or_fetch_ohlcv(
                 except Exception:
                     symbol_fetch = None
                 if not symbol_fetch:
-                    raise ValueError(f"Символ {symbol_cctx} не найден на бирже {exchange_id}.")
+                    raise ValueError(f"Символ {symbol_cctx} не найден в Bybit swap (fallback на spot отключён).")
             else:
                 # Символ найден как unified
                 markets = getattr(exchange, 'markets', {}) or {}
@@ -316,9 +288,15 @@ def db_get_or_fetch_ohlcv(
                 print(f"[DB_OHLCV] Fetching {limit_fetch} candles for {_sym_to_use} {timeframe} since {datetime.fromtimestamp(since_ms/1000)}")
                 raw_ohlcv = exchange.fetch_ohlcv(_sym_to_use, timeframe, since=since_ms, limit=limit_fetch)
 
-                if detailed_logs and raw_ohlcv:
-                    # Логируем только последние 10-20 свечей, чтобы не перегружать логи
-                    print(f"[DB_OHLCV] Raw OHLCV (last 20) for {_sym_to_use} {timeframe}: {json.dumps(raw_ohlcv[-20:], ensure_ascii=False)}")
+                if (detailed_logs or audit_enabled) and raw_ohlcv:
+                    try:
+                        first_ts = raw_ohlcv[0][0]
+                        last_ts_b = raw_ohlcv[-1][0]
+                        print(f"[AUDIT][FETCH] count={len(raw_ohlcv)} ts_range={datetime.fromtimestamp(first_ts/1000)}..{datetime.fromtimestamp(last_ts_b/1000)}")
+                        # Логируем только хвост, чтобы не засорять
+                        print(f"[DB_OHLCV] Raw OHLCV (last 10) for {_sym_to_use} {timeframe}: {json.dumps(raw_ohlcv[-10:], ensure_ascii=False)}")
+                    except Exception as _e:
+                        print(f"[AUDIT][FETCH] log error: {_e}")
 
                 ohlcv = raw_ohlcv
 
@@ -336,7 +314,48 @@ def db_get_or_fetch_ohlcv(
                 if new_df.empty:
                     if detailed_logs:
                         logging.info("Все загруженные свечи уже есть в БД.")
+                    if audit_enabled and isinstance(ohlcv, list) and len(ohlcv) > 0:
+                        try:
+                            # Сравним хвост полученных баров с БД, даже если вставлять нечего
+                            tail = ohlcv[-20:]
+                            ts_list = [int(r[0]) for r in tail]
+                            db_rows = session.query(OHLCV).filter(
+                                OHLCV.symbol_id == symbol_obj.id,
+                                OHLCV.timeframe == timeframe,
+                                OHLCV.timestamp.in_(ts_list)
+                            ).all()
+                            db_map = {int(r.timestamp): r for r in db_rows}
+                            def _diff(a,b, rel=1e-8, abs_tol=1e-6):
+                                try:
+                                    return not math.isclose(float(a), float(b), rel_tol=rel, abs_tol=abs_tol)
+                                except Exception:
+                                    return True
+                            for r in tail:
+                                ts = int(r[0]); o=float(r[1]); h=float(r[2]); l=float(r[3]); c=float(r[4]); v=float(r[5])
+                                db_r = db_map.get(ts)
+                                if not db_r:
+                                    print(f"[AUDIT][TAIL_COMPARE] ts={datetime.fromtimestamp(ts/1000)} missing_in_db")
+                                    continue
+                                diffs=[]
+                                if _diff(db_r.open,o): diffs.append(("open", db_r.open, o))
+                                if _diff(db_r.high,h): diffs.append(("high", db_r.high, h))
+                                if _diff(db_r.low,l): diffs.append(("low", db_r.low, l))
+                                if _diff(db_r.close,c): diffs.append(("close", db_r.close, c))
+                                if _diff(db_r.volume,v): diffs.append(("volume", db_r.volume, v))
+                                if diffs:
+                                    print(f"[AUDIT][TAIL_MISMATCH] ts={datetime.fromtimestamp(ts/1000)} diffs={diffs}")
+                                else:
+                                    print(f"[AUDIT][TAIL_OK] ts={datetime.fromtimestamp(ts/1000)}")
+                        except Exception as _e:
+                            print(f"[AUDIT][TAIL_COMPARE] error: {_e}")
                     break
+
+                if audit_enabled:
+                    try:
+                        tmin = int(new_df['timestamp'].min()); tmax = int(new_df['timestamp'].max())
+                        print(f"[AUDIT][PREP] new_df size={len(new_df)} ts_range={datetime.fromtimestamp(tmin/1000)}..{datetime.fromtimestamp(tmax/1000)} last5={json.dumps(new_df.tail(5).to_dict('records'), ensure_ascii=False)}")
+                    except Exception as _e:
+                        print(f"[AUDIT][PREP] log error: {_e}")
 
                 all_new_data.extend(new_df.to_dict('records'))
 
@@ -392,9 +411,53 @@ def db_get_or_fetch_ohlcv(
                     }
                     for _, row in new_data_df.iterrows() if int(row['timestamp']) not in existing_timestamps
                 ]
+                audit_ts_list = [rec['timestamp'] for rec in new_records[-20:]] if audit_enabled else []
+                if audit_enabled and new_records:
+                    try:
+                        print(f"[AUDIT][INSERT] count={len(new_records)} tail10={json.dumps(new_records[-10:], ensure_ascii=False)}")
+                    except Exception as _e:
+                        print(f"[AUDIT][INSERT] log error: {_e}")
+                # --- ВСТРОЕННАЯ СВЕРКА: перепроверяем весь диапазон new_data_df, даже если вставлять нечего ---
+                try:
+                    if detailed_logs:
+                        logging.info("Запуск сверки диапазона после обработки новых баров...")
+                    from scripts.reconcile_ohlcv_bybit import reconcile_range_ohlcv
+                    range_since = int(new_data_df['timestamp'].min())
+                    range_until = int(new_data_df['timestamp'].max())
+                    reconcile_range_ohlcv(symbol_name, timeframe, exchange_id, range_since, range_until, verbose=False)
+                except Exception as _re:
+                    logging.warning(f"Сверка диапазона не выполнена: {_re}")
+
                 if new_records:
                     session.bulk_insert_mappings(OHLCV, new_records)
                     session.commit()
+                    if audit_enabled and audit_ts_list:
+                        # читаем обратно и сравниваем
+                        stored_rows = session.query(OHLCV).filter(
+                            OHLCV.symbol_id == symbol_obj.id,
+                            OHLCV.timeframe == timeframe,
+                            OHLCV.timestamp.in_(audit_ts_list)
+                        ).all()
+                        stored_map = {int(r.timestamp): r for r in stored_rows}
+                        def _diff(a,b, rel=1e-8, abs_tol=1e-6):
+                            try:
+                                return not math.isclose(float(a), float(b), rel_tol=rel, abs_tol=abs_tol)
+                            except Exception:
+                                return True
+                        for rec in new_records[-20:]:
+                            ts = int(rec['timestamp'])
+                            st = stored_map.get(ts)
+                            if not st:
+                                print(f"[AUDIT][MISSING_AFTER_INSERT] ts={datetime.fromtimestamp(ts/1000)}")
+                                continue
+                            diffs = []
+                            for f in ('open','high','low','close','volume'):
+                                if _diff(rec[f], getattr(st, f)):
+                                    diffs.append((f, rec[f], getattr(st, f)))
+                            if diffs:
+                                print(f"[AUDIT][MISMATCH_AFTER_INSERT] ts={datetime.fromtimestamp(ts/1000)} diffs={diffs}")
+                            else:
+                                print(f"[AUDIT][OK_AFTER_INSERT] ts={datetime.fromtimestamp(ts/1000)}")
                     if detailed_logs:
                         logging.info(f"Добавлено {len(new_records)} новых свечей {timeframe} для {symbol_name}.")
                 else:

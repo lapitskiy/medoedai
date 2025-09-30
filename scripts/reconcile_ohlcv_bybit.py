@@ -24,13 +24,16 @@ def iso_from_ms(ts_ms: int) -> str:
         return str(ts_ms)
 
 
-def create_exchange(exchange_id: str) -> ccxt.Exchange:
+def create_exchange(exchange_id: str, default_type: str | None = None) -> ccxt.Exchange:
     exchange_id = (exchange_id or 'bybit').lower().strip()
     ex_class = getattr(ccxt, exchange_id)
-    ex = ex_class({
+    opts = {
         'enableRateLimit': True,
         'timeout': 30000,
-    })
+    }
+    if exchange_id == 'bybit' and default_type in ('swap', 'spot'):
+        opts['options'] = {'defaultType': default_type}
+    ex = ex_class(opts)
     ex.load_markets()
     return ex
 
@@ -103,8 +106,15 @@ def reconcile_symbol_timeframe(symbol: str, timeframe: str, exchange_id: str, fr
     """
     Если from_days задан — берём now-from_days..now. Иначе — от MIN(timestamp в БД)..now.
     """
-    ex = create_exchange(exchange_id)
-    uni = map_symbol_on_exchange(ex, symbol)
+    # Жёстко работаем в Bybit swap, без fallback
+    if (exchange_id or 'bybit').lower().strip() == 'bybit':
+        ex = create_exchange(exchange_id, default_type='swap')
+        uni = map_symbol_on_exchange(ex, symbol)
+        if uni not in getattr(ex, 'symbols', []):
+            raise ValueError(f"{uni} not found in Bybit swap (fallback to spot is disabled)")
+    else:
+        ex = create_exchange(exchange_id)
+        uni = map_symbol_on_exchange(ex, symbol)
     symbol_db = normalize_to_db(symbol)
 
     with SASession(bind=engine) as db:
@@ -165,8 +175,82 @@ def reconcile_symbol_timeframe(symbol: str, timeframe: str, exchange_id: str, fr
                         equals += 1
             db.commit()
 
+        try:
+            m = ex.market(uni)
+            if verbose:
+                print(f"[RECONCILE] Market info: type={m.get('type')} linear={m.get('linear')} inverse={m.get('inverse')} contractSize={m.get('contractSize')}")
+        except Exception:
+            pass
         print(f"[RECONCILE] Done: inserted={inserts}, updated={updates}, unchanged={equals}, total_fetched={len(rows)}")
 
+
+def reconcile_range_ohlcv(symbol: str, timeframe: str, exchange_id: str, since_ms: int, until_ms: int, verbose: bool = False) -> None:
+    """Сверяет и обновляет OHLCV в БД с биржей в заданном диапазоне [since_ms..until_ms]."""
+    if (exchange_id or 'bybit').lower().strip() == 'bybit':
+        ex = create_exchange(exchange_id, default_type='swap')
+        uni = map_symbol_on_exchange(ex, symbol)
+        if uni not in getattr(ex, 'symbols', []):
+            raise ValueError(f"[RANGE] {uni} not found in Bybit swap (fallback to spot is disabled)")
+    else:
+        ex = create_exchange(exchange_id)
+        uni = map_symbol_on_exchange(ex, symbol)
+    symbol_db = normalize_to_db(symbol)
+
+    with SASession(bind=engine) as db:
+        symbol_id = get_or_create_symbol_id(db, symbol_db)
+
+        if verbose:
+            print(f"[RECONCILE][RANGE] {symbol_db} {timeframe} range {iso_from_ms(since_ms)} .. {iso_from_ms(until_ms)} via {exchange_id} as {uni}")
+
+        rows = fetch_range_ohlcv(ex, uni, timeframe, since_ms, until_ms)
+        if not rows:
+            if verbose:
+                print("[RECONCILE][RANGE] No rows fetched from exchange. Nothing to do.")
+            return
+
+        updates = inserts = equals = 0
+        ts_list = [int(r[0]) for r in rows]
+        existing = load_existing_batch(db, symbol_id, timeframe, ts_list)
+
+        for ts, o, h, l, c, v in ((int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])) for r in rows):
+            row = existing.get(ts)
+            if row is None:
+                # Вставка
+                new_row = OHLCV(symbol_id=symbol_id, timeframe=timeframe, timestamp=ts, open=o, high=h, low=l, close=c, volume=v)
+                db.add(new_row)
+                inserts += 1
+                if verbose:
+                    print(f"[RECONCILE][RANGE][INSERT] {iso_from_ms(ts)} O:{o} H:{h} L:{l} C:{c} V:{v}")
+            else:
+                # Сравнение
+                changed_fields = []
+                if floats_differs(row.open, o):
+                    changed_fields.append(("open", row.open, o)); row.open = o
+                if floats_differs(row.high, h):
+                    changed_fields.append(("high", row.high, h)); row.high = h
+                if floats_differs(row.low, l):
+                    changed_fields.append(("low", row.low, l)); row.low = l
+                if floats_differs(row.close, c):
+                    changed_fields.append(("close", row.close, c)); row.close = c
+                if floats_differs(row.volume, v):
+                    changed_fields.append(("volume", row.volume, v)); row.volume = v
+                if changed_fields:
+                    updates += 1
+                    if verbose:
+                        diff_str = ", ".join([f"{f}:{old}->{new}" for f, old, new in changed_fields])
+                        print(f"[RECONCILE][RANGE][UPDATE] {iso_from_ms(ts)} {diff_str}")
+                else:
+                    equals += 1
+        db.commit()
+
+        try:
+            m = ex.market(uni)
+            if verbose:
+                print(f"[RECONCILE][RANGE] Market info: type={m.get('type')} linear={m.get('linear')} inverse={m.get('inverse')} contractSize={m.get('contractSize')}")
+        except Exception:
+            pass
+        if verbose:
+            print(f"[RECONCILE][RANGE] Done: inserted={inserts}, updated={updates}, unchanged={equals}, total_fetched={len(rows)}")
 
 def main():
     ap = argparse.ArgumentParser(description="Синхронизация OHLCV в PostgreSQL с Bybit")
