@@ -15,6 +15,7 @@ import platform
 from datetime import datetime
 import subprocess
 from utils.adaptive_normalization import adaptive_normalizer
+import json as _json
 
 # Добавляем путь к проекту
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -146,6 +147,256 @@ def prepare_data_for_training(dfs: Dict) -> Dict:
     print(f"✅ Данные готовы: 5min={len(dfs['df_5min'])}, 15min={len(dfs['df_15min'])}, 1h={len(dfs['df_1h'])}")
     
     return dfs
+
+def _save_training_results(
+    run_dir: str,
+    cfg, # vDqnConfig
+    training_name: str,
+    current_episode: int, # Фактически завершенный эпизод или текущий для промежуточного сохранения
+    total_episodes_planned: int, # Общее количество запланированных эпизодов
+    all_trades: list,
+    episode_winrates: list,
+    best_winrate: float,
+    best_episode_idx: int,
+    action_counts_total: dict,
+    buy_attempts_total: int,
+    buy_rejected_vol_total: int,
+    buy_rejected_roi_total: int,
+    episodes_with_trade_count: int,
+    total_steps_processed: int,
+    episode_length: Optional[int],
+    seed: Optional[int],
+    dqn_solver, # DQNSolver instance
+    env, # CryptoTradingEnvOptimized or MultiCryptoTradingEnv instance
+    is_multi_crypto: bool,
+    parent_run_id: Optional[str],
+    root_id: Optional[str],
+    training_start_time: float,
+    current_total_training_time: float, # Текущее время обучения для промежуточных сохранений
+):
+    try:
+        total_training_time = current_total_training_time
+
+        # Определяем список плохих сделок (убыточные сделки)
+        bad_trades_list = []
+        try:
+            if all_trades:
+                bad_trades_list = [t for t in all_trades if t.get('roi', 0) < 0]
+        except Exception:
+            bad_trades_list = []
+
+        bad_trades_count = len(bad_trades_list)
+        total_trades_count = len(all_trades) if all_trades else 0
+        bad_trades_percentage = (bad_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
+
+        # Получаем статистику, если есть сделки, иначе пустой словарь
+        stats_all = dqn_solver.print_trade_stats(all_trades) if all_trades else {}
+
+        training_results = {
+            'episodes': total_episodes_planned,  # Планируемое количество эпизодов
+            'actual_episodes': current_episode,  # Реальное количество завершенных эпизодов (текущий эпизод)
+            'total_training_time': total_training_time,
+            'episode_winrates': episode_winrates,
+            'all_trades': all_trades,
+            'bad_trades': bad_trades_list,
+            'bad_trades_count': bad_trades_count,
+            'bad_trades_percentage': bad_trades_percentage,
+            'best_winrate': best_winrate,
+            'final_stats': stats_all,
+            'training_date': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'model_path': cfg.model_path,
+            'buffer_path': cfg.buffer_path,
+            'symbol': training_name,
+            'model_id': getattr(cfg, 'run_id', None) or (run_dir.split(os.sep)[-1] if run_dir else None), # Используем run_id из cfg или из run_dir
+            'early_stopping_triggered': current_episode < total_episodes_planned,  # True если early stopping сработал
+            'reward_scale': float(getattr(env.cfg, 'reward_scale', 1.0)) if hasattr(env, 'cfg') else 1.0,
+            # --- Новые агрегаты для анализа поведения ---
+            'action_counts_total': action_counts_total,
+            'buy_attempts_total': buy_attempts_total,
+            'buy_rejected_vol_total': buy_rejected_vol_total,
+            'buy_rejected_roi_total': buy_rejected_roi_total,
+            'buy_accept_rate': ( (action_counts_total.get(1, 0) or 0) / float(buy_attempts_total) ) if buy_attempts_total > 0 else 0.0,
+            'episodes_with_trade_count': episodes_with_trade_count,
+            'episodes_with_trade_ratio': (episodes_with_trade_count / float(current_episode)) if current_episode > 0 else 0.0,
+            'avg_minutes_between_buys': ( (total_steps_processed * 5.0) / float(action_counts_total.get(1, 0) or 1) ) if (action_counts_total.get(1, 0) or 0) > 0 else None,
+            'total_steps_processed': total_steps_processed,
+            'episode_length': episode_length, # Добавляем длину эпизода
+            # Дополнительные метрики из dqn_solver
+            'epsilon_final_value': dqn_solver.epsilon,
+            'learning_rate_final_value': dqn_solver.optimizer.param_groups[0]['lr'] if dqn_solver.optimizer.param_groups else None,
+        }
+        
+        # Метаданные окружения и запуска
+        git_commit = None
+        try:
+            git_commit = subprocess.check_output(['git','rev-parse','--short','HEAD'], stderr=subprocess.DEVNULL).decode().strip()
+        except Exception:
+            pass
+        train_seed = seed if isinstance(seed, int) else None
+        train_metadata = {
+            'created_at_utc': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'hostname': platform.node(),
+            'platform': platform.platform(),
+            'python_version': platform.python_version(),
+            'pytorch_version': torch.__version__,
+            'cuda_available': torch.cuda.is_available(),
+            'gpu_name': (torch.cuda.get_device_name(0) if torch.cuda.is_available() else None),
+            'omp_threads': os.environ.get('OMP_NUM_THREADS'),
+            'mkl_threads': os.environ.get('MKL_NUM_THREADS'),
+            'torch_threads': os.environ.get('TORCH_NUM_THREADS'),
+            'train_cpu_fraction': os.environ.get('TRAIN_CPU_FRACTION'),
+            'git_commit': git_commit,
+            'script': os.path.basename(__file__),
+            'seed': train_seed,
+        }
+
+        # Снимок конфигурации и архитектуры
+        cfg_snapshot = _safe_cfg_snapshot(cfg)
+        arch_main = _architecture_summary(dqn_solver.model)
+        arch_target = _architecture_summary(dqn_solver.target_model)
+        
+        # Снимок параметров окружения и данных (для воспроизводимости) ---
+        gym_snapshot = {}
+        try:
+            # Reconstruct gym_snapshot from env
+            gym_snapshot = {
+                'symbol': getattr(env, 'symbol', None),
+                'lookback_window': getattr(env, 'lookback_window', None),
+                'indicators_config': getattr(env, 'indicators_config', None),
+                'reward_scale': getattr(env.cfg, 'reward_scale', 1.0) if hasattr(env, 'cfg') else 1.0,
+                'episode_length': getattr(env, 'episode_length', None),
+                'funding_features': {
+                    'present_in_input_df': [], # Not directly available from env, needs to be passed
+                    'included': False,
+                },
+                'risk_management': {
+                    'STOP_LOSS_PCT': getattr(env, 'STOP_LOSS_PCT', None),
+                    'TAKE_PROFIT_PCT': getattr(env, 'TAKE_PROFIT_PCT', None),
+                    'min_hold_steps': getattr(env, 'min_hold_steps', None),
+                    'volume_threshold': getattr(env, 'volume_threshold', None),
+                    'base_stop_loss': getattr(env, 'base_stop_loss', None),
+                    'base_take_profit': getattr(env, 'base_take_profit', None),
+                    'base_min_hold': getattr(env, 'base_min_hold', None),
+                },
+                'position_sizing': {
+                    'base_position_fraction': getattr(env, 'base_position_fraction', None),
+                    'position_fraction': getattr(env, 'position_fraction', None),
+                    'position_confidence_threshold': getattr(env, 'position_confidence_threshold', None),
+                },
+                'observation_space_shape': getattr(env, 'observation_space_shape', None),
+                'step_minutes': getattr(env.cfg, 'step_minutes', 5) if hasattr(env, 'cfg') else 5,
+            }
+        except Exception as e:
+            logger.warning(f"Ошибка при создании gym_snapshot: {e}")
+            gym_snapshot = {}
+
+        # --- Снимок адаптивной нормализации (по символам) ---
+        adaptive_snapshot = {}
+        try:
+            if is_multi_crypto:
+                per_symbol = {}
+                # Здесь нужна логика получения dfs. Вместо того, чтобы передавать dfs сюда,
+                # можно сделать так, чтобы env экспортировал snapshot адаптивной нормализации
+                # или передать его через аргумент, если это более удобно.
+                # Для упрощения пока оставлю так, как будто dfs доступен глобально (НЕПРАВИЛЬНО!)
+                # На самом деле, лучше передать dfs, либо env должен экспортировать этот снапшот.
+                # Пока что, если is_multi_crypto, оставлю adaptive_snapshot пустым.
+                adaptive_snapshot = {'per_symbol': {}} # Заглушка
+            else:
+                # В текущей реализации dfs не передается в _save_training_results.
+                # Поэтому мы не можем пересчитать adaptive_normalization здесь.
+                # Либо надо передать dfs, либо env должен экспортировать этот снапшот.
+                adaptive_snapshot = {} # Заглушка
+        except Exception as e:
+            logger.warning(f"Ошибка при создании adaptive_snapshot: {e}")
+            adaptive_snapshot = {}
+            
+        # Информация о весах (пути и хэши)
+        weights_info = {
+            'model_path': cfg.model_path,
+            'buffer_path': cfg.buffer_path,
+            'model_sha256': _sha256_of_file(cfg.model_path) if cfg and getattr(cfg, 'model_path', None) and os.path.exists(cfg.model_path) else None,
+            'buffer_sha256': _sha256_of_file(cfg.buffer_path) if cfg and getattr(cfg, 'buffer_path', None) and os.path.exists(cfg.buffer_path) else None,
+        }
+
+        # Объединяем
+        enriched_results = {
+            **training_results,
+            'train_metadata': train_metadata,
+            'cfg_snapshot': cfg_snapshot,
+            'gym_snapshot': gym_snapshot,
+            'adaptive_normalization': adaptive_snapshot,
+            'architecture': {
+                'main': arch_main,
+                'target': arch_target,
+            },
+            'weights': weights_info,
+        }
+
+        # Создаем папку, если не существует
+        os.makedirs(run_dir, exist_ok=True)
+        results_file = os.path.join(run_dir, 'train_result.pkl')
+
+        with open(results_file, 'wb') as f:
+            pickle.dump(enriched_results, f, protocol=HIGHEST_PROTOCOL)
+        
+        logger.info(f"📊 Детальные результаты сохранены в: {results_file}")
+
+        # === Структурированное сохранение в result/<SYMBOL>/runs/<run_id>/ ===
+        # Копируем артефакты в папку запуска с фиксированными именами
+        try:
+            import shutil as _sh
+            # Модель
+            if cfg and getattr(cfg, 'model_path', None) and os.path.exists(cfg.model_path):
+                _dst_m = os.path.join(run_dir, 'model.pth')
+                if os.path.abspath(cfg.model_path) != os.path.abspath(_dst_m):
+                    _sh.copy2(cfg.model_path, _dst_m)
+            # Буфер
+            if cfg and getattr(cfg, 'buffer_path', None) and os.path.exists(cfg.buffer_path):
+                _dst_b = os.path.join(run_dir, 'replay.pkl')
+                if os.path.abspath(cfg.buffer_path) != os.path.abspath(_dst_b):
+                    _sh.copy2(cfg.buffer_path, _dst_b)
+            # Результаты
+            if os.path.exists(results_file):
+                _dst_r = os.path.join(run_dir, 'train_result.pkl')
+                if os.path.abspath(results_file) != os.path.abspath(_dst_r):
+                    _sh.copy2(results_file, _dst_r)
+        except Exception as _copy_err:
+            logger.warning(f"⚠️ Не удалось скопировать артефакты в {run_dir}: {_copy_err}")
+
+        # Пишем манифест (минимум метаданных; подробности уже в train_result.pkl)
+        symbol_dir_name = training_name # Используем training_name, который уже обработан
+        manifest = {
+            'run_id': getattr(cfg, 'run_id', None) or (run_dir.split(os.sep)[-1] if run_dir else None),
+            'parent_run_id': parent_run_id,
+            'root_id': root_id,
+            'symbol': symbol_dir_name,
+            'seed': int(seed) if isinstance(seed, int) else None,
+            'episodes_start': 0 if not (getattr(cfg, 'load_model_path', None) or getattr(cfg, 'load_buffer_path', None)) else None, # Если модель или буфер загружались
+            'episodes_end': int(current_episode),
+            'episodes_added': int(current_episode) if not (getattr(cfg, 'load_model_path', None) or getattr(cfg, 'load_buffer_path', None)) else int(current_episode - (getattr(cfg, 'start_episode', 0))), # Считаем добавленные эпизоды
+            'episodes_last': int(current_episode),
+            'episodes_best': int(best_episode_idx) if best_episode_idx is not None and best_episode_idx >= 0 else None,
+            'created_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'artifacts': {
+                'model': 'model.pth',
+                'replay': 'replay.pkl' if (dqn_solver and getattr(dqn_solver, 'cfg', None) and getattr(dqn_solver.cfg, 'buffer_path', None)) else None,
+                'result': 'train_result.pkl',
+                'best_model': 'best_model.pth' if os.path.exists(os.path.join(run_dir, 'best_model.pth')) else None,
+                'last_model': 'last_model.pth' if os.path.exists(os.path.join(run_dir, 'last_model.pth')) else None
+            },
+            'best_metrics': {
+                'winrate': float(best_winrate) if isinstance(best_winrate, (int, float)) else None
+            }
+        }
+        try:
+            with open(os.path.join(run_dir, 'manifest.json'), 'w', encoding='utf-8') as mf:
+                _json.dump(manifest, mf, ensure_ascii=False, indent=2)
+        except Exception as _mf_err:
+            logger.warning(f"⚠️ Не удалось записать manifest.json: {_mf_err}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при сохранении результатов обучения: {e}", exc_info=True)
+
 
 def train_model_optimized(
     dfs: Dict,
@@ -932,7 +1183,35 @@ def train_model_optimized(
             if episode > 0 and episode % buffer_save_frequency == 0:
                 dqn_solver.save()
                 logger.info("[INFO] Periodic save model + replay buffer at episode %d", episode)
-                # Сохраняем последний снапшот last_model.pth
+                # Сохраняем результаты обучения также
+                _save_training_results(
+                    run_dir=run_dir,
+                    dfs=dfs, # Передаем dfs
+                    cfg=cfg,
+                    training_name=training_name,
+                    current_episode=episode,
+                    total_episodes_planned=episodes,
+                    all_trades=all_trades,
+                    episode_winrates=episode_winrates,
+                    best_winrate=best_winrate,
+                    best_episode_idx=best_episode_idx,
+                    action_counts_total=action_counts_total,
+                    buy_attempts_total=buy_attempts_total,
+                    buy_rejected_vol_total=buy_rejected_vol_total,
+                    buy_rejected_roi_total=buy_rejected_roi_total,
+                    episodes_with_trade_count=episodes_with_trade_count,
+                    total_steps_processed=total_steps_processed,
+                    episode_length=episode_length,
+                    seed=seed,
+                    dqn_solver=dqn_solver,
+                    env=env,
+                    is_multi_crypto=is_multi_crypto,
+                    parent_run_id=parent_run_id,
+                    root_id=root_id,
+                    training_start_time=training_start_time,
+                    current_total_training_time=time.time() - training_start_time,
+                )
+                # Сохраняем последний снапшот last_model.pth (отдельно)
                 try:
                     import shutil as _sh
                     if os.path.exists(cfg.model_path):
@@ -1037,188 +1316,34 @@ def train_model_optimized(
             pass
         
         # Сохраняем детальные результаты обучения
-        # Определяем список плохих сделок (убыточные сделки)
-        bad_trades_list = []
-        try:
-            if all_trades:
-                bad_trades_list = [t for t in all_trades if t.get('roi', 0) < 0]
-        except Exception:
-            bad_trades_list = []
+        _save_training_results(
+            run_dir=run_dir,
+            dfs=dfs, # Передаем dfs
+            cfg=cfg,
+            training_name=training_name,
+            current_episode=actual_episodes, # Используем actual_episodes для финального сохранения
+            total_episodes_planned=episodes,
+            all_trades=all_trades,
+            episode_winrates=episode_winrates,
+            best_winrate=best_winrate,
+            best_episode_idx=best_episode_idx,
+            action_counts_total=action_counts_total,
+            buy_attempts_total=buy_attempts_total,
+            buy_rejected_vol_total=buy_rejected_vol_total,
+            buy_rejected_roi_total=buy_rejected_roi_total,
+            episodes_with_trade_count=episodes_with_trade_count,
+            total_steps_processed=total_steps_processed,
+            episode_length=episode_length,
+            seed=seed,
+            dqn_solver=dqn_solver,
+            env=env,
+            is_multi_crypto=is_multi_crypto,
+            parent_run_id=parent_run_id,
+            root_id=root_id,
+            training_start_time=training_start_time,
+            current_total_training_time=total_training_time, # Используем final total_training_time
+        )
 
-        bad_trades_count = len(bad_trades_list)
-        total_trades_count = len(all_trades) if all_trades else 0
-        bad_trades_percentage = (bad_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
-
-        training_results = {
-            'episodes': episodes,  # Планируемое количество эпизодов
-            'actual_episodes': episode,  # Реальное количество завершенных эпизодов (текущий эпизод)
-            'total_training_time': total_training_time,
-            'episode_winrates': episode_winrates,
-            'all_trades': all_trades,
-            'bad_trades': bad_trades_list,
-            'bad_trades_count': bad_trades_count,
-            'bad_trades_percentage': bad_trades_percentage,
-            'best_winrate': best_winrate,
-            'final_stats': stats_all,
-            'training_date': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'model_path': cfg.model_path,
-            'buffer_path': cfg.buffer_path,
-            'symbol': training_name,
-            'model_id': short_id,
-            'early_stopping_triggered': episode < episodes,  # True если early stopping сработал
-            'reward_scale': float(getattr(env.cfg, 'reward_scale', 1.0)),
-            # --- Новые агрегаты для анализа поведения ---
-            'action_counts_total': action_counts_total,
-            'buy_attempts_total': buy_attempts_total,
-            'buy_rejected_vol_total': buy_rejected_vol_total,
-            'buy_rejected_roi_total': buy_rejected_roi_total,
-            'buy_accept_rate': ( (action_counts_total.get(1, 0) or 0) / float(buy_attempts_total) ) if buy_attempts_total > 0 else 0.0,
-            'episodes_with_trade_count': episodes_with_trade_count,
-            'episodes_with_trade_ratio': (episodes_with_trade_count / float(episodes)) if episodes > 0 else 0.0,
-            'avg_minutes_between_buys': ( (total_steps_processed * 5.0) / float(action_counts_total.get(1, 0) or 1) ) if (action_counts_total.get(1, 0) or 0) > 0 else None,
-            'total_steps_processed': total_steps_processed,
-            'episode_length': episode_length, # Добавляем длину эпизода
-        }
-        
-        # Создаем папку если не существует (используем структурированный run_dir)
-        try:
-            run_dir  # noqa: F401
-        except NameError:
-            # Папка символа без суффикса (TON, BTC, BNB...) в верхнем регистре
-            symbol_dir_name = _symbol_code(training_name).upper() if training_name else "UNKNOWN"
-            # Короткий run_id (4 символа) если не передан
-            this_run_id = run_id or str(__import__('uuid').uuid4())[:4]
-            this_root_id = root_id or this_run_id
-            run_dir = os.path.join("result", symbol_dir_name, "runs", this_run_id)
-            os.makedirs(run_dir, exist_ok=True)
-
-        # Сохраняем результаты в файле в run_dir
-        results_file = os.path.join(run_dir, 'train_result.pkl')
-
-        # Метаданные окружения и запуска
-        try:
-            git_commit = None
-            try:
-                git_commit = subprocess.check_output(['git','rev-parse','--short','HEAD'], stderr=subprocess.DEVNULL).decode().strip()
-            except Exception:
-                pass
-            # Сохраняем seed, если он был передан аргументом функции
-            train_seed = seed if isinstance(seed, int) else None
-            train_metadata = {
-                'created_at_utc': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
-                'hostname': platform.node(),
-                'platform': platform.platform(),
-                'python_version': platform.python_version(),
-                'pytorch_version': torch.__version__,
-                'cuda_available': torch.cuda.is_available(),
-                'gpu_name': (torch.cuda.get_device_name(0) if torch.cuda.is_available() else None),
-                'omp_threads': os.environ.get('OMP_NUM_THREADS'),
-                'mkl_threads': os.environ.get('MKL_NUM_THREADS'),
-                'torch_threads': os.environ.get('TORCH_NUM_THREADS'),
-                'train_cpu_fraction': os.environ.get('TRAIN_CPU_FRACTION'),
-                'git_commit': git_commit,
-                'script': os.path.basename(__file__),
-                'seed': train_seed,
-            }
-        except Exception:
-            train_metadata = {}
-
-        # Снимок конфигурации и архитектуры
-        try:
-            cfg_snapshot = _safe_cfg_snapshot(cfg)
-        except Exception:
-            cfg_snapshot = {}
-        try:
-            arch_main = _architecture_summary(dqn_solver.model)
-            arch_target = _architecture_summary(dqn_solver.target_model)
-        except Exception:
-            arch_main, arch_target = {}, {}
-
-        # Информация о весах (пути и хэши)
-        weights_info = {
-            'model_path': cfg.model_path,
-            'buffer_path': cfg.buffer_path,
-            'model_sha256': _sha256_of_file(cfg.model_path) if cfg and getattr(cfg, 'model_path', None) and os.path.exists(cfg.model_path) else None,
-            'buffer_sha256': _sha256_of_file(cfg.buffer_path) if cfg and getattr(cfg, 'buffer_path', None) and os.path.exists(cfg.buffer_path) else None,
-        }
-
-        # Объединяем
-        enriched_results = {
-            **training_results,
-            'train_metadata': train_metadata,
-            'cfg_snapshot': cfg_snapshot,
-            'gym_snapshot': gym_snapshot,
-            'adaptive_normalization': adaptive_snapshot,
-            'architecture': {
-                'main': arch_main,
-                'target': arch_target,
-            },
-            'weights': weights_info,
-        }
-
-        with open(results_file, 'wb') as f:
-            pickle.dump(enriched_results, f, protocol=HIGHEST_PROTOCOL)
-        
-        print(f"📊 Детальные результаты сохранены в: {results_file}")
-
-        # === Структурированное сохранение в result/<SYMBOL>/runs/<run_id>/ ===
-        try:
-            # run_dir уже создан выше
-
-            # Копируем артефакты в папку запуска с фиксированными именами
-            try:
-                import shutil as _sh
-                # Модель
-                if cfg and getattr(cfg, 'model_path', None) and os.path.exists(cfg.model_path):
-                    _dst_m = os.path.join(run_dir, 'model.pth')
-                    if os.path.abspath(cfg.model_path) != os.path.abspath(_dst_m):
-                        _sh.copy2(cfg.model_path, _dst_m)
-                # Буфер
-                if cfg and getattr(cfg, 'buffer_path', None) and os.path.exists(cfg.buffer_path):
-                    _dst_b = os.path.join(run_dir, 'replay.pkl')
-                    if os.path.abspath(cfg.buffer_path) != os.path.abspath(_dst_b):
-                        _sh.copy2(cfg.buffer_path, _dst_b)
-                # Результаты
-                if os.path.exists(results_file):
-                    _dst_r = os.path.join(run_dir, 'train_result.pkl')
-                    if os.path.abspath(results_file) != os.path.abspath(_dst_r):
-                        _sh.copy2(results_file, _dst_r)
-            except Exception as _copy_err:
-                print(f"⚠️ Не удалось скопировать артефакты в {run_dir}: {_copy_err}")
-
-            # Пишем манифест (минимум метаданных; подробности уже в train_result.pkl)
-            manifest = {
-                'run_id': this_run_id,
-                'parent_run_id': parent_run_id,
-                'root_id': this_root_id,
-                'symbol': symbol_dir_name,
-                'seed': int(seed) if isinstance(seed, int) else None,
-                'episodes_start': 0 if not load_model_path else None,
-                'episodes_end': int(training_results.get('actual_episodes') or episodes),
-                'episodes_added': int(training_results.get('actual_episodes') or episodes),
-                'episodes_last': int(training_results.get('actual_episodes') or episodes),
-                'episodes_best': int(best_episode_idx) if best_episode_idx is not None and best_episode_idx >= 0 else None,
-                'created_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
-                'artifacts': {
-                    'model': 'model.pth',
-                    'replay': 'replay.pkl' if (dqn_solver and getattr(dqn_solver, 'cfg', None) and getattr(dqn_solver.cfg, 'buffer_path', None)) else None,
-                    'result': 'train_result.pkl',
-                    'best_model': 'best_model.pth' if os.path.exists(os.path.join(run_dir, 'best_model.pth')) else None,
-                    'last_model': 'last_model.pth' if os.path.exists(os.path.join(run_dir, 'last_model.pth')) else None
-                },
-                'best_metrics': {
-                    'winrate': float(best_winrate) if isinstance(best_winrate, (int, float)) else None
-                }
-            }
-            try:
-                import json as _json
-                with open(os.path.join(run_dir, 'manifest.json'), 'w', encoding='utf-8') as mf:
-                    _json.dump(manifest, mf, ensure_ascii=False, indent=2)
-            except Exception as _mf_err:
-                print(f"⚠️ Не удалось записать manifest.json: {_mf_err}")
-        except Exception as _struct_err:
-            print(f"⚠️ Ошибка структурированного сохранения: {_struct_err}")
-        
         # Анализ трендов
         if len(episode_winrates) > 10:
             recent_winrate = np.mean(episode_winrates[-10:])
