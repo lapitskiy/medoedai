@@ -7,25 +7,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>!Управление моделями DQN</title>
     <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.umd.js"></script>
-    <style>
-        /* Компактная таблица для секции "Модели в result (удаление)" */
-        #resultModelsSection { font-size: 12px; }
-        #resultModelsSection #resultModelsList { display: block; overflow: visible; padding: 0; }
-        #resultModelsTable { width: 100%; border-collapse: collapse; table-layout: fixed; }
-        #resultModelsTable th, #resultModelsTable td { padding: 6px 8px; text-align: left; vertical-align: middle; }
-        #resultModelsTable th { background: #f5f7fb; font-weight: 600; }
-        #resultModelsTable tr:nth-child(even) { background: #fafbfe; }
-        #resultModelsTable .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-        #resultModelsTable .muted { color: #6b7280; }
-        #resultModelsTable .nowrap { white-space: nowrap; }
-        #resultModelsTable .truncate { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
-        #resultModelsSection .button-group { margin-bottom: 10px; }
-        #resultModelsSection .btn.btn-danger { font-size: 12px; padding: 6px 10px; }
-        #resultModelsSection .btn { font-size: 11px; padding: 4px 8px; margin: 1px; white-space: nowrap; }
-        #resultModelsSection .btn-group { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
-        #resultModelsSection .btn-group .btn { margin: 0; }
-    </style>
-
 </head>
 <body>
     <!-- Sidebar навигация -->
@@ -37,8 +18,7 @@
             <li><a href="#create-model" onclick="scrollToSection('create-model')">📦 Создать версию</a></li>
             <li><a href="#training" onclick="scrollToSection('training')">🎯 Обучение DQN</a></li>
             <li><a href="#continue-training" onclick="scrollToSection('continue-training')">🔁 Дообучить модель</a></li>
-            <li><a href="#result-models" onclick="scrollToSection('result-models')">🗑️ Модели в result</a></li>
-            <li><a href="#oos-results" onclick="scrollToSection('oos-results')">📈 OOS результаты</a></li>
+            <li><a href="/oos">📈 OOS результаты</a></li>
         </ul>
     </nav>
 
@@ -815,15 +795,33 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                 const windows = [30,60,90];
                 const scales = multiRuns ? [0.0, 0.5, 1.0] : [null];
                 const allResults = [];
+                // Ставим все прогоны в очередь Celery (oos) и ждём через поллинг
+                const pending = [];
                 for(const days of windows){
                     for(const s of scales){
                         const payload = {...payloadBase, days};
                         if (s !== null){ payload.gate_disable = false; payload.gate_scale = s; }
-                        const r = await fetch('/oos_test_model', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+                        const r = await fetch('/oos_test_model_async', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                         const j = await r.json().catch(()=>({success:false,error:'bad json'}));
-                        allResults.push({days, scale:s, data:j});
+                        if (j && j.success && j.task_id){ pending.push({days, scale:s, task_id:j.task_id}); }
+                        else { allResults.push({days, scale:s, data:j}); }
                     }
                 }
+                async function waitTask(task_id){
+                    for(let tries=0; tries<600; tries++){
+                        await new Promise(r=>setTimeout(r, 1000));
+                        const s = await fetch('/oos_test_status?task_id='+encodeURIComponent(task_id));
+                        const sj = await s.json().catch(()=>null);
+                        if (sj && sj.state === 'SUCCESS' && sj.result){ return sj.result; }
+                        if (sj && sj.state === 'FAILURE' && sj.result){ return sj.result; }
+                    }
+                    return {success:false, error:'timeout waiting task '+task_id};
+                }
+                const settled = await Promise.all(pending.map(async item=>{
+                    const data = await waitTask(item.task_id);
+                    return {days:item.days, scale:item.scale, data};
+                }));
+                allResults.push(...settled);
                 btn.disabled=false; btn.textContent=prev;
                 // Выводим результат в панель (копируемый текст)
                 ensureOOSPanel();
@@ -1184,3 +1182,4 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
     <script src="/static/js/sidebar.js"></script>
 </body>
 </html>
+

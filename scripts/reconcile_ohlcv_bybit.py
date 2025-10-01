@@ -24,33 +24,27 @@ def iso_from_ms(ts_ms: int) -> str:
         return str(ts_ms)
 
 
-def create_exchange(exchange_id: str, default_type: str | None = None) -> ccxt.Exchange:
+def create_exchange(exchange_id: str) -> ccxt.Exchange:
     exchange_id = (exchange_id or 'bybit').lower().strip()
     ex_class = getattr(ccxt, exchange_id)
     opts = {
         'enableRateLimit': True,
         'timeout': 30000,
+        'options': {
+            'warnOnFetchOHLCVLimitArgument': False, # отключаем предупреждения об ограничении лимита
+        }
     }
-    if exchange_id == 'bybit':
-        # Для Bybit используем linear (perpetual futures) по умолчанию
-        market_type = default_type or 'linear'
-        opts['options'] = {'defaultType': market_type}
+    # Для Bybit теперь полагаемся исключительно на category='linear' в запросах
     ex = ex_class(opts)
     ex.load_markets()
     return ex
 
 
 def map_symbol_on_exchange(ex: ccxt.Exchange, symbol: str) -> str:
-    """Возвращает unified-символ, который знает биржа (или map по market id)."""
-    uni = normalize_symbol(symbol)
-    if uni in getattr(ex, 'symbols', []):
-        return uni
-    markets = getattr(ex, 'markets', {}) or {}
-    for k, m in markets.items():
-        mid = (m.get('id') if isinstance(m, dict) else None) or ''
-        if str(mid).upper() == normalize_to_db(symbol).upper():
-            return k
-    return uni  # пусть биржа упадёт, если такого нет
+    """Возвращает корректный unified-символ для биржи.
+    Для Bybit linear swap unified-символ будет сконструирован в reconcile_symbol_timeframe.
+    """
+    return normalize_symbol(symbol)
 
 
 def fetch_range_ohlcv(ex: ccxt.Exchange, uni_symbol: str, timeframe: str, since_ms: int, until_ms: int, limit_total: int = 1_000_000) -> list[list]:
@@ -59,7 +53,7 @@ def fetch_range_ohlcv(ex: ccxt.Exchange, uni_symbol: str, timeframe: str, since_
     cursor = since_ms
     tf_ms = ex.parse_timeframe(timeframe) * 1000
     while cursor <= until_ms and len(rows) < limit_total:
-        batch = ex.fetch_ohlcv(uni_symbol, timeframe, since=cursor, limit=1000)
+        batch = ex.fetch_ohlcv(uni_symbol, timeframe, since=cursor, limit=1000, params={'category': 'linear'})
         if not batch:
             break
         rows.extend(batch)
@@ -110,10 +104,13 @@ def reconcile_symbol_timeframe(symbol: str, timeframe: str, exchange_id: str, fr
     """
     # Жёстко работаем в Bybit linear, без fallback
     if (exchange_id or 'bybit').lower().strip() == 'bybit':
-        ex = create_exchange(exchange_id, default_type='linear')
-        uni = map_symbol_on_exchange(ex, symbol)
+        ex = create_exchange(exchange_id)
+        # Для Bybit linear мы явно конструируем unified символ
+        uni_base = normalize_symbol(symbol).split('/')[0]
+        uni_quote = normalize_symbol(symbol).split('/')[1]
+        uni = f"{uni_base}/{uni_quote}:USDT" # Предполагаем USDT perpetual
         if uni not in getattr(ex, 'symbols', []):
-            raise ValueError(f"{uni} not found in Bybit linear (fallback to spot is disabled)")
+            raise ValueError(f"{uni} not found in Bybit linear. Please check the symbol or market.")
     else:
         ex = create_exchange(exchange_id)
         uni = map_symbol_on_exchange(ex, symbol)
@@ -177,22 +174,42 @@ def reconcile_symbol_timeframe(symbol: str, timeframe: str, exchange_id: str, fr
                         equals += 1
             db.commit()
 
-        try:
-            m = ex.market(uni)
-            if verbose:
-                print(f"[RECONCILE] Market info: type={m.get('type')} linear={m.get('linear')} inverse={m.get('inverse')} contractSize={m.get('contractSize')}")
-        except Exception:
-            pass
+        # Убеждаемся, что получаем информацию для linear рынка
+        market_info = None
+        if ex.id == 'bybit':
+            # Ищем по market id среди linear swap/future
+            sym_db = normalize_to_db(symbol)
+            for k, m in getattr(ex, 'markets', {}).items():
+                if not isinstance(m, dict):
+                    continue
+                mid = str(m.get('id') or '').upper()
+                m_type = m.get('type')
+                is_linear = bool(m.get('linear'))
+                if mid == sym_db.upper() and is_linear and (m_type in ('swap', 'future')):
+                    market_info = m
+                    break
+        if market_info is None:
+            # Фоллбэк: если по каким-то причинам не нашли через перебор, пробуем напрямую
+            try:
+                market_info = ex.market(uni)
+            except Exception:
+                pass
+
+        if verbose and market_info:
+            print(f"[RECONCILE] Market info: type={market_info.get('type')} linear={market_info.get('linear')} inverse={market_info.get('inverse')} contractSize={market_info.get('contractSize')}")
         print(f"[RECONCILE] Done: inserted={inserts}, updated={updates}, unchanged={equals}, total_fetched={len(rows)}")
 
 
 def reconcile_range_ohlcv(symbol: str, timeframe: str, exchange_id: str, since_ms: int, until_ms: int, verbose: bool = False) -> None:
     """Сверяет и обновляет OHLCV в БД с биржей в заданном диапазоне [since_ms..until_ms]."""
     if (exchange_id or 'bybit').lower().strip() == 'bybit':
-        ex = create_exchange(exchange_id, default_type='linear')
-        uni = map_symbol_on_exchange(ex, symbol)
+        ex = create_exchange(exchange_id)
+        # Для Bybit linear мы явно конструируем unified символ
+        uni_base = normalize_symbol(symbol).split('/')[0]
+        uni_quote = normalize_symbol(symbol).split('/')[1]
+        uni = f"{uni_base}/{uni_quote}:USDT" # Предполагаем USDT perpetual
         if uni not in getattr(ex, 'symbols', []):
-            raise ValueError(f"[RANGE] {uni} not found in Bybit linear (fallback to spot is disabled)")
+            raise ValueError(f"[RANGE] {uni} not found in Bybit linear. Please check the symbol or market.")
     else:
         ex = create_exchange(exchange_id)
         uni = map_symbol_on_exchange(ex, symbol)
@@ -204,7 +221,7 @@ def reconcile_range_ohlcv(symbol: str, timeframe: str, exchange_id: str, since_m
         if verbose:
             print(f"[RECONCILE][RANGE] {symbol_db} {timeframe} range {iso_from_ms(since_ms)} .. {iso_from_ms(until_ms)} via {exchange_id} as {uni}")
 
-        rows = fetch_range_ohlcv(ex, uni, timeframe, since_ms, until_ms)
+        rows = fetch_range_ohlcv(ex, uni, timeframe, since_ms, until_ms, params={'category': 'linear'})
         if not rows:
             if verbose:
                 print("[RECONCILE][RANGE] No rows fetched from exchange. Nothing to do.")
@@ -245,12 +262,29 @@ def reconcile_range_ohlcv(symbol: str, timeframe: str, exchange_id: str, since_m
                     equals += 1
         db.commit()
 
-        try:
-            m = ex.market(uni)
-            if verbose:
-                print(f"[RECONCILE][RANGE] Market info: type={m.get('type')} linear={m.get('linear')} inverse={m.get('inverse')} contractSize={m.get('contractSize')}")
-        except Exception:
-            pass
+        # Убеждаемся, что получаем информацию для linear рынка
+        market_info = None
+        if ex.id == 'bybit':
+            # Ищем по market id среди linear swap/future
+            sym_db = normalize_to_db(symbol)
+            for k, m in getattr(ex, 'markets', {}).items():
+                if not isinstance(m, dict):
+                    continue
+                mid = str(m.get('id') or '').upper()
+                m_type = m.get('type')
+                is_linear = bool(m.get('linear'))
+                if mid == sym_db.upper() and is_linear and (m_type in ('swap', 'future')):
+                    market_info = m
+                    break
+        if market_info is None:
+            # Фоллбэк: если по каким-то причинам не нашли через перебор, пробуем напрямую
+            try:
+                market_info = ex.market(uni)
+            except Exception:
+                pass
+
+        if verbose and market_info:
+            print(f"[RECONCILE][RANGE] Market info: type={market_info.get('type')} linear={market_info.get('linear')} inverse={market_info.get('inverse')} contractSize={market_info.get('contractSize')}")
         if verbose:
             print(f"[RECONCILE][RANGE] Done: inserted={inserts}, updated={updates}, unchanged={equals}, total_fetched={len(rows)}")
 

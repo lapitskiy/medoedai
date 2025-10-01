@@ -1,4 +1,6 @@
 from flask import Blueprint, jsonify, request, current_app
+from celery.result import AsyncResult
+from tasks import celery
 from pathlib import Path
 import os
 from utils.config_loader import get_config_value
@@ -1068,6 +1070,62 @@ def oos_test_model():
             result_payload['ohlcv_data'] = []
 
         return jsonify(result_payload)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@models_admin_bp.post('/oos_test_model_async')
+def oos_test_model_async():
+    try:
+        data = request.get_json(silent=True) or {}
+        payload = {
+            'filename': (data.get('filename') or data.get('model') or '').strip(),
+            'code': (data.get('code') or '').strip(),
+            'days': int(data.get('days') or 30),
+            'start_capital': data.get('start_capital'),
+            'fee_enabled': data.get('fee_enabled'),
+            'fee_rate': data.get('fee_rate'),
+            'gate_disable': data.get('gate_disable'),
+            'gate_scale': data.get('gate_scale'),
+            'exchange': (data.get('exchange') or 'bybit'),
+        }
+        # Отправляем задачу по имени без прямого импорта, чтобы избежать циклов
+        task = celery.send_task('tasks.oos_tasks.run_oos_test', kwargs={'payload': payload}, queue='oos')
+        try:
+            rc_id = f"ui:oos:tasks"
+            from utils.redis_utils import get_redis_client
+            r = get_redis_client()
+            r.lrem(rc_id, 0, task.id)
+            r.lpush(rc_id, task.id)
+            r.ltrim(rc_id, 0, 99)
+        except Exception:
+            pass
+        return jsonify({'success': True, 'task_id': task.id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@models_admin_bp.get('/oos_test_status')
+def oos_test_status():
+    try:
+        task_id = (request.args.get('task_id') or '').strip()
+        if not task_id:
+            return jsonify({'success': False, 'error': 'task_id required'}), 400
+        ar = AsyncResult(task_id, app=celery)
+        resp = {
+            'success': True,
+            'task_id': task_id,
+            'state': ar.state,
+        }
+        if ar.state in ('SUCCESS', 'FAILURE'):
+            try:
+                res = ar.result
+                # результат нашей задачи — json словарь
+                if isinstance(res, dict):
+                    resp['result'] = res
+            except Exception:
+                pass
+        return jsonify(resp)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

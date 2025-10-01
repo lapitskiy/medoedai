@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📈 OOS результаты</title>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.umd.js"></script>
+    <style>
+        #resultModelsSection { font-size: 12px; }
+        #resultModelsSection #resultModelsList { display: block; overflow: visible; padding: 0; }
+        #resultModelsTable { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        #resultModelsTable th, #resultModelsTable td { padding: 6px 8px; text-align: left; vertical-align: middle; }
+        #resultModelsTable th { background: #f5f7fb; font-weight: 600; }
+        #resultModelsTable tr:nth-child(even) { background: #fafbfe; }
+        #resultModelsTable .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+        #resultModelsTable .muted { color: #6b7280; }
+        #resultModelsTable .nowrap { white-space: nowrap; }
+        #resultModelsTable .truncate { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
+        #resultModelsSection .button-group { margin-bottom: 10px; }
+        #resultModelsSection .btn.btn-danger { font-size: 12px; padding: 6px 10px; }
+        #resultModelsSection .btn { font-size: 11px; padding: 4px 8px; margin: 1px; white-space: nowrap; }
+        #resultModelsSection .btn-group { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+        #resultModelsSection .btn-group .btn { margin: 0; }
+    </style>
+</head>
+<body>
+    <nav class="sidebar">
+        <h3>📋 Навигация</h3>
+        <ul class="sidebar-nav">
+            <li><a href="/" class="back-link">← На главную</a></li>
+            <li><a href="javascript:history.back()">← Назад</a></li>
+            <li><a href="#result-models" onclick="scrollToSection('result-models')">🗑️ Модели в result</a></li>
+            <li><a href="#oos-results" onclick="scrollToSection('oos-results')">📈 OOS результаты</a></li>
+        </ul>
+    </nav>
+
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <div class="container">
+        <div class="main-content">
+            <div class="header">
+                <h1>📈 OOS и управление Result</h1>
+                <p>История тестов и очистка папки result</p>
+            </div>
+
+            <div class="content">
+                <a href="/" class="back-link">← Вернуться на главную</a>
+
+                <div class="section" id="result-models">
+                    <h2>🗑️ Модели в result</h2>
+                    <p>Показывает файлы в папке <code>result/</code> с краткой статистикой. Можно удалить комплект (веса, буфер, результат) по коду модели.</p>
+                    <div class="button-group">
+                        <button class="btn btn-info" onclick="refreshResultModels()">🔄 Обновить список</button>
+                    </div>
+                    <div id="resultModelsList">
+                        <div class="loading"><div class="spinner"></div>Загрузка...</div>
+                    </div>
+                </div>
+
+                <div class="section" id="oos-results">
+                    <h2>📈 Результаты OOS (копируемые)</h2>
+                    <div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                        <button class="btn btn-info" onclick="openOOSModal()">⚙️ Настройки OOS</button>
+                        <button class="btn btn-secondary" onclick="clearOOSResults()">🗑️ Очистить результаты</button>
+                        <div class="muted" style="font-size:12px;">
+                            <strong>Критерии оценки:</strong><br>
+                            ✅ <span style="color:#10b981;">Кандидат на дообучение</span>: ROI>10%, PF≥1.2, PLR>1.0, MaxDD<40%<br>
+                            ❌ <span style="color:#ef4444;">Дообучать нельзя</span>: ROI≤0% ИЛИ PF<1.0 ИЛИ PLR<1.0 ИЛИ MaxDD>70%<br>
+                            ⚠️ <span style="color:#6b7280;">Требует анализа</span>: средние показатели
+                        </div>
+                    </div>
+                    <div id="oosChart" style="height: 400px; margin-bottom: 20px;"></div>
+                    <div id="oosResults"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function scrollToSection(id){
+            const el = document.getElementById(id);
+            if(el){ el.scrollIntoView({behavior:'smooth'}); }
+        }
+
+        function toggleSidebar(){ document.body.classList.toggle('sidebar-open'); }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            try { ensureResultModelsSection(); refreshResultModels(); } catch(_){ }
+            try { ensureOOSPanel(); } catch(_){ }
+        });
+
+        function ensureResultModelsSection(){}
+        function ensureOOSPanel(){}
+    </script>
+    <script>
+        // --- Вставлен полный JS блок из models.html ---
+        async function refreshResultModels() {
+            ensureResultModelsSection();
+            const listDiv = document.getElementById('resultModelsList');
+            if (!listDiv) return;
+            listDiv.innerHTML = '<div class="loading"><div class="spinner"></div>Загрузка...</div>';
+            try {
+                const symResp = await fetch('/api/runs/symbols');
+                const symData = await symResp.json();
+                if(!symData.success){ listDiv.innerHTML = '<div class="status error">Ошибка загрузки символов</div>'; return; }
+                const symbols = Array.isArray(symData.symbols)? symData.symbols: [];
+                if(symbols.length===0){ listDiv.innerHTML = '<div class="status info">📭 Папка result пуста</div>'; return; }
+
+                const rows = [];
+                for(const s of symbols){
+                    try{
+                        const r = await fetch('/api/runs/list?symbol='+encodeURIComponent(s));
+                        const d = await r.json();
+                        const runs = Array.isArray(d.runs)? d.runs: [];
+                        const idToNode = {}; const idToChildren = {};
+                        runs.forEach(x=>{ idToNode[x.run_id]=x; idToChildren[x.run_id]=[]; });
+                        runs.forEach(x=>{
+                            if(x.parent_run_id) {
+                                if(idToChildren[x.parent_run_id]) {
+                                    idToChildren[x.parent_run_id].push(x.run_id);
+                                }
+                            }
+                        });
+                        const roots = runs.filter(x=>!x.parent_run_id || !idToNode[x.parent_run_id]).map(x=>x.run_id);
+
+                        async function renderRunRow(runId, depth){
+                            const run = idToNode[runId]; if(!run) return;
+                            let win = 'N/A', plr = 'N/A', episodes = 'N/A';
+                            let isBad = false;
+                            if(typeof run.winrate === 'number') {
+                                win = (run.winrate * 100).toFixed(1) + '%';
+                                if(run.winrate < 0.5) isBad = true;
+                            }
+                            if(typeof run.pl_ratio === 'number') {
+                                plr = run.pl_ratio.toFixed(2);
+                                if(run.pl_ratio < 1.0) isBad = true;
+                            }
+                            if(run.episodes != null) episodes = run.episodes;
+                            const indent = `<span style="display:inline-block; width:${depth*16}px;"></span>`;
+                            const label = `${depth>0?'▸ ':''}${run.run_id}`;
+                            const parent = (run.parent_run_id && idToNode[run.parent_run_id]) ? run.parent_run_id : '—';
+                            const oosBtn = run.model_path ? `<button class="btn btn-info" onclick="runOOSTest('${run.run_id}','${run.model_path}')">Test</button>` : '';
+                            const showResultsBtn = `<button class="btn btn-secondary" onclick="showOOSResults('${s}','${run.run_id}')">Result</button>`;
+                            const graphBtn = `<a class="btn btn-secondary" target="_blank" href="/oos_graph?symbol=${encodeURIComponent(s)}&run=${encodeURIComponent(run.run_id)}">Graph</a>`;
+                            const delBtn = `<button class="btn btn-danger" onclick="deleteRun('${s}','${run.run_id}')">✖</button>`;
+                            const buttonsHtml = `<div class="btn-group">${oosBtn}${showResultsBtn}${graphBtn}${delBtn}</div>`;
+                            const rowStyle = isBad ? 'style="background-color: #fef2f2; border-left: 3px solid #ef4444;"' : '';
+                            rows.push(`
+                                <tr ${rowStyle}>
+                                    <td class="nowrap mono">${s}</td>
+                                    <td class="nowrap mono">${indent}${label}</td>
+                                    <td class="nowrap mono">${parent}</td>
+                                    <td class="nowrap">${win}</td>
+                                    <td class="nowrap">${plr}</td>
+                                    <td class="nowrap">${episodes}</td>
+                                    <td class="nowrap" style="text-align:right;">${buttonsHtml}</td>
+                                </tr>
+                            `);
+                            const children = idToChildren[runId]||[];
+                            for(const cid of children){ await renderRunRow(cid, depth+1); }
+                        }
+                        for(const rootId of roots){ await renderRunRow(rootId, 0); }
+                    }catch(e){ }
+                }
+                const header = `
+                    <thead>
+                        <tr>
+                            <th class="nowrap">Символ</th>
+                            <th class="nowrap">Модель</th>
+                            <th class="nowrap">Родитель</th>
+                            <th class="nowrap">Winrate</th>
+                            <th class="nowrap">P/L Ratio</th>
+                            <th class="nowrap">Эпизоды</th>
+                            <th class="nowrap" style="width:300px; text-align:right;">Действия</th>
+                        </tr>
+                    </thead>`;
+                listDiv.innerHTML = rows.length>0 ? `<table id="resultModelsTable">${header}<tbody>${rows.join('')}</tbody></table>` : '<div class="status info">📭 Пусто</div>';
+            } catch (e) {
+                listDiv.innerHTML = `<div class="status error">❌ Ошибка загрузки: ${e.message}</div>`;
+            }
+        }
+
+        function deleteRun(symbol, runId){
+            if(!confirm(`Удалить run ${runId} для ${symbol}?`)) return;
+            fetch('/api/runs/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({symbol, run_id: runId})})
+                .then(r=>r.json()).then(data=>{
+                    if(data.success){ refreshResultModels(); }
+                    else{ alert('Ошибка удаления: '+(data.error||'Unknown')); }
+                }).catch(e=> alert('Сеть: '+e.message));
+        }
+
+        async function showOOSResults(symbol, runId){
+            try{
+                const resp = await fetch(`/api/runs/oos_results?symbol=${encodeURIComponent(symbol)}&run_id=${encodeURIComponent(runId)}`);
+                const data = await resp.json();
+                if(!data.success){
+                    alert('❌ Ошибка загрузки результатов: ' + (data.error || 'Unknown'));
+                    return;
+                }
+                const oosData = data.data;
+                const counters = oosData.counters || {};
+                const history = oosData.history || [];
+                ensureOOSPanel();
+                const wrap = document.getElementById('oosResults');
+                wrap.innerHTML = '';
+                const totalTests = (counters.good||0) + (counters.bad||0) + (counters.neutral||0);
+                const summaryHtml = `
+                    <div class="card" style="margin-bottom: 16px; border: 1px solid #e5e7eb;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                            <div class="mono" style="font-weight:600;">📊 История OOS тестов: ${symbol}/${runId}</div>
+                            <div class="muted">Всего тестов: ${totalTests}</div>
+                        </div>
+                        <div style="margin:8px 0; display:flex;gap:16px;">
+                            <span class="badge" style="background:#10b981;color:#fff;border-radius:4px;padding:4px 8px;">
+                                ✅ Хорошие: ${counters.good || 0}
+                            </span>
+                            <span class="badge" style="background:#ef4444;color:#fff;border-radius:4px;padding:4px 8px;">
+                                ❌ Плохие: ${counters.bad || 0}
+                            </span>
+                            <span class="badge" style="background:#6b7280;color:#fff;border-radius:4px;padding:4px 8px;">
+                                ⚠️ Средние: ${counters.neutral || 0}
+                            </span>
+                        </div>
+                    </div>
+                `;
+                wrap.insertAdjacentHTML('afterbegin', summaryHtml);
+                const sortedHistory = [...history].reverse();
+                for(const test of sortedHistory){
+                    const metrics = test.metrics || {};
+                    const classification = test.classification || 'unknown';
+                    const ts = new Date(test.ts || '');
+                    const timeStr = ts.toLocaleString('ru-RU');
+                    let cardStyle = 'border: 1px solid #e5e7eb;';
+                    if(classification === 'good'){
+                        cardStyle = 'border: 1px solid #10b981; box-shadow: 0 0 0 2px rgba(16,185,129,0.12);';
+                    } else if(classification === 'bad'){
+                        cardStyle = 'border: 1px solid #ef4444; box-shadow: 0 0 0 2px rgba(239,68,68,0.12);';
+                    }
+                    const roiPct = metrics.roi_pct != null ? metrics.roi_pct.toFixed(2) + '%' : 'N/A';
+                    const winrate = metrics.winrate != null ? (metrics.winrate * 100).toFixed(1) + '%' : 'N/A';
+                    const plr = metrics.pl_ratio != null ? metrics.pl_ratio.toFixed(2) : 'N/A';
+                    const pf = metrics.profit_factor != null ? metrics.profit_factor.toFixed(2) : 'N/A';
+                    const maxdd = metrics.max_dd != null ? (metrics.max_dd * 100).toFixed(1) + '%' : 'N/A';
+                    const trades = metrics.trades != null ? metrics.trades : 'N/A';
+                    const gateInfo = test.gate_disable ? 'Q-gate: отключен' : (test.gate_scale != null ? `Q-gate: ${((1-test.gate_scale)*100).toFixed(0)}%` : 'Q-gate: стандарт');
+                    const testCard = `
+                        <div class="card" style="${cardStyle}">
+                            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                                <div class="mono" style="font-weight:600;">${test.days}д ${gateInfo}</div>
+                                <div class="muted">${timeStr}</div>
+                            </div>
+                            <pre style="white-space:pre-wrap;margin:6px 0;">
+ROI: ${roiPct} | Winrate: ${winrate} | PLR: ${plr} | PF: ${pf} | MaxDD: ${maxdd} | Trades: ${trades}
+Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
+                            </pre>
+                        </div>
+                    `;
+                    wrap.insertAdjacentHTML('beforeend', testCard);
+                }
+            }catch(e){
+                console.error('[OOS Results] error', e);
+                alert('❌ Ошибка загрузки результатов: ' + e.message);
+            }
+        }
+
+        function clearOOSResults(){
+            const wrap = document.getElementById('oosResults');
+            if(wrap){ wrap.innerHTML = '<div class="status info">📭 Результаты очищены</div>'; }
+        }
+
+        function openOOSModal(){
+            if(document.getElementById('oosModal')){ document.getElementById('oosModal').style.display='block'; return; }
+            const html = `
+                <div id="oosModal" style="position:fixed;inset:0;display:block;background:rgba(0,0,0,0.4);z-index:9999;">
+                    <div style="background:#fff;max-width:460px;margin:10% auto;padding:16px;border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.2);">
+                        <h3 style="margin-top:0;">⚙️ Настройки OOS</h3>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="oosGateDisable"> Отключить Q‑gate (T1/T2=0)</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Биржа для OOS</label>
+                            <select id="oosExchange" class="form-control">
+                                <option value="bybit" selected>Bybit</option>
+                                <option value="binance">Binance</option>
+                            </select>
+                            <div class="muted">Если выбранная биржа недоступна, используется авто‑фолбэк</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Снизить пороги Q‑gate на долю (0..1)</label>
+                            <input type="number" id="oosGateScale" class="form-control" step="0.05" min="0" max="1" placeholder="например, 0.5">
+                            <div class="muted">0.5 = пороги вдвое ниже; пусто = без изменений</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Стартовый капитал (для MaxDD)</label>
+                            <input type="number" id="oosStartCapital" class="form-control" step="100" min="0" placeholder="например, 10000">
+                            <div class="muted">Эквити = старт + PnL; MaxDD считается от эквити</div>
+                        </div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="oosMultiRuns"> Выполнить 3 прогона: 100% / 50% / 0% порогов</label>
+                        </div>
+                        <div style="text-align:right;display:flex;gap:8px;justify-content:flex-end;">
+                            <button class="btn" onclick="document.getElementById('oosModal').style.display='none'">Закрыть</button>
+                            <button class="btn btn-info" onclick="document.getElementById('oosModal').style.display='none'">OK</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', html);
+        }
+
+        function ensureOOSPanel(){}
+
+        async function runOOSTest(code, filename){
+            const file = filename || '';
+            const name = code || (file.split('/').pop().split('\').pop());
+            try{
+                const btn = event.target; const prev = btn.textContent; btn.disabled=true; btn.textContent='⏳ OOS...';
+                const gateDisable = !!document.getElementById('oosGateDisable')?.checked;
+                const multiRuns = !!document.getElementById('oosMultiRuns')?.checked;
+                let gateScale = document.getElementById('oosGateScale')?.value;
+                gateScale = gateScale===''? null : Number(gateScale);
+                let startCapital = document.getElementById('oosStartCapital')?.value;
+                startCapital = startCapital===''? null : Number(startCapital);
+                const exchangeSel = document.getElementById('oosExchange');
+                const exchange = exchangeSel ? (exchangeSel.value||'bybit') : 'bybit';
+                const payloadBase = { filename:file, code:code, gate_disable: gateDisable, gate_scale: gateScale, start_capital: startCapital, exchange };
+                const windows = [30,60,90];
+                const scales = multiRuns ? [0.0, 0.5, 1.0] : [null];
+                const allResults = [];
+                const pending = [];
+                for(const days of windows){
+                    for(const s of scales){
+                        const payload = {...payloadBase, days};
+                        if (s !== null){ payload.gate_disable = false; payload.gate_scale = s; }
+                        const r = await fetch('/oos_test_model_async', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+                        const j = await r.json().catch(()=>({success:false,error:'bad json'}));
+                        if (j && j.success && j.task_id){ pending.push({days, scale:s, task_id:j.task_id}); }
+                        else { allResults.push({days, scale:s, data:j}); }
+                    }
+                }
+                async function waitTask(task_id){
+                    for(let tries=0; tries<600; tries++){
+                        await new Promise(r=>setTimeout(r, 1000));
+                        const s = await fetch('/oos_test_status?task_id='+encodeURIComponent(task_id));
+                        const sj = await s.json().catch(()=>null);
+                        if (sj && sj.state === 'SUCCESS' && sj.result){ return sj.result; }
+                        if (sj && sj.state === 'FAILURE' && sj.result){ return sj.result; }
+                    }
+                    return {success:false, error:'timeout waiting task '+task_id};
+                }
+                const settled = await Promise.all(pending.map(async item=>{
+                    const data = await waitTask(item.task_id);
+                    return {days:item.days, scale:item.scale, data};
+                }));
+                allResults.push(...settled);
+                btn.disabled=false; btn.textContent=prev;
+                ensureOOSPanel();
+                const wrap = document.getElementById('oosResults');
+                wrap.innerHTML = '';
+                const first = (allResults[0]||{}).data || {success:false};
+                const chartDiv = document.getElementById('oosChart');
+                if (chartDiv) { chartDiv.innerHTML = ''; }
+                if(!first.success){
+                    const err = '❌ OOS: '+(first.error||'ошибка');
+                    if (wrap){
+                        const el = document.createElement('div'); el.className = 'status error'; el.textContent = err; wrap.prepend(el);
+                    } else { alert(err); }
+                    return;
+                }
+                function renderCard(title, res){
+                    const r = (res||{}).result || {};
+                    const details = Array.isArray(r.trades_details)? r.trades_details: [];
+                    const roiPct = (r && r.start_capital && typeof r.pnl_total === 'number') ? ((r.pnl_total / r.start_capital) * 100.0) : null;
+                    const isGood = (roiPct!=null && roiPct>10) && (r.profit_factor==null || r.profit_factor>=1.2) && (r.pl_ratio==null || r.pl_ratio>1.0) && (r.max_dd==null || r.max_dd<0.40);
+                    const isBad  = (roiPct!=null && roiPct<=0) || (r.profit_factor!=null && r.profit_factor<1.0) || (r.pl_ratio!=null && r.pl_ratio<1.0) || (r.max_dd!=null && r.max_dd>0.70);
+                    let statusBadge = '';
+                    if (isGood) {
+                        statusBadge = '<span class="badge" style="background:#10b981;color:#fff;border-radius:4px;padding:2px 6px;">✅ Кандидат на дообучение</span>';
+                    } else if (isBad) {
+                        statusBadge = '<span class="badge" style="background:#ef4444;color:#fff;border-radius:4px;padding:2px 6px;">❌ Дообучать нельзя</span>';
+                    } else {
+                        statusBadge = '<span class="badge" style="background:#6b7280;color:#fff;border-radius:4px;padding:2px 6px;">⚠️ Требует анализа</span>';
+                    }
+                    const dc = (r.decisions_counts||{});
+                    const dBuy = Number(dc.buy||0), dHold = Number(dc.hold||0), dSell = Number(dc.sell||0);
+                    const dTotal = (typeof r.decisions_total==='number')? r.decisions_total : (dBuy + dHold + dSell);
+                    const ni = (r.nan_indicators!=null)? r.nan_indicators: '—';
+                    const ii = (r.inf_indicators!=null)? r.inf_indicators: '—';
+                    const lines = [title + ' ' + statusBadge,
+                        `Winrate: ${r.winrate!=null?(r.winrate*100).toFixed(1)+'%':'N/A'}`,
+                        `PLR: ${r.pl_ratio!=null?r.pl_ratio.toFixed(2):'N/A'}`,
+                        `PF: ${r.profit_factor!=null?r.profit_factor.toFixed(2):'N/A'}`,
+                        `MaxDD: ${r.max_dd!=null?(r.max_dd*100).toFixed(1)+'%':'N/A'}`,
+                        `PnL: ${roiPct!=null?roiPct.toFixed(2)+'%':'N/A'}`,
+                        `Trades: ${r.trades!=null?r.trades:'N/A'}`,
+                        `Decisions: B=${dBuy} H=${dHold} S=${dSell} (total ${dTotal})`,
+                        `Indicators NaN: ${ni} / Inf: ${ii}`,
+                        r.symbol? `Symbol: ${r.symbol}`: '',
+                        r.days!=null? `Window: ${r.days}d`: ''
+                    ].filter(Boolean);
+                    const text = lines.join('\n');
+                    const item = document.createElement('div'); item.className = 'card';
+                    if(isGood){ item.style.border = '1px solid #10b981'; item.style.boxShadow = '0 0 0 2px rgba(16,185,129,0.12)'; }
+                    else if(isBad){ item.style.border = '1px solid #ef4444'; item.style.boxShadow = '0 0 0 2px rgba(239,68,68,0.12)'; }
+                    const ts = new Date(); const hh = String(ts.getHours()).padStart(2,'0'); const mm = String(ts.getMinutes()).padStart(2,'0');
+                    const tradesFile = r.trades_file || '';
+                    const symbolForChart = r.symbol || '';
+                    const runIdForChart = res.run_id || '';
+                    let tradesButton = '';
+                    if (tradesFile && symbolForChart && runIdForChart) {
+                        const q = `symbol=${encodeURIComponent(symbolForChart)}&run=${encodeURIComponent(runIdForChart)}&trades=${encodeURIComponent(tradesFile)}`;
+                        tradesButton = `<a class="btn btn-info" target="_blank" title="Открыть график" href="/oos_graph?${q}">График</a>`;
+                    }
+                    item.innerHTML = `
+                        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><div class="mono" style="font-weight:600;">${name}</div><div class="muted">${hh}:${mm}</div></div>
+                        <pre style="white-space:pre-wrap;margin:6px 0;">${text}</pre>
+                        <div style="text-align:right;display:flex;gap:8px;justify-content:flex-end;"><button class="btn" data-text="${text.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" onclick="copyText(this.getAttribute('data-text'))">Сохранить</button>${tradesButton}</div>`;
+                    return item;
+                }
+                const groups = {30:[],60:[],90:[]};
+                for(const r of allResults){ if(r.data&&r.data.success) groups[r.days].push(r); }
+                const firstResult = allResults.find(r => r.data && r.data.success)?.data?.result || {};
+                const ohlcvData = allResults.find(r => r.data && r.data.success)?.data?.ohlcv_data || [];
+                const tradesFilePath = allResults.find(r => r.data && r.data.success)?.data?.result?.trades_file || '';
+                const runId = allResults.find(r => r.data && r.data.success)?.data?.run_id || '';
+                const symbol = firstResult.symbol || '';
+                if (ohlcvData.length > 0 && tradesFilePath && runId && symbol) {
+                    await loadAndRenderTradesChart(symbol, runId, tradesFilePath, ohlcvData);
+                }
+                let stats = {good: 0, bad: 0, neutral: 0};
+                for(const r of allResults){
+                    if(r.data && r.data.success){
+                        const res = r.data.result || {};
+                        const roiPct = (res && res.start_capital && typeof res.pnl_total === 'number') ? ((res.pnl_total / res.start_capital) * 100.0) : null;
+                        const isGood = (roiPct!=null && roiPct>10) && (res.profit_factor==null || res.profit_factor>=1.2) && (res.pl_ratio==null || res.pl_ratio>1.0) && (res.max_dd==null || res.max_dd<0.40);
+                        const isBad  = (roiPct!=null && roiPct<=0) || (res.profit_factor!=null && res.profit_factor<1.0) || (res.pl_ratio!=null && res.pl_ratio<1.0) || (res.max_dd!=null && res.max_dd>0.70);
+                        if(isGood) stats.good++;
+                        else if(isBad) stats.bad++;
+                        else stats.neutral++;
+                    }
+                }
+                try {
+                    await fetch('/api/strategies/save_stats', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ filename: file, code: code, stats: stats })
+                    });
+                } catch(e) {
+                    console.warn('Failed to save OOS stats:', e);
+                }
+                for(const g of groups[30]){
+                    const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
+                    const card = renderCard(`✅ 30d (${pct})`, g.data);
+                    wrap.prepend(card);
+                }
+                for(const g of groups[60]){
+                    const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
+                    const card = renderCard(`✅ 60d (${pct})`, g.data);
+                    wrap.prepend(card);
+                }
+                for(const g of groups[90]){
+                    const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
+                    const card = renderCard(`✅ 90d (${pct})`, g.data);
+                    wrap.prepend(card);
+                }
+            }catch(e){ console.error('[OOS] error', e); alert('❌ OOS сеть: '+e.message); }
+        }
+
+        async function loadAndRenderTradesChart(symbol, runId, tradesFilePath, ohlcvData = []) {
+            const chartDiv = document.getElementById('oosChart');
+            if (!chartDiv) { console.error('oosChart div not found'); return; }
+            try {
+                const resp = await fetch(`/api/runs/trades?symbol=${encodeURIComponent(symbol)}&run_id=${encodeURIComponent(runId)}&trades_file=${encodeURIComponent(tradesFilePath)}`);
+                const data = await resp.json();
+                if (!data.success) {
+                    console.error('Failed to load trades data:', data.error);
+                    chartDiv.innerHTML = `<div class="status error">❌ Ошибка загрузки данных о сделках: ${data.error}</div>`;
+                    return;
+                }
+                const trades = Array.isArray(data.trades) ? data.trades : [];
+                renderChart(ohlcvData, trades);
+            } catch (e) {
+                console.error('[OOS Chart] error loading trades', e);
+                chartDiv.innerHTML = `<div class="status error">❌ Ошибка загрузки данных о сделках: ${e.message}</div>`;
+            }
+        }
+
+        let currentChart = null;
+        function renderChart(ohlcvData, trades) {
+            const chartDiv = document.getElementById('oosChart');
+            if (!chartDiv) return;
+            if (currentChart) {
+                currentChart.remove();
+                currentChart = null;
+            }
+            chartDiv.innerHTML = '';
+            const chart = LightweightCharts.createChart(chartDiv, {
+                width: chartDiv.clientWidth,
+                height: 400,
+                layout: { backgroundColor: '#ffffff', textColor: '#333' },
+                grid: { vertLines: { color: '#e1e2e4' }, horzLines: { color: '#e1e2e4' } },
+                timeScale: { timeVisible: true, secondsVisible: false },
+            });
+            currentChart = chart;
+            const candlestickSeries = chart.addCandlestickSeries({
+                upColor: '#4CAF50', downColor: '#F44336', borderVisible: false,
+                wickUpColor: '#4CAF50', wickDownColor: '#F44336',
+            });
+            const chartData = ohlcvData.map(d => ({
+                time: d.dt,
+                open: d.open,
+                high: d.high,
+                low: d.low,
+                close: d.close,
+            }));
+            candlestickSeries.setData(chartData);
+            const markers = trades.slice(-50).flatMap(trade => {
+                return [
+                    { time: trade.entry_ts, position: 'aboveBar', color: '#2196F3', shape: 'arrowUp', text: `Buy @ ${trade.entry_price.toFixed(2)}` },
+                    { time: trade.exit_ts, position: 'belowBar', color: '#FF9800', shape: 'arrowDown', text: `Sell @ ${trade.exit_price.toFixed(2)} | PnL ${trade.pnl.toFixed(2)}` },
+                ];
+            });
+            candlestickSeries.setMarkers(markers);
+            new ResizeObserver(entries => {
+                if (entries.length === 0 || entries[0].target.id !== 'oosChart') { return; }
+                const newRect = entries[0].contentRect;
+                chart.applyOptions({ width: newRect.width });
+            }).observe(chartDiv);
+            chart.timeScale().fitContent();
+        }
+
+        async function copyText(t){
+            try{ await navigator.clipboard.writeText(String(t||'')); }
+            catch(_){ try{ prompt('Скопируйте вручную:', String(t||'')); }catch(__){} }
+        }
+    </script>
+    <script src="/static/js/sidebar.js"></script>
+</body>
+</html>
+

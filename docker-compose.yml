@@ -182,9 +182,6 @@ services:
         echo '✅ Очередь train очищена' &&
         NPROC=$$(nproc); THREADS=$$(python -c 'import os,math; n=os.cpu_count() or 1; f=float(os.environ.get("TRAIN_CPU_FRACTION", "0.8")); print(max(1,int(n*f)))'); export OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$THREADS} MKL_NUM_THREADS=$${MKL_NUM_THREADS:-$$THREADS} TORCH_NUM_THREADS=$${TORCH_NUM_THREADS:-$$THREADS} OMP_SCHEDULE=$${OMP_SCHEDULE:-dynamic} MKL_DYNAMIC=$${MKL_DYNAMIC:-true} MKL_INTERFACE_LAYER=$${MKL_INTERFACE_LAYER:-LP64}; echo '🚀 CPU/GPU Optimization: Using '"$$THREADS"'/'"$$NPROC"' threads (OMP='"$$OMP_NUM_THREADS"', MKL='"$$MKL_NUM_THREADS"', TORCH='"$$TORCH_NUM_THREADS"')'; exec celery -A tasks worker -Q train -P $${CELERY_POOL:-prefork} -c $${CELERY_CONCURRENCY:-1} --loglevel=info
       "
-
-
-
   celery-beat:
     build: .
     container_name: celery-beat
@@ -202,6 +199,33 @@ services:
       - redis
       - celery-worker
     restart: unless-stopped
+
+  # Специализированный воркер для OOS, изолированная очередь 'oos'
+  celery-oos:
+    build: .
+    container_name: celery-oos
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      serving:
+        condition: service_started
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      PYTHONDONTWRITEBYTECODE: "1"
+      SERVING_URL: http://serving:8000/predict_ensemble
+      # ограничим потоки у научных либ, OOS CPU-bound
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      TORCH_NUM_THREADS: "4"
+      CUDA_VISIBLE_DEVICES: ""
+    env_file:
+      - .env
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    command: ["sh","-lc","celery -A tasks worker -Q oos -P prefork -c 2 --loglevel=info"]
 
   serving:
     build:

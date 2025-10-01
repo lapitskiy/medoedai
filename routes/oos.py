@@ -18,6 +18,14 @@ def oos_graph_page():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@oos_bp.get('/oos')
+def oos_page():
+    try:
+        return render_template('oos/oos.html')
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @oos_bp.get('/api/runs/trades_files')
 def api_runs_trades_files():
     try:

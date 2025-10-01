@@ -29,6 +29,7 @@ celery.conf.task_queues = (
     Queue('celery'),
     Queue('train'),
     Queue('trade'),
+    Queue('oos'),
 )
 celery.conf.task_default_queue = 'celery'
 celery.conf.task_routes = {
@@ -39,6 +40,7 @@ celery.conf.task_routes = {
     'tasks.celery_task_trade.execute_trade': {'queue': 'trade'},
     'tasks.celery_task_trade.start_trading_task': {'queue': 'trade'},
     'tasks.celery_task_trade.refresh_trading_status': {'queue': 'celery'},
+    'tasks.oos_tasks.run_oos_test': {'queue': 'oos'},
 }
 
 # Включаем периодический запуск торговли
@@ -63,3 +65,4 @@ else:
 # Импортируем модули с задачами, чтобы Celery их обнаружил
 import tasks.celery_tasks
 import tasks.celery_task_trade
+import tasks.oos_tasks

@@ -301,7 +301,10 @@ def db_get_or_fetch_ohlcv(
                 # Используем symbol_fetch (unified) если он определён, иначе fallback к symbol_cctx
                 _sym_to_use = symbol_fetch or symbol_cctx
                 print(f"[DB_OHLCV] Fetching {limit_fetch} candles for {_sym_to_use} {timeframe} since {datetime.fromtimestamp(since_ms/1000)}")
-                raw_ohlcv = exchange.fetch_ohlcv(_sym_to_use, timeframe, since=since_ms, limit=limit_fetch)
+                if exchange_id.lower() == 'bybit':
+                    raw_ohlcv = exchange.fetch_ohlcv(_sym_to_use, timeframe, since=since_ms, limit=limit_fetch, params={'category': 'linear'})
+                else:
+                    raw_ohlcv = exchange.fetch_ohlcv(_sym_to_use, timeframe, since=since_ms, limit=limit_fetch)
 
                 if (detailed_logs or audit_enabled) and raw_ohlcv:
                     try:
