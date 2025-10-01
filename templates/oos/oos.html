@@ -52,7 +52,7 @@
                     <h2>🗑️ Модели в result</h2>
                     <p>Показывает файлы в папке <code>result/</code> с краткой статистикой. Можно удалить комплект (веса, буфер, результат) по коду модели.</p>
                     <div class="button-group">
-                        <button class="btn btn-info" onclick="refreshResultModels()">🔄 Обновить список</button>
+                        <button class="btn btn-info" id="refreshResultModelsBtn">🔄 Обновить список</button>
                     </div>
                     <div id="resultModelsList">
                         <div class="loading"><div class="spinner"></div>Загрузка...</div>
@@ -62,8 +62,8 @@
                 <div class="section" id="oos-results">
                     <h2>📈 Результаты OOS (копируемые)</h2>
                     <div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-                        <button class="btn btn-info" onclick="openOOSModal()">⚙️ Настройки OOS</button>
-                        <button class="btn btn-secondary" onclick="clearOOSResults()">🗑️ Очистить результаты</button>
+                        <button class="btn btn-info" id="openOOSModalBtn">⚙️ Настройки OOS</button>
+                        <button class="btn btn-secondary" id="clearOOSResultsBtn">🗑️ Очистить результаты</button>
                         <div class="muted" style="font-size:12px;">
                             <strong>Критерии оценки:</strong><br>
                             ✅ <span style="color:#10b981;">Кандидат на дообучение</span>: ROI>10%, PF≥1.2, PLR>1.0, MaxDD<40%<br>
@@ -86,34 +86,43 @@
 
         function toggleSidebar(){ document.body.classList.toggle('sidebar-open'); }
 
-        document.addEventListener('DOMContentLoaded', function() {
-            try { ensureResultModelsSection(); refreshResultModels(); } catch(_){ }
-            try { ensureOOSPanel(); } catch(_){ }
-        });
-
-        function ensureResultModelsSection(){}
-        function ensureOOSPanel(){}
     </script>
     <script>
         // --- Вставлен полный JS блок из models.html ---
         async function refreshResultModels() {
-            ensureResultModelsSection();
+            console.log('refreshResultModels: starting');
             const listDiv = document.getElementById('resultModelsList');
-            if (!listDiv) return;
+            if (!listDiv) {
+                console.log('refreshResultModels: listDiv not found, returning');
+                return;
+            }
             listDiv.innerHTML = '<div class="loading"><div class="spinner"></div>Загрузка...</div>';
             try {
                 const symResp = await fetch('/api/runs/symbols');
                 const symData = await symResp.json();
-                if(!symData.success){ listDiv.innerHTML = '<div class="status error">Ошибка загрузки символов</div>'; return; }
+                console.log('refreshResultModels: /api/runs/symbols response:', symData);
+                if(!symData.success){
+                    console.error('Error fetching symbols:', symData.error);
+                    listDiv.innerHTML = '<div class="status error">Ошибка загрузки символов</div>';
+                    return;
+                }
                 const symbols = Array.isArray(symData.symbols)? symData.symbols: [];
+                console.log('refreshResultModels: processed symbols:', symbols);
                 if(symbols.length===0){ listDiv.innerHTML = '<div class="status info">📭 Папка result пуста</div>'; return; }
 
                 const rows = [];
                 for(const s of symbols){
                     try{
+                        console.log(`refreshResultModels: fetching runs for symbol: ${s}`);
                         const r = await fetch('/api/runs/list?symbol='+encodeURIComponent(s));
                         const d = await r.json();
+                        console.log(`refreshResultModels: /api/runs/list?symbol=${s} response:`, d);
+                        if (!d.success) {
+                            console.error(`Error fetching runs for ${s}:`, d.error);
+                            continue; // Пропустить этот символ и продолжить с другими
+                        }
                         const runs = Array.isArray(d.runs)? d.runs: [];
+                        console.log(`refreshResultModels: processed runs for ${s}:`, runs);
                         const idToNode = {}; const idToChildren = {};
                         runs.forEach(x=>{ idToNode[x.run_id]=x; idToChildren[x.run_id]=[]; });
                         runs.forEach(x=>{
@@ -149,9 +158,9 @@
                             const rowStyle = isBad ? 'style="background-color: #fef2f2; border-left: 3px solid #ef4444;"' : '';
                             rows.push(`
                                 <tr ${rowStyle}>
-                                    <td class="nowrap mono">${s}</td>
-                                    <td class="nowrap mono">${indent}${label}</td>
-                                    <td class="nowrap mono">${parent}</td>
+                                    <td class="nowrap">${s}</td>
+                                    <td class="nowrap">${indent}${label}</td>
+                                    <td class="nowrap">${parent}</td>
                                     <td class="nowrap">${win}</td>
                                     <td class="nowrap">${plr}</td>
                                     <td class="nowrap">${episodes}</td>
@@ -162,7 +171,7 @@
                             for(const cid of children){ await renderRunRow(cid, depth+1); }
                         }
                         for(const rootId of roots){ await renderRunRow(rootId, 0); }
-                    }catch(e){ }
+                    }catch(e){ console.error(`Error processing symbol ${s}:`, e); }
                 }
                 const header = `
                     <thead>
@@ -176,8 +185,12 @@
                             <th class="nowrap" style="width:300px; text-align:right;">Действия</th>
                         </tr>
                     </thead>`;
-                listDiv.innerHTML = rows.length>0 ? `<table id="resultModelsTable">${header}<tbody>${rows.join('')}</tbody></table>` : '<div class="status info">📭 Пусто</div>';
+                listDiv.innerHTML = rows.length>0 ? `<table id="resultModelsTable">${header}<tbody>${rows.join('')}</tbody></table>` : '<div class="status info">📭 Папка result пуста</div>';
+                if (rows.length === 0) {
+                    console.log('refreshResultModels: No rows rendered, resultModelsList should show empty message');
+                }
             } catch (e) {
+                console.error('Error in refreshResultModels:', e);
                 listDiv.innerHTML = `<div class="status error">❌ Ошибка загрузки: ${e.message}</div>`;
             }
         }
@@ -314,7 +327,7 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
 
         async function runOOSTest(code, filename){
             const file = filename || '';
-            const name = code || (file.split('/').pop().split('\').pop());
+            const name = code || (file.split('/').pop().split('\\').pop());
             try{
                 const btn = event.target; const prev = btn.textContent; btn.disabled=true; btn.textContent='⏳ OOS...';
                 const gateDisable = !!document.getElementById('oosGateDisable')?.checked;
@@ -421,7 +434,7 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                 }
                 const groups = {30:[],60:[],90:[]};
                 for(const r of allResults){ if(r.data&&r.data.success) groups[r.days].push(r); }
-                const firstResult = allResults.find(r => r.data && r.data.success)?.data?.result || {};
+                const firstResult = allResults.find(r => r.data && r.data.success)?.data || {};
                 const ohlcvData = allResults.find(r => r.data && r.data.success)?.data?.ohlcv_data || [];
                 const tradesFilePath = allResults.find(r => r.data && r.data.success)?.data?.result?.trades_file || '';
                 const runId = allResults.find(r => r.data && r.data.success)?.data?.run_id || '';
@@ -535,8 +548,15 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
             try{ await navigator.clipboard.writeText(String(t||'')); }
             catch(_){ try{ prompt('Скопируйте вручную:', String(t||'')); }catch(__){} }
         }
+
+        // Add event listeners after DOM is fully loaded and all functions are defined
+        document.addEventListener('DOMContentLoaded', function() {
+            try { refreshResultModels(); } catch(_){ console.error("Error calling refreshResultModels on DOMContentLoaded:", _); }
+            document.getElementById('refreshResultModelsBtn')?.addEventListener('click', refreshResultModels);
+            document.getElementById('openOOSModalBtn')?.addEventListener('click', openOOSModal);
+            document.getElementById('clearOOSResultsBtn')?.addEventListener('click', clearOOSResults);
+        });
     </script>
     <script src="/static/js/sidebar.js"></script>
 </body>
 </html>
-
