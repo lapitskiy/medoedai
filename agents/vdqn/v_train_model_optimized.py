@@ -1269,8 +1269,13 @@ def train_model_optimized(
         
         print(f"⏱️ ВРЕМЯ ОБУЧЕНИЯ:")
         print(f"  • Общее время: {total_training_time:.2f} секунд ({total_training_time/60:.1f} минут)")
-        print(f"  • Время на эпизод: {total_training_time/episode:.2f} секунд")
-        print(f"  • Эпизодов в минуту: {episode/(total_training_time/60):.1f}")
+        # Исправление ZeroDivisionError: Проверяем, что episode > 0 перед делением
+        if episode > 0:
+            print(f"  • Время на эпизод: {total_training_time/episode:.2f} секунд")
+            print(f"  • Эпизодов в минуту: {episode/(total_training_time/60):.1f}")
+        else:
+            print(f"  • Время на эпизод: Недоступно (эпизод = 0)")
+            print(f"  • Эпизодов в минуту: Недоступно (эпизод = 0)")
         
         stats_all = dqn_solver.print_trade_stats(all_trades)
         
