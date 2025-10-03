@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MedoedAI - 📊 Аналитика</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <link rel="stylesheet" href="/static/css/tabs.css">
+</head>
+<body>
+    <nav class="sidebar">
+        <h3>📋 Навигация</h3>
+        <ul class="sidebar-nav">
+            <li><a href="/#trading-agent">💰 Торговый агент</a></li>
+            <li><a href="/analitika" class="active">📊 Аналитика</a></li>
+            <li><a href="/#models">🤖 Модели</a></li>
+            <li><a href="/oos">📈 OOS</a></li>
+            <li><a href="/#data-management">📥 Данные</a></li>
+            <li><a href="/#system">🔧 Система</a></li>
+        </ul>
+    </nav>
+
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <div class="container">
+        <div class="main-content">
+            <div class="header">
+                <h1>📊 Аналитика результатов</h1>
+                <p>Выберите символ и run (result/&lt;SYMBOL&gt;/runs/&lt;run_id&gt;)</p>
+                <div class="button-group" style="margin-top: 12px;">
+                    <a href="/" class="btn btn-secondary">⬅ На главную</a>
+                </div>
+            </div>
+
+            <div class="content">
+                <div id="analytics-section" class="section">
+                    <div class="form-group">
+                        <label>Тип модели</label>
+                        <select id="modelTypeSelect" onchange="reloadSymbolsForModelType()">
+                            <option value="dqn" selected>🤖 DQN</option>
+                            <option value="sac">🌌 SAC</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Символ</label>
+                        <select id="indexSymbolSelect"></select>
+                    </div>
+                    <div class="form-group">
+                        <label>Run (UUID)</label>
+                        <select id="indexRunSelect"></select>
+                    </div>
+                    <div class="form-group" style="display: none;">
+                        <label>Файлы результатов (legacy)</label>
+                        <select id="resultsFileSelect"></select>
+                    </div>
+                    <div class="button-group">
+                        <button id="listResultsBtn" class="btn btn-info" onclick="loadIndexSymbols()">📋 Обновить список</button>
+                        <button id="analyzeResultsBtn" class="btn btn-primary" onclick="analyzeTrainingResultsSelected()">📈 Анализ результатов</button>
+                        <button id="analyzeBadTradesBtn" class="btn btn-warning" onclick="analyzeBadTradesSelected()">🔍 Плохие сделки</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div id="indexRunInfo" class="status info" style="display:none; white-space: pre-line;"></div>
+                    <div id="analysisStatus" class="status" style="display: none;"></div>
+                    <div id="analysisResults" class="results" style="display: none;"></div>
+                    <div id="filesList" class="results" style="display: none;"></div>
+                </div>
+
+                <div class="section">
+                    <div id="badTradesStatus" class="status" style="display: none;"></div>
+                    <div id="badTradesSummary" class="results" style="display: none;"></div>
+                    <div id="badTradesResults" class="results" style="display: none;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Функции для анализа результатов обучения перенесены с главной страницы
+        let indexRunsBySymbol = {};
+
+        async function parseJsonResponse(response) {
+            const text = await response.text();
+            const trimmed = (typeof text === 'string') ? text.trim() : '';
+            if (!response.ok) {
+                // Подробное сообщение о 404 для SAC API
+                if (response.status === 404 && trimmed.startsWith('<!doctype')) {
+                    throw new Error('Эндпоинт не найден (404). Возможно, сервер не поддерживает SAC-аналитику.');
+                }
+                const detail = trimmed ? trimmed.slice(0, 200) : (response.statusText || 'Неизвестная ошибка');
+                throw new Error(`HTTP ${response.status}: ${detail}`);
+            }
+            try {
+                return JSON.parse(text);
+            } catch (err) {
+                const detail = trimmed.slice(0, 200);
+                throw new Error(`Ответ сервера не в формате JSON${detail ? `: ${detail}` : ''}`);
+            }
+        }
+
+        function reloadSymbolsForModelType(){
+            indexRunsBySymbol = {};
+            const runSel = document.getElementById('indexRunSelect');
+            if(runSel){ runSel.innerHTML = '<option value="">—</option>'; }
+            loadIndexSymbols();
+        }
+
+        function getSelectedModelType(){
+            return (document.getElementById('modelTypeSelect')?.value || 'dqn').trim().toLowerCase();
+        }
+
+        async function loadIndexSymbols(){
+            const sel = document.getElementById('indexSymbolSelect');
+            const runSel = document.getElementById('indexRunSelect');
+            if(!sel) return;
+            try{
+                const modelType = getSelectedModelType();
+                const resp = await fetch(`/api/runs/symbols?model_type=${encodeURIComponent(modelType)}`);
+                const data = await resp.json();
+                const symbols = (data && data.success && Array.isArray(data.symbols))? data.symbols: [];
+                sel.innerHTML = symbols.length?
+                    symbols.map(s=>{
+                        const value = typeof s === 'string' ? s : (s.value || s.label || '');
+                        if(!value) return '';
+                        let label = typeof s === 'string' ? s : (s.label || s.value);
+                        if(value.toUpperCase().startsWith('SAC:')){
+                            label = value.split(':')[1] || label;
+                        }
+                        return `<option value="${value}">${label}</option>`;
+                    }).filter(Boolean).join('')
+                    : '<option value="">Нет символов</option>';
+                if(symbols.length){ await loadIndexRuns(); }
+                else if(runSel){ runSel.innerHTML = '<option value="">—</option>'; }
+            }catch(e){ if(sel) sel.innerHTML = '<option value="">Ошибка</option>'; }
+        }
+
+        async function loadIndexRuns(){
+            const sym = (document.getElementById('indexSymbolSelect')?.value||'').trim();
+            const runSel = document.getElementById('indexRunSelect');
+            if(!sym || !runSel) return;
+            try{
+                const modelType = getSelectedModelType();
+                const resp = await fetch(`/api/runs/list?model_type=${encodeURIComponent(modelType)}&symbol=${encodeURIComponent(sym)}`);
+                const data = await resp.json();
+                const runs = (data && data.success && Array.isArray(data.runs))? data.runs: [];
+                const symbolDir = runs.length ? (runs[0].symbol_dir || sym.replace(/^SAC:/i, '')) : sym.replace(/^SAC:/i, '');
+                indexRunsBySymbol[sym] = { list: runs, modelType, symbolDir };
+                runSel.innerHTML = runs.length? runs.map(r=>`<option value="${r.run_id}">${r.run_id}</option>`).join(''): '<option value="">Нет runов</option>';
+                try{ await showIndexRunInfo(); }catch(_){ }
+            }catch(e){ runSel.innerHTML = '<option value="">Ошибка</option>'; }
+        }
+
+        function getSelectedTrainResultPath(){
+            const sym = (document.getElementById('indexSymbolSelect')?.value||'').trim();
+            const runId = (document.getElementById('indexRunSelect')?.value||'').trim();
+            const entry = indexRunsBySymbol[sym] || indexRunsBySymbol[sym.replace(/^SAC:/i, '')] || null;
+            const runs = entry?.list || [];
+            const modelType = entry?.modelType || getSelectedModelType();
+            const symbolDir = entry?.symbolDir || sym.replace(/^SAC:/i, '');
+            const found = runs.find(r=>r.run_id===runId);
+            if(found && found.result_path){ return found.result_path; }
+            if(sym && runId){
+                if(modelType === 'sac'){
+                    return `result/sac/${symbolDir.toLowerCase()}/runs/${runId}/train_result.pkl`;
+                }
+                return `result/${symbolDir}/runs/${runId}/train_result.pkl`;
+            }
+            return '';
+        }
+
+        async function showIndexRunInfo(){
+            const infoDiv = document.getElementById('indexRunInfo');
+            if(!infoDiv) return;
+            const sym = (document.getElementById('indexSymbolSelect')?.value||'').trim();
+            const runId = (document.getElementById('indexRunSelect')?.value||'').trim();
+            if(!sym || !runId){ infoDiv.style.display='none'; return; }
+            const entry = indexRunsBySymbol[sym] || indexRunsBySymbol[sym.replace(/^SAC:/i, '')] || null;
+            const modelType = entry?.modelType || getSelectedModelType();
+            const symbolDir = entry?.symbolDir || sym.replace(/^SAC:/i, '');
+            const basePath = modelType === 'sac' ? `result/sac/${symbolDir.toLowerCase()}` : `result/${symbolDir}`;
+            const runs = entry?.list || [];
+            const found = runs.find(r=>r.run_id===runId);
+            const modelPath = found?.model_path || `${basePath}/runs/${runId}/model.pth`;
+            try{
+                const resp = await fetch('/get_result_model_info', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ filename: modelPath, model_type: modelType }) });
+                const result = await resp.json();
+                if(!result.success){
+                    infoDiv.className = 'status error';
+                    infoDiv.textContent = '❌ ' + (result.error || 'Ошибка получения информации');
+                    infoDiv.style.display = 'block';
+                    return;
+                }
+                const stats = result.stats || {};
+                const winrate = typeof stats.winrate === 'number' ? (stats.winrate * 100).toFixed(1) + '%' : 'N/A';
+                const plr = typeof stats.pl_ratio === 'number' ? stats.pl_ratio.toFixed(2) : 'N/A';
+                const trades = (stats.trades_count != null) ? stats.trades_count : 'N/A';
+                const episodes = (result.episodes != null) ? result.episodes : 'N/A';
+                const plannedEpisodes = (result.episodes_planned != null) ? result.episodes_planned : '—';
+                const episodeLength = (result.episode_length != null) ? result.episode_length : null;
+                const bestWinrate = (typeof result.best_winrate === 'number') ? (result.best_winrate * 100).toFixed(1) + '%' : 'N/A';
+                const episodeWinrateSummary = result.episode_winrate_summary || null;
+                const validationSummary = result.validation_summary || null;
+                const seed = (result.train_metadata && result.train_metadata.seed != null)
+                    ? result.train_metadata.seed
+                    : (result.cfg_snapshot && result.cfg_snapshot.seed != null)
+                        ? result.cfg_snapshot.seed
+                        : (result.seed ?? '—');
+                const cfgSeed = (result.cfg_snapshot && result.cfg_snapshot.seed != null) ? result.cfg_snapshot.seed : null;
+                const gpu = (result.cuda_available===true) ? (result.gpu_name || 'GPU') : (result.cuda_available===false ? 'CPU' : '—');
+                const totalTime = (typeof result.total_training_time === 'number') ? result.total_training_time : null;
+                const avgTime = (typeof result.avg_time_per_episode_sec === 'number') ? result.avg_time_per_episode_sec : (totalTime && episodes ? (totalTime/episodes) : null);
+                const fmtSec = (s)=>{ if(!s && s!==0) return 'N/A'; try{ const m=Math.floor(s/60), r=Math.round(s%60); return (m>0?`${m}м `:'')+`${r}с`; }catch(_){ return s.toFixed? s.toFixed(1)+'с' : String(s); } };
+
+                const lines = [];
+                lines.push(`Символ: ${symbolDir.toUpperCase()}`);
+                lines.push(`Run: ${runId}`);
+                lines.push(`Seed: ${seed}`);
+                if (episodeLength !== null && episodeLength !== undefined) {
+                    lines.push(`Длина эпизода (шагов): ${episodeLength}`);
+                }
+                lines.push(`Устройство: ${gpu}`);
+                lines.push(`Эпизодов (факт/план): ${episodes} / ${plannedEpisodes}`);
+                lines.push(`Winrate: ${winrate}`);
+                lines.push(`Лучший winrate: ${bestWinrate}`);
+                if (episodeWinrateSummary && typeof episodeWinrateSummary.count === 'number') {
+                    const avgWr = (typeof episodeWinrateSummary.avg === 'number') ? (episodeWinrateSummary.avg * 100).toFixed(1) + '%' : 'N/A';
+                    const lastWr = (typeof episodeWinrateSummary.last === 'number') ? (episodeWinrateSummary.last * 100).toFixed(1) + '%' : 'N/A';
+                    lines.push(`Winrate эпизодов: avg ${avgWr}, last ${lastWr} (${episodeWinrateSummary.count} эп.)`);
+                }
+                lines.push(`P/L Ratio: ${plr}`);
+                lines.push(`Сделок: ${trades}`);
+                if (validationSummary && typeof validationSummary.count === 'number') {
+                    const avgVal = (typeof validationSummary.avg === 'number') ? validationSummary.avg.toFixed(2) : 'N/A';
+                    const lastVal = (typeof validationSummary.last === 'number') ? validationSummary.last.toFixed(2) : 'N/A';
+                    lines.push(`Валидация: avg ${avgVal}, last ${lastVal} (${validationSummary.count} чеков)`);
+                }
+                lines.push(`Буфер: ${result.replay_exists ? '✅ есть' : '❌ нет'}`);
+                lines.push(`Результаты обучения: ${result.train_result_exists ? '✅ есть' : '❌ нет'}`);
+                lines.push(`Среднее время за эпизод: ${fmtSec(avgTime)}`);
+                lines.push(`Общее время обучения: ${totalTime ? fmtSec(totalTime) : 'N/A'}`);
+                lines.push(`Модель: ${result.model_file ? result.model_file.split('/').pop().split('\\').pop() : 'N/A'}`);
+                lines.push(`Путь к модели: ${result.model_path || result.model_file || '—'}`);
+                lines.push(`Путь к буферу: ${result.buffer_path || result.replay_file || '—'}`);
+                lines.push(`Результаты: ${result.train_result_file ? result.train_result_file.split('/').pop().split('\\').pop() : '—'}`);
+                infoDiv.className = 'status info';
+                infoDiv.innerText = lines.join('\n');
+                infoDiv.style.display = 'block';
+            }catch(e){
+                infoDiv.className = 'status error';
+                infoDiv.textContent = '❌ Ошибка сети: ' + e.message;
+                infoDiv.style.display = 'block';
+            }
+        }
+
+        async function listTrainingResults() {
+            const statusDiv = document.getElementById('analysisStatus');
+            const filesDiv = document.getElementById('filesList');
+            const selectEl = document.getElementById('resultsFileSelect');
+            const listBtn = document.getElementById('listResultsBtn');
+            
+            listBtn.disabled = true;
+            listBtn.textContent = '⏳ Поиск файлов...';
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'status running';
+            statusDiv.textContent = '🔍 Поиск файлов результатов обучения...';
+            
+            try {
+                const response = await fetch('/list_training_results', {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+                const result = await parseJsonResponse(response);
+                
+                if (result.success) {
+                    statusDiv.className = 'status success';
+                    statusDiv.textContent = '✅ ' + result.message;
+                    filesDiv.style.display = 'block';
+                    
+                    let filesText = `📋 ДОСТУПНЫЕ ФАЙЛЫ РЕЗУЛЬТАТОВ:\n`;
+                    filesText += `=====================================\n\n`;
+                    
+                    if (result.files && result.files.length > 0) {
+                        selectEl.innerHTML = '';
+                        for (const file of result.files) {
+                            const opt = document.createElement('option');
+                            opt.value = file.filename;
+                            const date = new Date(file.created * 1000).toLocaleString();
+                            const sizeKB = (file.size / 1024).toFixed(1);
+                            opt.textContent = `${file.filename} (${sizeKB} KB, ${date})`;
+                            selectEl.appendChild(opt);
+                        }
+                        for (const file of result.files) {
+                            const date = new Date(file.created * 1000).toLocaleString();
+                            const sizeKB = (file.size / 1024).toFixed(1);
+                            filesText += `📄 ${file.filename}\n`;
+                            filesText += `   📅 Создан: ${date}\n`;
+                            filesText += `   📏 Размер: ${sizeKB} KB\n\n`;
+                        }
+                    } else {
+                        if (selectEl) {
+                            selectEl.innerHTML = '';
+                            const opt = document.createElement('option');
+                            opt.value = '';
+                            opt.textContent = 'Нет файлов результатов';
+                            selectEl.appendChild(opt);
+                        }
+                        filesText += `❌ Файлы результатов не найдены\n`;
+                        filesText += `💡 Сначала запустите обучение модели\n`;
+                    }
+                    
+                    filesDiv.innerHTML = `<pre>${filesText}</pre>`;
+                    
+                } else {
+                    throw new Error(result.message);
+                }
+                
+            } catch (error) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Ошибка при поиске файлов: ' + error.message;
+            } finally {
+                listBtn.disabled = false;
+                listBtn.textContent = '📋 Обновить список';
+            }
+        }
+
+        async function analyzeTrainingResultsSelected() {
+            let file = getSelectedTrainResultPath();
+            if(!file){
+                const selectEl = document.getElementById('resultsFileSelect');
+                file = selectEl? (selectEl.value||'') : '';
+            }
+            const entry = indexRunsBySymbol[document.getElementById('indexSymbolSelect')?.value || ''];
+            const modelType = entry?.modelType || getSelectedModelType();
+            const analyzeBtn = document.getElementById('analyzeResultsBtn');
+            const statusDiv = document.getElementById('analysisStatus');
+            const resultsDiv = document.getElementById('analysisResults');
+            analyzeBtn.disabled = true;
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'status running';
+            statusDiv.textContent = '📊 Анализ результатов обучения...';
+            try {
+                let url = '/analyze_training_results';
+                let payload = { file, model_type: modelType };
+                if (modelType === 'sac') {
+                    url = '/api/sac/analyze_training_results';
+                    payload = { file };
+                }
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await parseJsonResponse(response);
+                if (result.success) {
+                    statusDiv.className = 'status success';
+                    statusDiv.textContent = '✅ ' + result.message;
+                    resultsDiv.style.display = 'block';
+                    let analysisText = `📊 АНАЛИЗ ФАЙЛА\n===============================\n\n`;
+                    analysisText += `📄 Файл: ${result.file_analyzed}\n`;
+                    if (Array.isArray(result.summaries) && result.summaries.length) {
+                        analysisText += `\n🔍 Сводка:\n`;
+                        analysisText += result.summaries.map(line => `  • ${line}`).join('\n');
+                        analysisText += '\n';
+                    }
+                    const outputText = (result.output && result.output.trim()) ? result.output : 'Нет детального вывода анализа.';
+                    analysisText += outputText;
+                    resultsDiv.innerHTML = `<pre>${analysisText}</pre>`;
+                } else {
+                    throw new Error(result.message);
+                }
+            } catch (e) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Ошибка: ' + e.message;
+            } finally {
+                analyzeBtn.disabled = false;
+            }
+        }
+
+        async function analyzeBadTradesSelected() {
+            let file = getSelectedTrainResultPath();
+            if(!file){
+                const selectEl = document.getElementById('resultsFileSelect');
+                file = selectEl? (selectEl.value||'') : '';
+            }
+            const entry = indexRunsBySymbol[document.getElementById('indexSymbolSelect')?.value || ''];
+            const modelType = entry?.modelType || getSelectedModelType();
+            const analyzeBtn = document.getElementById('analyzeBadTradesBtn');
+            const statusDiv = document.getElementById('badTradesStatus');
+            const resultsDiv = document.getElementById('badTradesResults');
+            const summaryDiv = document.getElementById('badTradesSummary');
+            analyzeBtn.disabled = true;
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'status running';
+            statusDiv.textContent = '🔍 Анализ плохих сделок...';
+            resultsDiv.style.display = 'none';
+            summaryDiv.style.display = 'none';
+            try {
+                const response = await fetch('/analyze_bad_trades', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file, model_type: modelType })
+                });
+                const result = await parseJsonResponse(response);
+                if (result.success) {
+                    statusDiv.className = 'status success';
+                    statusDiv.textContent = '✅ ' + result.message;
+                    summaryDiv.style.display = 'block';
+                    let summaryText = `📊 СВОДКА ПЛОХИХ СДЕЛОК\n===============================\n\n`;
+                    summaryText += `📄 Файл: ${result.file_analyzed.split('/').pop()}\n`;
+                    summaryText += `🔢 Плохих сделок: ${result.bad_trades_count} (${result.bad_trades_percentage.toFixed(2)}%)\n`;
+                    summaryDiv.innerHTML = `<pre>${summaryText}</pre>`;
+                    resultsDiv.style.display = 'block';
+                    const badTradesOutput = (result.output && result.output.trim()) ? result.output : 'Нет дополнительных деталей.';
+                    resultsDiv.innerHTML = `<pre>${badTradesOutput}</pre>`;
+                } else {
+                    throw new Error(result.message);
+                }
+            } catch (e) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Ошибка: ' + e.message;
+            } finally {
+                analyzeBtn.disabled = false;
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            try {
+                loadIndexSymbols();
+                const symSel = document.getElementById('indexSymbolSelect');
+                if (symSel) { symSel.addEventListener('change', loadIndexRuns); }
+                const runSel = document.getElementById('indexRunSelect');
+                if (runSel) { runSel.addEventListener('change', showIndexRunInfo); }
+            } catch (e) {
+                console.error(e);
+            }
+        });
+    </script>
+    <script src="/static/js/sidebar.js"></script>
+</body>
+</html>

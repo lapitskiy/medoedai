@@ -12,6 +12,13 @@
         .predictions-large {
             max-height: 1200px !important;
         }
+        .prediction-filter-btn {
+            opacity: 0.85;
+        }
+        .prediction-filter-btn.active {
+            box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.2);
+            opacity: 1;
+        }
     </style>
 </head>
 <body>
@@ -108,12 +115,19 @@
                         <div class="section">
                             <h2>🧠 Предсказания ИИ - {{ symbol }}</h2>
                             <div class="button-group">
-                                <button class="btn btn-primary" onclick="loadPredictions('{{ symbol }}')">Загрузить предсказания</button>
+                              <button class="btn btn-primary" onclick="loadPredictions('{{ symbol }}')">Загрузить предсказания</button>
                                 <button class="btn btn-primary" onclick="loadPredictionStats('{{ symbol }}')">Статистика предсказаний</button>
+                            </div>
+                            <div class="button-group" style="margin-top: 10px;">
+                                <button class="btn btn-secondary prediction-filter-btn" data-filter="all" onclick="setPredictionFilter('all')">Все</button>
+                                <button class="btn btn-success prediction-filter-btn" data-filter="buy" onclick="setPredictionFilter('buy')">Купить</button>
+                                <button class="btn btn-danger prediction-filter-btn" data-filter="sell" onclick="setPredictionFilter('sell')">Продать</button>
+                                <button class="btn btn-info prediction-filter-btn" data-filter="hold" onclick="setPredictionFilter('hold')">Держать</button>
                             </div>
                             <div id="predictionsBox" class="trading-history predictions-large" style="display:none;">
                                 <h3>🧠 Предсказания для {{ symbol }}</h3>
                                 <div id="predictionsContent"></div>
+                                <div id="predictionsFilterEmpty" style="display:none; margin-top:10px; font-style:italic; color:#555;"></div>
                             </div>
                             <div id="predStatsBox" class="trading-history" style="display:none;">
                                 <h3>📊 Статистика предсказаний для {{ symbol }}</h3>
@@ -173,6 +187,12 @@
 
 <script>
 // Связываем переход из сайдбара с активацией табов
+let currentPredictionFilter = 'all';
+const PREDICTION_ACTION_LABELS = {
+  buy: 'ПОКУПКА',
+  sell: 'ПРОДАЖА',
+  hold: 'ДЕРЖАТЬ'
+};
 document.addEventListener('DOMContentLoaded', function(){
     try{
         document.querySelectorAll('.sidebar-nav a[href^="#"]').forEach(a => {
@@ -513,27 +533,63 @@ async function loadDbHistory(symbol){
   }catch(e){console.error(e)}
 }
 
-async function loadPredictions(symbol){
+async function loadPredictions(symbol, filter = currentPredictionFilter){
   try{
     const resp = await fetch('/api/predictions/recent?limit=150&symbol='+encodeURIComponent(symbol));
     const data = await resp.json();
     const box = document.getElementById('predictionsBox');
     const el = document.getElementById('predictionsContent');
+    const emptyState = document.getElementById('predictionsFilterEmpty');
+
+    const normalizeAction = (val) => {
+      if (typeof val !== 'string') return '';
+      return val.trim().toLowerCase();
+    };
+
+    const deriveCardAction = (prediction) => {
+      const direct = normalizeAction(prediction && prediction.action);
+      const mc = prediction && prediction.market_conditions || {};
+      const ensemble = normalizeAction(mc && mc.ensemble_decision);
+
+      if (direct === 'buy' || direct === 'sell' || direct === 'hold') {
+        return direct;
+      }
+
+      if (ensemble === 'buy' || ensemble === 'sell') {
+        return ensemble;
+      }
+
+      if (direct.includes('sell')) return 'sell';
+      if (direct.includes('buy')) return 'buy';
+
+      return 'hold';
+    };
+
     if(!box || !el) return;
     if(!data.success){ el.innerHTML='❌ Ошибка получения предсказаний'; box.style.display='block'; return; }
     const preds = Array.isArray(data.predictions)? data.predictions : [];
     if(preds.length === 0){
       el.innerHTML = `<p>🧠 Предсказания модели для ${symbol} пока отсутствуют</p><p><em>Данные появятся после выполнения торговых операций</em></p>`;
+      if(emptyState){
+        emptyState.style.display = 'none';
+        emptyState.textContent = '';
+      }
       box.style.display='block';
       return;
     }
     
     const errorPredictions = preds.filter(p => {
-      const action = (p.action || '').toLowerCase();
+      const action = deriveCardAction(p);
       const mc = p.market_conditions || {};
       return action === 'error' || Boolean(mc.error);
     });
-    const validPredictions = preds.filter(p => !errorPredictions.includes(p));
+    let validPredictions = preds.filter(p => !errorPredictions.includes(p));
+
+    const activeFilter = String(filter || currentPredictionFilter || 'all').toLowerCase();
+    currentPredictionFilter = activeFilter;
+    if(activeFilter !== 'all'){
+      validPredictions = validPredictions.filter(p => deriveCardAction(p) === activeFilter);
+    }
 
     let predictionsHTML = '';
     if(errorPredictions.length > 0){
@@ -560,15 +616,27 @@ async function loadPredictions(symbol){
 
     if(validPredictions.length === 0){
       el.innerHTML = predictionsHTML || '<p>❌ Предсказания недоступны</p>';
+      if(emptyState){
+        const label = PREDICTION_ACTION_LABELS[activeFilter] || activeFilter.toUpperCase();
+        emptyState.textContent = activeFilter === 'all'
+          ? 'По выбранному фильтру данных нет.'
+          : `По выбранному фильтру (${label}) данных нет.`;
+        emptyState.style.display = 'block';
+      }
       box.style.display='block';
       return;
+    } else {
+      if(emptyState){
+        emptyState.style.display = 'none';
+        emptyState.textContent = '';
+      }
     }
 
     predictionsHTML += `<p><strong>Всего предсказаний:</strong> ${data.total_predictions}</p>`;
     const seenGroups = new Set();
     for(const prediction of validPredictions){
       const predictionTime = formatMoscowDateTime(prediction.timestamp);
-      const action = (prediction.action||'hold').toLowerCase();
+      const action = deriveCardAction(prediction);
       const actionClass = action === 'buy' ? 'buy' : action === 'sell' ? 'sell' : 'hold';
       const conf = typeof prediction.confidence === 'number' ? prediction.confidence : null;
       const confidenceClass = conf != null && conf > 0.5 ? 'success' : (conf != null && conf > 0.2 ? 'info' : 'warning');
@@ -620,8 +688,9 @@ async function loadPredictions(symbol){
         }
       }catch(_){ }
       // Для шапки используем итог ансамбля, если есть
-      const headerAction = (edec || action || 'hold').toLowerCase();
-      const headerActionClass = headerAction === 'buy' ? 'buy' : (headerAction === 'sell' ? 'sell' : 'hold');
+      const edecLower = typeof edec === 'string' ? edec.toLowerCase() : null;
+      const headerAction = (action || 'hold');
+      const headerActionClass = actionClass;
       // Подготовим чипы для всех моделей текущего тика: V1 B / V2 S / V3 H
       let modelsLine = '';
       let anyPassForHeader = false;
@@ -767,10 +836,12 @@ async function loadPredictions(symbol){
       }
 
       const showQgateBanner = isQgateFiltered && !anyPassForHeader;
+      const showEdecBadge = edecLower && edecLower !== action;
       predictionsHTML += `
         <div class="trade-item" style="border-left: 4px solid ${isQgateFiltered ? '#ffc107' : (headerActionClass === 'buy' ? '#28a745' : headerActionClass === 'sell' ? '#dc3545' : '#6c757d')};">
           <div class="trade-header">
             <span class="trade-action ${headerActionClass}">${String(headerAction).toUpperCase()}</span>
+            ${showEdecBadge ? `<span class="trade-confidence info">Ансамбль: ${String(edec).toUpperCase()}</span>` : ''}
             ${showQgateBanner ? '<span class="trade-confidence warning">🚫 Q-gate отфильтровано</span>' : (conf!=null ? `<span class="trade-confidence ${confidenceClass}">Уверенность: ${(conf*100).toFixed(1)}%</span>` : '')}
             <span>${predictionTime}</span>
           </div>
@@ -800,6 +871,10 @@ async function loadPredictions(symbol){
       `;
     }
     el.innerHTML = predictionsHTML;
+    if(emptyState){
+      emptyState.style.display = 'none';
+      emptyState.textContent = '';
+    }
     box.style.display='block';
   }catch(e){
     console.error(e);
@@ -807,6 +882,11 @@ async function loadPredictions(symbol){
       const box = document.getElementById('predictionsBox');
       const el = document.getElementById('predictionsContent');
       if(el){ el.innerHTML = '<p>❌ Ошибка сети</p>'; }
+      const emptyState = document.getElementById('predictionsFilterEmpty');
+      if(emptyState){
+        emptyState.style.display = 'none';
+        emptyState.textContent = '';
+      }
       if(box){ box.style.display='block'; }
     }catch(_){ }
   }
@@ -956,7 +1036,7 @@ function startMonitoringSymbol(symbol){
   getBalance();
   loadDbHistory(symbol);
   refreshDbTradeHistory(symbol);
-  loadPredictions(symbol);
+  loadPredictions(symbol, currentPredictionFilter);
   loadPredictionStats(symbol);
   loadCeleryResults(symbol, false);
   getTradingHistory();
@@ -967,7 +1047,7 @@ function startMonitoringSymbol(symbol){
     getBalance();
     loadDbHistory(symbol);
     refreshDbTradeHistory(symbol);
-    loadPredictions(symbol);
+    loadPredictions(symbol, currentPredictionFilter);
     loadPredictionStats(symbol);
     loadCeleryResults(symbol, false);
     getTradingHistory();
@@ -1011,7 +1091,21 @@ window.addEventListener('load', ()=>{
   try{
     const last = localStorage.getItem('agent:last_symbol');
     if(!sym && last){ startMonitoringSymbol(last); return; }
+    const savedFilter = localStorage.getItem('agent:predictions_filter');
+    if(savedFilter){
+      currentPredictionFilter = savedFilter;
+    }
   }catch(_){ }
+  try {
+    document.querySelectorAll('.prediction-filter-btn').forEach(btn => {
+      const btnFilter = btn.getAttribute('data-filter');
+      if(btnFilter === currentPredictionFilter){
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+  } catch (_) {}
   startMonitoringSymbol(sym);
 });
 
@@ -1034,6 +1128,24 @@ async function manualPeriodicTrading(){
     console.error(e);
     alert('Ошибка сети при запуске задачи');
   }
+}
+
+function setPredictionFilter(filter) {
+  currentPredictionFilter = filter;
+  try {
+    localStorage.setItem('agent:predictions_filter', filter);
+  } catch (_) {}
+  try {
+    document.querySelectorAll('.prediction-filter-btn').forEach(btn => {
+      const btnFilter = btn.getAttribute('data-filter');
+      if(btnFilter === filter){
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+  } catch (_) {}
+  loadPredictions('{{ symbol }}', filter);
 }
 </script>
 <script src="/static/js/sidebar.js"></script>

@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>!Управление моделями SAC</title>
+</head>
+<body>
+    <!-- Sidebar навигация -->
+    <nav class="sidebar">
+        <h3>📋 Навигация</h3>
+        <ul class="sidebar-nav">
+            <li><a href="/" class="back-link">← На главную</a></li>
+            <li><a href="javascript:history.back()">← Назад</a></li>
+            <li><a href="#create-model" onclick="scrollToSection('create-model')">📦 Создать версию</a></li>
+            <li><a href="#training" onclick="scrollToSection('training')">🎯 Обучение SAC</a></li>
+            <li><a href="#continue-training" onclick="scrollToSection('continue-training')">🔁 Дообучить модель SAC</a></li>
+            <li><a href="/oos">📈 OOS результаты</a></li>
+        </ul>
+    </nav>
+
+    <!-- Кнопка мобильного меню -->
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <div class="container">
+        <div class="main-content">
+            <div class="header">
+                <h1>🤖 Управление моделями SAC</h1>
+                <p>Версионирование и управление обученными моделями SAC</p>
+            </div>
+            
+            <div class="content">
+            <a href="/" class="back-link">← Вернуться на главную</a>
+            
+            <!-- Секция создания новой модели -->
+            <div class="section" id="create-model">
+                <h2>📦 Создать новую версию модели SAC</h2>
+                <p>Скопирует веса/буфер/результаты из <code>result/sac/</code> в <code>models/sac/&lt;symbol&gt;/ensemble-a/vN</code> (с <code>manifest.yaml</code> и ссылкой <code>current</code>)</p>
+                <div class="form-group">
+                    <label>Символ</label>
+                    <select id="resultSymbolSelect" class="form-control" onchange="loadSacResultFilesForCreate()">
+                        <option value="">Загрузка символов...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Выберите модель из папки result/sac</label>
+                    <select id="resultFileSelect" class="form-control">
+                        <option value="">Сначала выберите символ...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Ансамбль назначения</label>
+                    <select id="resultEnsembleSelect" class="form-control">
+                        <option value="ensemble-a" selected>ensemble-a</option>
+                        <option value="ensemble-b">ensemble-b</option>
+                        <option value="ensemble-c">ensemble-c</option>
+                    </select>
+                </div>
+                <div class="button-group">
+                    <button class="btn btn-success" onclick="createSacModelVersion()">🚀 Создать новую версию</button>
+                </div>
+            </div>
+
+            <!-- Секция запуска обучения SAC -->
+            <div class="section" id="training">
+                <h2>🎯 Обучение SAC модели</h2>
+                <p>Запустите обучение Soft Actor-Critic модели для торговли криптовалютами</p>
+                <div class="form-group">
+                    <label>Эпизоды обучения</label>
+                    <input id="episodesInput" class="form-control" type="number" min="1" step="1" value="1000">
+                </div>
+                <div class="form-group">
+                    <label>Длина эпизода (количество свечей)</label>
+                    <input id="episodeLengthInput" class="form-control" type="number" min="1" step="1" value="2000">
+                </div>
+                <div class="form-group">
+                    <label>Seed (если пусто — сгенерируем случайный)</label>
+                    <input id="trainSeedInput" class="form-control" type="number" min="1" step="1" placeholder="например, 42">
+                </div>
+                <div class="button-group">
+                    <button class="btn btn-primary" onclick="startSacTrainingForSymbol('BTCUSDT', event)">🚀 Обучить BTC</button>
+                    <button class="btn btn-primary" onclick="startSacTrainingForSymbol('TONUSDT', event)">🚀 Обучить TON</button>
+                    <button class="btn btn-primary" onclick="startSacTrainingForSymbol('ETHUSDT', event)">🚀 Обучить ETH</button>
+                    <button class="btn btn-primary" onclick="startSacTrainingForSymbol('SOLUSDT', event)">🚀 Обучить SOL</button>
+                    <button class="btn btn-primary" onclick="startSacTrainingForSymbol('ADAUSDT', event)">🚀 Обучить ADA</button>
+                    <button class="btn btn-primary" onclick="startSacTrainingForSymbol('BNBUSDT', event)">🚀 Обучить BNB</button>
+                    <button class="btn btn-primary" onclick="startSacTrainingForSymbol('XMRUSDT', event)">🚀 Обучить XMR</button>
+                    <button class="btn btn-primary" onclick="startSacTrainingForSymbol('XRPUSDT', event)">🚀 Обучить XRP</button>
+                    <button class="btn btn-success" onclick="startSacTrainingMulti()">🌟 Обучить мультивалютную</button>
+                </div>
+                <div id="trainStatus"></div>
+                <div id="trainingLogs" class="status info" style="display:none; white-space: pre-wrap; max-height:300px; overflow-y:auto; margin-top:8px;"></div>
+            </div>
+
+            <!-- Секция дообучения существующей модели SAC -->
+            <div class="section" id="continue-training">
+                <h2>🔁 Дообучить существующую модель SAC</h2>
+                <p>Выберите файл весов из <code>result/sac/</code> (формат <code>model.pth</code>). Если найдется соответствующий <code>replay.pkl</code>, он также будет загружен. Дообучение сохранит результат как новую версию.</p>
+
+                <div class="form-group">
+                    <label>Символ</label>
+                    <select id="runsSymbolSelect" class="form-control" onchange="loadSacRunsForSymbol()">
+                        <option value="">Загрузка символов...</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Выберите веса модели (например, model.pth)</label>
+                    <select id="continueModelSelect" class="form-control" onchange="showSelectedContinueSacModelInfo()">
+                        <option value="">Загрузка списка...</option>
+                    </select>
+                </div>
+
+                <div id="continueModelInfo" class="status info" style="display:none; white-space: pre-line;"></div>
+
+                <div class="form-group">
+                    <label>Эпизоды дообучения</label>
+                    <input id="continueEpisodesInput" class="form-control" type="number" min="1" step="1" value="1000" oninput="updateEstimatedSacTime()">
+                    <div id="episodesEstimate" class="status info" style="display:none; margin-top:6px;"></div>
+                </div>
+                <div class="form-group">
+                    <label>Seed для дообучения (если пусто — случайный)</label>
+                    <input id="continueSeedInput" class="form-control" type="number" min="1" step="1" placeholder="например, 2024">
+                </div>
+
+                <div class="button-group">
+                    <button class="btn btn-success" onclick="continueSacTraining()">🔁 Запустить дообучение</button>
+                </div>
+
+                <div id="continueStatus"></div>
+            </div>
+                <div id="createStatus"></div>
+            </div>
+
+            
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Загрузить список моделей при загрузке страницы
+        document.addEventListener('DOMContentLoaded', function() {
+            // Очищаем флаги активного обучения при загрузке страницы
+            // (на случай если страница была перезагружена во время обучения)
+            cleanupActiveTrainingFlags();
+
+            try{ loadSacResultSymbolsForCreate(); }catch(_){ }
+            loadContinueSacModels();
+            loadSacRunsSymbols();
+        });
+
+        // Функция очистки флагов активного обучения при загрузке страницы
+        function cleanupActiveTrainingFlags() {
+            const symbols = ['BTCUSDT', 'TONUSDT', 'ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'BNBUSDT', 'XMRUSDT', 'XRPUSDT'];
+            symbols.forEach(symbol => {
+                const key = `sac_training_active_${symbol}`;
+                const taskId = sessionStorage.getItem(key);
+                if (taskId) {
+                    console.log(`[cleanupActiveTrainingFlags] Found active training flag for ${symbol}: ${taskId}`);
+                    // Здесь можно добавить проверку статуса задачи через API
+                    // и очистить флаг только если задача действительно завершена
+                    sessionStorage.removeItem(key);
+                }
+            });
+        }
+
+        // Очищаем флаги активного обучения при закрытии страницы
+        window.addEventListener('beforeunload', function() {
+            const symbols = ['BTCUSDT', 'TONUSDT', 'ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'BNBUSDT', 'XMRUSDT', 'XRPUSDT'];
+            symbols.forEach(symbol => {
+                sessionStorage.removeItem(`sac_training_active_${symbol}`);
+            });
+        });
+
+        // Создать новую версию модели SAC
+        async function createSacModelVersion() {
+            const statusDiv = document.getElementById('createStatus');
+            const button = event.target;
+            const fileSelect = document.getElementById('resultFileSelect');
+            const symbolSelect = document.getElementById('resultSymbolSelect');
+            const selectedFile = fileSelect ? fileSelect.value : '';
+            const selectedSymbol = symbolSelect ? symbolSelect.value : '';
+            const ensSelect = document.getElementById('resultEnsembleSelect');
+            const selectedEns = ensSelect ? ensSelect.value : 'ensemble-a';
+            
+            if (!selectedFile) {
+                statusDiv.innerHTML = '<div class="status error">❌ Сначала выберите модель из result/sac</div>';
+                return;
+            }
+            
+            button.disabled = true;
+            button.textContent = '⏳ Создание...';
+            statusDiv.innerHTML = '<div class="status info">Создание новой версии модели SAC...</div>';
+            
+            try {
+                const response = await fetch('/create_sac_model_version', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ file: selectedFile, symbol: selectedSymbol, ensemble: selectedEns })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    statusDiv.innerHTML = `<div class="status success">
+                        ✅ Новая версия SAC создана!<br>
+                        ID: ${result.model_id}<br>
+                        Файлы: ${result.files.join(', ')}
+                    </div>`;
+                    // Секция доступных моделей удалена
+                } else {
+                    statusDiv.innerHTML = `<div class="status error">
+                        ❌ Ошибка: ${result.error}
+                    </div>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<div class="status error">
+                    ❌ Ошибка сети: ${error.message}
+                </div>`;
+            } finally {
+                button.disabled = false;
+                button.textContent = '🚀 Создать новую версию';
+            }
+        }
+
+        // === Runs UI for SAC ===
+        async function loadSacRunsSymbols(){
+            const sel = document.getElementById('runsSymbolSelect');
+            if(!sel) return;
+            try{
+                const resp = await fetch('/api/sac_runs/symbols');
+                const data = await resp.json();
+                if(!data.success){ sel.innerHTML = '<option value="">Ошибка</option>'; return; }
+                const list = Array.isArray(data.symbols)? data.symbols: [];
+                if(list.length===0){ sel.innerHTML = '<option value="">Нет символов</option>'; return; }
+                sel.innerHTML = list.map(s=>`<option value="${s}">${s}</option>`).join('');
+                try{ loadSacRunsForSymbol(); }catch(_){ }
+            }catch(e){ if(sel) sel.innerHTML = '<option value="">Ошибка загрузки</option>'; }
+        }
+
+        async function loadSacRunsForSymbol(){
+            const sym = (document.getElementById('runsSymbolSelect')?.value||'').trim();
+            if(!sym) return;
+            try{
+                const resp = await fetch('/api/sac_runs/list?symbol='+encodeURIComponent(sym));
+                const data = await resp.json();
+                if(!data.success) return;
+                // Заполняем continueModelSelect файлами model.pth из выбранного символа
+                const select = document.getElementById('continueModelSelect');
+                if(!select) return;
+                const runs = Array.isArray(data.runs)? data.runs: [];
+                if(runs.length===0){ select.innerHTML = '<option value="">Нет запусков</option>'; return; }
+                // отобразим древовидно: parent → child (упростим: префикс ▸)
+                const idToChildren = {};
+                const idToNode = {};
+                runs.forEach(r=>{ idToChildren[r.run_id]=[]; idToNode[r.run_id]=r; });
+                runs.forEach(r=>{ if(r.parent_run_id && idToChildren[r.parent_run_id]) idToChildren[r.parent_run_id].push(r.run_id); });
+                function renderRun(runId, depth){
+                    const r = idToNode[runId]; if(!r) return '';
+                    const label = `${'▸'.repeat(depth)} ${r.run_id}`;
+                    const file = r.model_path || '';
+                    const opt = `<option value="${file}">${label}</option>`;
+                    const children = (idToChildren[runId]||[]).map(cid=>renderRun(cid, depth+1)).join('');
+                    return opt+children;
+                }
+                // корни: без parent
+                const roots = runs.filter(r=>!r.parent_run_id).map(r=>r.run_id);
+                const html = roots.map(rt=>renderRun(rt,0)).join('');
+                select.innerHTML = html;
+                try{ showSelectedContinueSacModelInfo(); }catch(_){ }
+            }catch(e){ /* noop */ }
+        }
+
+        // Глобально храним среднее время за эпизод (сек) для SAC
+        let avgSacTimePerEpisodeSec = null;
+
+        // Загрузка символов для секции создания версии SAC
+        async function loadSacResultSymbolsForCreate(){
+            const sel = document.getElementById('resultSymbolSelect');
+            if(!sel) return;
+            try{
+                const resp = await fetch('/api/sac_runs/symbols');
+                const data = await resp.json();
+                if(!data.success){ sel.innerHTML = '<option value="">Ошибка</option>'; return; }
+                const list = Array.isArray(data.symbols)? data.symbols: [];
+                if(list.length===0){ sel.innerHTML = '<option value="">Нет символов</option>'; return; }
+                sel.innerHTML = list.map(s=>`<option value="${s}">${s}</option>`).join('');
+                try{ loadSacResultFilesForCreate(); }catch(_){ }
+            }catch(e){ sel.innerHTML = '<option value="">Ошибка загрузки</option>'; }
+        }
+
+        // Загрузка моделей (весов) для выбранного символа из структуры runs SAC
+        async function loadSacResultFilesForCreate(){
+            const sym = (document.getElementById('resultSymbolSelect')?.value||'').trim();
+            const select = document.getElementById('resultFileSelect');
+            if(!select) return;
+            if(!sym){ select.innerHTML = '<option value="">Сначала выберите символ...</option>'; return; }
+            try{
+                const resp = await fetch('/api/sac_runs/list?symbol='+encodeURIComponent(sym));
+                const data = await resp.json();
+                if(!data.success){ select.innerHTML = '<option value="">Ошибка загрузки</option>'; return; }
+                const runs = Array.isArray(data.runs)? data.runs: [];
+                const options = [];
+                for(const r of runs){
+                    const path = r.model_path || '';
+                    if(path && path.toLowerCase().endsWith('.pth')){
+                        const fname = path.split('/').pop().split('\\').pop();
+                        const label = `${r.run_id || 'run'} — ${fname}`;
+                        options.push(`<option value="${path}">${label}</option>`);
+                    }
+                }
+                select.innerHTML = options.length? options.join('') : '<option value="">Нет обученных моделей</option>';
+            }catch(e){ select.innerHTML = '<option value="">Ошибка загрузки</option>'; }
+        }
+
+        // Загрузка списка весов для дообучения SAC (все model.pth)
+        async function loadContinueSacModels() {
+            const select = document.getElementById('continueModelSelect');
+            if (!select) return;
+            try {
+                const resp = await fetch('/list_sac_result_models');
+                const data = await resp.json();
+                if (!data.success || !data.files || data.files.length === 0) {
+                    select.innerHTML = '<option value="">Нет доступных файлов</option>';
+                    return;
+                }
+                // Все model.pth (без фильтра по символу)
+                const opts = data.files.map(f => {
+                    const filename = (f.filename || '').split('/').pop().split('\\').pop();
+                    return `<option value="${f.filename}">${filename}</option>`;
+                }).join('');
+                select.innerHTML = opts;
+                // Авто-показ информации для первого значения
+                try { showSelectedContinueSacModelInfo(); } catch(e){}
+            } catch (e) {
+                select.innerHTML = '<option value="">Ошибка загрузки списка</option>';
+            }
+        }
+
+        // Показать краткую информацию о выбранных весах для дообучения SAC
+        async function showSelectedContinueSacModelInfo() {
+            const select = document.getElementById('continueModelSelect');
+            const infoDiv = document.getElementById('continueModelInfo');
+            if (!select || !infoDiv) return;
+            const filename = select.value;
+            if (!filename) { infoDiv.style.display = 'none'; return; }
+            try {
+                const resp = await fetch('/get_sac_result_model_info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename })
+                });
+                const result = await resp.json();
+                if (!result.success) {
+                    infoDiv.className = 'status error';
+                    infoDiv.textContent = '❌ ' + (result.error || 'Ошибка получения информации');
+                    infoDiv.style.display = 'block';
+                    return;
+                }
+                const stats = result.stats || {};
+                const winrate = typeof stats.winrate === 'number' ? (stats.winrate * 100).toFixed(1) + '%' : 'N/A';
+                const roi = typeof stats.avg_roi === 'number' ? (stats.avg_roi * 100).toFixed(2) + '%' : 'N/A';
+                const max_dd = typeof stats.max_drawdown === 'number' ? (stats.max_drawdown * 100).toFixed(2) + '%' : 'N/A';
+                const trades = (stats.trades_count != null) ? stats.trades_count : 'N/A';
+                const episodes = (result.episodes != null) ? result.episodes : 'N/A';
+                const seed = (result.seed != null) ? result.seed : null;
+                const gpu = (result.cuda_available===true) ? (result.gpu_name || 'GPU') : 'CPU';
+                const totalTime = (typeof result.total_training_time === 'number') ? result.total_training_time : null;
+                const avgReward = (typeof stats.avg_reward === 'number') ? stats.avg_reward.toFixed(2) : 'N/A';
+                const avgTime = (totalTime && episodes ? (totalTime/episodes) : null);
+                const fmtSec = (s)=>{
+                    if(!s && s!==0) return 'N/A';
+                    try{ const m=Math.floor(s/60), r=Math.round(s%60); return (m>0?`${m}м `:'')+`${r}с`; }catch(_){ return s.toFixed? s.toFixed(1)+'с' : String(s); }
+                };
+                // Сохраняем для онлайн-оценки времени при вводе
+                try { avgSacTimePerEpisodeSec = (typeof avgTime === 'number' && avgTime > 0) ? avgTime : null; } catch(_) { avgSacTimePerEpisodeSec = null; }
+                
+                const agentType = result.agent_type || 'N/A';
+                const agentVersion = result.version || 'N/A';
+                const symbolOut = (result.symbol || '').toUpperCase();
+
+                infoDiv.className = 'status info';
+                infoDiv.innerHTML = `
+Выбрано: ${filename.split('/').pop().split('\\').pop()}
+Тип агента: ${agentType} (v${agentVersion})
+Символ: ${symbolOut || 'N/A'}
+Seed: ${seed !== null ? seed : '—'}
+Устройство: ${gpu}
+Winrate: ${winrate}
+Средний ROI: ${roi}
+Макс. просадка: ${max_dd}
+Средняя награда: ${avgReward}
+Сделок: ${trades}
+Эпизодов: ${episodes}
+Длина эпизода: ${result.episode_length != null ? result.episode_length : 'N/A'}
+Буфер: ${result.replay_exists ? '✅ есть' : '❌ нет'}
+Результаты обучения: ${result.train_result_exists ? '✅ есть' : '❌ нет'}
+Среднее время за эпизод: ${fmtSec(avgTime)}
+Общее время обучения: ${totalTime ? fmtSec(totalTime) : 'N/A'}
+`;
+                infoDiv.style.display = 'block';
+                // Автоматически устанавливаем длину эпизода
+                const continueEpisodeLengthInput = document.getElementById('continueEpisodeLengthInput');
+                if (continueEpisodeLengthInput && result.episode_length != null) {
+                    continueEpisodeLengthInput.value = result.episode_length;
+                }
+                // Обновим подсказку времени после выбора модели
+                try { updateEstimatedSacTime(); } catch(_) {}
+            } catch (e) {
+                infoDiv.className = 'status error';
+                infoDiv.textContent = '❌ Ошибка сети: ' + e.message;
+                infoDiv.style.display = 'block';
+            }
+        }
+
+        // Обновление оценки общего времени при вводе эпизодов SAC
+        function updateEstimatedSacTime(){
+            const estDiv = document.getElementById('episodesEstimate');
+            const inp = document.getElementById('continueEpisodesInput');
+            if(!estDiv || !inp){ return; }
+            const n = Math.max(1, parseInt(inp.value || '0', 10) || 0);
+            if (avgSacTimePerEpisodeSec && n > 0){
+                const totalSec = n * avgSacTimePerEpisodeSec;
+                const hours = Math.floor(totalSec/3600);
+                const minutes = Math.round((totalSec%3600)/60);
+                const human = (hours>0? `${hours} ч `: '') + `${minutes} мин`;
+                // Оценка времени окончания
+                try {
+                    const finish = new Date(Date.now() + totalSec*1000);
+                    const hh = String(finish.getHours()).padStart(2,'0');
+                    const mm = String(finish.getMinutes()).padStart(2,'0');
+                    const day = String(finish.getDate()).padStart(2, '0');
+                    const month = String(finish.getMonth() + 1).padStart(2, '0'); // Месяцы с 0
+                    estDiv.textContent = `≈ ${human} (окончание в ${hh}:${mm} ${day}.${month})`;
+                } catch(_) {
+                    estDiv.textContent = `≈ ${human}`;
+                }
+                estDiv.style.display = 'block';
+            } else {
+                estDiv.textContent = 'Время будет рассчитано после выбора модели со статистикой';
+                estDiv.style.display = 'block';
+            }
+        }
+
+        // Запуск дообучения SAC
+        async function continueSacTraining() {
+            const statusDiv = document.getElementById('continueStatus');
+            const fileSelect = document.getElementById('continueModelSelect');
+            const episodes = document.getElementById('continueEpisodesInput').value;
+            const seedVal = (document.getElementById('continueSeedInput')?.value || '').trim();
+            const selectedFile = fileSelect ? fileSelect.value : '';
+
+            if (!selectedFile) {
+                statusDiv.innerHTML = '<div class="status error">❌ Сначала выберите веса модели SAC</div>';
+                return;
+            }
+            const episodeLength = document.getElementById('continueEpisodeLengthInput').value;
+
+            statusDiv.innerHTML = '<div class="status info">⏳ Запуск дообучения SAC...</div>';
+            try {
+                const resp = await fetch('/training/continue_sac_training', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: selectedFile, episodes, episode_length: episodeLength, seed: seedVal })
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    statusDiv.innerHTML = `<div class="status success">✅ Дообучение SAC запущено (task: ${result.task_id}). Результат появится в разделе моделей.</div>`;
+                } else {
+                    statusDiv.innerHTML = `<div class="status error">❌ Ошибка: ${result.error}</div>`;
+                }
+            } catch (e) {
+                statusDiv.innerHTML = `<div class="status error">❌ Ошибка сети: ${e.message}</div>`;
+            }
+        }
+
+        // Запуск обучения с выбранным количеством эпизодов SAC
+        async function startSacTrainingForSymbol(symbol, evt) {
+            console.log(`[startSacTrainingForSymbol] Called for symbol: ${symbol}`); // Добавлено логирование
+
+            // Проверяем, не запущено ли уже обучение для этого символа
+            const activeTrainingKey = `sac_training_active_${symbol}`;
+            if (sessionStorage.getItem(activeTrainingKey)) {
+                console.log(`[startSacTrainingForSymbol] Training already active for ${symbol}, skipping`);
+                return;
+            }
+
+            const episodes = document.getElementById('episodesInput').value || 1000;
+            const episodeLength = document.getElementById('episodeLengthInput').value || 2000;
+            const seedVal = (document.getElementById('trainSeedInput')?.value || '').trim();
+            const statusDiv = document.getElementById('trainStatus');
+            const logsDiv = document.getElementById('trainingLogs');
+            const button = evt?.currentTarget || evt?.target;
+            const originalButtonText = button ? button.textContent : '🚀 Обучить';
+            let trainingStarted = false;
+
+            if (button) {
+                button.disabled = true;
+                button.textContent = '⏳ Обучение...';
+            }
+
+            logsDiv.style.display = 'block';
+            logsDiv.textContent = '';
+            statusDiv.innerHTML = '<div class="status info">⏳ Запуск обучения SAC ' + symbol + '...</div>';
+            
+            try {
+                const payload = { symbol, episodes, episode_length: episodeLength, seed: seedVal };
+                console.log('[startSacTrainingForSymbol] Sending payload:', payload); // Добавлено логирование
+                const resp = await fetch('/api/sac_runs/train', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json().catch(() => null);
+                console.log('[startSacTrainingForSymbol] API response:', data); // Добавлено логирование
+
+                if (data && data.success) {
+                    statusDiv.innerHTML = '<div class="status success">✅ Обучение SAC запущено (task: ' + data.task_id + ')</div>';
+                    trainingStarted = true;
+                    // Сохраняем флаг активного обучения в sessionStorage
+                    sessionStorage.setItem(activeTrainingKey, data.task_id);
+                    monitorSacTask(data.task_id, button, originalButtonText);
+                } else if (data && data.error) {
+                    statusDiv.innerHTML = '<div class="status error">❌ ' + data.error + '</div>';
+                } else if (resp.redirected) {
+                    window.location.href = resp.url;
+                } else {
+                    statusDiv.innerHTML = '<div class="status error">❌ Неизвестный ответ сервера</div>';
+                }
+            } catch (e) {
+                console.error('[startSacTrainingForSymbol] Fetch error:', e); // Добавлено логирование
+                statusDiv.innerHTML = '<div class="status error">❌ Ошибка запуска обучения SAC: ' + e.message + '</div>';
+            } finally {
+                if (!trainingStarted && button) {
+                    button.disabled = false;
+                    button.textContent = originalButtonText;
+                    // Очищаем флаг активного обучения, если запуск не удался
+                    sessionStorage.removeItem(activeTrainingKey);
+                }
+            }
+        }
+
+        async function monitorSacTask(taskId, button, originalButtonText) {
+            console.log(`[monitorSacTask] Starting to monitor task: ${taskId}`); // Добавлено логирование
+            const statusDiv = document.getElementById('trainStatus');
+            const logsDiv = document.getElementById('trainingLogs');
+
+            const fetchStatus = async () => {
+                console.log(`[monitorSacTask] Fetching status for task: ${taskId}`); // Добавлено логирование
+                const resp = await fetch(`/api/sac_runs/task_status/${taskId}`);
+                if (!resp.ok) {
+                    throw new Error(`HTTP ${resp.status}`);
+                }
+                return resp.json();
+            };
+
+            const poll = async () => {
+                try {
+                    const data = await fetchStatus();
+                    console.log(`[monitorSacTask] Poll response for ${taskId}:`, data); // Добавлено логирование
+
+                    if (!data.success) {
+                        throw new Error(data.error || 'Unknown error');
+                    }
+
+                    statusDiv.innerHTML = `<div class="status info">🔄 Статус: ${data.state}</div>`;
+                    const logs = data.info?.logs;
+                    if (Array.isArray(logs)) {
+                        logsDiv.textContent = logs.join('\n');
+                        logsDiv.scrollTop = logsDiv.scrollHeight;
+                    }
+
+                    if (data.state === 'SUCCESS' || data.state === 'FAILURE') {
+                        clearInterval(pollInterval);
+                        if (button) {
+                            button.disabled = false;
+                            button.textContent = originalButtonText;
+                        }
+                        // Очищаем флаг активного обучения
+                        sessionStorage.removeItem(`sac_training_active_${symbol}`);
+                        statusDiv.innerHTML = data.state === 'SUCCESS'
+                            ? '<div class="status success">✅ Обучение завершено</div>'
+                            : '<div class="status error">❌ Обучение завершилось ошибкой</div>';
+                        console.log(`[monitorSacTask] Task ${taskId} finished with state: ${data.state}`); // Добавлено логирование
+                    }
+                } catch (e) {
+                    console.error(`[monitorSacTask] Error polling task ${taskId}:`, e); // Добавлено логирование
+                    clearInterval(pollInterval);
+                    // Очищаем флаг активного обучения при ошибке мониторинга
+                    sessionStorage.removeItem(`sac_training_active_${symbol}`);
+                    statusDiv.innerHTML = '<div class="status error">❌ Ошибка опроса статуса: ' + e.message + '</div>';
+                    if (button) {
+                        button.disabled = false;
+                        button.textContent = originalButtonText;
+                    }
+                }
+            };
+
+            const pollInterval = setInterval(poll, 1500);
+            await poll();
+        }
+
+        async function startSacTrainingMulti() {
+            const statusDiv = document.getElementById('trainStatus');
+            const episodes = document.getElementById('episodesInput').value || 1000;
+            const episodeLength = document.getElementById('episodeLengthInput').value || 2000;
+            const seedVal = (document.getElementById('trainSeedInput')?.value || '').trim();
+            if (statusDiv) statusDiv.innerHTML = '<div class="status info">⏳ Запуск мультивалютного обучения SAC...</div>';
+            try {
+                const resp = await fetch('/training/train_sac_multi_crypto', {
+                    method: 'POST',
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ episodes, episode_length: episodeLength, seed: seedVal })
+                });
+                const data = await resp.json().catch(() => null);
+                if (data && data.success) {
+                    if (statusDiv) statusDiv.innerHTML = '<div class="status success">✅ Обучение SAC (multi) запущено (task: ' + data.task_id + ')</div>';
+                } else if (data && data.error) {
+                    if (statusDiv) statusDiv.innerHTML = '<div class="status error">❌ ' + data.error + '</div>';
+                } else if (resp.redirected) {
+                    if (statusDiv) statusDiv.innerHTML = '<div class="status info">ℹ️ Обучение запущено, оставайтесь на странице.</div>';
+                } else {
+                    if (statusDiv) statusDiv.innerHTML = '<div class="status error">❌ Неизвестный ответ сервера</div>';
+                }
+            } catch (e) {
+                if (statusDiv) statusDiv.innerHTML = '<div class="status error">❌ Ошибка запуска мультивалютного обучения SAC: ' + e.message + '</div>';
+            }
+        }
+
+    </script>
+    <script src="/static/js/sidebar.js"></script>
+</body>
+</html>

@@ -1,35 +1,64 @@
-from flask import Blueprint, jsonify, request, current_app
-from celery.result import AsyncResult
-from tasks import celery
+from flask import Blueprint, jsonify, request, current_app, render_template # type: ignore
+from celery.result import AsyncResult # type: ignore
+from tasks import celery # type: ignore
 from pathlib import Path
 import os
 from utils.config_loader import get_config_value
 import json
-from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized
-from envs.dqn_model.gym.indicators_optimized import preprocess_dataframes
-from agents.vdqn.cfg.vconfig import vDqnConfig
+from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized # type: ignore
+from envs.dqn_model.gym.indicators_optimized import preprocess_dataframes # type: ignore
+from agents.vdqn.cfg.vconfig import vDqnConfig # type: ignore
 import pickle
-import numpy as np
-import pandas as pd
-import requests
-from redis import Redis
+import numpy as np # type: ignore
+import pandas as pd # type: ignore
+import requests # type: ignore
+from redis import Redis # type: ignore
 from datetime import datetime
+import torch # type: ignore
 
 models_admin_bp = Blueprint('models_admin', __name__)
+
+@models_admin_bp.route('/models')
+def models_page():
+    """Страница управления моделями (DQN)"""
+    return render_template('models.html')
+
 
 @models_admin_bp.get('/api/runs/symbols')
 def api_runs_symbols():
     try:
+        model_type = (request.args.get('model_type') or 'dqn').strip().lower()
+        if model_type not in {'dqn', 'sac'}:
+            model_type = 'dqn'
+
         base = Path('result')
         if not base.exists():
             return jsonify({'success': True, 'symbols': []})
+
+        if model_type == 'sac':
+            base = base / 'sac'
+
+        if not base.exists():
+            return jsonify({'success': True, 'symbols': []})
+
         symbols = []
         for d in base.iterdir():
-            if d.is_dir() and (d / 'runs').exists():
-                # проверим наличие хотя бы одного run
-                has_run = any((d / 'runs').iterdir())
-                if has_run:
-                    symbols.append(d.name)
+            if not d.is_dir():
+                continue
+            if model_type == 'dqn' and d.name.lower() == 'sac':
+                continue
+            runs_dir = d / 'runs'
+            if not runs_dir.exists():
+                continue
+            try:
+                has_runs = any(runs_dir.iterdir())
+            except Exception:
+                has_runs = False
+            if not has_runs:
+                continue
+            symbol_value = d.name.upper()
+            symbols.append(symbol_value)
+
         symbols.sort()
         return jsonify({'success': True, 'symbols': symbols})
     except Exception as e:
@@ -141,12 +170,37 @@ def api_strategy_apply():
 @models_admin_bp.get('/api/runs/list')
 def api_runs_list():
     try:
-        symbol = (request.args.get('symbol') or '').strip().upper()
-        if not symbol:
+        model_type = (request.args.get('model_type') or 'dqn').strip().lower()
+        if model_type not in {'dqn', 'sac'}:
+            model_type = 'dqn'
+
+        symbol_raw = (request.args.get('symbol') or '').strip()
+        if not symbol_raw:
             return jsonify({'success': False, 'error': 'symbol required'}), 400
-        runs_dir = Path('result') / symbol / 'runs'
-        if not runs_dir.exists():
+
+        base = Path('result')
+        symbol_candidates = []
+        if model_type == 'sac':
+            base = base / 'sac'
+            core_symbol = symbol_raw.split(':',1)[-1]
+            symbol_candidates = [core_symbol.lower(), core_symbol.upper(), core_symbol]
+        else:
+            core_symbol = symbol_raw
+            symbol_candidates = [core_symbol.upper(), core_symbol.lower(), core_symbol]
+        requested_value = core_symbol
+
+        runs_dir = None
+        symbol_dir = None
+        for candidate in symbol_candidates:
+            candidate_dir = base / candidate / 'runs'
+            if candidate_dir.exists():
+                runs_dir = candidate_dir
+                symbol_dir = base / candidate
+                break
+
+        if runs_dir is None or not runs_dir.exists():
             return jsonify({'success': True, 'runs': []})
+
         runs = []
         for rd in runs_dir.iterdir():
             if not rd.is_dir():
@@ -159,11 +213,17 @@ def api_runs_list():
                     manifest = json.loads(mf.read_text(encoding='utf-8'))
                 except Exception:
                     manifest = {}
-            model_path = str(rd / 'model.pth') if (rd / 'model.pth').exists() else None
-            replay_path = str(rd / 'replay.pkl') if (rd / 'replay.pkl').exists() else None
-            result_path = str(rd / 'train_result.pkl') if (rd / 'train_result.pkl').exists() else None
+            model_path = (rd / 'model.pth') if (rd / 'model.pth').exists() else None
+            replay_path = (rd / 'replay.pkl') if (rd / 'replay.pkl').exists() else None
+            result_path = (rd / 'train_result.pkl') if (rd / 'train_result.pkl').exists() else None
             # Попытаемся извлечь краткую статистику
             winrate = None; pl_ratio = None; episodes = None
+            episodes_planned = None
+            best_winrate = None
+            episode_winrate_avg = None
+            episode_winrate_last = None
+            validation_avg = None
+            validation_last = None
             if result_path:
                 try:
                     import pickle as _pkl
@@ -172,7 +232,35 @@ def api_runs_list():
                     _fs = _res.get('final_stats') or {}
                     winrate = _fs.get('winrate')
                     pl_ratio = _fs.get('pl_ratio')
-                    episodes = _res.get('actual_episodes', _res.get('episodes'))
+                    episodes_planned = _res.get('episodes')
+                    episodes = _res.get('actual_episodes', episodes_planned)
+
+                    def _sanitize(seq):
+                        if not isinstance(seq, (list, tuple)):
+                            return []
+                        cleaned = []
+                        for value in seq:
+                            if isinstance(value, (int, float)) and value == value:
+                                cleaned.append(float(value))
+                        return cleaned
+
+                    episode_winrates = _sanitize(_res.get('episode_winrates'))
+                    if episode_winrates:
+                        episode_winrate_last = episode_winrates[-1]
+                        episode_winrate_avg = sum(episode_winrates) / len(episode_winrates)
+                        if not isinstance(_res.get('best_winrate'), (int, float)):
+                            best_winrate = max(episode_winrates)
+                        else:
+                            best_winrate = _res.get('best_winrate')
+                    else:
+                        val = _res.get('best_winrate')
+                        if isinstance(val, (int, float)):
+                            best_winrate = float(val)
+
+                    validation_rewards = _sanitize(_res.get('validation_rewards'))
+                    if validation_rewards:
+                        validation_last = validation_rewards[-1]
+                        validation_avg = sum(validation_rewards) / len(validation_rewards)
                 except Exception:
                     pass
             runs.append({
@@ -182,12 +270,20 @@ def api_runs_list():
                 'seed': manifest.get('seed'),
                 'episodes_end': manifest.get('episodes_end'),
                 'created_at': manifest.get('created_at'),
-                'model_path': model_path,
-                'replay_path': replay_path,
-                'result_path': result_path,
+                'model_path': model_path.as_posix() if model_path else None,
+                'replay_path': replay_path.as_posix() if replay_path else None,
+                'result_path': result_path.as_posix() if result_path else None,
                 'winrate': winrate,
                 'pl_ratio': pl_ratio,
                 'episodes': episodes,
+                'episodes_planned': episodes_planned,
+                'best_winrate': best_winrate,
+                'episode_winrate_avg': episode_winrate_avg,
+                'episode_winrate_last': episode_winrate_last,
+                'validation_avg': validation_avg,
+                'validation_last': validation_last,
+                'symbol_dir': symbol_dir.name if symbol_dir else requested_value,
+                'model_type': model_type,
             })
         # Простая сортировка по created_at, затем по run_id
         try:

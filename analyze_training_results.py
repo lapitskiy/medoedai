@@ -38,10 +38,15 @@ def analyze_training_results(results_file):
             print(f"  • {key}: {value}")
     
     # Основная информация
-    print(f"📅 Дата обучения: {results['training_date']}")
+    training_date = results.get('training_date') or results.get('created_at') or 'N/A'
+    print(f"📅 Дата обучения: {training_date}")
     
     # Показываем планируемое и реальное количество эпизодов
-    planned_episodes = results['episodes']
+    planned_episodes = results.get('episodes')
+    if planned_episodes is None:
+        planned_episodes = results.get('planned_episodes')
+    if planned_episodes is None:
+        planned_episodes = len(results.get('episode_winrates') or [])
     
     # Ищем реальное количество эпизодов в разных местах
     actual_episodes = None
@@ -66,20 +71,17 @@ def analyze_training_results(results_file):
         print(f"🔍 2. real_episodes НЕ найден")
     
     # 3. Проверяем episode_winrates (но это может быть неточно)
-    if actual_episodes is None and 'episode_winrates' in results and results['episode_winrates']:
+    episode_winrates = results.get('episode_winrates') or []
+    if actual_episodes is None and episode_winrates:
         # ВНИМАНИЕ: episode_winrates может содержать winrate для каждого эпизода, а не только завершенных
         # Поэтому используем это только как fallback
-        episode_winrates_count = len(results['episode_winrates'])
+        episode_winrates_count = len(episode_winrates)
         print(f"🔍 3. Найден episode_winrates с {episode_winrates_count} элементами")
-        
-        # Если количество winrate'ов значительно меньше планируемых эпизодов, 
-        # это может указывать на early stopping
         if episode_winrates_count < planned_episodes * 0.8:  # Если меньше 80% от планируемых
             actual_episodes = episode_winrates_count
             early_stopping_triggered = True
             print(f"⚠️ 3. Обнаружен возможный early stopping: {episode_winrates_count} < {planned_episodes}")
         else:
-            # Если winrate'ов много, возможно обучение завершилось полностью
             actual_episodes = episode_winrates_count
             print(f"🔍 3. Используем episode_winrates как actual_episodes: {actual_episodes}")
     elif actual_episodes is None:
@@ -95,12 +97,12 @@ def analyze_training_results(results_file):
     # Дополнительная проверка: если actual_episodes равен planned_episodes, 
     # но в episode_winrates меньше элементов, это может быть early stopping
     if (actual_episodes == planned_episodes and 
-        'episode_winrates' in results and 
-        len(results['episode_winrates']) < planned_episodes):
+        episode_winrates and 
+        len(episode_winrates) < planned_episodes):
         
-        actual_episodes = len(results['episode_winrates'])
+        actual_episodes = len(episode_winrates)
         early_stopping_triggered = True
-        print(f"🔍 5. Обнаружен early stopping по несоответствию: actual_episodes={actual_episodes}, episode_winrates={len(results['episode_winrates'])}")
+        print(f"🔍 5. Обнаружен early stopping по несоответствию: actual_episodes={actual_episodes}, episode_winrates={len(episode_winrates)}")
     
     # ИСПРАВЛЕНИЕ: Проверяем наличие early_stopping_triggered в результатах
     if 'early_stopping_triggered' in results and results['early_stopping_triggered']:
@@ -113,8 +115,8 @@ def analyze_training_results(results_file):
             print(f"🔍 6. Обновлен actual_episodes из результатов: {actual_episodes}")
     
     # ИСПРАВЛЕНИЕ: Дополнительная проверка по episode_winrates
-    if 'episode_winrates' in results and results['episode_winrates']:
-        episode_winrates_count = len(results['episode_winrates'])
+    if episode_winrates:
+        episode_winrates_count = len(episode_winrates)
         planned_episodes = results.get('episodes', planned_episodes)
         
         # ИСПРАВЛЕНИЕ: episode_winrates - это ЕДИНСТВЕННЫЙ надежный источник реального количества эпизодов
@@ -136,14 +138,13 @@ def analyze_training_results(results_file):
     print(f"🔍 ФИНАЛЬНЫЙ РЕЗУЛЬТАТ: actual_episodes = {actual_episodes}, early_stopping = {early_stopping_triggered}")
     
     # ФИНАЛЬНАЯ ПРОВЕРКА: Убеждаемся, что actual_episodes корректен
-    if 'episode_winrates' in results and results['episode_winrates']:
-        episode_winrates_count = len(results['episode_winrates'])
+    if episode_winrates:
+        episode_winrates_count = len(episode_winrates)
         if actual_episodes != episode_winrates_count:
             print(f"🔍 ФИНАЛЬНАЯ ПРОВЕРКА: Исправляем actual_episodes с {actual_episodes} на {episode_winrates_count}")
             actual_episodes = episode_winrates_count
             early_stopping_triggered = True
     
-    # Проверяем early stopping
     if actual_episodes < planned_episodes:
         early_stopping_triggered = True
         print(f"🎯 Планируемое количество эпизодов: {planned_episodes}")
@@ -155,15 +156,22 @@ def analyze_training_results(results_file):
         print(f"✅ Реальное количество эпизодов: {actual_episodes}")
         print(f"✅ Обучение завершено полностью")
     
-    # Показываем информацию о early stopping
     if 'early_stopping_triggered' in results:
         early_stopping_triggered = results['early_stopping_triggered']
         print(f"🔄 Early Stopping: {'Сработал' if early_stopping_triggered else 'Не сработал'}")
-    
-    print(f"⏱️ Время обучения: {results['total_training_time']:.2f} секунд ({results['total_training_time']/60:.1f} минут)")
-    print(f"🚀 Скорость: {actual_episodes/(results['total_training_time']/60):.1f} эпизодов/минуту")
-    
-    # Показываем информацию о early stopping в статистике
+
+    total_training_time = results.get('total_training_time') or results.get('training_time_seconds')
+    if total_training_time is not None:
+        try:
+            total_training_time = float(total_training_time)
+            print(f"⏱️ Время обучения: {total_training_time:.2f} секунд ({total_training_time/60:.1f} минут)")
+            speed = (actual_episodes / (total_training_time / 60)) if total_training_time else 0.0
+            print(f"🚀 Скорость: {speed:.1f} эпизодов/минуту")
+        except Exception:
+            print(f"⏱️ Время обучения: {total_training_time}")
+    else:
+        print("⏱️ Время обучения: N/A")
+
     if early_stopping_triggered:
         print(f"🔄 Early Stopping: Сработал на {actual_episodes} эпизоде")
         print(f"📊 Причина: Достигнут стабильный winrate или сработали другие критерии остановки")
@@ -171,13 +179,16 @@ def analyze_training_results(results_file):
     else:
         print(f"🔄 Early Stopping: Не сработал")
         print(f"✅ Обучение завершено по всем планируемым эпизодам")
-    
-    # Статистика winrate
-    winrates = results['episode_winrates']
+
+    winrates = episode_winrates
     if winrates:
         print(f"\n📊 СТАТИСТИКА WINRATE:")
         print(f"  • Средний winrate: {np.mean(winrates):.3f}")
-        print(f"  • Лучший winrate: {results['best_winrate']:.3f}")
+        best_winrate = results.get('best_winrate')
+        if best_winrate is None and winrates:
+            best_winrate = max(winrates)
+        if best_winrate is not None:
+            print(f"  • Лучший winrate: {float(best_winrate):.3f}")
         print(f"  • Минимальный winrate: {np.min(winrates):.3f}")
         print(f"  • Максимальный winrate: {np.max(winrates):.3f}")
         print(f"  • Стандартное отклонение: {np.std(winrates):.3f}")
@@ -194,7 +205,7 @@ def analyze_training_results(results_file):
             print(f"  • Всего эпизодов в статистике: {len(winrates)}")
     
     # Статистика сделок
-    trades = results['all_trades']
+    trades = results.get('all_trades') or []
     if trades:
         print(f"\n💰 СТАТИСТИКА СДЕЛОК:")
         print(f"  • Всего сделок: {len(trades)}")
@@ -226,13 +237,16 @@ def analyze_training_results(results_file):
             print(f"  • Максимальная длительность: {np.max(durations):.1f} минут")
     
     # Финальная статистика
-    if 'final_stats' in results:
+    final_stats = results.get('final_stats')
+    if isinstance(final_stats, dict):
         print(f"\n📈 ФИНАЛЬНАЯ СТАТИСТИКА:")
-        for key, value in results['final_stats'].items():
+        for key, value in final_stats.items():
             if isinstance(value, float):
                 print(f"  • {key}: {value:.4f}")
             else:
                 print(f"  • {key}: {value}")
+    elif final_stats is not None:
+        print(f"\n📈 ФИНАЛЬНАЯ СТАТИСТИКА: {final_stats}")
     
     # Дополнительная информация об обучении
     print(f"\n📊 ИНФОРМАЦИЯ ОБ ОБУЧЕНИИ:")

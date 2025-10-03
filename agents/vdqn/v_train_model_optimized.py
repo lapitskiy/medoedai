@@ -190,7 +190,7 @@ def _save_training_results(
         bad_trades_percentage = (bad_trades_count / total_trades_count * 100.0) if total_trades_count > 0 else 0.0
 
         # Получаем статистику, если есть сделки, иначе пустой словарь
-        stats_all = dqn_solver.print_trade_stats(all_trades) if all_trades else {}
+        stats_all = dqn_solver.print_trade_stats(all_trades) if all_trades and dqn_solver is not None else {}
 
         training_results = {
             'episodes': total_episodes_planned,  # Планируемое количество эпизодов
@@ -205,7 +205,7 @@ def _save_training_results(
             'final_stats': stats_all,
             'training_date': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
             'model_path': cfg.model_path,
-            'buffer_path': cfg.buffer_path,
+            'buffer_path': getattr(cfg, 'replay_buffer_path', getattr(cfg, 'buffer_path', None)),
             'symbol': training_name,
             'model_id': getattr(cfg, 'run_id', None) or (run_dir.split(os.sep)[-1] if run_dir else None), # Используем run_id из cfg или из run_dir
             'early_stopping_triggered': current_episode < total_episodes_planned,  # True если early stopping сработал
@@ -222,8 +222,8 @@ def _save_training_results(
             'total_steps_processed': total_steps_processed,
             'episode_length': episode_length, # Добавляем длину эпизода
             # Дополнительные метрики из dqn_solver
-            'epsilon_final_value': dqn_solver.epsilon,
-            'learning_rate_final_value': dqn_solver.optimizer.param_groups[0]['lr'] if dqn_solver.optimizer.param_groups else None,
+            'epsilon_final_value': dqn_solver.epsilon if dqn_solver is not None else None,
+            'learning_rate_final_value': dqn_solver.optimizer.param_groups[0]['lr'] if dqn_solver and dqn_solver.optimizer and dqn_solver.optimizer.param_groups else None,
         }
         
         # Метаданные окружения и запуска
@@ -252,8 +252,8 @@ def _save_training_results(
 
         # Снимок конфигурации и архитектуры
         cfg_snapshot = _safe_cfg_snapshot(cfg)
-        arch_main = _architecture_summary(dqn_solver.model)
-        arch_target = _architecture_summary(dqn_solver.target_model)
+        arch_main = _architecture_summary(dqn_solver.model) if dqn_solver and hasattr(dqn_solver, 'model') else {}
+        arch_target = _architecture_summary(dqn_solver.target_model) if dqn_solver and hasattr(dqn_solver, 'target_model') else {}
         
         # Снимок параметров окружения и данных (для воспроизводимости) ---
         gym_snapshot = {}
@@ -314,9 +314,9 @@ def _save_training_results(
         # Информация о весах (пути и хэши)
         weights_info = {
             'model_path': cfg.model_path,
-            'buffer_path': cfg.buffer_path,
+            'buffer_path': getattr(cfg, 'replay_buffer_path', getattr(cfg, 'buffer_path', None)),
             'model_sha256': _sha256_of_file(cfg.model_path) if cfg and getattr(cfg, 'model_path', None) and os.path.exists(cfg.model_path) else None,
-            'buffer_sha256': _sha256_of_file(cfg.buffer_path) if cfg and getattr(cfg, 'buffer_path', None) and os.path.exists(cfg.buffer_path) else None,
+            'buffer_sha256': _sha256_of_file(getattr(cfg, 'replay_buffer_path', getattr(cfg, 'buffer_path', None))) if cfg and getattr(cfg, 'replay_buffer_path', getattr(cfg, 'buffer_path', None)) and os.path.exists(getattr(cfg, 'replay_buffer_path', getattr(cfg, 'buffer_path', None))) else None,
         }
 
         # Объединяем
@@ -352,10 +352,11 @@ def _save_training_results(
                 if os.path.abspath(cfg.model_path) != os.path.abspath(_dst_m):
                     _sh.copy2(cfg.model_path, _dst_m)
             # Буфер
-            if cfg and getattr(cfg, 'buffer_path', None) and os.path.exists(cfg.buffer_path):
+            buffer_path = getattr(cfg, 'replay_buffer_path', getattr(cfg, 'buffer_path', None))
+            if cfg and buffer_path and os.path.exists(buffer_path):
                 _dst_b = os.path.join(run_dir, 'replay.pkl')
-                if os.path.abspath(cfg.buffer_path) != os.path.abspath(_dst_b):
-                    _sh.copy2(cfg.buffer_path, _dst_b)
+                if os.path.abspath(buffer_path) != os.path.abspath(_dst_b):
+                    _sh.copy2(buffer_path, _dst_b)
             # Результаты
             if os.path.exists(results_file):
                 _dst_r = os.path.join(run_dir, 'train_result.pkl')
@@ -773,7 +774,7 @@ def train_model_optimized(
                 pass
         if load_buffer_path and isinstance(load_buffer_path, str):
             try:
-                dqn_solver.cfg.buffer_path = load_buffer_path
+                dqn_solver.cfg.replay_buffer_path = load_buffer_path
             except Exception:
                 pass
         # Если внешняя cfg не передана — используем конфиг из dqn_solver
@@ -801,13 +802,13 @@ def train_model_optimized(
         # Обновляем пути сохранения на структурированные независимо от наличия внешней cfg
         try:
             dqn_solver.cfg.model_path = new_model_path
-            dqn_solver.cfg.buffer_path = new_buffer_path
+            dqn_solver.cfg.replay_buffer_path = new_buffer_path
         except Exception:
             pass
         try:
             if cfg is not None:
                 cfg.model_path = dqn_solver.cfg.model_path
-                cfg.buffer_path = dqn_solver.cfg.buffer_path
+                cfg.replay_buffer_path = dqn_solver.cfg.replay_buffer_path
         except Exception:
             pass
         

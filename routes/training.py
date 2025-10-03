@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, request, redirect, url_for, current_app as app
 from celery.result import AsyncResult
 from tasks.celery_tasks import celery, train_dqn_multi_crypto, train_dqn_symbol
+from tasks.sac_tasks import train_sac_symbol
 from utils.redis_utils import get_redis_client
 import os
 import logging
@@ -232,45 +233,35 @@ def continue_training_route():
         else:
             return jsonify({"success": False, "error": "Ожидался файл dqn_model_*.pth, train_result_*.pkl или runs/.../model.pth"}), 400
 
-        # Запускаем фоновой таск обучения, передав пути в ENV (упрощение без изменения сигнатуры Celery)
-        # Используем общую очередь 'train'
-        from celery import group
-        # Сохраним параметры в Redis на час
-        try:
-            redis_client.setex('continue:model_path', 3600, str(model_file))
-            if replay_file and os.path.exists(str(replay_file)):
-                redis_client.setex('continue:buffer_path', 3600, str(replay_file))
-        except Exception:
-            pass
+        # Определяем тип модели
+        model_type = 'dqn'
+        if symbol_from_path and str(symbol_from_path).lower() == 'sac':
+            model_type = 'sac'
+        elif 'result/sac/' in str(model_file).replace('\\','/').lower():
+            model_type = 'sac'
 
-        # Таск train_dqn_symbol не принимает пути, поэтому временно применим символ из code для данных,
-        # а загрузка модели произойдет в v_train_model_optimized по этим путям через ENV.
         symbol_guess = None
         try:
-            if symbol_from_path:
+            if symbol_from_path and model_type == 'dqn':
                 symbol_guess = (str(symbol_from_path).upper())
+            elif symbol_from_path and model_type == 'sac':
+                symbol_guess = (str(Path(symbol_from_path).stem).upper())
             else:
                 symbol_guess = (code.split('_', 1)[0] + 'USDT').upper()
         except Exception:
             symbol_guess = None
         if not symbol_guess:
             symbol_guess = 'BTCUSDT'
-        # Если seed не указан — сгенерируем случайный
+
         if seed is None:
             import random as _rnd
             seed = _rnd.randint(1, 2**31 - 1)
             logger.info(f"[continue_training] generated random seed={seed}")
 
-        task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol_guess, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length}, queue='train')
-
-        # Прокинем пути через ENV переменные для этого процесса воркера (если он читает их)
-        # Если воркер в другом процессе, используем Redis как источник — уже сохранено выше.
-        try:
-            os.environ['CONTINUE_MODEL_PATH'] = str(model_file)
-            if replay_file and os.path.exists(str(replay_file)):
-                os.environ['CONTINUE_BUFFER_PATH'] = str(replay_file)
-        except Exception:
-            pass
+        if model_type == 'sac':
+            task = train_sac_symbol.apply_async(kwargs={'symbol': symbol_guess, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length, 'model_path': str(model_file), 'buffer_path': str(replay_file) if replay_file and os.path.exists(replay_file) else None}, queue='train')
+        else:
+            task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol_guess, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length}, queue='train')
 
         # Добавим задачу в UI список
         try:
@@ -280,7 +271,7 @@ def continue_training_route():
         except Exception:
             pass
 
-        return jsonify({"success": True, "task_id": task.id, "seed": seed})
+        return jsonify({"success": True, "task_id": task.id, "seed": seed, "model_type": model_type, "symbol": symbol_guess})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

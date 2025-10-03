@@ -681,6 +681,7 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.last_buy_step = None
         self.trailing_stop_counter = 0
         self.max_price_during_hold = None
+        self.balance_history = [self.balance]
         
         # ИСПРАВЛЯЕМ: НЕ очищаем сделки между эпизодами для правильного расчета winrate
         # self.trades = []  # ЗАКОММЕНТИРОВАНО
@@ -999,6 +1000,7 @@ class CryptoTradingEnvOptimized(gym.Env):
             "total_profit": (self.balance + self.crypto_held * current_price) - initial_balance,
             "reward": reward
         })
+        self.balance_history.append(self.balance + self.crypto_held * current_price)
         
         # Обновляем next_state для всех переходов в n-step buffer
         for transition in self.n_step_buffer:

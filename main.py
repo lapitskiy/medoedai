@@ -8,12 +8,12 @@
     FLASK_APP=main.py flask run # Альтернатива
 """
 
-import requests
-from flask import Flask, request, jsonify, render_template
+import requests # type: ignore
+from flask import Flask, request, jsonify, render_template, current_app # type: ignore
 from flask import redirect, url_for
 from pathlib import Path
 
-import redis
+import redis # type: ignore
 
 from tasks.celery_tasks import celery
 from routes.bybit import bybit_bp
@@ -21,6 +21,8 @@ from routes.trading import trading_bp, get_matched_full_trades
 from routes.models_admin import models_admin_bp
 from routes.oos import oos_bp
 from routes.training import training_bp
+from routes.analysis_page import analytics_bp
+from routes.sac import sac_bp
 from utils.redis_utils import get_redis_client, clear_redis_on_startup
 
 """get_redis_client берём из utils.redis_utils"""
@@ -52,7 +54,7 @@ import glob
 import os
 import pickle
 
-import docker
+import docker # type: ignore
 
 from tasks.celery_task_trade import start_trading_task
 from utils.celery_utils import ensure_symbol_worker
@@ -68,6 +70,8 @@ app.register_blueprint(training_bp, url_prefix='/training')
 from routes.clean import clean_bp
 app.register_blueprint(clean_bp)
 app.register_blueprint(oos_bp)
+app.register_blueprint(sac_bp)
+app.register_blueprint(analytics_bp)
 
 # Функция очистки Redis вынесена в utils.redis_utils.clear_redis_on_startup
 
@@ -350,25 +354,88 @@ def get_result_model_info():
                     'pl_ratio': stats.get('pl_ratio'),
                     'trades_count': stats.get('trades_count')
                 }
-                info['episodes'] = results.get('actual_episodes', results.get('episodes'))
-                # Пробрасываем seed из метаданных, если сохранён
-                info['seed'] = results.get('train_metadata', {}).get('seed')
-                # Пробрасываем информацию о GPU
-                info['cuda_available'] = results.get('train_metadata', {}).get('cuda_available', False)
-                info['gpu_name'] = results.get('train_metadata', {}).get('gpu_name')
+
+                planned_episodes = results.get('episodes')
+                actual_episodes = results.get('actual_episodes')
+                info['episodes'] = actual_episodes if actual_episodes is not None else planned_episodes
+                info['episodes_planned'] = planned_episodes
+                info['actual_episodes'] = actual_episodes
+
+                train_metadata = results.get('train_metadata') or {}
+                info['seed'] = train_metadata.get('seed')
+                info['cuda_available'] = train_metadata.get('cuda_available', False)
+                info['gpu_name'] = train_metadata.get('gpu_name')
                 info['total_training_time'] = results.get('total_training_time')
                 if info['total_training_time'] and info['episodes']:
-                    info['avg_time_per_episode_sec'] = info['total_training_time'] / info['episodes']
+                    try:
+                        info['avg_time_per_episode_sec'] = info['total_training_time'] / max(info['episodes'], 1)
+                    except Exception:
+                        info['avg_time_per_episode_sec'] = None
                 else:
                     info['avg_time_per_episode_sec'] = None
-                
+
+                info['train_metadata'] = {
+                    'created_at_utc': train_metadata.get('created_at_utc'),
+                    'hostname': train_metadata.get('hostname'),
+                    'platform': train_metadata.get('platform'),
+                    'python_version': train_metadata.get('python_version'),
+                    'torch_version': train_metadata.get('torch_version'),
+                    'cuda_available': train_metadata.get('cuda_available'),
+                    'gpu_name': train_metadata.get('gpu_name'),
+                    'git_commit': train_metadata.get('git_commit'),
+                    'seed': train_metadata.get('seed'),
+                }
+
                 # Добавляем длину эпизода, если она сохранена в gym_snapshot
                 gym_snapshot = results.get('gym_snapshot', {}) or {}
                 if 'episode_length' in gym_snapshot:
                     info['episode_length'] = gym_snapshot['episode_length']
-                # Вторая попытка: может быть в cfg_snapshot
-                elif 'cfg_snapshot' in results and 'episode_length' in (results['cfg_snapshot'] or {}):
-                    info['episode_length'] = results['cfg_snapshot']['episode_length']
+                elif 'cfg_snapshot' in results and isinstance(results['cfg_snapshot'], dict):
+                    info['episode_length'] = results['cfg_snapshot'].get('episode_length')
+
+                # Пути к артефактам
+                info['model_path'] = results.get('model_path') or info.get('model_file')
+                info['buffer_path'] = results.get('buffer_path')
+
+                weights = results.get('weights') or {}
+                info['weights'] = {
+                    'model_path': weights.get('model_path'),
+                    'model_sha256': weights.get('model_sha256'),
+                    'buffer_path': weights.get('buffer_path'),
+                    'buffer_sha256': weights.get('buffer_sha256'),
+                }
+
+                # Сводная статистика валидации и winrate по эпизодам
+                def _sanitize_sequence(seq):
+                    if not isinstance(seq, (list, tuple)):
+                        return []
+                    clean = []
+                    for value in seq:
+                        if isinstance(value, (int, float)) and value == value:
+                            clean.append(float(value))
+                    return clean
+
+                episode_winrates = _sanitize_sequence(results.get('episode_winrates'))
+                best_winrate = results.get('best_winrate')
+                if best_winrate is None and episode_winrates:
+                    best_winrate = max(episode_winrates)
+                info['best_winrate'] = best_winrate
+                if episode_winrates:
+                    info['episode_winrate_summary'] = {
+                        'count': len(episode_winrates),
+                        'last': episode_winrates[-1],
+                        'best': max(episode_winrates),
+                        'avg': sum(episode_winrates) / len(episode_winrates),
+                    }
+
+                validation_rewards = _sanitize_sequence(results.get('validation_rewards'))
+                if validation_rewards:
+                    info['validation_summary'] = {
+                        'count': len(validation_rewards),
+                        'last': validation_rewards[-1],
+                        'best': max(validation_rewards),
+                        'avg': sum(validation_rewards) / len(validation_rewards),
+                    }
 
             except Exception as e:
                 app.logger.warning(f"get_result_model_info: не удалось загрузить train_file {train_file}: {e}")
@@ -454,7 +521,6 @@ def create_model_version():
         requested_symbol = (data.get('symbol') or '').strip()
         requested_file = (data.get('file') or '').strip()
         requested_ensemble = (data.get('ensemble') or 'ensemble-a').strip() or 'ensemble-a'
-        print(f"[create_model_version] payload: symbol='{requested_symbol}', file='{requested_file}', ensemble='{requested_ensemble}'")
         
         # Генерируем уникальный ID (4 символа)
         model_id = str(uuid.uuid4())[:4].upper()
@@ -482,7 +548,6 @@ def create_model_version():
             return s
         
         base_code = normalize_symbol(requested_symbol)
-        print(f"[create_model_version] base_code (from symbol): '{base_code}'")
         
         selected_result_file = None
         selected_model_file = None
@@ -495,7 +560,6 @@ def create_model_version():
             req_norm = requested_file.replace('\\', '/')
             safe_path = _Path(req_norm)
             result_dir_abs = result_dir.resolve()
-            print(f"[create_model_version] requested_file(normalized)='{req_norm}'")
 
             # Определяем кандидат с учётом разных вариантов формата пути
             if safe_path.is_absolute():
@@ -512,14 +576,12 @@ def create_model_version():
                 cand_resolved = candidate.resolve()
             except Exception:
                 cand_resolved = candidate
-            print(f"[create_model_version] candidate='{cand_resolved}', exists={cand_resolved.exists()}, is_file={cand_resolved.is_file()}")
 
             # Безопасность: файл должен быть внутри result/
             try:
                 inside_result = str(cand_resolved).lower().startswith(str(result_dir_abs).lower())
             except Exception:
                 inside_result = False
-            print(f"[create_model_version] inside_result={inside_result}, result_dir_abs='{result_dir_abs}'")
 
             if inside_result and cand_resolved.exists() and cand_resolved.is_file():
                 run_dir = cand_resolved.parent
@@ -537,10 +599,9 @@ def create_model_version():
                             selected_replay_file = selected_replay_file or f
                         elif n.endswith('.pkl') and (n.startswith('train_result') or 'result' in n):
                             selected_result_file = selected_result_file or f
-                    print(f"[create_model_version] from run dir found: model={selected_model_file}, replay={selected_replay_file}, result={selected_result_file}")
                     # Если каких-то файлов нет — продолжаем, но предупредим
                     if not (selected_replay_file and selected_result_file):
-                        print("[create_model_version] WARN: not all artifacts found near model; will copy available ones only")
+                        pass
                     try:
                         if selected_result_file is not None:
                             fname = selected_result_file.stem
@@ -560,7 +621,6 @@ def create_model_version():
                             selected_model_file = selected_model_file or f
                         elif n.endswith('.pkl') and (n.startswith('replay_buffer') or 'replay' in n):
                             selected_replay_file = selected_replay_file or f
-                    print(f"[create_model_version] neighbor search: model={selected_model_file}, replay={selected_replay_file}, result={selected_result_file}")
                     if not selected_model_file:
                         return jsonify({
                             "success": False,
@@ -586,7 +646,6 @@ def create_model_version():
         elif base_code:
             # Ищем точный train_result_<base_code>.pkl
             candidate = result_dir / f"train_result_{base_code}.pkl"
-            print(f"[create_model_version] fallback by base_code: candidate='{candidate}' exists={candidate.exists()}")
             if candidate.exists():
                 selected_result_file = candidate
             else:
@@ -622,7 +681,6 @@ def create_model_version():
         else:
             model_file = result_dir / f'dqn_model_{base_code}.pth'
             replay_file = result_dir / f'replay_buffer_{base_code}.pkl'
-        print(f"[create_model_version] sources: model='{model_file}', replay='{replay_file}', result='{selected_result_file}'")
         
         if not model_file.exists():
             return jsonify({
@@ -668,8 +726,7 @@ def create_model_version():
             version_name = f'v{next_num}'
             version_dir = ensemble_dir / version_name
             version_dir.mkdir(exist_ok=False)
-            print(f"[create_model_version] create version_dir='{version_dir}'")
-
+            
             # Копируем артефакты версии (сохраняем оригинальные имена файлов)
             ver_model = version_dir / model_file.name
             ver_replay = version_dir / (replay_file.name if replay_file.exists() else 'replay_buffer.pkl')
@@ -679,30 +736,13 @@ def create_model_version():
                 if replay_file.exists():
                     shutil.copy2(replay_file, ver_replay)
             except Exception:
-                print(f"[create_model_version] WARN: replay not copied from '{replay_file}'")
+                pass
             try:
                 if selected_result_file and selected_result_file.exists():
                     shutil.copy2(selected_result_file, ver_result)
             except Exception:
-                print(f"[create_model_version] WARN: results not copied from '{selected_result_file}'")
-            print(f"[create_model_version] copied core files to '{version_dir.name}'")
-
-            # Дополнительно переносим все файлы из папки запуска (если известна)
-            try:
-                if run_dir_path is not None:
-                    print(f"[create_model_version] copying extra files from run_dir='{run_dir_path}'")
-                    for f in run_dir_path.iterdir():
-                        if f.is_file():
-                            dst = version_dir / f.name
-                            try:
-                                if not dst.exists():
-                                    shutil.copy2(f, dst)
-                                    print(f"[create_model_version] extra file copied: '{f.name}'")
-                            except Exception:
-                                print(f"[create_model_version] WARN: failed to copy extra file '{f}'")
-            except Exception:
-                print("[create_model_version] WARN: extra-files copy failed:\n" + traceback.format_exc())
-
+                pass
+            
             # Пишем manifest.yaml (без зависимости от PyYAML)
             manifest_path = version_dir / 'manifest.yaml'
             try:
@@ -716,7 +756,7 @@ def create_model_version():
                             if isinstance(_res, dict) and 'final_stats' in _res:
                                 stats_brief = _res['final_stats'] or {}
                     except Exception:
-                        print("[create_model_version] WARN: cannot read stats from ver_result")
+                        pass
                 created_ts = _dt.utcnow().isoformat()
                 # Используем run_id из исходной папки, если она известна
                 manifest_id = (str(run_dir_path.name) if run_dir_path is not None else named_id)
@@ -739,7 +779,7 @@ def create_model_version():
                 with open(manifest_path, 'w', encoding='utf-8') as mf:
                     mf.write(yaml_text)
             except Exception:
-                print("[create_model_version] WARN: manifest write failed:\n" + traceback.format_exc())
+                pass
 
             # Обновляем симлинк current -> vN (если не удаётся — создаём файл-указатель)
             current_link = ensemble_dir / 'current'
@@ -762,7 +802,7 @@ def create_model_version():
                     pass
         except Exception:
             # Не валим основной сценарий, если models/ недоступна
-            print("[create_model_version] WARN: version packaging failed:\n" + traceback.format_exc())
+            pass
         
         return jsonify({
             "success": True,

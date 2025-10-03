@@ -14,7 +14,7 @@
         <h3>📋 Навигация</h3>
         <ul class="sidebar-nav">
             <li><a href="#trading-agent" onclick="scrollToSection('trading-agent')">💰 Торговый агент</a></li>
-            <li><a href="#analytics" onclick="scrollToSection('analytics')">📊 Аналитика</a></li>
+            <li><a href="/analitika">📊 Аналитика</a></li>
             <li><a href="#models" onclick="scrollToSection('models')">🤖 Модели</a></li>
             <li><a href="/oos">📈 OOS</a></li>
             <li><a href="#data-management" onclick="scrollToSection('data-management')">📥 Данные</a></li>
@@ -36,8 +36,8 @@
             <div class="tabs" data-tabs="main">
                 <div class="tabs-nav">
                     <button class="tab-btn active" data-tab-btn data-target="#trading-agent">💰 Торговый агент</button>
-                    <button class="tab-btn" data-tab-btn data-target="#analytics">📊 Аналитика</button>
                     <button class="tab-btn" data-tab-btn data-target="#models">🤖 Модели</button>
+                    <button class="tab-btn" onclick="window.location.href='/analitika'">📊 Аналитика</button>
                     <button class="tab-btn" onclick="window.location.href='/oos'">📈 OOS</button>
                     <button class="tab-btn" data-tab-btn data-target="#data-management">📥 Данные</button>
                     <button class="tab-btn" data-tab-btn data-target="#system">🔧 Система</button>
@@ -102,34 +102,6 @@
                         </div>
                     </div>
 
-                    <!-- Панель аналитики -->
-                    <div class="tab-panel" data-tab-panel id="analytics">
-                        <div class="section">
-                            <h2>📊 Аналитика результатов</h2>
-                            <p>Выберите символ и run (result/<SYMBOL>/runs/<run_id>)</p>
-                            <div class="form-group">
-                                <label>Символ</label>
-                                <select id="indexSymbolSelect"></select>
-                            </div>
-                            <div class="form-group">
-                                <label>Run (UUID)</label>
-                                <select id="indexRunSelect"></select>
-                            </div>
-                            <div class="button-group">
-                                <button id="listResultsBtn" class="btn btn-info" onclick="loadIndexSymbols()">📋 Обновить список</button>
-                                <button id="analyzeResultsBtn" class="btn btn-primary" onclick="analyzeTrainingResultsSelected()">📈 Анализ результатов</button>
-                                <button id="analyzeBadTradesBtn" class="btn btn-warning" onclick="analyzeBadTradesSelected()">🔍 Плохие сделки</button>
-                            </div>
-                            <div id="indexRunInfo" class="status info" style="display:none; white-space: pre-line;"></div>
-                            <div id="analysisStatus" class="status" style="display: none;"></div>
-                            <div id="analysisResults" class="results" style="display: none;"></div>
-                            <div id="filesList" class="results" style="display: none;"></div>
-                            <div id="badTradesStatus" class="status" style="display: none;"></div>
-                            <div id="badTradesResults" class="results" style="display: none;"></div>
-                            <div id="badTradesSummary" class="results" style="display: none;"></div>
-                        </div>
-                    </div>
- 
                     <!-- Панель моделей -->
                     <div class="tab-panel" data-tab-panel id="models">
                         <div class="section">
@@ -142,6 +114,9 @@
                                 </a>
                                 <a href="/cnn_training" class="btn btn-primary">
                                     🧠 Обучение CNN моделей
+                                </a>
+                                <a href="/sac_models" class="btn btn-info">
+                                    🌌 Управление моделями SAC
                                 </a>
                             </div>
                             
@@ -263,16 +238,16 @@
     <script>
         // Связываем переход из сайдбара с активацией табов
         document.addEventListener('DOMContentLoaded', function(){
-            try{
-                document.querySelectorAll('.sidebar-nav a[href^="#"]').forEach(a => {
-                    a.addEventListener('click', function(){
-                        const href = a.getAttribute('href');
-                        if(href){
-                            try{ window.__tabs && window.__tabs.activateTabByAnchor('[data-tabs="main"]', href); }catch(_){ }
-                        }
-                    });
+        try{
+            document.querySelectorAll('.sidebar-nav a[href^="#"]').forEach(a => {
+                a.addEventListener('click', function(){
+                    const href = a.getAttribute('href');
+                    if(href){
+                        try{ window.__tabs && window.__tabs.activateTabByAnchor('[data-tabs="main"]', href); }catch(_){ }
+                    }
                 });
-            }catch(_){ }
+            });
+        }catch(_){ }
         });
         // Функция для мультивалютного скачивания
         async function startMultiCryptoDownload() {
@@ -338,261 +313,6 @@
                 });
             }
         });
-
-        // Функции для анализа результатов обучения
-        let indexRunsBySymbol = {};
-
-        async function loadIndexSymbols(){
-            const sel = document.getElementById('indexSymbolSelect');
-            const runSel = document.getElementById('indexRunSelect');
-            if(!sel) return;
-            try{
-                const resp = await fetch('/api/runs/symbols');
-                const data = await resp.json();
-                const symbols = (data && data.success && Array.isArray(data.symbols))? data.symbols: [];
-                sel.innerHTML = symbols.length? symbols.map(s=>`<option value="${s}">${s}</option>`).join(''): '<option value="">Нет символов</option>';
-                if(symbols.length){ await loadIndexRuns(); }
-                else if(runSel){ runSel.innerHTML = '<option value="">—</option>'; }
-            }catch(e){ if(sel) sel.innerHTML = '<option value="">Ошибка</option>'; }
-        }
-
-        async function loadIndexRuns(){
-            const sym = (document.getElementById('indexSymbolSelect')?.value||'').trim();
-            const runSel = document.getElementById('indexRunSelect');
-            if(!sym || !runSel) return;
-            try{
-                const resp = await fetch('/api/runs/list?symbol='+encodeURIComponent(sym));
-                const data = await resp.json();
-                const runs = (data && data.success && Array.isArray(data.runs))? data.runs: [];
-                indexRunsBySymbol[sym] = runs;
-                runSel.innerHTML = runs.length? runs.map(r=>`<option value="${r.run_id}">${r.run_id}</option>`).join(''): '<option value="">Нет runов</option>';
-                try{ await showIndexRunInfo(); }catch(_){ }
-            }catch(e){ runSel.innerHTML = '<option value="">Ошибка</option>'; }
-        }
-
-        function getSelectedTrainResultPath(){
-            const sym = (document.getElementById('indexSymbolSelect')?.value||'').trim();
-            const runId = (document.getElementById('indexRunSelect')?.value||'').trim();
-            const runs = indexRunsBySymbol[sym]||[];
-            const found = runs.find(r=>r.run_id===runId);
-            if(found && found.result_path){ return found.result_path; }
-            if(sym && runId){ return `result/${sym}/runs/${runId}/train_result.pkl`; }
-            return '';
-        }
-
-        async function showIndexRunInfo(){
-            const infoDiv = document.getElementById('indexRunInfo');
-            if(!infoDiv) return;
-            const sym = (document.getElementById('indexSymbolSelect')?.value||'').trim();
-            const runId = (document.getElementById('indexRunSelect')?.value||'').trim();
-            if(!sym || !runId){ infoDiv.style.display='none'; return; }
-            const modelPath = `result/${sym}/runs/${runId}/model.pth`;
-            try{
-                const resp = await fetch('/get_result_model_info', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ filename: modelPath }) });
-                const result = await resp.json();
-                if(!result.success){
-                    infoDiv.className = 'status error';
-                    infoDiv.textContent = '❌ ' + (result.error || 'Ошибка получения информации');
-                    infoDiv.style.display = 'block';
-                    return;
-                }
-                const stats = result.stats || {};
-                const winrate = typeof stats.winrate === 'number' ? (stats.winrate * 100).toFixed(1) + '%' : 'N/A';
-                const plr = typeof stats.pl_ratio === 'number' ? stats.pl_ratio.toFixed(2) : 'N/A';
-                const trades = (stats.trades_count != null) ? stats.trades_count : 'N/A';
-                const episodes = (result.episodes != null) ? result.episodes : 'N/A';
-                const seed = (result.seed != null) ? result.seed : '—';
-                const gpu = (result.cuda_available===true) ? (result.gpu_name || 'GPU') : (result.cuda_available===false ? 'CPU' : '—');
-                const totalTime = (typeof result.total_training_time === 'number') ? result.total_training_time : null;
-                const avgTime = (typeof result.avg_time_per_episode_sec === 'number') ? result.avg_time_per_episode_sec : (totalTime && episodes ? (totalTime/episodes) : null);
-                const fmtSec = (s)=>{ if(!s && s!==0) return 'N/A'; try{ const m=Math.floor(s/60), r=Math.round(s%60); return (m>0?`${m}м `:'')+`${r}с`; }catch(_){ return s.toFixed? s.toFixed(1)+'с' : String(s); } };
-                infoDiv.className = 'status info';
-                infoDiv.innerHTML = `
-Символ: ${sym}
-Run: ${runId}
-Seed: ${seed}
-Устройство: ${gpu}
-Winrate: ${winrate}
-P/L Ratio: ${plr}
-Сделок: ${trades}
-Эпизодов: ${episodes}
-Буфер: ${result.replay_exists ? '✅ есть' : '❌ нет'}
-Результаты обучения: ${result.train_result_exists ? '✅ есть' : '❌ нет'}
-Среднее время за эпизод: ${fmtSec(avgTime)}
-Общее время обучения: ${totalTime ? fmtSec(totalTime) : 'N/A'}
-Модель: ${result.model_file ? result.model_file.split('/').pop().split('\\').pop() : 'N/A'}
-Результаты: ${result.train_result_file ? result.train_result_file.split('/').pop().split('\\').pop() : '—'}
-`;
-                infoDiv.style.display = 'block';
-            }catch(e){
-                infoDiv.className = 'status error';
-                infoDiv.textContent = '❌ Ошибка сети: ' + e.message;
-                infoDiv.style.display = 'block';
-            }
-        }
-        async function listTrainingResults() {
-            const statusDiv = document.getElementById('analysisStatus');
-            const filesDiv = document.getElementById('filesList');
-            const selectEl = document.getElementById('resultsFileSelect');
-            const listBtn = document.getElementById('listResultsBtn');
-            
-            // Отключаем кнопку и показываем статус
-            listBtn.disabled = true;
-            listBtn.textContent = '⏳ Поиск файлов...';
-            statusDiv.style.display = 'block';
-            statusDiv.className = 'status running';
-            statusDiv.textContent = '🔍 Поиск файлов результатов обучения...';
-            
-            try {
-                const response = await fetch('/list_training_results', {
-                    method: 'GET',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    }
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    statusDiv.className = 'status success';
-                    statusDiv.textContent = '✅ ' + result.message;
-                    
-                    // Показываем список файлов
-                    filesDiv.style.display = 'block';
-                    
-                    let filesText = `📋 ДОСТУПНЫЕ ФАЙЛЫ РЕЗУЛЬТАТОВ:\n`;
-                    filesText += `=====================================\n\n`;
-                    
-                    if (result.files && result.files.length > 0) {
-                        // обновляем select
-                        selectEl.innerHTML = '';
-                        for (const file of result.files) {
-                            const opt = document.createElement('option');
-                            opt.value = file.filename;
-                            const date = new Date(file.created * 1000).toLocaleString();
-                            const sizeKB = (file.size / 1024).toFixed(1);
-                            opt.textContent = `${file.filename} (${sizeKB} KB, ${date})`;
-                            selectEl.appendChild(opt);
-                        }
-                        for (const file of result.files) {
-                            const date = new Date(file.created * 1000).toLocaleString();
-                            const sizeKB = (file.size / 1024).toFixed(1);
-                            filesText += `📄 ${file.filename}\n`;
-                            filesText += `   📅 Создан: ${date}\n`;
-                            filesText += `   📏 Размер: ${sizeKB} KB\n\n`;
-                        }
-                    } else {
-                        // Обновляем select плейсхолдером
-                        if (selectEl) {
-                            selectEl.innerHTML = '';
-                            const opt = document.createElement('option');
-                            opt.value = '';
-                            opt.textContent = 'Нет файлов результатов';
-                            selectEl.appendChild(opt);
-                        }
-                        filesText += `❌ Файлы результатов не найдены\n`;
-                        filesText += `💡 Сначала запустите обучение модели\n`;
-                    }
-                    
-                    filesDiv.innerHTML = `<pre>${filesText}</pre>`;
-                    
-                } else {
-                    throw new Error(result.message);
-                }
-                
-            } catch (error) {
-                statusDiv.className = 'status error';
-                statusDiv.textContent = '❌ Ошибка при поиске файлов: ' + error.message;
-            } finally {
-                // Восстанавливаем кнопку
-                listBtn.disabled = false;
-                listBtn.textContent = '📋 Список результатов';
-            }
-        }
-
-        async function analyzeTrainingResultsSelected() {
-            let file = getSelectedTrainResultPath();
-            if(!file){
-                // Fallback: скрытый select не используется больше
-                const selectEl = document.getElementById('resultsFileSelect');
-                file = selectEl? (selectEl.value||'') : '';
-            }
-            const analyzeBtn = document.getElementById('analyzeResultsBtn');
-            const statusDiv = document.getElementById('analysisStatus');
-            const resultsDiv = document.getElementById('analysisResults');
-            analyzeBtn.disabled = true;
-            statusDiv.style.display = 'block';
-            statusDiv.className = 'status running';
-            statusDiv.textContent = '📊 Анализ результатов обучения...';
-            try {
-                const response = await fetch('/analyze_training_results', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ file })
-                });
-                const result = await response.json();
-                if (result.success) {
-                    statusDiv.className = 'status success';
-                    statusDiv.textContent = '✅ ' + result.message;
-                    resultsDiv.style.display = 'block';
-                    let analysisText = `📊 АНАЛИЗ ФАЙЛА\n===============================\n\n`;
-                    analysisText += `📄 Файл: ${result.file_analyzed}\n`;
-                    analysisText += result.output || '';
-                    resultsDiv.innerHTML = `<pre>${analysisText}</pre>`;
-                } else {
-                    throw new Error(result.message);
-                }
-            } catch (e) {
-                statusDiv.className = 'status error';
-                statusDiv.textContent = '❌ Ошибка: ' + e.message;
-            } finally {
-                analyzeBtn.disabled = false;
-            }
-        }
-
-        async function analyzeBadTradesSelected() {
-            let file = getSelectedTrainResultPath();
-            if(!file){
-                const selectEl = document.getElementById('resultsFileSelect');
-                file = selectEl? (selectEl.value||'') : '';
-            }
-            const analyzeBtn = document.getElementById('analyzeBadTradesBtn');
-            const statusDiv = document.getElementById('badTradesStatus');
-            const resultsDiv = document.getElementById('badTradesResults');
-            const summaryDiv = document.getElementById('badTradesSummary');
-            analyzeBtn.disabled = true;
-            statusDiv.style.display = 'block';
-            statusDiv.className = 'status running';
-            statusDiv.textContent = '🔍 Анализ плохих сделок...';
-            resultsDiv.style.display = 'none';
-            summaryDiv.style.display = 'none';
-            try {
-                const response = await fetch('/analyze_bad_trades', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ file })
-                });
-                const result = await response.json();
-                if (result.success) {
-                    statusDiv.className = 'status success';
-                    statusDiv.textContent = '✅ ' + result.message;
-                    summaryDiv.style.display = 'block';
-                    let summaryText = `📊 СВОДКА ПЛОХИХ СДЕЛОК\n===============================\n\n`;
-                    summaryText += `📄 Файл: ${result.file_analyzed.split('/').pop()}\n`;
-                    summaryText += `🔢 Плохих сделок: ${result.bad_trades_count} (${result.bad_trades_percentage.toFixed(2)}%)\n`;
-                    summaryDiv.innerHTML = `<pre>${summaryText}</pre>`;
-                    resultsDiv.style.display = 'block';
-                    resultsDiv.innerHTML = `<pre>${result.output}</pre>`;
-                } else {
-                    throw new Error(result.message);
-                }
-            } catch (e) {
-                statusDiv.className = 'status error';
-                statusDiv.textContent = '❌ Ошибка: ' + e.message;
-            } finally {
-                analyzeBtn.disabled = false;
-            }
-        }
 
         // Функции для мониторинга торгового агента
         let agentMonitoringInterval = null;
@@ -744,11 +464,6 @@ P/L Ratio: ${plr}
         // Автозагрузка списка результатов (новая структура) при открытии страницы
         document.addEventListener('DOMContentLoaded', function() {
             try { 
-                loadIndexSymbols();
-                const symSel = document.getElementById('indexSymbolSelect');
-                if(symSel){ symSel.addEventListener('change', loadIndexRuns); }
-                const runSel = document.getElementById('indexRunSelect');
-                if(runSel){ runSel.addEventListener('change', showIndexRunInfo); }
                 // Автоматически запускаем мониторинг агента
                 startAgentMonitoring();
             } catch (e) { 

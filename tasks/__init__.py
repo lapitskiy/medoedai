@@ -37,6 +37,7 @@ celery.conf.task_routes = {
     'tasks.celery_tasks.train_dqn_symbol': {'queue': 'train'},
     'tasks.celery_tasks.train_dqn_multi_crypto': {'queue': 'train'},
     'tasks.celery_tasks.train_cnn_model': {'queue': 'train'},
+    'tasks.sac_tasks.train_sac_symbol': {'queue': 'train'},
     'tasks.celery_task_trade.execute_trade': {'queue': 'trade'},
     'tasks.celery_task_trade.start_trading_task': {'queue': 'trade'},
     'tasks.celery_task_trade.refresh_trading_status': {'queue': 'celery'},
@@ -66,3 +67,4 @@ else:
 import tasks.celery_tasks
 import tasks.celery_task_trade
 import tasks.oos_tasks
+import tasks.sac_tasks

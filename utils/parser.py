@@ -18,7 +18,7 @@ def parser_download_and_combine_with_library(
 ):
     
     output_file = f"{temp_data_dir}/bigdata_5m_klines.csv"
-    print(f"Начало загрузки данных {symbol} {interval} с использованием binance-historical-data.")
+    print(f"Начало загрузки данных {symbol} {interval} (основной источник: Binance, fallback: Bybit).")
 
     end_date = date.today()
     start_date = end_date - timedelta(days=30 * months_to_fetch)

@@ -54,6 +54,31 @@
                     <div class="button-group">
                         <button class="btn btn-info" id="refreshResultModelsBtn">🔄 Обновить список</button>
                     </div>
+                    <div id="modelTypeSelection" style="margin-bottom: 10px;">
+                        <label for="agentTypeSelect">Тип модели:</label>
+                        <select id="agentTypeSelect" class="form-control" style="width: auto; display: inline-block; margin-left: 10px;">
+                            <option value="dqn" selected>DQN</option>
+                            <option value="sac">SAC</option>
+                        </select>
+                    </div>
+                    <div id="dqnSymbolSelection" style="margin-bottom: 10px; display: none;">
+                        <label for="dqnSymbolSelect">Выберите символ DQN:</label>
+                        <select id="dqnSymbolSelect" class="form-control" style="width: auto; display: inline-block; margin-left: 10px;">
+                            <option value="">-- Все --</option>
+                            {% for symbol in dqn_symbols %}
+                            <option value="{{ symbol }}">{{ symbol }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div id="sacRunSelection" style="margin-bottom: 10px; display: none;">
+                        <label for="sacRunNameSelect">Выберите SAC Run:</label>
+                        <select id="sacRunNameSelect" class="form-control" style="width: auto; display: inline-block; margin-left: 10px;">
+                            <option value="">-- Все --</option>
+                            {% for run in sac_runs %}
+                            <option value="{{ run }}">{{ run }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
                     <div id="resultModelsList">
                         <div class="loading"><div class="spinner"></div>Загрузка...</div>
                     </div>
@@ -98,94 +123,121 @@
             }
             listDiv.innerHTML = '<div class="loading"><div class="spinner"></div>Загрузка...</div>';
             try {
-                const symResp = await fetch('/api/runs/symbols');
-                const symData = await symResp.json();
-                console.log('refreshResultModels: /api/runs/symbols response:', symData);
-                if(!symData.success){
-                    console.error('Error fetching symbols:', symData.error);
-                    listDiv.innerHTML = '<div class="status error">Ошибка загрузки символов</div>';
+                const agentType = document.getElementById('agentTypeSelect')?.value || 'dqn';
+                let url = '';
+                let params = {};
+
+                document.getElementById('dqnSymbolSelection').style.display = agentType === 'dqn' ? 'block' : 'none';
+                document.getElementById('sacRunSelection').style.display = agentType === 'sac' ? 'block' : 'none';
+
+                if (agentType === 'dqn') {
+                    const selectedSymbol = document.getElementById('dqnSymbolSelect')?.value;
+                    url = '/api/dqn_runs/list';
+                    if (selectedSymbol) {
+                        params.symbol = selectedSymbol;
+                    }
+                } else if (agentType === 'sac') {
+                    const selectedRunName = document.getElementById('sacRunNameSelect')?.value;
+                    url = '/api/sac_runs/list';
+                    if (selectedRunName) {
+                        params.run_name = selectedRunName;
+                    }
+                }
+
+                const queryString = new URLSearchParams(params).toString();
+                const fullUrl = `${url}?${queryString}`;
+
+                console.log('refreshResultModels: fetching runs from URL:', fullUrl);
+                const resp = await fetch(fullUrl);
+                const data = await resp.json();
+                console.log('refreshResultModels: API response:', data);
+
+                if (!data.success) {
+                    console.error('Error fetching runs:', data.error);
+                    listDiv.innerHTML = `<div class="status error">Ошибка загрузки: ${data.error}</div>`;
                     return;
                 }
-                const symbols = Array.isArray(symData.symbols)? symData.symbols: [];
-                console.log('refreshResultModels: processed symbols:', symbols);
-                if(symbols.length===0){ listDiv.innerHTML = '<div class="status info">📭 Папка result пуста</div>'; return; }
+                const runs = Array.isArray(data.runs) ? data.runs : [];
+                console.log('refreshResultModels: processed runs:', runs);
+
+                if (runs.length === 0) {
+                    listDiv.innerHTML = '<div class="status info">📭 Нет запусков для выбранного типа/фильтра</div>';
+                    return;
+                }
 
                 const rows = [];
-                for(const s of symbols){
-                    try{
-                        console.log(`refreshResultModels: fetching runs for symbol: ${s}`);
-                        const r = await fetch('/api/runs/list?symbol='+encodeURIComponent(s));
-                        const d = await r.json();
-                        console.log(`refreshResultModels: /api/runs/list?symbol=${s} response:`, d);
-                        if (!d.success) {
-                            console.error(`Error fetching runs for ${s}:`, d.error);
-                            continue; // Пропустить этот символ и продолжить с другими
-                        }
-                        const runs = Array.isArray(d.runs)? d.runs: [];
-                        console.log(`refreshResultModels: processed runs for ${s}:`, runs);
-                        const idToNode = {}; const idToChildren = {};
-                        runs.forEach(x=>{ idToNode[x.run_id]=x; idToChildren[x.run_id]=[]; });
-                        runs.forEach(x=>{
-                            if(x.parent_run_id) {
-                                if(idToChildren[x.parent_run_id]) {
-                                    idToChildren[x.parent_run_id].push(x.run_id);
-                                }
-                            }
-                        });
-                        const roots = runs.filter(x=>!x.parent_run_id || !idToNode[x.parent_run_id]).map(x=>x.run_id);
+                for (const run of runs) {
+                    let win = 'N/A', roi = 'N/A', max_dd = 'N/A', episodes = 'N/A', symbolOrRunId = '';
+                    let isBad = false;
 
-                        async function renderRunRow(runId, depth){
-                            const run = idToNode[runId]; if(!run) return;
-                            let win = 'N/A', plr = 'N/A', episodes = 'N/A';
-                            let isBad = false;
-                            if(typeof run.winrate === 'number') {
-                                win = (run.winrate * 100).toFixed(1) + '%';
-                                if(run.winrate < 0.5) isBad = true;
-                            }
-                            if(typeof run.pl_ratio === 'number') {
-                                plr = run.pl_ratio.toFixed(2);
-                                if(run.pl_ratio < 1.0) isBad = true;
-                            }
-                            if(run.episodes != null) episodes = run.episodes;
-                            const indent = `<span style="display:inline-block; width:${depth*16}px;"></span>`;
-                            const label = `${depth>0?'▸ ':''}${run.run_id}`;
-                            const parent = (run.parent_run_id && idToNode[run.parent_run_id]) ? run.parent_run_id : '—';
-                            const oosBtn = run.model_path ? `<button class="btn btn-info" onclick="runOOSTest('${run.run_id}','${run.model_path}')">Test</button>` : '';
-                            const showResultsBtn = `<button class="btn btn-secondary" onclick="showOOSResults('${s}','${run.run_id}')">Result</button>`;
-                            const graphBtn = `<a class="btn btn-secondary" target="_blank" href="/oos_graph?symbol=${encodeURIComponent(s)}&run=${encodeURIComponent(run.run_id)}">Graph</a>`;
-                            const delBtn = `<button class="btn btn-danger" onclick="deleteRun('${s}','${run.run_id}')">✖</button>`;
-                            const buttonsHtml = `<div class="btn-group">${oosBtn}${showResultsBtn}${graphBtn}${delBtn}</div>`;
-                            const rowStyle = isBad ? 'style="background-color: #fef2f2; border-left: 3px solid #ef4444;"' : '';
-                            rows.push(`
-                                <tr ${rowStyle}>
-                                    <td class="nowrap">${s}</td>
-                                    <td class="nowrap">${indent}${label}</td>
-                                    <td class="nowrap">${parent}</td>
-                                    <td class="nowrap">${win}</td>
-                                    <td class="nowrap">${plr}</td>
-                                    <td class="nowrap">${episodes}</td>
-                                    <td class="nowrap" style="text-align:right;">${buttonsHtml}</td>
-                                </tr>
-                            `);
-                            const children = idToChildren[runId]||[];
-                            for(const cid of children){ await renderRunRow(cid, depth+1); }
+                    if (agentType === 'dqn') {
+                        symbolOrRunId = run.symbol;
+                        if (typeof run.winrate === 'number') {
+                            win = (run.winrate * 100).toFixed(1) + '%';
+                            if (run.winrate < 0.5) isBad = true;
                         }
-                        for(const rootId of roots){ await renderRunRow(rootId, 0); }
-                    }catch(e){ console.error(`Error processing symbol ${s}:`, e); }
+                        if (typeof run.pl_ratio === 'number') {
+                            roi = run.pl_ratio.toFixed(2);
+                            if (run.pl_ratio < 1.0) isBad = true;
+                        }
+                        // MaxDD may not be present for older DQN runs
+                        if (typeof run.max_dd === 'number') {
+                            max_dd = (run.max_dd * 100).toFixed(1) + '%';
+                            if (run.max_dd > 0.7) isBad = true;
+                        }
+                    } else if (agentType === 'sac') {
+                        symbolOrRunId = run.run_id;
+                        if (typeof run.winrate === 'number') {
+                            win = (run.winrate * 100).toFixed(1) + '%';
+                            if (run.winrate < 0.5) isBad = true;
+                        }
+                        if (typeof run.roi === 'number') {
+                            roi = run.roi.toFixed(2);
+                            if (run.roi < 0) isBad = true;
+                        }
+                        if (typeof run.max_dd === 'number') {
+                            max_dd = (run.max_dd * 100).toFixed(1) + '%';
+                            if (run.max_dd > 0.7) isBad = true;
+                        }
+                    }
+
+                    if (run.episodes != null) episodes = run.episodes;
+
+                    const oosBtn = run.model_path ? `<button class="btn btn-info" onclick="runOOSTest('${agentType}', '${symbolOrRunId}', '${run.model_path}')">Test</button>` : '';
+                    const showResultsBtn = `<button class="btn btn-secondary" onclick="showOOSResults('${agentType}', '${symbolOrRunId}')">Result</button>`;
+                    const graphBtn = `<a class="btn btn-secondary" target="_blank" href="/oos_graph?agent_type=${agentType}&id=${encodeURIComponent(symbolOrRunId)}">Graph</a>`;
+                    const delBtn = `<button class="btn btn-danger" onclick="deleteAgentRun('${agentType}', '${symbolOrRunId}', '${run.ensemble || 'ensemble-a'}', '${run.version || 'v1'}')">✖</button>`;
+                    const buttonsHtml = `<div class="btn-group">${oosBtn}${showResultsBtn}${graphBtn}${delBtn}</div>`;
+                    const rowStyle = isBad ? 'style="background-color: #fef2f2; border-left: 3px solid #ef4444;"' : '';
+
+                    rows.push(`
+                        <tr ${rowStyle}>
+                            <td class="nowrap">${run.agent_type || 'N/A'}</td>
+                            <td class="nowrap">${symbolOrRunId}</td>
+                            <td class="nowrap">${run.version || 'N/A'}</td>
+                            <td class="nowrap">${win}</td>
+                            <td class="nowrap">${roi}</td>
+                            <td class="nowrap">${max_dd}</td>
+                            <td class="nowrap">${episodes}</td>
+                            <td class="nowrap" style="text-align:right;">${buttonsHtml}</td>
+                        </tr>
+                    `);
                 }
+
                 const header = `
                     <thead>
                         <tr>
-                            <th class="nowrap">Символ</th>
-                            <th class="nowrap">Модель</th>
-                            <th class="nowrap">Родитель</th>
+                            <th class="nowrap">Тип агента</th>
+                            <th class="nowrap">ID Запуска/Символ</th>
+                            <th class="nowrap">Версия</th>
                             <th class="nowrap">Winrate</th>
-                            <th class="nowrap">P/L Ratio</th>
+                            <th class="nowrap">ROI/P/L Ratio</th>
+                            <th class="nowrap">Max DD</th>
                             <th class="nowrap">Эпизоды</th>
                             <th class="nowrap" style="width:300px; text-align:right;">Действия</th>
                         </tr>
                     </thead>`;
-                listDiv.innerHTML = rows.length>0 ? `<table id="resultModelsTable">${header}<tbody>${rows.join('')}</tbody></table>` : '<div class="status info">📭 Папка result пуста</div>';
+                listDiv.innerHTML = rows.length > 0 ? `<table id="resultModelsTable">${header}<tbody>${rows.join('')}</tbody></table>` : '<div class="status info">📭 Нет запусков для выбранного типа/фильтра</div>';
                 if (rows.length === 0) {
                     console.log('refreshResultModels: No rows rendered, resultModelsList should show empty message');
                 }
@@ -195,20 +247,57 @@
             }
         }
 
-        function deleteRun(symbol, runId){
-            if(!confirm(`Удалить run ${runId} для ${symbol}?`)) return;
-            fetch('/api/runs/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({symbol, run_id: runId})})
-                .then(r=>r.json()).then(data=>{
-                    if(data.success){ refreshResultModels(); }
-                    else{ alert('Ошибка удаления: '+(data.error||'Unknown')); }
-                }).catch(e=> alert('Сеть: '+e.message));
+        function deleteAgentRun(agentType, id, ensembleName, version) {
+            let confirmMsg = `Удалить ${agentType.toUpperCase()} модель ${id}?`;
+            let apiUrl = '';
+            let payload = {};
+
+            if (agentType === 'dqn') {
+                confirmMsg = `Удалить DQN модель ${id} (символ ${id})?`;
+                apiUrl = '/api/runs/delete'; // Существующий эндпоинт для DQN
+                payload = { symbol: id, run_id: id }; // id здесь это символ для DQN
+            } else if (agentType === 'sac') {
+                confirmMsg = `Удалить SAC модель ${id}/${ensembleName}/${version}?`;
+                apiUrl = '/api/sac_models/delete'; // Эндпоинт для SAC
+                payload = { run_name: id, ensemble: ensembleName, version: version };
+            } else {
+                alert('Неизвестный тип агента: ' + agentType);
+                return;
+            }
+
+            if (!confirm(confirmMsg)) return;
+
+            fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    refreshResultModels();
+                } else {
+                    alert('Ошибка удаления: ' + (data.error || 'Unknown'));
+                }
+            })
+            .catch(e => alert('Сеть: ' + e.message));
         }
 
-        async function showOOSResults(symbol, runId){
-            try{
-                const resp = await fetch(`/api/runs/oos_results?symbol=${encodeURIComponent(symbol)}&run_id=${encodeURIComponent(runId)}`);
+        async function showOOSResults(agentType, id) {
+            try {
+                let url = '';
+                if (agentType === 'dqn') {
+                    url = `/api/runs/oos_results?symbol=${encodeURIComponent(id)}&run_id=${encodeURIComponent(id)}`;
+                } else if (agentType === 'sac') {
+                    url = `/api/sac_runs/oos_results?run_id=${encodeURIComponent(id)}`; // Предполагаем новый эндпоинт для SAC OOS
+                } else {
+                    alert('Неизвестный тип агента: ' + agentType);
+                    return;
+                }
+
+                const resp = await fetch(url);
                 const data = await resp.json();
-                if(!data.success){
+                if (!data.success) {
                     alert('❌ Ошибка загрузки результатов: ' + (data.error || 'Unknown'));
                     return;
                 }
@@ -222,7 +311,7 @@
                 const summaryHtml = `
                     <div class="card" style="margin-bottom: 16px; border: 1px solid #e5e7eb;">
                         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-                            <div class="mono" style="font-weight:600;">📊 История OOS тестов: ${symbol}/${runId}</div>
+                            <div class="mono" style="font-weight:600;">📊 История OOS тестов: ${id}</div>
                             <div class="muted">Всего тестов: ${totalTests}</div>
                         </div>
                         <div style="margin:8px 0; display:flex;gap:16px;">
@@ -325,7 +414,7 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
 
         function ensureOOSPanel(){}
 
-        async function runOOSTest(code, filename){
+        async function runOOSTest(agentType, code, filename){
             const file = filename || '';
             const name = code || (file.split('/').pop().split('\\').pop());
             try{
@@ -338,7 +427,16 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                 startCapital = startCapital===''? null : Number(startCapital);
                 const exchangeSel = document.getElementById('oosExchange');
                 const exchange = exchangeSel ? (exchangeSel.value||'bybit') : 'bybit';
-                const payloadBase = { filename:file, code:code, gate_disable: gateDisable, gate_scale: gateScale, start_capital: startCapital, exchange };
+                
+                let payloadBase = { filename:file, code:code, gate_disable: gateDisable, gate_scale: gateScale, start_capital: startCapital, exchange, agent_type: agentType };
+                
+                // Если это DQN, нужно передать символ, если это SAC - run_id
+                if (agentType === 'dqn') {
+                    payloadBase.symbol = code; // `code` в этом случае будет символом
+                } else if (agentType === 'sac') {
+                    payloadBase.run_id = code; // `code` в этом случае будет run_id
+                }
+
                 const windows = [30,60,90];
                 const scales = multiRuns ? [0.0, 0.5, 1.0] : [null];
                 const allResults = [];
@@ -423,7 +521,7 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                     const runIdForChart = res.run_id || '';
                     let tradesButton = '';
                     if (tradesFile && symbolForChart && runIdForChart) {
-                        const q = `symbol=${encodeURIComponent(symbolForChart)}&run=${encodeURIComponent(runIdForChart)}&trades=${encodeURIComponent(tradesFile)}`;
+                        const q = `agent_type=${agentType}&symbol=${encodeURIComponent(symbolForChart)}&run=${encodeURIComponent(runIdForChart)}&trades=${encodeURIComponent(tradesFile)}`;
                         tradesButton = `<a class="btn btn-info" target="_blank" title="Открыть график" href="/oos_graph?${q}">График</a>`;
                     }
                     item.innerHTML = `
@@ -439,15 +537,15 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                 const tradesFilePath = allResults.find(r => r.data && r.data.success)?.data?.result?.trades_file || '';
                 const runId = allResults.find(r => r.data && r.data.success)?.data?.run_id || '';
                 const symbol = firstResult.symbol || '';
-                if (ohlcvData.length > 0 && tradesFilePath && runId && symbol) {
-                    await loadAndRenderTradesChart(symbol, runId, tradesFilePath, ohlcvData);
+                if (ohlcvData.length > 0 && tradesFilePath && (runId || symbol)) {
+                    await loadAndRenderTradesChart(agentType, symbol, runId, tradesFilePath, ohlcvData);
                 }
                 let stats = {good: 0, bad: 0, neutral: 0};
                 for(const r of allResults){
                     if(r.data && r.data.success){
                         const res = r.data.result || {};
                         const roiPct = (res && res.start_capital && typeof res.pnl_total === 'number') ? ((res.pnl_total / res.start_capital) * 100.0) : null;
-                        const isGood = (roiPct!=null && roiPct>10) && (res.profit_factor==null || res.profit_factor>=1.2) && (res.pl_ratio==null || res.pl_ratio>1.0) && (res.max_dd==null || res.max_dd<0.40);
+                        const isGood = (roiPct!=null && roiPct>10) && (res.profit_factor==null || res.profit_factor>=1.2) && (res.pl_ratio==null || res.pl_ratio<1.0) && (res.max_dd==null || res.max_dd<0.40);
                         const isBad  = (roiPct!=null && roiPct<=0) || (res.profit_factor!=null && res.profit_factor<1.0) || (res.pl_ratio!=null && res.pl_ratio<1.0) || (res.max_dd!=null && res.max_dd>0.70);
                         if(isGood) stats.good++;
                         else if(isBad) stats.bad++;
@@ -458,7 +556,7 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                     await fetch('/api/strategies/save_stats', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ filename: file, code: code, stats: stats })
+                        body: JSON.stringify({ filename: file, code: code, stats: stats, agent_type: agentType })
                     });
                 } catch(e) {
                     console.warn('Failed to save OOS stats:', e);
@@ -481,11 +579,28 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
             }catch(e){ console.error('[OOS] error', e); alert('❌ OOS сеть: '+e.message); }
         }
 
-        async function loadAndRenderTradesChart(symbol, runId, tradesFilePath, ohlcvData = []) {
+        async function loadAndRenderTradesChart(agentType, symbol, runId, tradesFilePath, ohlcvData = []) {
             const chartDiv = document.getElementById('oosChart');
             if (!chartDiv) { console.error('oosChart div not found'); return; }
             try {
-                const resp = await fetch(`/api/runs/trades?symbol=${encodeURIComponent(symbol)}&run_id=${encodeURIComponent(runId)}&trades_file=${encodeURIComponent(tradesFilePath)}`);
+                let url = '';
+                let params = {};
+                if (agentType === 'dqn') {
+                    url = `/api/runs/trades`;
+                    params = { symbol: symbol, run_id: runId, trades_file: tradesFilePath };
+                } else if (agentType === 'sac') {
+                    // Предполагаем, что для SAC может быть свой эндпоинт или текущий универсален
+                    url = `/api/sac_runs/trades`; // Новый эндпоинт для SAC трейдов
+                    params = { run_id: runId, trades_file: tradesFilePath };
+                } else {
+                    console.error('Unknown agent type for chart loading:', agentType);
+                    return;
+                }
+                
+                const queryString = new URLSearchParams(params).toString();
+                const fullUrl = `${url}?${queryString}`;
+
+                const resp = await fetch(fullUrl);
                 const data = await resp.json();
                 if (!data.success) {
                     console.error('Failed to load trades data:', data.error);
@@ -551,6 +666,12 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
 
         // Add event listeners after DOM is fully loaded and all functions are defined
         document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('agentTypeSelect')?.addEventListener('change', function() {
+                refreshResultModels();
+            });
+            document.getElementById('dqnSymbolSelect')?.addEventListener('change', refreshResultModels);
+            document.getElementById('sacRunNameSelect')?.addEventListener('change', refreshResultModels);
+
             try { refreshResultModels(); } catch(_){ console.error("Error calling refreshResultModels on DOMContentLoaded:", _); }
             document.getElementById('refreshResultModelsBtn')?.addEventListener('click', refreshResultModels);
             document.getElementById('openOOSModalBtn')?.addEventListener('click', openOOSModal);
