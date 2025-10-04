@@ -541,6 +541,53 @@ class SacTrainer:
         except Exception as exc:  # noqa: BLE001
             print(f"⚠️ Не удалось записать manifest.json: {exc}")
 
+    def _validate_agent(self, agent: SacAgent, env) -> float:
+        """Проводит валидационный прогон агента без обновления параметров."""
+        try:
+            from copy import deepcopy
+        except ImportError:  # pragma: no cover
+            deepcopy = None
+
+        env_copy = deepcopy(env) if deepcopy is not None else env
+        total_reward = 0.0
+        episodes = max(1, getattr(self.cfg, "validation_episodes", 1))
+
+        for _ in range(episodes):
+            state = env_copy.reset()
+            done = False
+            episode_reward = 0.0
+            steps = 0
+            max_steps = getattr(self.cfg, "max_episode_steps", None)
+            if max_steps is None:
+                max_steps = getattr(env_copy, "episode_length", 10_000) or 10_000
+            while not done and steps < max_steps:
+                state_tensor = torch.tensor(state, dtype=torch.float32, device=agent.device).unsqueeze(0)
+                if not torch.isfinite(state_tensor).all():
+                    break
+                action_tensor = agent.act(state_tensor, deterministic=True)
+                action = int(action_tensor.item())
+                next_state, reward, done, _ = env_copy.step(action)
+                if np.isnan(next_state).any() or np.isinf(next_state).any():  # type: ignore[arg-type]
+                    break
+                state = next_state
+                episode_reward += float(reward)
+                steps += 1
+            total_reward += episode_reward
+
+        return total_reward / episodes if episodes else 0.0
+
+    def _compute_episode_winrate(self, env) -> float:
+        """Оценивает долю прибыльных сделок в текущем эпизоде."""
+        trades = getattr(env, "all_trades", None)
+        if trades:
+            profitable = [t for t in trades if t.get("roi", 0) > 0]
+            return len(profitable) / len(trades) if trades else 0.0
+        trades = getattr(env, "trades", None)
+        if trades:
+            profitable = [t for t in trades if t.get("roi", 0) > 0]
+            return len(profitable) / len(trades) if trades else 0.0
+        return 0.0
+
     def _compute_best_winrate(self, env) -> float:
         trades = getattr(env, "all_trades", [])
         if not trades:

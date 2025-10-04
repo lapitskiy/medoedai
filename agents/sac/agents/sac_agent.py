@@ -86,13 +86,13 @@ class SacAgent:
     # === Action selection ===
     def act(self, obs: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
         obs = obs.to(self.device)
-        if deterministic:
-            with torch.no_grad():
-                logits = self.actor.forward(obs)
-                action = torch.argmax(logits, dim=-1, keepdim=True)
-                return action.float()
         with torch.no_grad():
-            action, _ = self.actor.sample(obs)
+            dist = self.actor.forward(obs)
+            if deterministic:
+                probs = dist.probs
+                action = torch.argmax(probs, dim=-1, keepdim=True)
+                return action.float()
+            action = dist.sample().unsqueeze(-1).float()
         return action
 
     # === Training ===
@@ -101,6 +101,14 @@ class SacAgent:
         for k, v in batch.items():
             if torch.isnan(v).any() or torch.isinf(v).any():
                 logging.warning(f"Обнаружены NaN или Inf в {k} батча. Пропускаем обновление.")
+                logging.warning(
+                    "🔎 [SacAgent] batch stats %s: min=%s max=%s mean=%s std=%s",
+                    k,
+                    v.nanmin().item(),
+                    v.nanmax().item(),
+                    v.nanmean().item(),
+                    v.nanstd().item(),
+                )
                 # Очищаем буфер при обнаружении NaN в батче
                 if hasattr(self, 'clear_buffer_on_nan') and self.clear_buffer_on_nan:
                     self.replay_buffer.clear()
@@ -117,16 +125,94 @@ class SacAgent:
         next_obs = batch["next_obs"].float().to(self.device)
         dones = batch["dones"].float().to(self.device).view(-1, 1)
 
-                # Агрессивная очистка нечисловых значений во входах
-        obs = torch.nan_to_num(obs, nan=0.0, posinf=1e5, neginf=-1e5)
-        next_obs = torch.nan_to_num(next_obs, nan=0.0, posinf=1e5, neginf=-1e5)
-        rewards = torch.nan_to_num(rewards, nan=0.0, posinf=1e3, neginf=-1e3)
+        obs = torch.nan_to_num(
+            obs,
+            nan=0.0,
+            posinf=float(self.cfg.obs_clip_value),
+            neginf=-float(self.cfg.obs_clip_value),
+        )
+        next_obs = torch.nan_to_num(
+            next_obs,
+            nan=0.0,
+            posinf=float(self.cfg.obs_clip_value),
+            neginf=-float(self.cfg.obs_clip_value),
+        )
+        rewards = torch.nan_to_num(
+            rewards,
+            nan=0.0,
+            posinf=float(self.cfg.reward_clip_value),
+            neginf=-float(self.cfg.reward_clip_value),
+        )
 
-        # Дополнительная проверка на экстремальные значения
-        if torch.abs(obs).max() > 1e6 or torch.abs(next_obs).max() > 1e6 or torch.abs(rewards).max() > 1e4:
-            logging.warning("⚠️ [SacAgent] Обнаружены экстремальные значения во входах. Очищаем буфер.")
-            self.replay_buffer.clear()
-            return {}
+        obs_abs_max = torch.max(torch.abs(obs)).item()
+        next_obs_abs_max = torch.max(torch.abs(next_obs)).item()
+        reward_abs_max = torch.max(torch.abs(rewards)).item()
+
+        clipped_any = False
+        if obs_abs_max > self.cfg.obs_clip_value:
+            obs.clamp_(min=-self.cfg.obs_clip_value, max=self.cfg.obs_clip_value)
+            clipped_any = True
+        if next_obs_abs_max > self.cfg.obs_clip_value:
+            next_obs.clamp_(min=-self.cfg.obs_clip_value, max=self.cfg.obs_clip_value)
+            clipped_any = True
+        if reward_abs_max > self.cfg.reward_clip_value:
+            rewards.clamp_(min=-self.cfg.reward_clip_value, max=self.cfg.reward_clip_value)
+            clipped_any = True
+
+        logging.debug(
+            "🔎 [SacAgent] batch stats obs: min=%.3f max=%.3f mean=%.3f std=%.3f",
+            obs.min().item(),
+            obs.max().item(),
+            obs.mean().item(),
+            obs.std().item(),
+        )
+        logging.debug(
+            "🔎 [SacAgent] batch stats next_obs: min=%.3f max=%.3f mean=%.3f std=%.3f",
+            next_obs.min().item(),
+            next_obs.max().item(),
+            next_obs.mean().item(),
+            next_obs.std().item(),
+        )
+        logging.debug(
+            "🔎 [SacAgent] batch stats rewards: min=%.3f max=%.3f mean=%.3f std=%.3f",
+            rewards.min().item(),
+            rewards.max().item(),
+            rewards.mean().item(),
+            rewards.std().item(),
+        )
+
+        step_idx = getattr(self, "update_steps", 0)
+        should_log_extreme = self.cfg.warn_on_clipped_inputs and (
+            step_idx % max(1, self.cfg.extreme_log_interval) == 0
+        )
+
+        if clipped_any and should_log_extreme:
+            logging.warning(
+                "⚠️ [SacAgent] Входы клиппированы: |obs|max=%.2f, |next_obs|max=%.2f, |reward|max=%.2f",
+                obs_abs_max,
+                next_obs_abs_max,
+                reward_abs_max,
+            )
+
+        hard_limit_triggered = (
+            obs_abs_max > self.cfg.obs_hard_limit
+            or next_obs_abs_max > self.cfg.obs_hard_limit
+            or reward_abs_max > self.cfg.reward_hard_limit
+        )
+
+        if hard_limit_triggered:
+            if should_log_extreme:
+                logging.warning(
+                    "⚠️ [SacAgent] Превышены жёсткие лимиты: |obs|max=%.2f, |next_obs|max=%.2f, |reward|max=%.2f",
+                    obs_abs_max,
+                    next_obs_abs_max,
+                    reward_abs_max,
+                )
+            if self.cfg.drop_batch_on_extreme:
+                if hasattr(self, "replay_buffer"):
+                    self.replay_buffer.clear()
+                    logging.warning("🔄 Буфер очищен из-за экстремальных значений")
+                return {}
 
         with torch.cuda.amp.autocast(enabled=self.cfg.use_amp):
             alpha = self.log_alpha.exp()
@@ -165,13 +251,28 @@ class SacAgent:
                     nan_count = torch.isnan(target_q).sum().item()
                     logging.warning(f"⚠️ [SacAgent] target_q содержит {nan_count}/{target_q.numel()} NaN")
                     if nan_count > 0:
-                        # Попробуем понять откуда NaN
                         finite_mask = torch.isfinite(target_q).squeeze()
                         if finite_mask.any():
-                            logging.warning(f"⚠️ [SacAgent] Среднее конечное target_q: {target_q[finite_mask].mean().item():.6f}")
-                        # Очищаем буфер
-                        self.replay_buffer.clear()
-                        logging.warning("🔄 Буфер очищен из-за NaN в target_q")
+                            logging.warning(
+                                "⚠️ [SacAgent] target_q stats (finite): min=%.3f max=%.3f mean=%.3f std=%.3f",
+                                target_q[finite_mask].min().item(),
+                                target_q[finite_mask].max().item(),
+                                target_q[finite_mask].mean().item(),
+                                target_q[finite_mask].std().item(),
+                            )
+                        logging.warning(
+                            "⚠️ [SacAgent] next_probs stats: min=%.3f max=%.3f",
+                            next_probs.min().item(),
+                            next_probs.max().item(),
+                        )
+                        logging.warning(
+                            "⚠️ [SacAgent] next_log_probs stats: min=%.3f max=%.3f",
+                            next_log_probs.min().item(),
+                            next_log_probs.max().item(),
+                        )
+                    # Очищаем буфер
+                    self.replay_buffer.clear()
+                    logging.warning("🔄 Буфер очищен из-за NaN в target_q")
                     return {}
 
                 target_value = rewards + (1 - dones) * self.cfg.gamma * target_q
@@ -206,6 +307,32 @@ class SacAgent:
             (p.grad is not None) and (not torch.all(torch.isfinite(p.grad))) for p in self.critic.parameters()
         )
         if bad_grad_critic:
+            finite_grad_squares = [
+                torch.sum(p.grad.detach() ** 2).item()
+                for p in self.critic.parameters()
+                if p.grad is not None and torch.all(torch.isfinite(p.grad))
+            ]
+            grad_norm = (sum(finite_grad_squares) ** 0.5) if finite_grad_squares else float('nan')
+            logging.warning("⚠️ [SacAgent] critic grad norm before zero: %.6f", grad_norm)
+            logging.warning(
+                "⚠️ [SacAgent] critic grad stats (finite parts): max=%.6f min=%.6f",
+                max(
+                    (
+                        p.grad.max().item()
+                        for p in self.critic.parameters()
+                        if p.grad is not None and torch.all(torch.isfinite(p.grad))
+                    ),
+                    default=float('nan'),
+                ),
+                min(
+                    (
+                        p.grad.min().item()
+                        for p in self.critic.parameters()
+                        if p.grad is not None and torch.all(torch.isfinite(p.grad))
+                    ),
+                    default=float('nan'),
+                ),
+            )
             self.critic_optimizer.zero_grad(set_to_none=True)
             # Важно: синхронизируем GradScaler, иначе следующий unscale_ вызовет ошибку
             self.scaler.update()
@@ -262,10 +389,23 @@ class SacAgent:
         self.actor_optimizer.zero_grad()
         self.scaler.scale(actor_loss).backward()
         self.scaler.unscale_(self.actor_optimizer)
+        # Проверка градиентов актора на NaN/Inf
         bad_grad_actor = any(
             (p.grad is not None) and (not torch.all(torch.isfinite(p.grad))) for p in self.actor.parameters()
         )
         if bad_grad_actor:
+            finite_actor_grad_squares = [
+                torch.sum(p.grad.detach() ** 2).item()
+                for p in self.actor.parameters()
+                if p.grad is not None and torch.all(torch.isfinite(p.grad))
+            ]
+            actor_grad_norm = (sum(finite_actor_grad_squares) ** 0.5) if finite_actor_grad_squares else float('nan')
+            logging.warning("⚠️ [SacAgent] actor grad norm before zero: %.6f", actor_grad_norm)
+            logging.warning(
+                "⚠️ [SacAgent] actor grad stats (finite parts): max=%.6f min=%.6f",
+                max((p.grad.max().item() for p in self.actor.parameters() if p.grad is not None and torch.all(torch.isfinite(p.grad))), default=float('nan')),
+                min((p.grad.min().item() for p in self.actor.parameters() if p.grad is not None and torch.all(torch.isfinite(p.grad))), default=float('nan')),
+            )
             self.actor_optimizer.zero_grad(set_to_none=True)
             for param in self.critic.parameters():
                 param.requires_grad = True

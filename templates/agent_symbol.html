@@ -535,7 +535,13 @@ async function loadDbHistory(symbol){
 
 async function loadPredictions(symbol, filter = currentPredictionFilter){
   try{
-    const resp = await fetch('/api/predictions/recent?limit=150&symbol='+encodeURIComponent(symbol));
+    const requestedFilter = (filter && filter !== 'all') ? String(filter).toLowerCase() : null;
+    const resp = await fetch('/api/predictions/recent?limit=150&symbol='+encodeURIComponent(symbol), {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache'
+      }
+    });
     const data = await resp.json();
     const box = document.getElementById('predictionsBox');
     const el = document.getElementById('predictionsContent');
@@ -546,98 +552,18 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
       return val.trim().toLowerCase();
     };
 
-    const deriveCardAction = (prediction) => {
-      const direct = normalizeAction(prediction && prediction.action);
-      const mc = prediction && prediction.market_conditions || {};
-      const ensemble = normalizeAction(mc && mc.ensemble_decision);
-
-      if (direct === 'buy' || direct === 'sell' || direct === 'hold') {
-        return direct;
-      }
-
-      if (ensemble === 'buy' || ensemble === 'sell') {
-        return ensemble;
-      }
-
-      if (direct.includes('sell')) return 'sell';
-      if (direct.includes('buy')) return 'buy';
-
-      return 'hold';
-    };
-
     if(!box || !el) return;
     if(!data.success){ el.innerHTML='❌ Ошибка получения предсказаний'; box.style.display='block'; return; }
     const preds = Array.isArray(data.predictions)? data.predictions : [];
-    if(preds.length === 0){
-      el.innerHTML = `<p>🧠 Предсказания модели для ${symbol} пока отсутствуют</p><p><em>Данные появятся после выполнения торговых операций</em></p>`;
-      if(emptyState){
-        emptyState.style.display = 'none';
-        emptyState.textContent = '';
-      }
-      box.style.display='block';
-      return;
-    }
-    
-    const errorPredictions = preds.filter(p => {
-      const action = deriveCardAction(p);
-      const mc = p.market_conditions || {};
-      return action === 'error' || Boolean(mc.error);
-    });
-    let validPredictions = preds.filter(p => !errorPredictions.includes(p));
-
     const activeFilter = String(filter || currentPredictionFilter || 'all').toLowerCase();
     currentPredictionFilter = activeFilter;
-    if(activeFilter !== 'all'){
-      validPredictions = validPredictions.filter(p => deriveCardAction(p) === activeFilter);
-    }
-
     let predictionsHTML = '';
-    if(errorPredictions.length > 0){
-      predictionsHTML += `<p><strong>❌ Ошибки предсказаний:</strong></p>`;
-      errorPredictions.forEach(pred => {
-        const errorTime = formatMoscowDateTime(pred.timestamp);
-        const mc = pred.market_conditions || {};
-      const errorMsg = mc.error || mc.error_detail || pred.error || pred.message || 'Неизвестная ошибка';
-        predictionsHTML += `
-          <div class="trade-item" style="border-left: 4px solid #dc3545; margin-top: 10px;">
-            <div class="trade-header">
-              <span class="trade-action error">❌ ОШИБКА</span>
-              <span>${errorTime}</span>
-            </div>
-            <div class="trade-details">
-              <div class="trade-detail"><div class="label">Символ</div><div class="value">${pred.symbol || symbol}</div></div>
-              <div class="trade-detail"><div class="label">Ошибка</div><div class="value" style="color: #dc3545;">${errorMsg}</div></div>
-              ${pred.details ? `<div class="trade-detail"><div class="label">Детали</div><div class="value">${pred.details}</div></div>` : ''}
-            </div>
-          </div>
-        `;
-      });
-    }
-
-    if(validPredictions.length === 0){
-      el.innerHTML = predictionsHTML || '<p>❌ Предсказания недоступны</p>';
-      if(emptyState){
-        const label = PREDICTION_ACTION_LABELS[activeFilter] || activeFilter.toUpperCase();
-        emptyState.textContent = activeFilter === 'all'
-          ? 'По выбранному фильтру данных нет.'
-          : `По выбранному фильтру (${label}) данных нет.`;
-        emptyState.style.display = 'block';
-      }
-      box.style.display='block';
-      return;
-    } else {
-      if(emptyState){
-        emptyState.style.display = 'none';
-        emptyState.textContent = '';
-      }
-    }
-
-    predictionsHTML += `<p><strong>Всего предсказаний:</strong> ${data.total_predictions}</p>`;
+    const headerHtml = `<p><strong>Всего предсказаний:</strong> ${data.total_predictions}</p>`;
     const seenGroups = new Set();
-    for(const prediction of validPredictions){
+    const cards = [];
+    for(const prediction of preds){
       const predictionTime = formatMoscowDateTime(prediction.timestamp);
-      const action = deriveCardAction(prediction);
-      const actionClass = action === 'buy' ? 'buy' : action === 'sell' ? 'sell' : 'hold';
+      const createdTime = formatMoscowDateTime(prediction.created_at);
       const conf = typeof prediction.confidence === 'number' ? prediction.confidence : null;
       const confidenceClass = conf != null && conf > 0.5 ? 'success' : (conf != null && conf > 0.2 ? 'info' : 'warning');
       const qvals = Array.isArray(prediction.q_values) ? prediction.q_values : [];
@@ -648,20 +574,10 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
       const qgateT2 = prediction.market_conditions && prediction.market_conditions.qgate_T2;
       const qgateMaxQ = prediction.market_conditions && prediction.market_conditions.qgate_maxQ;
       const qgateGapQ = prediction.market_conditions && prediction.market_conditions.qgate_gapQ;
-      const gatePass = !isQgateFiltered;
-      const gateClass = gatePass ? 'success' : 'warning';
-      const gateText = gatePass ? 'Gate: проходит' : 'Gate: не проходит';
-
-      // Версия модели (из пути) + эмодзи действия; цвет фона чипа = PASS (зелёный) / BLOCK (красный)
-      const modelPath = prediction.model_path || '';
-      let modelVer = '';
-      try{
-        const m = modelPath.match(/\/(v\d+)\//i);
-        modelVer = m ? m[1].toUpperCase() : (modelPath.split('/')?.slice(-2,-1)?.[0] || '').toUpperCase();
-      }catch(_){ modelVer=''; }
-      const chipColor = gatePass ? '#28a745' : '#dc3545';
-      const actLetter = action === 'buy' ? 'B' : (action === 'sell' ? 'S' : 'H');
-      const modelChip = modelVer ? `<span style="margin-left:6px; padding:2px 8px; border-radius:999px; background:${chipColor}1a; color:${chipColor}; font-weight:600; font-size:12px;">${modelVer} ${actLetter}</span>` : '';
+      const qgateError = prediction.market_conditions && prediction.market_conditions.qgate_error;
+      const qgateErrorDetails = prediction.market_conditions && prediction.market_conditions.qgate_error_details;
+      const qgateBalance = prediction.market_conditions && prediction.market_conditions.qgate_available_balance;
+      const qgateRequiredCost = prediction.market_conditions && prediction.market_conditions.qgate_required_cost;
 
       // Консенсус ансамбля (если есть в market_conditions)
       const mc = prediction.market_conditions || {};
@@ -680,40 +596,47 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
           if (seenGroups.has('gid:'+gid)) { continue; }
           seenGroups.add('gid:'+gid);
         } else {
-          const curTs = Date.parse(prediction.timestamp);
-          const bucket = isFinite(curTs) ? Math.floor(curTs/5000) : `na|${String(prediction.timestamp)}`;
+          const curTs = Date.parse(prediction.created_at || prediction.timestamp);
+          const bucket = isFinite(curTs) ? Math.floor(curTs/5000) : `na|${String(prediction.created_at || prediction.timestamp)}`;
           const groupKey = `${prediction.symbol||symbol}|${Number(etotal)||0}|${bucket}`;
           if (seenGroups.has(groupKey)) { continue; }
           seenGroups.add(groupKey);
         }
       }catch(_){ }
       // Для шапки используем итог ансамбля, если есть
-      const edecLower = typeof edec === 'string' ? edec.toLowerCase() : null;
-      const headerAction = (action || 'hold');
-      const headerActionClass = actionClass;
+    const ensembleDecisionNormalized = normalizeAction(edec);
+      const ensembleLabel = edec ? String(edec).toUpperCase() : '—';
+      if(activeFilter !== 'all' && ensembleDecisionNormalized !== activeFilter){
+        continue;
+      }
+      const ensembleBadgeClass = 'info';
+      const headerTimestamp = (createdTime && createdTime !== 'N/A') ? createdTime : predictionTime;
       // Подготовим чипы для всех моделей текущего тика: V1 B / V2 S / V3 H
       let modelsLine = '';
-      let anyPassForHeader = false;
+      let anyPassForEnsemble = false;
       let perModelQHtml = '';
       try{
-        const curTs = Date.parse(prediction.timestamp);
+        const curTs = Date.parse(prediction.created_at || prediction.timestamp);
         const siblings = (Array.isArray(preds)? preds : []).filter(pp => {
           try{
             if ((pp.symbol||'') !== (prediction.symbol||'')) return false;
             const a = Number(mc.ensemble_total) || null;
             const b = Number((pp.market_conditions||{}).ensemble_total) || null;
             if (a && b && a !== b) return false;
-            const ts = Date.parse(pp.timestamp);
-            if (!isFinite(curTs) || !isFinite(ts)) return String(pp.timestamp) === String(prediction.timestamp);
+            const tsPrimary = Date.parse(pp.timestamp);
+            const tsCreated = Date.parse(pp.created_at);
+            const ts = isFinite(tsCreated) ? tsCreated : tsPrimary;
+            if (!isFinite(curTs) || !isFinite(ts)) {
+              return String(pp.timestamp) === String(prediction.timestamp) || String(pp.created_at) === String(prediction.created_at);
+            }
             return Math.abs(ts - curTs) <= 5000; // 5 секундный коридор для одного тика ансамбля
           }catch(_){ return false; }
         });
-        // Есть ли хотя бы одна модель, прошедшая Q-gate по итоговому действию заголовка (BUY/SELL)?
         try{
           for(const pp of siblings){
             const act = String(pp.action||'').toLowerCase();
             const filt = !!(pp.market_conditions && pp.market_conditions.qgate_filtered);
-            if (act === headerAction && !filt){ anyPassForHeader = true; break; }
+            if (act === normalizeAction(edec) && !filt){ anyPassForEnsemble = true; break; }
           }
         }catch(__){}
         // Отсортируем по версии модели: V1, V2, V3, ...
@@ -835,15 +758,15 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
           </div>`;
       }
 
-      const showQgateBanner = isQgateFiltered && !anyPassForHeader;
-      const showEdecBadge = edecLower && edecLower !== action;
-      predictionsHTML += `
-        <div class="trade-item" style="border-left: 4px solid ${isQgateFiltered ? '#ffc107' : (headerActionClass === 'buy' ? '#28a745' : headerActionClass === 'sell' ? '#dc3545' : '#6c757d')};">
+      const showQgateBanner = isQgateFiltered && !anyPassForEnsemble;
+      cards.push({
+        ensembleDecision: ensembleDecisionNormalized,
+        html: `
+        <div class="trade-item" style="border-left: 4px solid ${isQgateFiltered ? '#ffc107' : (ensembleLabel === 'BUY' ? '#28a745' : ensembleLabel === 'SELL' ? '#dc3545' : '#6c757d')};">
           <div class="trade-header">
-            <span class="trade-action ${headerActionClass}">${String(headerAction).toUpperCase()}</span>
-            ${showEdecBadge ? `<span class="trade-confidence info">Ансамбль: ${String(edec).toUpperCase()}</span>` : ''}
+            <span class="trade-action ${ensembleLabel === 'BUY' ? 'buy' : ensembleLabel === 'SELL' ? 'sell' : 'hold'}">Ансамбль: ${ensembleLabel}</span>
             ${showQgateBanner ? '<span class="trade-confidence warning">🚫 Q-gate отфильтровано</span>' : (conf!=null ? `<span class="trade-confidence ${confidenceClass}">Уверенность: ${(conf*100).toFixed(1)}%</span>` : '')}
-            <span>${predictionTime}</span>
+            <span>${headerTimestamp}</span>
           </div>
           <div class="trade-details">
             <div class="trade-detail"><div class="label">Символ</div><div class="value">${prediction.symbol||symbol}</div></div>
@@ -855,6 +778,14 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
           <div style="margin-top: 10px; padding: 10px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; font-size: 12px;">
             <strong>🚫 Q-gate фильтрация</strong>${qgateSide ? ` <span style="opacity:0.8">(${String(qgateSide).toUpperCase()})</span>` : ''}:<br>
             <div style="margin-top:6px; color:#856404;">${qgateReason || 'Недостаточная уверенность модели'}</div>
+            ${qgateError ? `<div style="margin-top:6px; color:#b35a00; font-weight:600;">${qgateError === 'insufficient_funds' ? 'Биржа отклонила сделку: недостаточно средств.' : qgateError}</div>` : ''}
+            ${qgateErrorDetails ? `<div style="margin-top:4px; color:#856404;">${qgateErrorDetails}</div>` : ''}
+            ${(Number.isFinite(Number(qgateBalance)) || Number.isFinite(Number(qgateRequiredCost))) ? `
+              <div style="margin-top:6px; color:#444;">
+                ${Number.isFinite(Number(qgateBalance)) ? `Доступно: ${Number(qgateBalance).toFixed(3)} USDT.` : ''}
+                ${Number.isFinite(Number(qgateRequiredCost)) ? ` Требовалось ≈ ${Number(qgateRequiredCost).toFixed(3)} USDT.` : ''}
+              </div>
+            ` : ''}
             <div style="margin-top:8px; display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:6px; color:#444;">
               ${typeof qgateT1 === 'number' ? `<div><strong>T1 (maxQ)</strong>: ${qgateT1.toFixed(3)}</div>` : ''}
               ${typeof qgateT2 === 'number' ? `<div><strong>T2 (gapQ)</strong>: ${qgateT2.toFixed(3)}</div>` : ''}
@@ -868,9 +799,37 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
             ${Object.entries(prediction.market_conditions).filter(([key]) => !String(key).startsWith('qgate_')).map(([key, value]) => `${key}: ${value}`).join(', ')}
           </div>` : ''}
         </div>
-      `;
+      `
+      });
     }
-    el.innerHTML = predictionsHTML;
+    const ensembleFilter = activeFilter || 'all';
+    const filteredCards = cards.filter(card => {
+      if(ensembleFilter === 'all') return true;
+      return card.ensembleDecision === ensembleFilter;
+    });
+
+    if(filteredCards.length === 0){
+      const label = PREDICTION_ACTION_LABELS[activeFilter] || activeFilter.toUpperCase();
+      const emptyHtml = activeFilter === 'all'
+        ? `<p>🧠 Предсказания модели для ${symbol} пока отсутствуют</p><p><em>Данные появятся после выполнения торговых операций</em></p>`
+        : `<p>По фильтру (${label}) карточек пока нет.</p>`;
+      el.innerHTML = emptyHtml;
+      if(emptyState){
+        emptyState.style.display = 'block';
+        emptyState.textContent = activeFilter === 'all'
+          ? ''
+          : `По выбранному фильтру (${label}) данных нет.`;
+      }
+      box.style.display='block';
+      return;
+    }
+
+    if(emptyState){
+      emptyState.style.display = 'none';
+      emptyState.textContent = '';
+    }
+
+    el.innerHTML = headerHtml + filteredCards.map(card => card.html).join('');
     if(emptyState){
       emptyState.style.display = 'none';
       emptyState.textContent = '';

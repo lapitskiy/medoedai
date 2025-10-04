@@ -59,7 +59,16 @@ class SacConfig:
     target_update_interval: int = 1
     max_grad_norm: float | None = 1.0
     use_amp: bool = True
-
+    
+    # === Обработка экстремальных входов ===
+    obs_clip_value: float = 1e4
+    obs_hard_limit: float = 1e6
+    reward_clip_value: float = 1e3
+    reward_hard_limit: float = 1e4
+    drop_batch_on_extreme: bool = False
+    warn_on_clipped_inputs: bool = True
+    extreme_log_interval: int = 500
+    
     # === Логирование и пути ===
     run_name: str = field(default_factory=lambda: f"sac-{datetime.utcnow():%Y%m%d-%H%M%S}")
     model_path: str = "sac/models/agent.pt"

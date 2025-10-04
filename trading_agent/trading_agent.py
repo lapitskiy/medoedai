@@ -1774,26 +1774,78 @@ class TradingAgent:
                     error_message=str(e),
                     is_successful=False
                 )
+            # Фиксируем причину в карточке предсказания, чтобы отобразить пользователю
+            try:
+                error_text = str(e)
+                err_lower = error_text.lower()
+                insufficient = isinstance(e, ccxt.InsufficientFunds) or '110007' in error_text or 'not enough' in err_lower
+                if insufficient:
+                    reason = "Не выполнено: недостаточно средств для новой заявки"
+                    extra = {
+                        'qgate_error': 'insufficient_funds',
+                        'qgate_error_details': error_text,
+                        'qgate_side': 'buy'
+                    }
+                    try:
+                        if 'balance' in locals() and isinstance(balance, (int, float)):
+                            extra['qgate_available_balance'] = float(balance)
+                    except Exception:
+                        pass
+                    try:
+                        current_price = self._get_current_price()
+                        required_cost = float(self.trade_amount) * float(current_price)
+                        extra['qgate_required_cost'] = required_cost
+                    except Exception:
+                        pass
+                    self._save_qgate_filtered_prediction(
+                        'buy',
+                        float('nan'),
+                        float('nan'),
+                        float('nan'),
+                        float('nan'),
+                        reason=reason,
+                        extra_market_conditions=extra
+                    )
+            except Exception:
+                pass
             
             return {
                 "success": False,
                 "error": str(e)
             }
     
-    def _save_qgate_filtered_prediction(self, action: str, max_q: float, gap_q: float, t1: float, t2: float):
+    def _save_qgate_filtered_prediction(
+        self,
+        action: str,
+        max_q: float,
+        gap_q: float,
+        t1: float,
+        t2: float,
+        reason: Optional[str] = None,
+        extra_market_conditions: Optional[dict] = None
+    ):
         """Сохраняет предсказание с информацией о Q-gate фильтрации"""
         try:
             
             # Создаем предсказание с пометкой о Q-gate фильтрации
             market_conditions = self._get_market_conditions()
             market_conditions['qgate_filtered'] = True
-            market_conditions['qgate_reason'] = f"maxQ={max_q:.3f}<{t1:.3f} или gapQ={gap_q:.3f}<{t2:.3f}"
+            if reason:
+                market_conditions['qgate_reason'] = reason
+            else:
+                market_conditions['qgate_reason'] = f"maxQ={max_q:.3f}<{t1:.3f} или gapQ={gap_q:.3f}<{t2:.3f}"
             # Подробности для UI
             market_conditions['qgate_side'] = action
             market_conditions['qgate_T1'] = float(t1) if t1 is not None else None
             market_conditions['qgate_T2'] = float(t2) if t2 is not None else None
             market_conditions['qgate_maxQ'] = float(max_q) if max_q is not None else None
             market_conditions['qgate_gapQ'] = float(gap_q) if gap_q is not None else None
+            if isinstance(extra_market_conditions, dict):
+                try:
+                    for key, value in extra_market_conditions.items():
+                        market_conditions[key] = value
+                except Exception:
+                    pass
             
             create_model_prediction(
                 symbol=self.symbol,
