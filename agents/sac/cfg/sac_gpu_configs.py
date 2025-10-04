@@ -40,13 +40,13 @@ SAC_GPU_CONFIGS: Dict[str, SACGPUConfig] = {
     "tesla_v100": SACGPUConfig(
         name="Tesla V100",
         vram_gb=16.0,
-        batch_size=512,
-        memory_size=150_000,
-        hidden_sizes=(1536, 768, 384),  # Больше для Tensor Cores
-        use_amp=True,
-        learning_rate=3e-4,
-        target_entropy_scale=1.0,
-        description="Максимальная производительность SAC на Tesla V100 с Tensor Cores"
+        batch_size=384,
+        memory_size=120_000,
+        hidden_sizes=(1024, 512, 256),
+        use_amp=False,
+        learning_rate=1e-4,
+        target_entropy_scale=0.9,
+        description="Сбалансированная конфигурация SAC для Tesla V100 с упором на стабильность"
     ),
 
     # GTX 1660 Super - оптимальная для SAC
