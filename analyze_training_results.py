@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-📊 Анализатор результатов обучения DQN модели
+📊 Анализатор результатов обучения RL-моделей (DQN, SAC и др.)
 
 Использование:
     python analyze_training_results.py training_results_1234567890.pkl
@@ -24,8 +24,31 @@ def analyze_training_results(results_file):
     with open(results_file, 'rb') as f:
         results = pickle.load(f)
     
+    def detect_model_type(data):
+        agent_type = (data.get('agent_type') or '').strip().upper() if isinstance(data.get('agent_type'), str) else ''
+        if not agent_type:
+            cfg_snapshot = data.get('cfg_snapshot') or {}
+            if isinstance(cfg_snapshot, dict):
+                cfg_agent = cfg_snapshot.get('agent_type')
+                if isinstance(cfg_agent, str):
+                    agent_type = cfg_agent.strip().upper()
+        if not agent_type:
+            weights = data.get('weights') or {}
+            if isinstance(weights, dict) and 'model_path' in weights:
+                if 'sac' in str(weights['model_path']).lower():
+                    agent_type = 'SAC'
+                elif 'dqn' in str(weights['model_path']).lower():
+                    agent_type = 'DQN'
+        if not agent_type and 'architecture' in data:
+            arch = data.get('architecture') or {}
+            if isinstance(arch, dict) and any('actor' in key.lower() for key in arch.keys()):
+                agent_type = 'SAC'
+        return agent_type or 'DQN'
+
+    model_type = detect_model_type(results)
+
     print("\n" + "="*60)
-    print("📈 ОТЧЕТ ОБ ОБУЧЕНИИ DQN МОДЕЛИ")
+    print(f"📈 ОТЧЕТ ОБ ОБУЧЕНИИ {model_type} МОДЕЛИ")
     print("="*60)
     
     # ОТЛАДКА: Показываем все ключи в файле результатов
@@ -256,6 +279,24 @@ def analyze_training_results(results_file):
     if early_stopping_triggered:
         print(f"  • Остановка на: {actual_episodes} эпизоде")
         print(f"  • Причина: Достигнут стабильный winrate")
+
+    alpha_stats = results.get('alpha_stats') or {}
+    entropy_stats = results.get('entropy_stats') or {}
+    best_winrate_episode = results.get('best_winrate_episode')
+    if isinstance(alpha_stats, dict) and alpha_stats:
+        print("\n🔥 ТЕМПЕРАТУРА ПОЛИТИКИ (α):")
+        print(f"  • Среднее α: {alpha_stats.get('avg', float('nan')):.6f}")
+        print(f"  • Min / Max α: {alpha_stats.get('min', float('nan')):.6f} / {alpha_stats.get('max', float('nan')):.6f}")
+        print(f"  • Последнее α: {alpha_stats.get('last', float('nan')):.6f}")
+        print(f"  • Обновлений α: {alpha_stats.get('count', 0)}")
+    if isinstance(entropy_stats, dict) and entropy_stats:
+        print("\n🎚️ ЭНТРОПИЯ ПОЛИТИКИ:")
+        print(f"  • Средняя энтропия: {entropy_stats.get('avg', float('nan')):.4f}")
+        print(f"  • Min / Max энтропия: {entropy_stats.get('min', float('nan')):.4f} / {entropy_stats.get('max', float('nan')):.4f}")
+        print(f"  • Последняя энтропия: {entropy_stats.get('last', float('nan')):.4f}")
+        print(f"  • Обновлений политики: {entropy_stats.get('count', 0)}")
+    if best_winrate_episode:
+        print(f"\n⭐ Лучший winrate достигнут на эпизоде: {best_winrate_episode}")
     
     # Создаем графики
     create_plots(results, results_file)

@@ -92,7 +92,7 @@ class SacConfig:
     min_episodes_before_stopping: int = 1000  # Минимум эпизодов до ранней остановки
     early_stopping_trend_threshold: float = 0.03  # Порог для анализа трендов
     long_term_patience_multiplier: float = 2.5  # Множитель для долгосрочного patience
-    save_only_on_improvement: bool = False  # Сохранять только при улучшении метрик
+    save_only_on_improvement: bool = True  # Сохранять только при улучшении метрик
 
     # === Технические параметры ===
     device: str = "cuda"

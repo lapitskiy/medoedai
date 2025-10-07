@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import random
 import time
@@ -17,7 +18,7 @@ from utils.parser import parser_download_and_combine_with_library
 from utils.redis_utils import get_redis_client
 from utils.seed import set_global_seed
 
-from agents.sac.agents.config import SacConfig
+from agents.sac.agents.config import SacConfig, _symbol_code
 from agents.sac.agents.trainer import SacTrainer
 from envs.dqn_model.gym.gconfig import GymConfig
 
@@ -49,24 +50,45 @@ def train_sac_symbol(
         # Проверяем, не завершилось ли обучение недавно успешно (чтобы избежать дубликатов)
         try:
             last_run_key = f"sac:last_run:{symbol}"
+            last_run_info_key = f"sac:last_run_info:{symbol}"
             last_run_time = redis_client.get(last_run_key)
             if last_run_time:
                 current_time = time.time()
                 # Если прошло менее 5 минут с момента успешного завершения, пропускаем
                 if current_time - float(last_run_time) < 300:  # 5 минут
-                    push_log(f"⏭️ Обучение {symbol} завершилось недавно ({current_time - float(last_run_time):.1f} сек назад), пропускаем повторный запуск")
-                    # Возвращаем информацию о предыдущем запуске
-                    result_dir = f"result/sac/{symbol.lower()}/runs/sac-{str(uuid.uuid4())[:4].lower()}"
-                    info = {
-                        'success': True,
-                        'symbol': symbol,
-                        'run_name': f"sac-{str(uuid.uuid4())[:4].lower()}",
-                        'result_dir': result_dir,
-                        'model_path': f"{result_dir}/model.pth",
-                        'metrics_path': f"{result_dir}/metrics.json",
-                        'skipped': True,
-                        'reason': 'recently_completed'
-                    }
+                    push_log(
+                        f"⏭️ Обучение {symbol} завершилось недавно ({current_time - float(last_run_time):.1f} сек назад), пропускаем повторный запуск"
+                    )
+
+                    cached_info: Dict[str, Any] | None = None
+                    try:
+                        cached_json = redis_client.get(last_run_info_key)
+                        if cached_json:
+                            cached_info = json.loads(cached_json)
+                    except Exception as cache_exc:
+                        push_log(f"⚠️ Не удалось прочитать сохраненный результат: {cache_exc}")
+
+                    if cached_info:
+                        info = {
+                            **cached_info,
+                            'skipped': True,
+                            'reason': 'recently_completed',
+                        }
+                    else:
+                        symbol_code = _symbol_code(symbol)
+                        run_name = f"sac-{str(uuid.uuid4())[:4].lower()}"
+                        result_dir = os.path.join("result", "sac", symbol_code, "runs", run_name)
+                        info = {
+                            'success': True,
+                            'symbol': symbol,
+                            'run_name': run_name,
+                            'result_dir': result_dir,
+                            'model_path': os.path.join(result_dir, "model.pth"),
+                            'metrics_path': os.path.join(result_dir, "metrics.json"),
+                            'skipped': True,
+                            'reason': 'recently_completed',
+                        }
+
                     self.update_state(state="SUCCESS", meta={"logs": list(logs), "symbol": symbol, "result": info})
                     return info
         except Exception as e:
@@ -167,6 +189,9 @@ def train_sac_symbol(
             progress_callback=push_log,
         )
 
+        # Включаем сохранение лучшего чекпоинта по winrate
+        cfg.save_only_on_improvement = True
+
         # Устанавливаем символ после создания тренера, чтобы пути создались правильно
         cfg.extra = cfg.extra.copy() if cfg.extra else {}
         cfg.extra['symbol'] = symbol
@@ -178,16 +203,20 @@ def train_sac_symbol(
         )
 
         dfs = {
+            'symbol': symbol,
             'df_5min': df_5min.reset_index(),
             'df_15min': df_15min,
             'df_1h': df_1h,
         }
 
-        trainer.train(dfs=dfs, gym_cfg=gym_cfg)
+        train_history = trainer.train(dfs=dfs, gym_cfg=gym_cfg)
 
         push_log("💾 Сохранение результатов обучения")
 
         metrics_path = os.path.join(cfg.result_dir, 'metrics.json')
+        alpha_stats = (train_history or {}).get('alpha_stats') or {}
+        entropy_stats = (train_history or {}).get('entropy_stats') or {}
+        best_wr_episode = (train_history or {}).get('best_winrate_episode')
         info: Dict[str, Any] = {
             'success': True,
             'symbol': symbol,
@@ -195,6 +224,9 @@ def train_sac_symbol(
             'result_dir': cfg.result_dir,
             'model_path': cfg.model_path,
             'metrics_path': metrics_path if os.path.exists(metrics_path) else None,
+            'alpha_stats': alpha_stats,
+            'entropy_stats': entropy_stats,
+            'best_winrate_episode': best_wr_episode,
         }
 
         push_log("✅ Обучение SAC завершено")
@@ -202,7 +234,15 @@ def train_sac_symbol(
         # Сохраняем время завершения для блокировки повторных запусков
         try:
             current_time = time.time()
-            redis_client.setex(f"sac:last_run:{symbol}", 3600, current_time)  # Храним 1 час
+            last_run_key = f"sac:last_run:{symbol}"
+            last_run_info_key = f"sac:last_run_info:{symbol}"
+            redis_client.setex(last_run_key, 3600, current_time)  # Храним 1 час
+            try:
+                serialized_info = json.dumps(info)
+                redis_client.setex(last_run_info_key, 3600, serialized_info)
+            except Exception as cache_exc:
+                push_log(f"⚠️ Не удалось сохранить результат обучения: {cache_exc}")
+
             # Снимаем глобальную блокировку после завершения
             redis_client.delete("sac:training:global_lock")
 

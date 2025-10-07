@@ -202,11 +202,14 @@
                 const bestWinrate = (typeof result.best_winrate === 'number') ? (result.best_winrate * 100).toFixed(1) + '%' : 'N/A';
                 const episodeWinrateSummary = result.episode_winrate_summary || null;
                 const validationSummary = result.validation_summary || null;
-                const seed = (result.train_metadata && result.train_metadata.seed != null)
-                    ? result.train_metadata.seed
-                    : (result.cfg_snapshot && result.cfg_snapshot.seed != null)
-                        ? result.cfg_snapshot.seed
-                        : (result.seed ?? '—');
+                const seedFromList = found?.seed;
+                const seed = seedFromList != null
+                    ? seedFromList
+                    : (result.train_metadata && result.train_metadata.seed != null)
+                        ? result.train_metadata.seed
+                        : (result.cfg_snapshot && result.cfg_snapshot.seed != null)
+                            ? result.cfg_snapshot.seed
+                            : (result.seed ?? '—');
                 const cfgSeed = (result.cfg_snapshot && result.cfg_snapshot.seed != null) ? result.cfg_snapshot.seed : null;
                 const gpu = (result.cuda_available===true) ? (result.gpu_name || 'GPU') : (result.cuda_available===false ? 'CPU' : '—');
                 const totalTime = (typeof result.total_training_time === 'number') ? result.total_training_time : null;

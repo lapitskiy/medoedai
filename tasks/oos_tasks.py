@@ -3,7 +3,7 @@ import json
 from datetime import datetime
 from celery import states
 from tasks import celery
-from routes.models_admin import oos_test_model as _sync_oos_test_model
+from routes.oos import oos_test_model as _sync_oos_test_model
 from flask import Flask
 
 

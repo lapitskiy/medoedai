@@ -114,6 +114,13 @@
     </script>
     <script>
         // --- Вставлен полный JS блок из models.html ---
+        function updateFilterVisibility(agentType) {
+            const dqnBlock = document.getElementById('dqnSymbolSelection');
+            const sacBlock = document.getElementById('sacRunSelection');
+            if (dqnBlock) dqnBlock.style.display = agentType === 'dqn' ? 'block' : 'none';
+            if (sacBlock) sacBlock.style.display = agentType === 'sac' ? 'block' : 'none';
+        }
+
         async function refreshResultModels() {
             console.log('refreshResultModels: starting');
             const listDiv = document.getElementById('resultModelsList');
@@ -124,23 +131,38 @@
             listDiv.innerHTML = '<div class="loading"><div class="spinner"></div>Загрузка...</div>';
             try {
                 const agentType = document.getElementById('agentTypeSelect')?.value || 'dqn';
+                updateFilterVisibility(agentType);
+
                 let url = '';
                 let params = {};
 
-                document.getElementById('dqnSymbolSelection').style.display = agentType === 'dqn' ? 'block' : 'none';
-                document.getElementById('sacRunSelection').style.display = agentType === 'sac' ? 'block' : 'none';
-
                 if (agentType === 'dqn') {
-                    const selectedSymbol = document.getElementById('dqnSymbolSelect')?.value;
-                    url = '/api/dqn_runs/list';
-                    if (selectedSymbol) {
-                        params.symbol = selectedSymbol;
+                    const dqnSelect = document.getElementById('dqnSymbolSelect');
+                    url = '/api/runs/list';
+                    params.model_type = 'dqn';
+                    if (dqnSelect) {
+                        if (!dqnSelect.value) {
+                            const firstOption = Array.from(dqnSelect.options || []).find(opt => opt.value);
+                            if (firstOption) {
+                                dqnSelect.value = firstOption.value;
+                            }
+                        }
+                        if (dqnSelect.value) {
+                            params.symbol = dqnSelect.value;
+                        } else {
+                            listDiv.innerHTML = '<div class="status info">Выберите символ для DQN.</div>';
+                            return;
+                        }
+                    } else {
+                        listDiv.innerHTML = '<div class="status error">Селектор символов DQN не найден.</div>';
+                        return;
                     }
                 } else if (agentType === 'sac') {
-                    const selectedRunName = document.getElementById('sacRunNameSelect')?.value;
-                    url = '/api/sac_runs/list';
-                    if (selectedRunName) {
-                        params.run_name = selectedRunName;
+                    const sacSelect = document.getElementById('sacRunNameSelect');
+                    url = '/api/runs/list';
+                    params.model_type = 'sac';
+                    if (sacSelect && sacSelect.value) {
+                        params.symbol = sacSelect.value;
                     }
                 }
 
@@ -204,7 +226,10 @@
                     if (run.episodes != null) episodes = run.episodes;
 
                     const oosBtn = run.model_path ? `<button class="btn btn-info" onclick="runOOSTest('${agentType}', '${symbolOrRunId}', '${run.model_path}')">Test</button>` : '';
-                    const showResultsBtn = `<button class="btn btn-secondary" onclick="showOOSResults('${agentType}', '${symbolOrRunId}')">Result</button>`;
+                    const symbolHint = agentType === 'sac'
+                        ? (document.getElementById('sacRunNameSelect')?.value || '')
+                        : (document.getElementById('dqnSymbolSelect')?.value || '');
+                    const showResultsBtn = `<button class="btn btn-secondary" onclick="showOOSResults('${agentType}', '${symbolOrRunId}', '${symbolHint}')">Result</button>`;
                     const graphBtn = `<a class="btn btn-secondary" target="_blank" href="/oos_graph?agent_type=${agentType}&id=${encodeURIComponent(symbolOrRunId)}">Graph</a>`;
                     const delBtn = `<button class="btn btn-danger" onclick="deleteAgentRun('${agentType}', '${symbolOrRunId}', '${run.ensemble || 'ensemble-a'}', '${run.version || 'v1'}')">✖</button>`;
                     const buttonsHtml = `<div class="btn-group">${oosBtn}${showResultsBtn}${graphBtn}${delBtn}</div>`;
@@ -212,7 +237,7 @@
 
                     rows.push(`
                         <tr ${rowStyle}>
-                            <td class="nowrap">${run.agent_type || 'N/A'}</td>
+                            <td class="nowrap">${run.agent_type || run.model_type || 'N/A'}</td>
                             <td class="nowrap">${symbolOrRunId}</td>
                             <td class="nowrap">${run.version || 'N/A'}</td>
                             <td class="nowrap">${win}</td>
@@ -283,13 +308,14 @@
             .catch(e => alert('Сеть: ' + e.message));
         }
 
-        async function showOOSResults(agentType, id) {
+        async function showOOSResults(agentType, id, symbolHint = '') {
             try {
                 let url = '';
                 if (agentType === 'dqn') {
                     url = `/api/runs/oos_results?symbol=${encodeURIComponent(id)}&run_id=${encodeURIComponent(id)}`;
                 } else if (agentType === 'sac') {
-                    url = `/api/sac_runs/oos_results?run_id=${encodeURIComponent(id)}`; // Предполагаем новый эндпоинт для SAC OOS
+                    const symbol = symbolHint || document.getElementById('sacRunNameSelect')?.value || '';
+                    url = `/api/sac_runs/oos_results?symbol=${encodeURIComponent(symbol)}&run_id=${encodeURIComponent(id)}`;
                 } else {
                     alert('Неизвестный тип агента: ' + agentType);
                     return;
@@ -437,7 +463,7 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                     payloadBase.run_id = code; // `code` в этом случае будет run_id
                 }
 
-                const windows = [30,60,90];
+                const windows = [30,60,90,180];
                 const scales = multiRuns ? [0.0, 0.5, 1.0] : [null];
                 const allResults = [];
                 const pending = [];
@@ -530,14 +556,21 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                         <div style="text-align:right;display:flex;gap:8px;justify-content:flex-end;"><button class="btn" data-text="${text.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" onclick="copyText(this.getAttribute('data-text'))">Сохранить</button>${tradesButton}</div>`;
                     return item;
                 }
-                const groups = {30:[],60:[],90:[]};
-                for(const r of allResults){ if(r.data&&r.data.success) groups[r.days].push(r); }
+                const groups = {};
+                for(const w of windows){ groups[w]=[]; }
+                for(const r of allResults){
+                    if(r.data && r.data.success){
+                        if(!groups[r.days]){ groups[r.days] = []; }
+                        groups[r.days].push(r);
+                    }
+                }
                 const firstResult = allResults.find(r => r.data && r.data.success)?.data || {};
-                const ohlcvData = allResults.find(r => r.data && r.data.success)?.data?.ohlcv_data || [];
-                const tradesFilePath = allResults.find(r => r.data && r.data.success)?.data?.result?.trades_file || '';
-                const runId = allResults.find(r => r.data && r.data.success)?.data?.run_id || '';
-                const symbol = firstResult.symbol || '';
-                if (ohlcvData.length > 0 && tradesFilePath && (runId || symbol)) {
+                const firstSuccess = allResults.find(r => r.data && r.data.success)?.data || {};
+                const tradesFilePath = firstSuccess?.result?.trades_file || '';
+                const runId = firstSuccess?.run_id || '';
+                const symbol = firstSuccess?.symbol || '';
+                const ohlcvData = firstSuccess?.ohlcv_data || [];
+                if (ohlcvData.length > 0 && tradesFilePath && runId) {
                     await loadAndRenderTradesChart(agentType, symbol, runId, tradesFilePath, ohlcvData);
                 }
                 let stats = {good: 0, bad: 0, neutral: 0};
@@ -546,7 +579,7 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                         const res = r.data.result || {};
                         const roiPct = (res && res.start_capital && typeof res.pnl_total === 'number') ? ((res.pnl_total / res.start_capital) * 100.0) : null;
                         const isGood = (roiPct!=null && roiPct>10) && (res.profit_factor==null || res.profit_factor>=1.2) && (res.pl_ratio==null || res.pl_ratio<1.0) && (res.max_dd==null || res.max_dd<0.40);
-                        const isBad  = (roiPct!=null && roiPct<=0) || (res.profit_factor!=null && res.profit_factor<1.0) || (res.pl_ratio!=null && res.pl_ratio<1.0) || (res.max_dd!=null && res.max_dd>0.70);
+                        const isBad  = (roiPct!=null && roiPct<=0) || (res.profit_factor!=null && res.profit_factor<1.0) || (res.pl_ratio!=null && res.pl_ratio<=1.0) || (res.max_dd!=null && res.max_dd>0.70);
                         if(isGood) stats.good++;
                         else if(isBad) stats.bad++;
                         else stats.neutral++;
@@ -561,20 +594,13 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                 } catch(e) {
                     console.warn('Failed to save OOS stats:', e);
                 }
-                for(const g of groups[30]){
-                    const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
-                    const card = renderCard(`✅ 30d (${pct})`, g.data);
-                    wrap.prepend(card);
-                }
-                for(const g of groups[60]){
-                    const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
-                    const card = renderCard(`✅ 60d (${pct})`, g.data);
-                    wrap.prepend(card);
-                }
-                for(const g of groups[90]){
-                    const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
-                    const card = renderCard(`✅ 90d (${pct})`, g.data);
-                    wrap.prepend(card);
+                for(const days of windows){
+                    const bucket = groups[days] || [];
+                    for(const g of bucket){
+                        const pct = (g.scale===null)? '100%' : ((1-g.scale)*100).toFixed(0)+'%';
+                        const card = renderCard(`✅ ${days}d (${pct})`, g.data);
+                        wrap.prepend(card);
+                    }
                 }
             }catch(e){ console.error('[OOS] error', e); alert('❌ OOS сеть: '+e.message); }
         }
@@ -589,9 +615,8 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                     url = `/api/runs/trades`;
                     params = { symbol: symbol, run_id: runId, trades_file: tradesFilePath };
                 } else if (agentType === 'sac') {
-                    // Предполагаем, что для SAC может быть свой эндпоинт или текущий универсален
-                    url = `/api/sac_runs/trades`; // Новый эндпоинт для SAC трейдов
-                    params = { run_id: runId, trades_file: tradesFilePath };
+                    url = `/api/sac_runs/trades`;
+                    params = { symbol: symbol, run_id: runId, trades_file: tradesFilePath };
                 } else {
                     console.error('Unknown agent type for chart loading:', agentType);
                     return;
@@ -666,12 +691,16 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
 
         // Add event listeners after DOM is fully loaded and all functions are defined
         document.addEventListener('DOMContentLoaded', function() {
-            document.getElementById('agentTypeSelect')?.addEventListener('change', function() {
+            const agentSelect = document.getElementById('agentTypeSelect');
+            agentSelect?.addEventListener('change', function(event) {
+                const val = event.target.value;
+                updateFilterVisibility(val);
                 refreshResultModels();
             });
             document.getElementById('dqnSymbolSelect')?.addEventListener('change', refreshResultModels);
             document.getElementById('sacRunNameSelect')?.addEventListener('change', refreshResultModels);
 
+            updateFilterVisibility(agentSelect?.value || 'dqn');
             try { refreshResultModels(); } catch(_){ console.error("Error calling refreshResultModels on DOMContentLoaded:", _); }
             document.getElementById('refreshResultModelsBtn')?.addEventListener('click', refreshResultModels);
             document.getElementById('openOOSModalBtn')?.addEventListener('click', openOOSModal);

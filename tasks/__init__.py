@@ -17,6 +17,10 @@ celery = Celery(
     backend="redis://redis:6379/0"
 )
 
+# Настройки устойчивости к потере соединения с брокером
+celery.conf.worker_cancel_long_running_tasks_on_connection_loss = True
+celery.conf.broker_connection_retry_on_startup = True
+
 # Настройки для автоматической очистки результатов задач
 celery.conf.result_expires = 3600 * 24 * 7 # 7 дней TTL для результатов задач
 celery.conf.result_backend_transport_options = {

@@ -57,7 +57,7 @@ SAC_GPU_CONFIGS: Dict[str, SACGPUConfig] = {
         memory_size=20_000,  # Дополнительно уменьшено с 30_000
         hidden_sizes=(512, 256, 128),  # Компактные сети для SAC
         use_amp=True,  # Включаем для экономии памяти
-        learning_rate=1e-6,  # Уменьшено до 1e-6
+        learning_rate=1e-5,
         target_entropy_scale=1.0,
         description="Оптимальная конфигурация SAC для GTX 1660 Super"
     ),

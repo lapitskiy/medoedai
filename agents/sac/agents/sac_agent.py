@@ -445,11 +445,14 @@ class SacAgent:
 
         self.update_steps += 1
 
+        avg_entropy = float(entropy.mean().item()) if torch.isfinite(entropy).all() else float('nan')
+
         return {
             "critic_loss": critic_loss.item() if critic_loss is not None else float('nan'),
             "actor_loss": actor_loss.item() if actor_loss is not None else float('nan'),
             "alpha_loss": alpha_loss.item() if torch.isfinite(alpha_loss) else float('nan'),
             "alpha": alpha.item() if alpha is not None else float('nan'),
+            "entropy": avg_entropy,
             "max_actor_grad": max_actor_grad,
             "max_critic_grad": max_critic_grad,
         }

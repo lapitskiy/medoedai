@@ -48,37 +48,55 @@ def api_sac_runs_list():
         if not run_name:
             return jsonify({'success': False, 'error': 'run_name required'}), 400
 
-        runs_dir = Path('result') / 'sac' / run_name
-        if not runs_dir.exists():
+        base_dir = Path('result') / 'sac' / run_name
+        if not base_dir.exists():
             return jsonify({'success': True, 'runs': []})
+
+        runs_dir = base_dir / 'runs' if (base_dir / 'runs').exists() else base_dir
 
         runs = []
         for rd in runs_dir.iterdir():
             if not rd.is_dir():
                 continue
-            
-            run_id = rd.name 
-            
-            manifest = {}
+
+            run_id = rd.name
+
+            manifest: dict[str, Any] = {}
+            manifest_file = rd / 'manifest.json'
+            if manifest_file.exists():
+                try:
+                    manifest_data = json.loads(manifest_file.read_text(encoding='utf-8'))
+                    if isinstance(manifest_data, dict):
+                        manifest.update(manifest_data)
+                        metrics_embedded = manifest_data.get('metrics')
+                        if isinstance(metrics_embedded, dict):
+                            for key in ('winrate', 'avg_roi', 'roi', 'max_drawdown', 'actual_episodes', 'episodes', 'created_at', 'seed'):
+                                if manifest.get(key) is None and metrics_embedded.get(key) is not None:
+                                    manifest[key] = metrics_embedded.get(key)
+                except Exception:
+                    pass
             metrics_file = rd / 'metrics.json'
             if metrics_file.exists():
                 try:
                     metrics_data = json.loads(metrics_file.read_text(encoding='utf-8'))
-                    manifest.update(metrics_data) 
+                    if isinstance(metrics_data, dict):
+                        manifest.update(metrics_data)
                 except Exception:
                     manifest = {}
 
             model_path = str(rd / 'model.pth') if (rd / 'model.pth').exists() else None
             replay_path = str(rd / 'replay.pkl') if (rd / 'replay.pkl').exists() else None
-            result_path = str(rd / 'train_result.pkl') if (rd / 'train_result.pkl').exists() else None 
+            result_path = str(rd / 'train_result.pkl') if (rd / 'train_result.pkl').exists() else None
 
-            winrate = manifest.get('winrate'); 
-            pl_ratio = manifest.get('roi'); 
-            max_dd = manifest.get('max_drawdown');
-            episodes = manifest.get('actual_episodes', manifest.get('episodes')) 
+            winrate = manifest.get('winrate')
+            roi_value = manifest.get('roi')
+            if roi_value is None:
+                roi_value = manifest.get('avg_roi')
+            max_dd = manifest.get('max_drawdown')
+            episodes = manifest.get('actual_episodes', manifest.get('episodes'))
 
             runs.append({
-                'run_id': rd.name, 
+                'run_id': run_id,
                 'parent_run_id': manifest.get('parent_run_id'),
                 'root_id': manifest.get('root_id'),
                 'seed': manifest.get('seed'),
@@ -88,11 +106,12 @@ def api_sac_runs_list():
                 'replay_path': replay_path,
                 'result_path': result_path,
                 'winrate': winrate,
-                'pl_ratio': pl_ratio,
-                'max_dd': max_dd, 
+                'pl_ratio': roi_value,
+                'roi': roi_value,
+                'max_dd': max_dd,
                 'episodes': episodes,
-                'agent_type': manifest.get('agent_type', 'sac'), 
-                'version': manifest.get('version', 'N/A'), 
+                'agent_type': manifest.get('agent_type', 'sac'),
+                'version': manifest.get('version', 'N/A'),
             })
         try:
             runs.sort(key=lambda r: (r.get('created_at') or '', r['run_id']))
@@ -858,10 +877,15 @@ def delete_sac_model():
 def api_sac_runs_oos_results():
     try:
         run_id = (request.args.get('run_id') or '').strip()
+        symbol = (request.args.get('symbol') or '').strip()
         if not run_id:
             return jsonify({'success': False, 'error': 'run_id required'}), 400
 
-        run_dir = Path('result') / 'sac' / run_id
+        run_dir = Path('result') / 'sac'
+        if symbol:
+            run_dir = run_dir / symbol.lower() / 'runs' / run_id
+        else:
+            run_dir = run_dir / run_id
         if not run_dir.exists():
             return jsonify({'success': False, 'error': f'Run directory not found: {run_dir}'}), 404
 
@@ -887,11 +911,16 @@ def api_sac_runs_trades():
     try:
         run_id = (request.args.get('run_id') or '').strip()
         trades_file = (request.args.get('trades_file') or '').strip()
+        symbol = (request.args.get('symbol') or '').strip()
 
         if not run_id or not trades_file:
             return jsonify({'success': False, 'error': 'run_id and trades_file required'}), 400
 
-        trades_path = Path('result') / 'sac' / run_id / trades_file
+        trades_path = Path('result') / 'sac'
+        if symbol:
+            trades_path = trades_path / symbol.lower() / 'runs' / run_id / trades_file
+        else:
+            trades_path = trades_path / run_id / trades_file
 
         if not trades_path.exists():
             return jsonify({'success': False, 'error': f'Trades file not found: {trades_path}'}), 404

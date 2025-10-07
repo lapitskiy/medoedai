@@ -83,6 +83,7 @@ class SacTrainer:
         
         # Early stopping и валидация
         self.best_winrate = 0.0
+        self.best_winrate_episode = None
         self.patience_counter = 0
         self.episode_winrates = []
         self.validation_rewards = []
@@ -116,6 +117,8 @@ class SacTrainer:
 
         agent = SacAgent(obs_dim, action_dim, cfg=self.cfg)
         stats = SacTrainingStats()
+        alpha_values: list[float] = []
+        entropy_values: list[float] = []
 
         # Тайминг обучения и чекпоинты
         start_time = time.time()
@@ -180,7 +183,14 @@ class SacTrainer:
                     batch = agent.sample_batch()
                     if batch:
                         losses = agent.update(batch)
-                        stats.losses.append(losses)
+                        if losses:
+                            stats.losses.append(losses)
+                            alpha_val = losses.get("alpha")
+                            if isinstance(alpha_val, (int, float)):
+                                alpha_values.append(float(alpha_val))
+                            entropy_val = losses.get("entropy")
+                            if isinstance(entropy_val, (int, float)):
+                                entropy_values.append(float(entropy_val))
 
                 state_tensor = next_state_tensor
                 state_input = state_tensor.unsqueeze(0)
@@ -251,6 +261,7 @@ class SacTrainer:
                 improved = False
                 if episode_winrate > self.best_winrate:
                     self.best_winrate = episode_winrate
+                    self.best_winrate_episode = episode + 1
                     improved = True
                     self.patience_counter = 0
                     
@@ -300,6 +311,29 @@ class SacTrainer:
                     break
 
         self._save_results(env, stats, agent)
+
+        alpha_stats = {}
+        if alpha_values:
+            alpha_arr = np.array(alpha_values, dtype=float)
+            alpha_stats = {
+                "avg": float(alpha_arr.mean()),
+                "min": float(alpha_arr.min()),
+                "max": float(alpha_arr.max()),
+                "last": float(alpha_arr[-1]),
+                "count": int(len(alpha_arr)),
+            }
+
+        entropy_stats = {}
+        if entropy_values:
+            entropy_arr = np.array(entropy_values, dtype=float)
+            entropy_stats = {
+                "avg": float(entropy_arr.mean()),
+                "min": float(entropy_arr.min()),
+                "max": float(entropy_arr.max()),
+                "last": float(entropy_arr[-1]),
+                "count": int(len(entropy_arr)),
+            }
+
         return {
             "episode_rewards": stats.episode_rewards,
             "episode_lengths": stats.episode_lengths,
@@ -307,6 +341,9 @@ class SacTrainer:
             "validation_rewards": self.validation_rewards,
             "episode_winrates": self.episode_winrates,
             "best_winrate": self.best_winrate,
+            "best_winrate_episode": self.best_winrate_episode,
+            "alpha_stats": alpha_stats,
+            "entropy_stats": entropy_stats,
         }
 
     def _save_results(self, env, stats: SacTrainingStats, agent: SacAgent) -> None:
