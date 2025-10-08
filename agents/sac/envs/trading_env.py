@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized
+from envs.sac_model.gym.crypto_trading_env_sac import CryptoTradingEnvOptimized
 from envs.dqn_model.gym.gconfig import GymConfig
 
 

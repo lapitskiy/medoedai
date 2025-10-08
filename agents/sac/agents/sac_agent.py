@@ -1,3 +1,4 @@
+
 """Основной SAC агент."""
 
 from __future__ import annotations
@@ -23,6 +24,23 @@ class SacAgentState:
     log_alpha: torch.Tensor
     alpha_optimizer: optim.Optimizer
 
+
+def _decay_optimizer_lr(self, optimizer: optim.Optimizer, which: str) -> None:
+    decay = self.cfg.grad_fail_lr_decay
+    if decay <= 0 or decay >= 1:
+        return
+    for param_group in optimizer.param_groups:
+        old_lr = param_group.get("lr", None)
+        if old_lr is None:
+            continue
+        new_lr = max(old_lr * decay, getattr(self.cfg, f"min_lr_{which}", old_lr))
+        param_group["lr"] = new_lr
+        logging.warning(
+            "⚠️ [SacAgent] %s lr decayed from %.3e to %.3e",
+            which,
+            old_lr,
+            new_lr,
+        )
 
 class SacAgent:
     def __init__(self, observation_dim: int, action_dim: int, cfg: Optional[SacConfig] = None) -> None:
@@ -65,6 +83,15 @@ class SacAgent:
 
         self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
         self.alpha_optimizer = optim.AdamW([self.log_alpha], lr=self.cfg.lr_alpha)
+
+        # Вспомогательные счётчики для адаптации lr и очистки буфера при NaN градиентах
+        self._critic_grad_fail_streak = 0
+        self._critic_grad_fail_decays = 0
+        self._actor_grad_fail_streak = 0
+        self._actor_grad_fail_decays = 0
+        self._initial_lr_actor = self.cfg.lr_actor
+        self._initial_lr_critic = self.cfg.lr_critic
+        self._initial_lr_alpha = self.cfg.lr_alpha
 
         # Инициализация GradScaler для AMP
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.cfg.use_amp)
@@ -336,8 +363,26 @@ class SacAgent:
             self.critic_optimizer.zero_grad(set_to_none=True)
             # Важно: синхронизируем GradScaler, иначе следующий unscale_ вызовет ошибку
             self.scaler.update()
+            self._critic_grad_fail_streak += 1
+            if self.cfg.grad_fail_log_details:
+                logging.warning(
+                    "⚠️ [SacAgent] critic grad fail streak=%d decay=%d",
+                    self._critic_grad_fail_streak,
+                    getattr(self, "_critic_grad_fail_decays", 0),
+                )
+            if self.cfg.grad_fail_clear_buffer and hasattr(self, "replay_buffer"):
+                self.replay_buffer.clear()
+                logging.warning("🔄 Буфер очищен из-за NaN в градиентах критика")
+            if (
+                self._critic_grad_fail_streak >= self.cfg.grad_fail_patience
+                and self._critic_grad_fail_decays < self.cfg.grad_fail_max_decays
+            ):
+                self._decay_optimizer_lr(self.critic_optimizer, "critic")
+                self._critic_grad_fail_streak = 0
+                self._critic_grad_fail_decays += 1
             logging.warning("⚠️ [SacAgent] NaN/Inf в градиентах критика. Шаг пропущен.")
             return {}
+        self._critic_grad_fail_streak = 0
         if self.cfg.max_grad_norm is not None:
             torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.cfg.max_grad_norm)
         self.scaler.step(self.critic_optimizer)
@@ -411,8 +456,25 @@ class SacAgent:
                 param.requires_grad = True
             # Важно: синхронизируем GradScaler, иначе следующий unscale_ вызовет ошибку
             self.scaler.update()
+            self._actor_grad_fail_streak += 1
+            if self.cfg.grad_fail_log_details:
+                logging.warning(
+                    "⚠️ [SacAgent] actor grad fail streak=%d",
+                    self._actor_grad_fail_streak,
+                )
+            if self.cfg.grad_fail_clear_buffer and hasattr(self, "replay_buffer"):
+                self.replay_buffer.clear()
+                logging.warning("🔄 Буфер очищен из-за NaN в градиентах актора")
+            if (
+                self._actor_grad_fail_streak >= self.cfg.grad_fail_patience
+                and self._actor_grad_fail_decays < self.cfg.grad_fail_max_decays
+            ):
+                self._decay_optimizer_lr(self.actor_optimizer, "actor")
+                self._actor_grad_fail_streak = 0
+                self._actor_grad_fail_decays += 1
             logging.warning("⚠️ [SacAgent] NaN/Inf в градиентах актора. Шаг пропущен.")
             return {}
+        self._actor_grad_fail_streak = 0
         if self.cfg.max_grad_norm is not None:
             torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.cfg.max_grad_norm)
         self.scaler.step(self.actor_optimizer)

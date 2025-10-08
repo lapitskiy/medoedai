@@ -55,9 +55,18 @@ class SacConfig:
     use_swiglu_gate: bool = False
 
     # === Обучение ===
-    start_learning_after: int = 10_000
+    start_learning_after: int = 20_000 # Увеличено с 10_000 до 20_000
     target_update_interval: int = 1
     max_grad_norm: float | None = 1.0
+    min_lr_actor: float = 1e-6
+    min_lr_critic: float = 1e-6
+    min_lr_alpha: float = 1e-6
+    grad_fail_patience: int = 3
+    grad_fail_max_decays: int = 4
+    grad_fail_lr_decay: float = 0.5
+    grad_fail_clear_buffer: bool = True
+    grad_fail_log_details: bool = True
+    clear_buffer_on_nan: bool = False
     use_amp: bool = True
     
     # === Обработка экстремальных входов ===

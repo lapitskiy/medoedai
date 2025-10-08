@@ -536,7 +536,7 @@ async function loadDbHistory(symbol){
 async function loadPredictions(symbol, filter = currentPredictionFilter){
   try{
     const requestedFilter = (filter && filter !== 'all') ? String(filter).toLowerCase() : null;
-    const resp = await fetch('/api/predictions/recent?limit=150&symbol='+encodeURIComponent(symbol), {
+    const resp = await fetch('/api/predictions/recent?limit=1500&symbol='+encodeURIComponent(symbol), {
       cache: 'no-store',
       headers: {
         'Cache-Control': 'no-cache'

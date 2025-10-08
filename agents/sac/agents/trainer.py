@@ -68,6 +68,7 @@ class SacTrainingStats:
     episode_rewards: list[float] = field(default_factory=list)
     episode_lengths: list[int] = field(default_factory=list)
     losses: list[Dict[str, float]] = field(default_factory=list)
+    episode_pl_ratios: list[float] = field(default_factory=list)
 
 
 class SacTrainer:
@@ -86,7 +87,10 @@ class SacTrainer:
         self.best_winrate_episode = None
         self.patience_counter = 0
         self.episode_winrates = []
+        self.episode_pl_ratios = [] # Добавлено
         self.validation_rewards = []
+        self.best_pl_ratio = -np.inf # Инициализируем отрицательной бесконечностью
+        self.best_pl_ratio_episode = None
 
     def train(
         self,
@@ -97,7 +101,7 @@ class SacTrainer:
     ) -> Dict:
         if progress_callback is not None:
             self.progress_callback = progress_callback
-        from agents.sac.envs.trading_env import make_trading_env
+        from envs.sac_model.gym.crypto_trading_env_sac import CryptoTradingEnvOptimized as make_trading_env # Изменено на новую среду SAC
 
         env_factory = env_factory or make_trading_env
         env = env_factory(dfs, gym_cfg)
@@ -257,11 +261,15 @@ class SacTrainer:
                 episode_winrate = self._compute_episode_winrate(env)
                 self.episode_winrates.append(episode_winrate)
                 
-                # Проверяем улучшение
+                # Вычисляем P/L Ratio для текущего эпизода
+                episode_pl_ratio = self._compute_pl_ratio(env)
+                self.episode_pl_ratios.append(episode_pl_ratio)
+                
+                # Проверяем улучшение по P/L Ratio
                 improved = False
-                if episode_winrate > self.best_winrate:
-                    self.best_winrate = episode_winrate
-                    self.best_winrate_episode = episode + 1
+                if episode_pl_ratio > self.best_pl_ratio: # Используем P/L Ratio как основной критерий
+                    self.best_pl_ratio = episode_pl_ratio
+                    self.best_pl_ratio_episode = episode + 1
                     improved = True
                     self.patience_counter = 0
                     
@@ -278,8 +286,8 @@ class SacTrainer:
                 message = (
                     f"Episode {episode + 1}: reward={episode_reward:.2f}, "
                     f"avg_last_10={avg_reward:.2f}, validation={validation_reward:.2f}, "
-                    f"winrate={episode_winrate:.3f}, best={self.best_winrate:.3f}, "
-                    f"patience={self.patience_counter}/{self.cfg.early_stopping_patience}"
+                    f"winrate={episode_winrate:.3f}, pl_ratio={episode_pl_ratio:.3f}, " # Добавляем P/L Ratio
+                    f"best_pl_ratio={self.best_pl_ratio:.3f}, patience={self.patience_counter}/{self.cfg.early_stopping_patience}"
                 )
                 if improved:
                     message += " ⭐ IMPROVED"
@@ -344,6 +352,9 @@ class SacTrainer:
             "best_winrate_episode": self.best_winrate_episode,
             "alpha_stats": alpha_stats,
             "entropy_stats": entropy_stats,
+            "episode_pl_ratios": self.episode_pl_ratios, # Добавлено
+            "best_pl_ratio": self.best_pl_ratio, # Добавлено
+            "best_pl_ratio_episode": self.best_pl_ratio_episode, # Добавлено
         }
 
     def _save_results(self, env, stats: SacTrainingStats, agent: SacAgent) -> None:
@@ -624,6 +635,31 @@ class SacTrainer:
             profitable = [t for t in trades if t.get("roi", 0) > 0]
             return len(profitable) / len(trades) if trades else 0.0
         return 0.0
+
+    def _compute_pl_ratio(self, env) -> Optional[float]:
+        """Вычисляет P/L Ratio для всех сделок в окружении."""
+        trades = getattr(env, "all_trades", [])
+        if not trades:
+            return None
+
+        net_values = []
+        for trade in trades:
+            net = trade.get("net")
+            if isinstance(net, (int, float)) and net == net: # Проверка на NaN
+                net_values.append(float(net))
+
+        if not net_values:
+            return None
+
+        profit_values = [v for v in net_values if v > 0]
+        loss_values = [abs(v) for v in net_values if v < 0]
+
+        if profit_values and loss_values:
+            avg_gain = np.mean(profit_values)
+            avg_loss = np.mean(loss_values)
+            if avg_loss:
+                return avg_gain / avg_loss
+        return None
 
     def _compute_best_winrate(self, env) -> float:
         trades = getattr(env, "all_trades", [])

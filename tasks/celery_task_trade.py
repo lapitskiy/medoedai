@@ -139,7 +139,21 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             except Exception:
                 return 0
 
-        df_5m, data_error = db_get_or_fetch_ohlcv(symbol_name=symbol, timeframe='5m', limit_candles=120, exchange_id='bybit', include_error=True)
+        max_window = 0
+        try:
+            if rc is not None:
+                raw_cfg = rc.get('trading:regime_config')
+                if raw_cfg:
+                    cfg = json.loads(raw_cfg)
+                    w = cfg.get('windows') if isinstance(cfg, dict) else None
+                    if isinstance(w, (list, tuple)) and w:
+                        max_window = max(int(abs(float(x))) for x in w if x is not None)
+        except Exception:
+            max_window = 0
+        if not max_window:
+            max_window = 2880
+        limit_candles = max(120, int(max_window) + 50)
+        df_5m, data_error = db_get_or_fetch_ohlcv(symbol_name=symbol, timeframe='5m', limit_candles=limit_candles, exchange_id='bybit', include_error=True)
         if data_error:
             error_msg = data_error
             human_error = error_msg
@@ -270,12 +284,12 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     cfg = None
 
                 # Значения по умолчанию
-                windows = (cfg.get('windows') if isinstance(cfg, dict) else None) or [60, 180, 300]
+                windows = (cfg.get('windows') if isinstance(cfg, dict) else None) or [576, 1440, 2880]
                 weights = (cfg.get('weights') if isinstance(cfg, dict) else None) or [1, 1, 1]
                 voting = (cfg.get('voting') if isinstance(cfg, dict) else None) or 'majority'
-                tie_break = (cfg.get('tie_break') if isinstance(cfg, dict) else None) or 'flat'
-                drift_thr = float((cfg.get('drift_threshold') if isinstance(cfg, dict) else 0.002) or 0.002)
-                vol_flat_thr = float((cfg.get('flat_vol_threshold') if isinstance(cfg, dict) else 0.0025) or 0.0025)
+                tie_break = (cfg.get('tie_break') if isinstance(cfg, dict) else None) or 'last'
+                drift_thr = float((cfg.get('drift_threshold') if isinstance(cfg, dict) else 0.001) or 0.001)
+                vol_flat_thr = float((cfg.get('flat_vol_threshold') if isinstance(cfg, dict) else 0.003) or 0.003)
                 # Пока регрессию/ADX не включаем (флаги можно будет учесть позже)
 
                 closes_full = df['close'].astype(float).values
@@ -354,10 +368,10 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 return winner, details
             except Exception:
                 return 'flat', {
-                    'windows': [60, 180, 300],
+                    'windows': [576, 1440, 2880],
                     'weights': [1, 1, 1],
                     'voting': 'majority',
-                    'tie_break': 'flat',
+                    'tie_break': 'last',
                     'labels': ['flat', 'flat', 'flat'],
                     'votes_map': {'flat': 0.0, 'uptrend': 0.0, 'downtrend': 0.0},
                     'drift_threshold': 0.002,
@@ -366,6 +380,18 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 }
 
         market_regime, market_regime_details = _compute_regime(df_5m)
+        try:
+            logger.warning(
+                "[REGIME] symbol=%s regime=%s windows=%s labels=%s votes=%s metrics=%s",
+                symbol,
+                market_regime,
+                market_regime_details.get('windows') if isinstance(market_regime_details, dict) else None,
+                market_regime_details.get('labels') if isinstance(market_regime_details, dict) else None,
+                market_regime_details.get('votes_map') if isinstance(market_regime_details, dict) else None,
+                market_regime_details.get('metrics') if isinstance(market_regime_details, dict) else None,
+            )
+        except Exception:
+            pass
 
         # 3) Вызов serving (+ передаём настройки консенсуса, если заданы)
         # Читаем консенсус из Redis для конкретного символа: {'counts': {flat, trend, total_selected}, 'percents': {flat, trend}}
