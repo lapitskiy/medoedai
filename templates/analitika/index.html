@@ -117,7 +117,8 @@
             if(!sel) return;
             try{
                 const modelType = getSelectedModelType();
-                const resp = await fetch(`/api/runs/symbols?model_type=${encodeURIComponent(modelType)}`);
+                const apiBase = (modelType === 'sac') ? '/api/sac' : '';
+                const resp = await fetch(`${apiBase}/api/runs/symbols?model_type=${encodeURIComponent(modelType)}`);
                 const data = await resp.json();
                 const symbols = (data && data.success && Array.isArray(data.symbols))? data.symbols: [];
                 sel.innerHTML = symbols.length?
@@ -137,27 +138,34 @@
         }
 
         async function loadIndexRuns(){
-            const sym = (document.getElementById('indexSymbolSelect')?.value||'').trim();
+            const selEl = document.getElementById('indexSymbolSelect');
+            const rawSymbol = selEl ? selEl.value : '';
+            let sym = (rawSymbol || '').trim();
+            const modelType = getSelectedModelType();
+            if (modelType === 'sac' && sym.toUpperCase().startsWith('SAC:')) {
+                sym = sym.split(':', 2)[1] || sym;
+            }
             const runSel = document.getElementById('indexRunSelect');
             if(!sym || !runSel) return;
             try{
-                const modelType = getSelectedModelType();
-                const resp = await fetch(`/api/runs/list?model_type=${encodeURIComponent(modelType)}&symbol=${encodeURIComponent(sym)}`);
+                const apiBase = (modelType === 'sac') ? '/api/sac' : '';
+                const resp = await fetch(`${apiBase}/api/runs/list?model_type=${encodeURIComponent(modelType)}&symbol=${encodeURIComponent(sym)}`);
                 const data = await resp.json();
                 const runs = (data && data.success && Array.isArray(data.runs))? data.runs: [];
-                const symbolDir = runs.length ? (runs[0].symbol_dir || sym.replace(/^SAC:/i, '')) : sym.replace(/^SAC:/i, '');
-                indexRunsBySymbol[sym] = { list: runs, modelType, symbolDir };
+                const symbolDir = runs.length ? (runs[0].symbol_dir || sym) : sym;
+                indexRunsBySymbol[rawSymbol] = { list: runs, modelType, symbolDir };
                 runSel.innerHTML = runs.length? runs.map(r=>`<option value="${r.run_id}">${r.run_id}</option>`).join(''): '<option value="">Нет runов</option>';
                 try{ await showIndexRunInfo(); }catch(_){ }
             }catch(e){ runSel.innerHTML = '<option value="">Ошибка</option>'; }
         }
 
         function getSelectedTrainResultPath(){
-            const sym = (document.getElementById('indexSymbolSelect')?.value||'').trim();
+            const symRaw = document.getElementById('indexSymbolSelect')?.value || '';
+            const sym = symRaw.trim();
             const runId = (document.getElementById('indexRunSelect')?.value||'').trim();
-            const entry = indexRunsBySymbol[sym] || indexRunsBySymbol[sym.replace(/^SAC:/i, '')] || null;
+            const entry = indexRunsBySymbol[symRaw] || indexRunsBySymbol[sym.replace(/^SAC:/i, '')] || null;
             const runs = entry?.list || [];
-            const modelType = entry?.modelType || getSelectedModelType();
+            const modelType = getSelectedModelType();
             const symbolDir = entry?.symbolDir || sym.replace(/^SAC:/i, '');
             const found = runs.find(r=>r.run_id===runId);
             if(found && found.result_path){ return found.result_path; }
@@ -165,7 +173,7 @@
                 if(modelType === 'sac'){
                     return `result/sac/${symbolDir.toLowerCase()}/runs/${runId}/train_result.pkl`;
                 }
-                return `result/${symbolDir}/runs/${runId}/train_result.pkl`;
+                return `result/dqn/${symbolDir}/runs/${runId}/train_result.pkl`;
             }
             return '';
         }
@@ -173,13 +181,14 @@
         async function showIndexRunInfo(){
             const infoDiv = document.getElementById('indexRunInfo');
             if(!infoDiv) return;
-            const sym = (document.getElementById('indexSymbolSelect')?.value||'').trim();
+            const symRaw = document.getElementById('indexSymbolSelect')?.value || '';
+            const sym = symRaw.trim();
             const runId = (document.getElementById('indexRunSelect')?.value||'').trim();
             if(!sym || !runId){ infoDiv.style.display='none'; return; }
-            const entry = indexRunsBySymbol[sym] || indexRunsBySymbol[sym.replace(/^SAC:/i, '')] || null;
-            const modelType = entry?.modelType || getSelectedModelType();
+            const entry = indexRunsBySymbol[symRaw] || indexRunsBySymbol[sym.replace(/^SAC:/i, '')] || null;
+            const modelType = getSelectedModelType();
             const symbolDir = entry?.symbolDir || sym.replace(/^SAC:/i, '');
-            const basePath = modelType === 'sac' ? `result/sac/${symbolDir.toLowerCase()}` : `result/${symbolDir}`;
+            const basePath = modelType === 'sac' ? `result/sac/${symbolDir.toLowerCase()}` : `result/dqn/${symbolDir}`;
             const runs = entry?.list || [];
             const found = runs.find(r=>r.run_id===runId);
             const modelPath = found?.model_path || `${basePath}/runs/${runId}/model.pth`;
@@ -336,8 +345,8 @@
                 const selectEl = document.getElementById('resultsFileSelect');
                 file = selectEl? (selectEl.value||'') : '';
             }
-            const entry = indexRunsBySymbol[document.getElementById('indexSymbolSelect')?.value || ''];
-            const modelType = entry?.modelType || getSelectedModelType();
+
+            const modelType = getSelectedModelType();
             const analyzeBtn = document.getElementById('analyzeResultsBtn');
             const statusDiv = document.getElementById('analysisStatus');
             const resultsDiv = document.getElementById('analysisResults');
@@ -345,18 +354,31 @@
             statusDiv.style.display = 'block';
             statusDiv.className = 'status running';
             statusDiv.textContent = '📊 Анализ результатов обучения...';
+
+            console.log('[Analytics] modelType =', modelType, 'file =', file);
+
             try {
-                let url = '/analyze_training_results';
-                let payload = { file, model_type: modelType };
+                let url;
+                let payload;
+
                 if (modelType === 'sac') {
                     url = '/api/sac/analyze_training_results';
                     payload = { file };
+                    console.log('[Analytics] SAC endpoint', url);
+                } else {
+                    url = '/analyze_training_results';
+                    payload = { file, model_type: modelType };
+                    console.log('[Analytics] DQN endpoint', url);
                 }
+
                 const response = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
+
+                console.log('[Analytics] Response status =', response.status);
+
                 const result = await parseJsonResponse(response);
                 if (result.success) {
                     statusDiv.className = 'status success';
@@ -376,6 +398,7 @@
                     throw new Error(result.message);
                 }
             } catch (e) {
+                console.error('[Analytics] Ошибка анализа:', e);
                 statusDiv.className = 'status error';
                 statusDiv.textContent = '❌ Ошибка: ' + e.message;
             } finally {

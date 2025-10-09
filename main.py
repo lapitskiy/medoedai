@@ -63,6 +63,10 @@ logging.basicConfig(level=logging.INFO)
 
 # Создаем Flask приложение
 app = Flask(__name__)
+
+# Регистрируем маршруты аналитики (анализ DQN)
+from routes.analysis import analysis_api_bp
+app.register_blueprint(analysis_api_bp)
 app.register_blueprint(bybit_bp)
 app.register_blueprint(trading_bp)
 app.register_blueprint(models_admin_bp)

@@ -1,5 +1,19 @@
 
-@app.route('/api/analysis/qvalues_vs_pnl', methods=['GET'])
+from flask import Blueprint, jsonify, request, render_template, current_app # type: ignore
+import os
+import glob
+import io
+import sys
+import pickle
+from contextlib import redirect_stdout
+import numpy as np # type: ignore
+
+from routes.trading import get_matched_full_trades
+
+analysis_api_bp = Blueprint('analysis_api', __name__)
+
+
+@analysis_api_bp.route('/api/analysis/qvalues_vs_pnl', methods=['GET'])
 def analysis_qvalues_vs_pnl():
     """Возвращает датасет BUY→SELL пар с P&L и q_values для анализа порогов.
 
@@ -100,7 +114,7 @@ def analysis_qvalues_vs_pnl():
     except Exception as e:
         return jsonify({ 'success': False, 'error': str(e) }), 500
 
-@app.route('/api/analysis/qgate_suggest', methods=['GET'])
+@analysis_api_bp.route('/api/analysis/qgate_suggest', methods=['GET'])
 def analysis_qgate_suggest():
     """Подбирает пороги T1/T2 (maxQ/gapQ) по сетке квантилей без внешних зависимостей.
 
@@ -299,7 +313,7 @@ def analysis_qgate_suggest():
     except Exception as e:
         return jsonify({ 'success': False, 'error': str(e) }), 500
 
-@app.route('/analyze_bad_trades', methods=['POST'])
+@analysis_api_bp.route('/analyze_bad_trades', methods=['POST'])
 def analyze_bad_trades():
     """Анализирует плохие сделки из результатов обучения DQN модели"""
     try:
@@ -440,7 +454,7 @@ def analyze_bad_trades():
             'success': False
         }), 500
 
-@app.route('/analyze_training_results', methods=['POST'])
+@analysis_api_bp.route('/analyze_training_results', methods=['POST'])
 def analyze_training_results():
     """Анализирует результаты обучения DQN модели"""
     try:
