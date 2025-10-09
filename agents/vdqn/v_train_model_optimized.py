@@ -173,6 +173,7 @@ def _save_training_results(
     root_id: Optional[str],
     training_start_time: float,
     current_total_training_time: float, # Текущее время обучения для промежуточных сохранений
+    dfs: Optional[Dict] = None,
 ):
     try:
         total_training_time = current_total_training_time
@@ -295,18 +296,21 @@ def _save_training_results(
         try:
             if is_multi_crypto:
                 per_symbol = {}
-                # Здесь нужна логика получения dfs. Вместо того, чтобы передавать dfs сюда,
-                # можно сделать так, чтобы env экспортировал snapshot адаптивной нормализации
-                # или передать его через аргумент, если это более удобно.
-                # Для упрощения пока оставлю так, как будто dfs доступен глобально (НЕПРАВИЛЬНО!)
-                # На самом деле, лучше передать dfs, либо env должен экспортировать этот снапшот.
-                # Пока что, если is_multi_crypto, оставлю adaptive_snapshot пустым.
-                adaptive_snapshot = {'per_symbol': {}} # Заглушка
+                # Для мульти-режима лучше формировать снапшот в среде и передавать сюда уже готовые данные.
+                adaptive_snapshot = {'per_symbol': per_symbol}
             else:
-                # В текущей реализации dfs не передается в _save_training_results.
-                # Поэтому мы не можем пересчитать adaptive_normalization здесь.
-                # Либо надо передать dfs, либо env должен экспортировать этот снапшот.
-                adaptive_snapshot = {} # Заглушка
+                # Если передали dfs, фиксируем базовую информацию о доступных фреймах
+                if dfs:
+                    adaptive_snapshot = {
+                        'frames': {
+                            key: {
+                                'rows': len(value) if hasattr(value, '__len__') else None
+                            }
+                            for key, value in dfs.items()
+                        }
+                    }
+                else:
+                    adaptive_snapshot = {}
         except Exception as e:
             logger.warning(f"Ошибка при создании adaptive_snapshot: {e}")
             adaptive_snapshot = {}
@@ -643,20 +647,20 @@ def train_model_optimized(
                 s = "multi"
             return s
 
-        result_dir = os.path.join("result")
+        result_dir = os.path.join("result", "dqn")
         os.makedirs(result_dir, exist_ok=True)
         symbol_code = _symbol_code(crypto_symbol)
         # Короткий UUID для версионирования (по умолчанию)
         import uuid
         short_id = str(uuid.uuid4())[:4].lower()
 
-        # Структурированный каталог результата: result/<SYMBOL>/runs/<run_id>/
+        # Структурированный каталог результата: result/dqn/<SYMBOL>/runs/<run_id>/
         # Папка символа без суффикса (TON, BTC, BNB...) в верхнем регистре
         symbol_dir_name = _symbol_code(crypto_symbol).upper() if crypto_symbol else "UNKNOWN"
         # Короткий run_id (4 символа) если не передан
         this_run_id = run_id or str(uuid.uuid4())[:4]
         this_root_id = root_id or this_run_id
-        run_dir = os.path.join("result", symbol_dir_name, "runs", this_run_id)
+        run_dir = os.path.join("result", "dqn", symbol_dir_name, "runs", this_run_id)
         os.makedirs(run_dir, exist_ok=True)
 
         # Код для артефактов по умолчанию
@@ -711,6 +715,7 @@ def train_model_optimized(
         # Подготавливаем НОВЫЕ пути сохранения: сразу в run_dir
         new_model_path = os.path.join(run_dir, 'model.pth')
         new_buffer_path = os.path.join(run_dir, 'replay.pkl')
+        new_encoder_path = os.path.join(run_dir, 'encoder_only.pth')
 
         # Если дообучаем из структурированного пути runs/... и parent/root не переданы — авто‑детект
         try:
@@ -803,12 +808,16 @@ def train_model_optimized(
         try:
             dqn_solver.cfg.model_path = new_model_path
             dqn_solver.cfg.replay_buffer_path = new_buffer_path
+            if hasattr(dqn_solver.cfg, 'encoder_path'):
+                dqn_solver.cfg.encoder_path = new_encoder_path
         except Exception:
             pass
         try:
             if cfg is not None:
                 cfg.model_path = dqn_solver.cfg.model_path
                 cfg.replay_buffer_path = dqn_solver.cfg.replay_buffer_path
+                if hasattr(cfg, 'encoder_path'):
+                    cfg.encoder_path = dqn_solver.cfg.encoder_path
         except Exception:
             pass
         

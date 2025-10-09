@@ -118,6 +118,7 @@ class vDqnConfig:
     # path
     model_path="dqn_model.pth"
     buffer_path="replay_buffer.pkl"
+    encoder_path="encoder_only.pth"
     
     # Определение устройства (GPU или CPU), учитываем GPU_COUNT
     _gpu_count_env = os.environ.get('GPU_COUNT', '').strip().lower()

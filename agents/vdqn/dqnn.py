@@ -1,4 +1,5 @@
 import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -7,6 +8,8 @@ import numpy as np
 
 # Keep torch.compile tolerant to modules that opt out.
 torch._dynamo.config.suppress_errors = True
+
+from .feature_extractor import FeatureExtractor
 
 
 class NoisyLinear(nn.Module):
@@ -179,17 +182,18 @@ class DuelingDQN(nn.Module):
         self._no_compile = True
 
         self.act_dim = act_dim
-        self.feature_layers = _build_feature_layers(
-            obs_dim,
-            hidden_sizes,
-            dropout_rate,
-            layer_norm,
-            activation,
-            use_residual,
-            use_swiglu,
-        )
+        self._feature_extractor_args = {
+            "obs_dim": obs_dim,
+            "hidden_sizes": hidden_sizes,
+            "dropout_rate": dropout_rate,
+            "layer_norm": layer_norm,
+            "activation": activation,
+            "use_residual": use_residual,
+            "use_swiglu": use_swiglu,
+        }
+        self.feature_extractor = FeatureExtractor(**self._feature_extractor_args)
 
-        feature_dim = hidden_sizes[-1]
+        feature_dim = self.feature_extractor.feature_dim
 
         self.value_stream = nn.Sequential(
             nn.Linear(feature_dim, feature_dim // 2),
@@ -214,12 +218,16 @@ class DuelingDQN(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for layer in self.feature_layers:
-            x = layer(x)
-        value = self.value_stream(x)
-        advantage = self.advantage_stream(x)
+        features = self.feature_extractor(x)
+        value = self.value_stream(features)
+        advantage = self.advantage_stream(features)
         advantage_centered = advantage - advantage.mean(dim=-1, keepdim=True)
         return value + advantage_centered
+
+    def get_feature_extractor(self) -> FeatureExtractor:
+        extractor = FeatureExtractor(**self._feature_extractor_args)
+        extractor.load_state_dict(self.feature_extractor.state_dict())
+        return extractor
 
 
 class NoisyDuelingDQN(nn.Module):
@@ -240,17 +248,18 @@ class NoisyDuelingDQN(nn.Module):
         self._no_compile = True
 
         self.act_dim = act_dim
-        self.feature_layers = _build_feature_layers(
-            obs_dim,
-            hidden_sizes,
-            dropout_rate,
-            layer_norm,
-            activation,
-            use_residual,
-            use_swiglu,
-        )
+        self._feature_extractor_args = {
+            "obs_dim": obs_dim,
+            "hidden_sizes": hidden_sizes,
+            "dropout_rate": dropout_rate,
+            "layer_norm": layer_norm,
+            "activation": activation,
+            "use_residual": use_residual,
+            "use_swiglu": use_swiglu,
+        }
+        self.feature_extractor = FeatureExtractor(**self._feature_extractor_args)
 
-        feature_dim = hidden_sizes[-1]
+        feature_dim = self.feature_extractor.feature_dim
 
         self.value_stream = nn.Sequential(
             nn.Linear(feature_dim, feature_dim // 2),
@@ -271,10 +280,9 @@ class NoisyDuelingDQN(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for layer in self.feature_layers:
-            x = layer(x)
-        value = self.value_stream(x)
-        advantage = self.advantage_stream(x)
+        features = self.feature_extractor(x)
+        value = self.value_stream(features)
+        advantage = self.advantage_stream(features)
         advantage_centered = advantage - advantage.mean(dim=-1, keepdim=True)
         return value + advantage_centered
 
@@ -282,6 +290,11 @@ class NoisyDuelingDQN(nn.Module):
         for module in self.advantage_stream.modules():
             if isinstance(module, NoisyLinear):
                 module.reset_noise()
+
+    def get_feature_extractor(self) -> FeatureExtractor:
+        extractor = FeatureExtractor(**self._feature_extractor_args)
+        extractor.load_state_dict(self.feature_extractor.state_dict())
+        return extractor
 
 
 class DistributionalDQN(nn.Module):
@@ -311,17 +324,18 @@ class DistributionalDQN(nn.Module):
         self.delta_z = (v_max - v_min) / (n_atoms - 1)
         self.support = torch.linspace(v_min, v_max, n_atoms)
 
-        self.feature_layers = _build_feature_layers(
-            obs_dim,
-            hidden_sizes,
-            dropout_rate,
-            layer_norm,
-            activation,
-            use_residual,
-            use_swiglu,
-        )
+        self._feature_extractor_args = {
+            "obs_dim": obs_dim,
+            "hidden_sizes": hidden_sizes,
+            "dropout_rate": dropout_rate,
+            "layer_norm": layer_norm,
+            "activation": activation,
+            "use_residual": use_residual,
+            "use_swiglu": use_swiglu,
+        }
+        self.feature_extractor = FeatureExtractor(**self._feature_extractor_args)
 
-        feature_dim = hidden_sizes[-1]
+        feature_dim = self.feature_extractor.feature_dim
         self.distribution_head = nn.Sequential(
             nn.Linear(feature_dim, feature_dim // 2),
             nn.ReLU(),
@@ -335,10 +349,9 @@ class DistributionalDQN(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        for layer in self.feature_layers:
-            x = layer(x)
-        batch_size = x.size(0)
-        logits = self.distribution_head(x)
+        features = self.feature_extractor(x)
+        batch_size = features.size(0)
+        logits = self.distribution_head(features)
         logits = logits.view(batch_size, self.act_dim, self.n_atoms)
         distributions = F.softmax(logits, dim=-1)
         q_values = torch.sum(distributions * self.support.to(x.device), dim=-1)
@@ -347,6 +360,11 @@ class DistributionalDQN(nn.Module):
     def get_q_values(self, x: torch.Tensor) -> torch.Tensor:
         q_values, _ = self.forward(x)
         return q_values
+
+    def get_feature_extractor(self) -> FeatureExtractor:
+        extractor = FeatureExtractor(**self._feature_extractor_args)
+        extractor.load_state_dict(self.feature_extractor.state_dict())
+        return extractor
 
 
 class DQNN(nn.Module):
@@ -365,6 +383,16 @@ class DQNN(nn.Module):
         super().__init__()
         self._no_compile = True
 
+        self._feature_extractor_args = {
+            "obs_dim": obs_dim,
+            "hidden_sizes": hidden_sizes,
+            "dropout_rate": dropout_rate,
+            "layer_norm": layer_norm,
+            "activation": activation,
+            "use_residual": use_residual,
+            "use_swiglu": use_swiglu,
+        }
+
         if dueling:
             self.net = DuelingDQN(
                 obs_dim,
@@ -376,27 +404,26 @@ class DQNN(nn.Module):
                 use_residual=use_residual,
                 use_swiglu=use_swiglu,
             )
+            self._feature_extractor = None
         else:
-            layers = []
-            prev_dim = obs_dim
-            for size in hidden_sizes:
-                layers.append(
-                    ResidualLinearBlock(
-                        prev_dim,
-                        size,
-                        activation=activation,
-                        dropout=dropout_rate,
-                        layer_norm=layer_norm,
-                        residual=use_residual,
-                        use_swiglu=use_swiglu,
-                    )
-                )
-                prev_dim = size
-            output_layer = nn.Linear(prev_dim, act_dim)
-            nn.init.xavier_uniform_(output_layer.weight)
-            nn.init.zeros_(output_layer.bias)
-            layers.append(output_layer)
-            self.net = nn.Sequential(*layers)
+            self._feature_extractor = FeatureExtractor(**self._feature_extractor_args)
+            head = nn.Linear(self._feature_extractor.feature_dim, act_dim)
+            nn.init.xavier_uniform_(head.weight)
+            nn.init.zeros_(head.bias)
+            self.head = head
+            self.net = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        if self.net is not None:
+            return self.net(x)
+        features = self._feature_extractor(x)
+        return self.head(features)
+
+    def get_feature_extractor(self) -> Optional[FeatureExtractor]:
+        if self.net is not None and hasattr(self.net, "get_feature_extractor"):
+            return self.net.get_feature_extractor()
+        if self._feature_extractor is not None:
+            extractor = FeatureExtractor(**self._feature_extractor_args)
+            extractor.load_state_dict(self._feature_extractor.state_dict())
+            return extractor
+        return None

@@ -233,6 +233,12 @@ class SacTrainer:
                         pickle.dump(agent.replay_buffer, f, protocol=pickle.HIGHEST_PROTOCOL)
                 except Exception:
                     pass
+                # Сохраняем энкодер
+                if getattr(self.cfg, "encoder_path", None):
+                    try:
+                        agent.save_encoder(self.cfg.encoder_path)
+                    except Exception:
+                        pass
 
             if self.episode_callback:
                 try:
@@ -360,7 +366,12 @@ class SacTrainer:
     def _save_results(self, env, stats: SacTrainingStats, agent: SacAgent) -> None:
         run_dir = Path(self.cfg.result_dir)
         last_model_path = run_dir / "last_model.pth"
-        agent.save(self.cfg.model_path)
+        try:
+            agent.save(self.cfg.model_path)
+            if getattr(self.cfg, "encoder_path", None):
+                agent.save_encoder(self.cfg.encoder_path)
+        except Exception:
+            pass
         if os.path.exists(self.cfg.model_path):
             try:
                 import shutil as _sh
@@ -477,8 +488,11 @@ class SacTrainer:
 
         architecture = {
             "actor": _architecture_summary(getattr(agent, "actor", None)) if hasattr(agent, "actor") else {},
-            "critic1": _architecture_summary(getattr(agent, "critic1", None)) if hasattr(agent, "critic1") else {},
-            "critic2": _architecture_summary(getattr(agent, "critic2", None)) if hasattr(agent, "critic2") else {},
+            "critic": _architecture_summary(getattr(agent, "critic", None)) if hasattr(agent, "critic") else {},
+            "target_critic": _architecture_summary(getattr(agent, "target_critic", None)) if hasattr(agent, "target_critic") else {},
+            "actor_encoder": _architecture_summary(getattr(agent, "actor_encoder", None)) if hasattr(agent, "actor_encoder") else {},
+            "critic_encoder": _architecture_summary(getattr(agent, "critic_encoder", None)) if hasattr(agent, "critic_encoder") else {},
+            "target_encoder": _architecture_summary(getattr(agent, "target_encoder", None)) if hasattr(agent, "target_encoder") else {},
         }
 
         total_training_time = None
@@ -580,6 +594,8 @@ class SacTrainer:
                 "replay": "replay.pkl" if replay_exists else None,
                 "result": "train_result.pkl",
                 "last_model": "last_model.pth" if os.path.exists(run_dir / "last_model.pth") else None,
+                "nan_critic_grad_count": self.cfg.nan_critic_grad_count,
+                "nan_alpha_count": self.cfg.nan_alpha_count,
             },
             "metrics": training_results["metrics"],
         }
@@ -689,6 +705,8 @@ class SacTrainer:
             "winrate": float(winrate),
             "avg_roi": float(roi),
             "max_drawdown": float(max_dd),
+            "nan_critic_grad_count": self.cfg.nan_critic_grad_count,
+            "nan_alpha_count": self.cfg.nan_alpha_count,
         }
 
     def _set_global_seed(self, seed: Optional[int]) -> None:

@@ -37,7 +37,7 @@ class SacConfig:
     gamma: float = 0.99
     tau: float = 5e-3  # soft update
     lr_actor: float = 3e-4
-    lr_critic: float = 3e-4
+    lr_critic: float = 1e-4 # Уменьшено по запросу
     lr_alpha: float = 3e-4
     target_entropy_scale: float = 1.0
 
@@ -57,7 +57,7 @@ class SacConfig:
     # === Обучение ===
     start_learning_after: int = 20_000 # Увеличено с 10_000 до 20_000
     target_update_interval: int = 1
-    max_grad_norm: float | None = 1.0
+    max_grad_norm: float | None = 1.0 # Включено по запросу
     min_lr_actor: float = 1e-6
     min_lr_critic: float = 1e-6
     min_lr_alpha: float = 1e-6
@@ -67,6 +67,8 @@ class SacConfig:
     grad_fail_clear_buffer: bool = True
     grad_fail_log_details: bool = True
     clear_buffer_on_nan: bool = False
+    nan_critic_grad_count: int = 0  # Счетчик NaN в градиентах критика
+    nan_alpha_count: int = 0      # Счетчик NaN в альфе
     use_amp: bool = True
     
     # === Обработка экстремальных входов ===
@@ -81,6 +83,7 @@ class SacConfig:
     # === Логирование и пути ===
     run_name: str = field(default_factory=lambda: f"sac-{datetime.utcnow():%Y%m%d-%H%M%S}")
     model_path: str = "sac/models/agent.pt"
+    encoder_path: str = "sac/models/encoder_only.pth"
     replay_buffer_path: str = "sac/result/replay_buffer.pt"
     result_dir: str = "sac/result"
 
@@ -89,7 +92,7 @@ class SacConfig:
     normalize_rewards: bool = False
     use_adaptive_risk: bool = True
     train_episodes: int = 1000
-    max_episode_steps: int | None = None
+    max_episode_steps: int | None = 1000 # Ограничено по запросу
     lookback_window: int = 60
 
     # === Валидация ===
@@ -169,6 +172,7 @@ class SacConfig:
 
         self.result_dir = run_dir
         self.model_path = os.path.join(run_dir, "model.pth")
+        self.encoder_path = os.path.join(run_dir, "encoder_only.pth")
         self.replay_buffer_path = os.path.join(run_dir, "replay.pkl")
 
     def update_result_paths(self) -> None:

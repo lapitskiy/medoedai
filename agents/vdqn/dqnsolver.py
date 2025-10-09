@@ -12,6 +12,7 @@ from pickle import HIGHEST_PROTOCOL
 import math
 from collections import deque
 import heapq
+from pathlib import Path
 
 # Ваши импорты
 from agents.vdqn.cfg.vconfig import vDqnConfig
@@ -626,6 +627,21 @@ class DQNSolver:
             except Exception:
                 pass
         torch.save(payload, self.cfg.model_path)
+        # Сохраняем энкодер отдельно
+        encoder_state = {}
+        extractor = None
+        if hasattr(self.model, 'get_feature_extractor'):
+            extractor = self.model.get_feature_extractor()
+        if extractor is not None:
+            encoder_state['encoder'] = extractor.state_dict()
+        if hasattr(self.target_model, 'get_feature_extractor'):
+            target_extractor = self.target_model.get_feature_extractor()
+            if target_extractor is not None:
+                encoder_state['target_encoder'] = target_extractor.state_dict()
+        if encoder_state and getattr(self.cfg, 'encoder_path', None):
+            encoder_path = Path(self.cfg.encoder_path)
+            encoder_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(encoder_state, encoder_path)
         
         # Сохраняем replay buffer
         with open(self.cfg.buffer_path, 'wb') as f:
@@ -636,6 +652,20 @@ class DQNSolver:
 
     def load_model(self):
         """Загружает модель с проверкой совместимости архитектуры"""
+        if os.path.exists(self.cfg.encoder_path):
+            try:
+                encoder_state = torch.load(self.cfg.encoder_path, map_location=self.cfg.device)
+                if 'encoder' in encoder_state and hasattr(self.model, 'get_feature_extractor'):
+                    extractor = self.model.get_feature_extractor()
+                    if extractor is not None:
+                        extractor.load_state_dict(encoder_state['encoder'])
+                if 'target_encoder' in encoder_state and hasattr(self.target_model, 'get_feature_extractor'):
+                    target_extractor = self.target_model.get_feature_extractor()
+                    if target_extractor is not None:
+                        target_extractor.load_state_dict(encoder_state['target_encoder'])
+            except Exception as exc:
+                print(f"⚠️ Не удалось загрузить энкодер: {exc}")
+
         if os.path.exists(self.cfg.model_path):
             # Явно логируем путь к модели и буферу перед загрузкой
             try:
@@ -789,14 +819,29 @@ class DQNSolver:
             else:
                 cleaned_target_state[key] = value
         
-        torch.save({
+        base_payload = {
             'model_state_dict': cleaned_model_state,
             'target_model_state_dict': cleaned_target_state,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'epsilon': self.epsilon,
             'cfg': self.cfg
-        }, self.cfg.model_path)
+        }
+
+        torch.save(base_payload, self.cfg.model_path)
+
+        encoder_state = {}
+        extractor = None
+        if hasattr(self.model, 'get_feature_extractor'):
+            extractor = self.model.get_feature_extractor()
+        if extractor is not None:
+            encoder_state['encoder'] = extractor.state_dict()
+        if hasattr(self.target_model, 'get_feature_extractor'):
+            target_extractor = self.target_model.get_feature_extractor()
+            if target_extractor is not None:
+                encoder_state['target_encoder'] = target_extractor.state_dict()
+        if encoder_state and getattr(self.cfg, 'encoder_path', None):
+            torch.save(encoder_state, self.cfg.encoder_path)
         
         print(f"✅ Модель сохранена в {self.cfg.model_path}")
         

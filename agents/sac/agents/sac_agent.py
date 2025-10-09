@@ -10,37 +10,13 @@ from typing import Dict, Optional, Tuple
 import torch # type: ignore
 import torch.nn.functional as F # type: ignore
 from torch import nn, optim # type: ignore
+from pathlib import Path
 
 from .config import SacConfig
 from .networks import SacCategoricalActor, SacDoubleCritic
 from .replay_buffer import SacReplayBuffer
+from agents.vdqn.feature_extractor import FeatureExtractor
 
-
-@dataclass
-class SacAgentState:
-    actor: nn.Module
-    critic: nn.Module
-    target_critic: nn.Module
-    log_alpha: torch.Tensor
-    alpha_optimizer: optim.Optimizer
-
-
-def _decay_optimizer_lr(self, optimizer: optim.Optimizer, which: str) -> None:
-    decay = self.cfg.grad_fail_lr_decay
-    if decay <= 0 or decay >= 1:
-        return
-    for param_group in optimizer.param_groups:
-        old_lr = param_group.get("lr", None)
-        if old_lr is None:
-            continue
-        new_lr = max(old_lr * decay, getattr(self.cfg, f"min_lr_{which}", old_lr))
-        param_group["lr"] = new_lr
-        logging.warning(
-            "⚠️ [SacAgent] %s lr decayed from %.3e to %.3e",
-            which,
-            old_lr,
-            new_lr,
-        )
 
 class SacAgent:
     def __init__(self, observation_dim: int, action_dim: int, cfg: Optional[SacConfig] = None) -> None:
@@ -58,24 +34,62 @@ class SacAgent:
             print("🧹 [SacAgent] Очищен кэш CUDA перед созданием буфера")
         
         # Инициализация актора и критика
+        actor_encoder = FeatureExtractor(
+            obs_dim=observation_dim,
+            hidden_sizes=self.cfg.hidden_sizes,
+            dropout_rate=self.cfg.dropout_rate,
+            layer_norm=self.cfg.layer_norm,
+            activation=self.cfg.activation,
+            use_residual=self.cfg.use_residual_blocks,
+            use_swigлу=self.cfg.use_swigлу_gate,
+        ).to(self.device)
+
+        critic_encoder = FeatureExtractor(
+            obs_dim=observation_dim,
+            hidden_sizes=self.cfg.hidden_sizes,
+            dropout_rate=self.cfg.dropout_rate,
+            layer_norm=self.cfg.layer_norm,
+            activation=self.cfg.activation,
+            use_residual=self.cfg.use_residual_blocks,
+            use_swigлу=self.cfg.use_swigлу_gate,
+        ).to(self.device)
+
+        target_encoder = FeatureExtractor(
+            obs_dim=observation_dim,
+            hidden_sizes=self.cfg.hidden_sizes,
+            dropout_rate=self.cfg.dropout_rate,
+            layer_norm=self.cfg.layer_norm,
+            activation=self.cfg.activation,
+            use_residual=self.cfg.use_residual_blocks,
+            use_swigлу=self.cfg.use_swigлу_gate,
+        ).to(self.device)
+
         self.actor = SacCategoricalActor(
             obs_dim=observation_dim,
             action_dim=action_dim,
             cfg=self.cfg,
+            encoder=actor_encoder,
         ).to(self.device)
         
         self.critic = SacDoubleCritic(
             obs_dim=observation_dim,
             action_dim=action_dim,
             cfg=self.cfg,
+            encoder_q1=critic_encoder,
+            encoder_q2=critic_encoder,
         ).to(self.device)
         
         self.target_critic = SacDoubleCritic(
             obs_dim=observation_dim,
             action_dim=action_dim,
             cfg=self.cfg,
+            encoder_q1=target_encoder,
+            encoder_q2=target_encoder,
         ).to(self.device)
         self.target_critic.load_state_dict(self.critic.state_dict())
+        self.actor_encoder = actor_encoder
+        self.critic_encoder = critic_encoder
+        self.target_encoder = target_encoder
         self.target_entropy = -torch.log(torch.tensor(1.0 / action_dim, device=self.device)) * self.cfg.target_entropy_scale
 
         self.actor_optimizer = optim.AdamW(self.actor.parameters(), lr=self.cfg.lr_actor)
@@ -109,6 +123,23 @@ class SacAgent:
         )
 
         self.total_steps = 0
+
+    def _decay_optimizer_lr(self, optimizer: optim.Optimizer, which: str) -> None:
+        decay = self.cfg.grad_fail_lr_decay
+        if decay <= 0 or decay >= 1:
+            return
+        for param_group in optimizer.param_groups:
+            old_lr = param_group.get("lr", None)
+            if old_lr is None:
+                continue
+            new_lr = max(old_lr * decay, getattr(self.cfg, f"min_lr_{which}", old_lr))
+            param_group["lr"] = new_lr
+            logging.warning(
+                "⚠️ [SacAgent] %s lr decayed from %.3e to %.3e",
+                which,
+                old_lr,
+                new_lr,
+            )
 
     # === Action selection ===
     def act(self, obs: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
@@ -246,6 +277,7 @@ class SacAgent:
 
             # Проверки на NaN в alpha и промежуточных расчетах
             if not torch.isfinite(alpha):
+                self.cfg.nan_alpha_count += 1
                 logging.warning("⚠️ [SacAgent] alpha не конечен (NaN/Inf). Пропускаем обновление.")
                 return {}
 
@@ -332,8 +364,9 @@ class SacAgent:
         # Проверка градиентов критика на NaN/Inf
         bad_grad_critic = any(
             (p.grad is not None) and (not torch.all(torch.isfinite(p.grad))) for p in self.critic.parameters()
-        )
-        if bad_grad_critic:
+        ) # type: ignore
+        if bad_grad_critic: # type: ignore
+            self.cfg.nan_critic_grad_count += 1
             finite_grad_squares = [
                 torch.sum(p.grad.detach() ** 2).item()
                 for p in self.critic.parameters()
@@ -517,6 +550,8 @@ class SacAgent:
             "entropy": avg_entropy,
             "max_actor_grad": max_actor_grad,
             "max_critic_grad": max_critic_grad,
+            "nan_alpha_count": self.cfg.nan_alpha_count,
+            "nan_critic_grad_count": self.cfg.nan_critic_grad_count,
         }
 
     def _soft_update(self, source: nn.Module, target: nn.Module) -> None:
@@ -566,21 +601,62 @@ class SacAgent:
         }
 
     def save(self, path: str) -> None:
-        torch.save(
-            {
-                "actor": self.actor.state_dict(),
-                "critic": self.critic.state_dict(),
-                "target_critic": self.target_critic.state_dict(),
-                "log_alpha": self.log_alpha.detach(),
-            },
-            path,
-        )
+        payload = {
+            "actor": self.actor.state_dict(),
+            "critic": self.critic.state_dict(),
+            "target_critic": self.target_critic.state_dict(),
+            "actor_encoder": self.actor_encoder.state_dict(),
+            "critic_encoder": self.critic_encoder.state_dict(),
+            "target_encoder": self.target_encoder.state_dict(),
+            "log_alpha": self.log_alpha.detach(),
+            "nan_critic_grad_count": self.cfg.nan_critic_grad_count,
+            "nan_alpha_count": self.cfg.nan_alpha_count,
+        }
+        torch.save(payload, path)
+
+        if getattr(self.cfg, "encoder_path", None):
+            print(f"💾 [SacAgent] Сохраняю энкодер в {self.cfg.encoder_path}")
+            self.save_encoder(self.cfg.encoder_path)
 
     def load(self, path: str) -> None:
         state = torch.load(path, map_location=self.device)
         self.actor.load_state_dict(state["actor"])
         self.critic.load_state_dict(state["critic"])
         self.target_critic.load_state_dict(state["target_critic"])
+        if "actor_encoder" in state:
+            self.actor_encoder.load_state_dict(state["actor_encoder"])
+        if "critic_encoder" in state:
+            self.critic_encoder.load_state_dict(state["critic_encoder"])
+        if "target_encoder" in state:
+            self.target_encoder.load_state_dict(state["target_encoder"])
         self.log_alpha = state["log_alpha"].to(self.device).requires_grad_()
+        if "nan_critic_grad_count" in state:
+            self.cfg.nan_critic_grad_count = state["nan_critic_grad_count"]
+        if "nan_alpha_count" in state:
+            self.cfg.nan_alpha_count = state["nan_alpha_count"]
+
+        if getattr(self.cfg, "encoder_path", None) and Path(self.cfg.encoder_path).exists():
+            self._load_encoder(self.cfg.encoder_path)
+
+    def save_encoder(self, path: str) -> None:
+        encoder_dir = Path(path).parent
+        encoder_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "actor_encoder": self.actor_encoder.state_dict(),
+                "critic_encoder": self.critic_encoder.state_dict(),
+                "target_encoder": self.target_encoder.state_dict(),
+            },
+            path,
+        )
+
+    def _load_encoder(self, path: str) -> None:
+        encoder_state = torch.load(path, map_location=self.device)
+        if "actor_encoder" in encoder_state:
+            self.actor_encoder.load_state_dict(encoder_state["actor_encoder"])
+        if "critic_encoder" in encoder_state:
+            self.critic_encoder.load_state_dict(encoder_state["critic_encoder"])
+        if "target_encoder" in encoder_state:
+            self.target_encoder.load_state_dict(encoder_state["target_encoder"])
 
 
