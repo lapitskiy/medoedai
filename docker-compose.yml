@@ -46,19 +46,21 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       PYTHONDONTWRITEBYTECODE: "1"
       FLASK_DEBUG: "False"
+      PYTHONWARNINGS: "ignore::DeprecationWarning"
     env_file:
       - .env
     volumes:
       - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock # Для доступа к Docker API
     working_dir: /workspace
     command: >
       sh -c "
         echo '🧹 Очищаю Redis перед запуском...' &&
-        python utils/redis/clear_redis.py &&
+        python -W ignore::DeprecationWarning utils/redis/clear_redis.py &&
         echo '🧹 Очищаю старые задачи Celery...' &&
-        python utils/redis/cleanup_celery_tasks.py &&
+        python -W ignore::DeprecationWarning utils/redis/cleanup_celery_tasks.py &&
         echo '✅ Redis готов, запускаю Flask...' &&
-        python main.py
+        python -W ignore::DeprecationWarning main.py
       "
     # CPU-only по умолчанию. GPU добавляется через docker-compose.gpu.yml
 
@@ -79,6 +81,7 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       DISABLE_TORCH_COMPILE: "true"   # Отключить torch.compile для Tesla P100
       FORCE_DISABLE_TORCH_COMPILE: "true"  # Дополнительная защита
+      PYTHONWARNINGS: "ignore::DeprecationWarning"
       # Параллелизм Celery (обычные очереди)
       CELERY_POOL: prefork
       CELERY_CONCURRENCY: "6"
@@ -95,7 +98,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /workspace
     # Исключаем очередь train из общего воркера, чтобы не конкурировать за CPU
-    command: ["sh","-lc","celery -A tasks worker -Q celery -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-6} --loglevel=info"]
+    command: ["sh","-lc","python -W ignore::DeprecationWarning -m celery -A tasks worker -Q celery -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-6} --loglevel=info"]
     # CPU-only воркер: GPU не требуется
 
   # Специализированный воркер для торговли
@@ -116,6 +119,7 @@ services:
       BYBIT_1_SECRET_KEY: ${BYBIT_1_SECRET_KEY:-}
       TRADING_MODE: ${TRADING_MODE:-sandbox}
       PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONWARNINGS: "ignore::DeprecationWarning"
       SERVING_URL: http://serving:8000/predict_ensemble
     env_file:
       - .env
@@ -127,7 +131,7 @@ services:
         echo '🧹 Очищаю Redis-блокировки для торговых агентов...' &&
         redis-cli -h redis -p 6379 keys 'trading:agent_lock:*' | xargs -r redis-cli -h redis -p 6379 DEL &&
         echo '✅ Redis-блокировки удалены, запускаю Celery-воркер...' &&
-        celery -A tasks worker -Q trade -P prefork -c 8 --loglevel=info
+        python -W ignore::DeprecationWarning -m celery -A tasks worker -Q trade -P prefork -c 8 --loglevel=info
       "
 
   # Специализированный воркер для обучения, использует все CPU ядра
@@ -159,11 +163,17 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       DISABLE_TORCH_COMPILE: "true"
       FORCE_DISABLE_TORCH_COMPILE: "true"
+      PYTHONWARNINGS: "ignore::DeprecationWarning"
       NVIDIA_VISIBLE_DEVICES: ${USE_GPU:-all}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       CELERY_POOL: solo
       CELERY_CONCURRENCY: "1"
       TRAIN_CPU_FRACTION: "0.9"
+      # ЖЁСТКИЕ лимиты потоков научных либ для SubprocVectorEnv
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      TORCH_NUM_THREADS: "1"
       OMP_SCHEDULE: "dynamic"
       MKL_DYNAMIC: "true"
       MKL_INTERFACE_LAYER: "LP64"
@@ -180,16 +190,17 @@ services:
         (redis-cli -h redis -p 6379 DEL train >/dev/null 2>&1 || true) &&
         (redis-cli -h redis -p 6379 KEYS '_kombu.binding.train*' | xargs -r -n 1 redis-cli -h redis -p 6379 DEL >/dev/null 2>&1 || true) &&
         echo '✅ Очередь train очищена' &&
-        NPROC=$$(nproc); THREADS=$$(python -c 'import os,math; n=os.cpu_count() or 1; f=float(os.environ.get("TRAIN_CPU_FRACTION", "0.8")); print(max(1,int(n*f)))'); export OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$THREADS} MKL_NUM_THREADS=$${MKL_NUM_THREADS:-$$THREADS} TORCH_NUM_THREADS=$${TORCH_NUM_THREADS:-$$THREADS} OMP_SCHEDULE=$${OMP_SCHEDULE:-dynamic} MKL_DYNAMIC=$${MKL_DYNAMIC:-true} MKL_INTERFACE_LAYER=$${MKL_INTERFACE_LAYER:-LP64}; echo '🚀 CPU/GPU Optimization: Using '"$$THREADS"'/'"$$NPROC"' threads (OMP='"$$OMP_NUM_THREADS"', MKL='"$$MKL_NUM_THREADS"', TORCH='"$$TORCH_NUM_THREADS"')'; exec celery -A tasks worker -Q train -P $${CELERY_POOL:-prefork} -c $${CELERY_CONCURRENCY:-1} --loglevel=info
+        NPROC=$$(nproc); THREADS=$$(python -c 'import os,math; n=os.cpu_count() or 1; f=float(os.environ.get("TRAIN_CPU_FRACTION", "0.8")); print(max(1,int(n*f)))'); export OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$THREADS} MKL_NUM_THREADS=$${MKL_NUM_THREADS:-$$THREADS} TORCH_NUM_THREADS=$${TORCH_NUM_THREADS:-$$THREADS} OMP_SCHEDULE=$${OMP_SCHEDULE:-dynamic} MKL_DYNAMIC=$${MKL_DYNAMIC:-true} MKL_INTERFACE_LAYER=$${MKL_INTERFACE_LAYER:-LP64}; echo '🚀 CPU/GPU Optimization: Using '"$$THREADS"'/'"$$NPROC"' threads (OMP='"$$OMP_NUM_THREADS"', MKL='"$$MKL_NUM_THREADS"', TORCH='"$$TORCH_NUM_THREADS"')'; exec python -W ignore::DeprecationWarning -m celery -A tasks worker -Q train -P $${CELERY_POOL:-prefork} -c $${CELERY_CONCURRENCY:-1} --loglevel=info
       "
   celery-beat:
     build: .
     container_name: celery-beat
-    command: ["celery", "-A", "tasks", "beat", "--loglevel=info"]
+    command: ["python", "-W", "ignore::DeprecationWarning", "-m", "celery", "-A", "tasks", "beat", "--loglevel=info"]
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       ENABLE_TRADING_BEAT: "1"
+      PYTHONWARNINGS: "ignore::DeprecationWarning"
     env_file:
       - .env      
     volumes:
@@ -215,6 +226,7 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       PYTHONDONTWRITEBYTECODE: "1"
       SERVING_URL: http://serving:8000/predict_ensemble
+      PYTHONWARNINGS: "ignore::DeprecationWarning"
       # ограничим потоки у научных либ, OOS CPU-bound
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
@@ -225,7 +237,7 @@ services:
     volumes:
       - .:/workspace
     working_dir: /workspace
-    command: ["sh","-lc","celery -A tasks worker -Q oos -P prefork -c 2 --loglevel=info"]
+    command: ["sh","-lc","python -W ignore::DeprecationWarning -m celery -A tasks worker -Q oos -P prefork -c 2 --loglevel=info"]
 
   serving:
     build:

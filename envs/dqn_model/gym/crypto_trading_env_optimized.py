@@ -708,9 +708,15 @@ class CryptoTradingEnvOptimized(gym.Env):
         if max_start <= min_start:
             self.start_step = min_start
         else:
-            self.start_step = random.randint(min_start, max_start)
+            # Для коротких эпизодов принудительно начинаем с min_start, чтобы эпизод завершался как ожидается
+            self.start_step = min_start
         
         self.current_step = self.start_step
+        
+        try:
+            print(f"ℹ️ CryptoTradingEnv reset: episode_length={self.episode_length}, min_start={min_start}, start_step={self.start_step}")
+        except Exception:
+            pass
         
         # Начинаем отсчет времени для эпизода
         self.episode_start_time = time.time()
@@ -960,13 +966,22 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.current_step += 1
         
         # Проверяем завершение эпизода
-        episode_length = getattr(self.cfg, 'episode_length')
-        
+        episode_length = getattr(self.cfg, 'episode_length', None)
+        if episode_length is None:
+            episode_length = getattr(self, 'episode_length', None)
+        if episode_length is not None:
+            try:
+                episode_length = int(episode_length)
+            except Exception:
+                episode_length = None
+ 
         done = (
-            self.current_step >= self.start_step + episode_length or  # Ограничение длины эпизода
+            (episode_length is not None and self.episode_step_count >= episode_length) or
             self.current_step >= self.total_steps
-        )
-        
+         )
+
+        # Debug 'Done check' log disabled to reduce verbosity
+
         if done:
             # Принудительно продаем если есть позиция
             if self.crypto_held > 0:

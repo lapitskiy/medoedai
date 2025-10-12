@@ -413,11 +413,30 @@ class DQNN(nn.Module):
             self.head = head
             self.net = None
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x, state=None, info=None):
+        # Приводим вход к torch.float32 на том же устройстве, что и модель
+        device = next(self.parameters()).device if any(True for _ in self.parameters()) else torch.device('cpu')
+        # Распакуем возможные структуры из Tianshou (dict/Batch)
+        if isinstance(x, dict):
+            x = x.get('obs', x.get('obs_next', next(iter(x.values()))))
+        # Приведение типов/устройства
+        if isinstance(x, np.ndarray):
+            x = torch.from_numpy(x).to(device=device, dtype=torch.float32)
+        elif isinstance(x, (list, tuple)):
+            x = torch.as_tensor(x, dtype=torch.float32, device=device)
+        elif isinstance(x, torch.Tensor):
+            if x.dtype != torch.float32:
+                x = x.float()
+            if x.device != device:
+                x = x.to(device)
+        else:
+            x = torch.as_tensor(x, dtype=torch.float32, device=device)
         if self.net is not None:
-            return self.net(x)
-        features = self._feature_extractor(x)
-        return self.head(features)
+            logits = self.net(x)
+        else:
+            features = self._feature_extractor(x)
+            logits = self.head(features)
+        return logits, state
 
     def get_feature_extractor(self) -> Optional[FeatureExtractor]:
         if self.net is not None and hasattr(self.net, "get_feature_extractor"):

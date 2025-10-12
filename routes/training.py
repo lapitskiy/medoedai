@@ -111,7 +111,9 @@ def train_dqn_symbol_route():
         seed = _rnd.randint(1, 2**31 - 1)
         logger.info(f"[train_dqn_symbol] generated random seed={seed}")
 
-    task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length}, queue="train")
+    # Переключаемся на Tianshou по умолчанию (engine='ts')
+    engine = (data.get('engine') or request.args.get('engine') or 'ts').lower()
+    task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length, 'engine': engine}, queue="train")
     logger.info(f"/train_dqn_symbol queued symbol={symbol} queue=train task_id={task.id}")
     # Сохраняем task_id для отображения на главной и отметку per-symbol
     try:

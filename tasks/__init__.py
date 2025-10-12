@@ -1,3 +1,4 @@
+import warnings
 import time
 import pandas as pd
 import json
@@ -9,6 +10,10 @@ from celery import Celery
 from kombu import Queue
 from celery.schedules import crontab
 from utils.config_loader import get_config_value
+
+# Подавляем DeprecationWarning от distutils, которые могут исходить из setuptools
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*distutils.*")
+warnings.filterwarnings("ignore", category=UserWarning, message=".*distutils.*")
 
 # Инициализируем Celery
 celery = Celery(

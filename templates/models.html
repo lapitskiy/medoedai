@@ -80,14 +80,14 @@
                     <input id="trainSeedInput" class="form-control" type="number" min="1" step="1" placeholder="например, 42">
                 </div>
                 <div class="button-group">
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BTCUSDT')">🚀 Обучить BTC</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('TONUSDT')">🚀 Обучить TON</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ETHUSDT')">🚀 Обучить ETH</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('SOLUSDT')">🚀 Обучить SOL</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ADAUSDT')">🚀 Обучить ADA</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BNBUSDT')">🚀 Обучить BNB</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('XMRUSDT')">🚀 Обучить XMR</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('XRPUSDT')">🚀 Обучить XRP</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BTCUSDT', 'ts')">🚀 Обучить BTC</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('TONUSDT', 'ts')">🚀 Обучить TON</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ETHUSDT', 'ts')">🚀 Обучить ETH</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('SOLUSDT', 'ts')">🚀 Обучить SOL</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ADAUSDT', 'ts')">🚀 Обучить ADA</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BNBUSDT', 'ts')">🚀 Обучить BNB</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('XMRUSDT', 'ts')">🚀 Обучить XMR</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('XRPUSDT', 'ts')">🚀 Обучить XRP</button>
                     <button class="btn btn-success" onclick="startTrainingMulti()">🌟 Обучить мультивалютную</button>
                 </div>
                 <div id="trainStatus"></div>
@@ -448,7 +448,7 @@ P/L Ratio: ${plr}
         }
 
         // Запуск обучения с выбранным количеством эпизодов
-        async function startTrainingForSymbol(symbol) {
+        async function startTrainingForSymbol(symbol, engine='ts') {
             const episodes = document.getElementById('episodesInput').value || 1000;
             const episodeLength = document.getElementById('episodeLengthInput').value || 2000;
             const seedVal = (document.getElementById('trainSeedInput')?.value || '').trim();
@@ -458,7 +458,7 @@ P/L Ratio: ${plr}
                 const resp = await fetch('/training/train_dqn_symbol', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                    body: JSON.stringify({ symbol, episodes, episode_length: episodeLength, seed: seedVal })
+                    body: JSON.stringify({ symbol, episodes, episode_length: episodeLength, seed: seedVal, engine })
                 });
                 const data = await resp.json().catch(() => null);
                 if (data && data.success) {

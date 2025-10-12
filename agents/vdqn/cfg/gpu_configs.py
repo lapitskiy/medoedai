@@ -21,6 +21,7 @@ class GPUConfig:
     use_gpu_storage: bool
     learning_rate: float
     description: str
+    use_torch_compile: bool = False
 
 # Конфигурации для разных GPU
 GPU_CONFIGS: Dict[str, GPUConfig] = {
@@ -35,7 +36,8 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         use_amp=True,
         use_gpu_storage=True,  # Включаем для стабильности
         learning_rate=0.0002,  # Уменьшаем для стабильности с большим батчем
-        description="Максимальная скорость эпизодов для Tesla P100 (используем все CPU ядра)"
+        description="Максимальная скорость эпизодов для Tesla P100 (используем все CPU ядра)",
+        use_torch_compile=False
     ),
     
     # Tesla V100 - еще быстрее с Tensor Cores
@@ -49,7 +51,8 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         use_amp=True,
         use_gpu_storage=True,
         learning_rate=0.0001,
-        description="Максимальная производительность для Tesla V100 с Tensor Cores"
+        description="Максимальная производительность для Tesla V100 с Tensor Cores",
+        use_torch_compile=True
     ),
     
     # GTX 1660 Super - оптимальная для 6GB VRAM
@@ -63,7 +66,8 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         use_amp=True,
         use_gpu_storage=True,  # Включаем GPU storage для синхронизации устройств
         learning_rate=0.0001,
-        description="Оптимальная конфигурация для GTX 1660 Super"
+        description="Оптимальная конфигурация для GTX 1660 Super",
+        use_torch_compile=True
     ),
     
     # RTX 3080 - высокопроизводительная карта
@@ -77,7 +81,8 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         use_amp=True,
         use_gpu_storage=True,
         learning_rate=0.0001,
-        description="Высокая производительность для RTX 3080"
+        description="Высокая производительность для RTX 3080",
+        use_torch_compile=True
     ),
     
     # RTX 4090 - топовая карта
@@ -91,7 +96,8 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         use_amp=True,
         use_gpu_storage=True,
         learning_rate=0.0001,
-        description="Максимальная производительность для RTX 4090"
+        description="Максимальная производительность для RTX 4090",
+        use_torch_compile=True
     ),
     
     # CPU fallback
@@ -105,7 +111,8 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         use_amp=False,
         use_gpu_storage=False,
         learning_rate=0.0001,
-        description="Fallback конфигурация для CPU"
+        description="Fallback конфигурация для CPU",
+        use_torch_compile=False
     )
 }
 
@@ -181,6 +188,7 @@ def get_gpu_config(gpu_key: str = None) -> GPUConfig:
     print(f"🔄 Train repeats: {config.train_repeats}")
     print(f"⚡ AMP: {config.use_amp}")
     print(f"💾 GPU storage: {config.use_gpu_storage}")
+    print(f"🧩 torch.compile: {config.use_torch_compile}")
     
     return config
 
@@ -195,7 +203,8 @@ def apply_gpu_config_to_vconfig(gpu_config: GPUConfig) -> Dict[str, Any]:
         'train_repeats': gpu_config.train_repeats,
         'use_amp': gpu_config.use_amp,
         'use_gpu_storage': gpu_config.use_gpu_storage,
-        'learning_rate': gpu_config.learning_rate
+        'learning_rate': gpu_config.learning_rate,
+        'use_torch_compile': gpu_config.use_torch_compile
     }
 
 # Функция для быстрого получения настроек

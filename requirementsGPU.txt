@@ -22,7 +22,7 @@ dill==0.3.8
 joblib==1.4.2
 
 # Web & Task Queue
-celery
+celery==5.3.6
 flask
 redis
 fastapi==0.111.0
@@ -87,7 +87,7 @@ python-version==0.0.2
 pytz==2024.1
 requests-oauthlib==2.0.0
 rsa==4.9
-scikeras==0.10.0
+scikeras>=0.13.0
 six==1.16.0
 termcolor==2.4.0
 threadpoolctl==3.5.0
@@ -96,3 +96,6 @@ tzdata==2024.1
 urllib3==2.2.1
 Werkzeug==3.0.3
 wrapt==1.16.0
+tianshou>=1.2.0,<2
+setuptools>=70
+

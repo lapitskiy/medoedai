@@ -21,6 +21,8 @@ from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOpti
 from envs.dqn_model.gym.indicators_optimized import preprocess_dataframes # type: ignore
 from utils.path import list_symbol_dirs, resolve_run_dir, resolve_symbol_dir
 from tasks import celery # type: ignore
+from agents.vdqn.tianshou_train import make_env_fn, TradingEnvWrapper
+from agents.vdqn.dqnn import DQNN
 
 oos_bp = Blueprint('oos', __name__)
 
@@ -1227,6 +1229,135 @@ def oos_test_model():
             result_payload['ohlcv_data'] = []
 
         return jsonify(result_payload)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@oos_bp.post('/oos_ts_test_model')
+def oos_ts_test_model():
+    try:
+        data = request.get_json(silent=True) or {}
+        filename = (data.get('filename') or '').strip()
+        code = (data.get('code') or '').strip()
+        days = int(data.get('days') or 30)
+        episode_length = int(data.get('episode_length') or 500)
+
+        # Определяем символ/путь аналогично обычному OOS
+        symbol = 'BTCUSDT'
+        run_dir = None
+        if filename:
+            p = Path(filename.replace('\\','/')).resolve()
+            if p.exists() and p.is_file() and p.name == 'model.pth' and 'runs' in p.parts:
+                runs_idx = list(p.parts).index('runs')
+                if runs_idx-1 >= 0:
+                    base = str(p.parts[runs_idx-1]).upper()
+                    symbol = base if base.endswith('USDT') else (base + 'USDT')
+                run_dir = p.parent
+        if (run_dir is None) and code:
+            # Поиск run по коду
+            root = Path('result')
+            if root.exists():
+                for sym_dir in root.iterdir():
+                    cand = sym_dir / 'runs' / code
+                    if (cand / 'model.pth').exists():
+                        run_dir = cand
+                        symbol = (sym_dir.name.upper() if sym_dir.name.upper().endswith('USDT') else (sym_dir.name.upper()+'USDT'))
+                        break
+        if run_dir is None:
+            return jsonify({'success': False, 'error': 'run directory not found (provide filename or code)'}), 400
+
+        # Загружаем данные (тот же подход, что и в обычном OOS)
+        primary_exchange = 'bybit'
+        fallback_exchange = 'binance'
+        candles_per_day_5m = (24 * 60) // 5
+        limit_candles = max(40000, (days + 5) * candles_per_day_5m)
+        df = db_get_or_fetch_ohlcv(symbol_name=symbol, timeframe='5m', limit_candles=limit_candles, exchange_id=primary_exchange)
+        if df is None or df.empty:
+            df = db_get_or_fetch_ohlcv(symbol_name=symbol, timeframe='5m', limit_candles=limit_candles, exchange_id=fallback_exchange)
+        if df is None or df.empty:
+            return jsonify({'success': False, 'error': f'no candles for {symbol}'}), 400
+        df['dt'] = pd.to_datetime(df['timestamp'], unit='ms')
+        cutoff = df['dt'].max().floor('5min') - pd.Timedelta(minutes=5)
+        start_ts = cutoff - pd.Timedelta(days=int(max(1, days)))
+        df = df[(df['dt'] > start_ts) & (df['dt'] <= cutoff)]
+        if df.empty:
+            return jsonify({'success': False, 'error': 'no oos window'}), 400
+
+        # Формируем dfs для env (как в обучении)
+        df_5min = df.copy().reset_index(drop=True)
+        df_15min = df_5min.resample('15min', on='dt').agg({
+            'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+        }).dropna().reset_index()
+        df_1h = df_5min.resample('1h', on='dt').agg({
+            'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+        }).dropna().reset_index()
+        dfs = {'df_5min': df_5min, 'df_15min': df_15min, 'df_1h': df_1h, 'symbol': symbol}
+
+        # Создаём env через make_env_fn → TradingEnvWrapper (как в обучении)
+        env = TradingEnvWrapper(make_env_fn(dfs, episode_length)())
+
+        # Определяем размеры для сети
+        obs_dim = getattr(env, 'observation_space_shape', None)
+        if obs_dim is None and hasattr(env, 'observation_space') and hasattr(env.observation_space, 'shape'):
+            obs_dim = int(env.observation_space.shape[0])
+        if obs_dim is None:
+            return jsonify({'success': False, 'error': 'cannot resolve obs_dim'}), 500
+        act_dim = env.action_space.n
+
+        # Готовим сеть и загружаем веса
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        net = DQNN(
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            hidden_sizes=(512,512,256),
+            dropout_rate=0.1,
+            layer_norm=True,
+            dueling=True,
+            activation='relu',
+            use_residual=True,
+            use_swiglu=False,
+        ).to(device)
+        ckpt_path = run_dir / 'model.pth'
+        if not ckpt_path.exists():
+            return jsonify({'success': False, 'error': 'model.pth not found in run_dir'}), 400
+        sd = torch.load(str(ckpt_path), map_location=device)
+        state = sd.get('model', sd) if isinstance(sd, dict) else sd
+        net.load_state_dict(state, strict=False)
+        net.eval()
+
+        # Простой цикл инференса (без policy), greedy argmax
+        obs, info = env.reset()
+        total_reward = 0.0
+        actions_stats = {0:0,1:0,2:0}
+        trades_total = 0
+        for _ in range(int(episode_length)):
+            with torch.no_grad():
+                logits, _ = net.forward(obs)
+                if isinstance(logits, torch.Tensor):
+                    act = int(torch.argmax(logits, dim=-1).item())
+                else:
+                    act = int(np.argmax(np.asarray(logits)))
+            actions_stats[act] = actions_stats.get(act, 0) + 1
+            obs, reward, terminated, truncated, info = env.step(act)
+            total_reward += float(reward)
+            if terminated or truncated:
+                try:
+                    if isinstance(info, dict) and 'trades_episode' in info and isinstance(info['trades_episode'], list):
+                        trades_total += len(info['trades_episode'])
+                except Exception:
+                    pass
+                break
+
+        result = {
+            'success': True,
+            'symbol': symbol,
+            'run_dir': str(run_dir),
+            'episode_length': int(episode_length),
+            'reward': float(total_reward),
+            'actions': actions_stats,
+            'trades': int(trades_total),
+        }
+        return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

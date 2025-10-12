@@ -13,6 +13,7 @@ from utils.parser import parser_download_and_combine_with_library
 from utils.seed import set_global_seed
 from utils.config_loader import get_config_value
 from tasks import celery
+from agents.vdqn.tianshou_train import train_tianshou_dqn
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +187,7 @@ def train_dqn(self, seed: int | None = None):
     return {"message": result}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
-def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None = None, episode_length: int = 2000):
+def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None = None, episode_length: int = 2000, engine: str = 'optimized'):
     """Обучение DQN для одного символа (BTCUSDT/ETHUSDT/...)
 
     Загружает данные из БД, готовит 5m/15m/1h, запускает train_model_optimized.
@@ -322,16 +323,42 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
             parent_run_id = parent_run_id or None
             root_run_id = root_run_id or None
 
-        result = train_model_optimized(
-            dfs=dfs,
-            episodes=episodes,
-            load_model_path=load_model_path,
-            load_buffer_path=load_buffer_path,
-            seed=seed,
-            parent_run_id=parent_run_id,
-            root_id=root_run_id,
-            episode_length=episode_length
-        )
+        if (engine or '').lower() in ('ts','tianshou'):
+            # Запуск через Tianshou тренер
+            run_dir = train_tianshou_dqn(
+                dfs=dfs,
+                episodes=episodes or int(os.getenv('DEFAULT_EPISODES', 5)),
+                n_envs=int(get_config_value('TS_NUM_ENVS', '4')),
+                batch_size=int(os.getenv('TS_BATCH_SIZE', '256')),
+                lr=float(os.getenv('TS_LR', '0.001')),
+                gamma=float(os.getenv('TS_GAMMA', '0.99')),
+                n_step=int(os.getenv('TS_N_STEP', '1')),
+                target_update_freq=int(os.getenv('TS_TARGET_UPDATE', '500')),
+                memory_size=int(os.getenv('TS_MEMORY', '500000')),
+                episode_length=episode_length,
+                run_id=None,
+                symbol_hint=symbol,
+                parent_run_id=parent_run_id,
+                root_id=root_run_id,
+                load_model_path=load_model_path,
+                load_buffer_path=load_buffer_path,
+                save_frequency=int(os.getenv('TS_SAVE_FREQ', '50')),
+                buffer_save_frequency=None,
+                save_replay_on_improvement=True,
+                seed=seed,
+            )
+            return {"message": f"Tianshou run saved to {run_dir}"}
+        else:
+            result = train_model_optimized(
+                dfs=dfs,
+                episodes=episodes,
+                load_model_path=load_model_path,
+                load_buffer_path=load_buffer_path,
+                seed=seed,
+                parent_run_id=parent_run_id,
+                root_id=root_run_id,
+                episode_length=episode_length
+            )
         return {"message": f"✅ Обучение {symbol} завершено: {result}"}
     except Exception as e:
         import traceback
