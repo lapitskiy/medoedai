@@ -9,17 +9,7 @@
     <link rel="stylesheet" href="/static/css/tabs.css">
 </head>
 <body>
-    <nav class="sidebar">
-        <h3>📋 Навигация</h3>
-        <ul class="sidebar-nav">
-            <li><a href="/#trading-agent">💰 Торговый агент</a></li>
-            <li><a href="/analitika" class="active">📊 Аналитика</a></li>
-            <li><a href="/#models">🤖 Модели</a></li>
-            <li><a href="/oos">📈 OOS</a></li>
-            <li><a href="/#data-management">📥 Данные</a></li>
-            <li><a href="/#system">🔧 Система</a></li>
-        </ul>
-    </nav>
+    {% include 'include/_sidebar.html' %}
 
     <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
 

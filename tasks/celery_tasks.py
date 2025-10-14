@@ -67,7 +67,7 @@ def search_lstm_task(self, query):
 
     return {"message": "Task completed!", "query": query}
 
-@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
+@celery.task(bind=True, acks_late=False, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')  # добавлено acks_late=False
 def train_dqn(self, seed: int | None = None):
     
     self.update_state(state="IN_PROGRESS", meta={"progress": 0})
@@ -186,7 +186,7 @@ def train_dqn(self, seed: int | None = None):
     result = train_model_optimized(dfs=df, episodes=episodes, seed=seed)
     return {"message": result}
 
-@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
+@celery.task(bind=True, acks_late=False, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')  # добавлено acks_late=False
 def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None = None, episode_length: int = 2000, engine: str = 'optimized'):
     """Обучение DQN для одного символа (BTCUSDT/ETHUSDT/...)
 

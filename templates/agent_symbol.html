@@ -22,20 +22,7 @@
     </style>
 </head>
 <body>
-    <!-- Sidebar навигация -->
-    <nav class="sidebar">
-        <h3>📋 Навигация</h3>
-        <ul class="sidebar-nav">
-            <li><a href="/" class="back-link">← На главную</a></li>
-            <li><a href="javascript:history.back()">← Назад</a></li>
-            <li><a href="#status-balance" onclick="scrollToSection('status-balance')">📊 Статус и баланс</a></li>
-            <li><a href="#db-history" onclick="scrollToSection('db-history')">📚 История (БД)</a></li>
-            <li><a href="#predictions" onclick="scrollToSection('predictions')">🧠 Предсказания ИИ</a></li>
-            <li><a href="#celery-results" onclick="scrollToSection('celery-results')">🔍 Результаты Celery</a></li>
-            <li><a href="#trading-history" onclick="scrollToSection('trading-history')">📈 История торговли</a></li>
-            <li><a href="#trade-stats" onclick="scrollToSection('trade-stats')">📊 Статистика сделок</a></li>
-        </ul>
-    </nav>
+    {% include 'include/_sidebar.html' %}
 
     <!-- Кнопка мобильного меню -->
     <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>

@@ -174,22 +174,16 @@ class TradingEnvWrapper(gym.Env):
         self._episode_steps += 1
         self._episode_reward = float(self._episode_reward) + float(reward)
 
-        # Принудительно обрезаем эпизод по заданной длине, если базовое окружение её не соблюдает
-        target_len = None
+        # Масштабирование награды по cfg.reward_scale (как в legacy DQN)
         try:
-            target_len = getattr(self.env, 'episode_length', None)
-            if target_len is None and hasattr(self.env, 'cfg'):
-                target_len = getattr(self.env.cfg, 'episode_length', None)
-            if target_len is not None:
-                target_len = int(target_len)
+            rs = 1.0
+            if hasattr(self.env, 'cfg') and hasattr(self.env.cfg, 'reward_scale'):
+                rs = float(getattr(self.env.cfg, 'reward_scale', 1.0))
+            reward = float(reward) * rs
         except Exception:
-            target_len = None
+            pass
 
-        if target_len is not None and self._episode_steps >= target_len and not (terminated or truncated):
-            truncated = True
-            info = info or {}
-            info['forced_truncate'] = True
-            print(f"⛔️ Форсирован конец эпизода после {self._episode_steps} шагов (target={target_len})")
+        # Длину эпизода контролирует базовое окружение/TimeLimit
 
         # Промежуточные логи убраны ради скорости; оставляем только терминальные
         try:
@@ -358,10 +352,16 @@ def make_env_fn(dfs: Dict, episode_length: Optional[int], gym_override: Optional
                 indicators_config=indicators_config,
                 episode_length=episode_length or gym_cfg.episode_length,
             )
-        # Принудительно выставляем длину эпизода, чтобы убрать хард-минимум внутри env
+        # Сначала совместимость API: наш wrapper всегда возвращает 5 значений
         try:
-            if episode_length is not None:
-                env.episode_length = int(episode_length)
+            env = TradingEnvWrapper(env)
+        except Exception:
+            pass
+        # Затем нормируем длину эпизода стандартным TimeLimit
+        try:
+            max_steps = int(episode_length or gym_cfg.episode_length or 0)
+            if max_steps and max_steps > 0:
+                env = TimeLimit(env, max_episode_steps=max_steps)
         except Exception:
             pass
         # Применим risk-management overrides в env
@@ -516,6 +516,30 @@ def train_tianshou_dqn(
     actual_episode_length = getattr(single_env, 'episode_length', episode_length)
     if actual_episode_length is None:
         actual_episode_length = episode_length
+    # Снимок ключевых атрибутов single_env до удаления, чтобы использовать позже
+    try:
+        single_env_snapshot = {
+            'symbol': getattr(single_env, 'symbol', None),
+            'lookback_window': getattr(single_env, 'lookback_window', None),
+            'indicators_config': getattr(single_env, 'indicators_config', None),
+            'cfg_reward_scale': (getattr(single_env.cfg, 'reward_scale', 1.0) if hasattr(single_env, 'cfg') else 1.0),
+            'episode_length': getattr(single_env, 'episode_length', None),
+            'position_sizing': {
+                'base_position_fraction': getattr(single_env, 'base_position_fraction', None),
+                'position_fraction': getattr(single_env, 'position_fraction', None),
+                'position_confidence_threshold': getattr(single_env, 'position_confidence_threshold', None),
+            },
+            'risk_management': {
+                'STOP_LOSS_PCT': getattr(single_env, 'STOP_LOSS_PCT', None),
+                'TAKE_PROFIT_PCT': getattr(single_env, 'TAKE_PROFIT_PCT', None),
+                'min_hold_steps': getattr(single_env, 'min_hold_steps', None),
+                'volume_threshold': getattr(single_env, 'volume_threshold', None),
+            },
+            'observation_space_shape': getattr(single_env, 'observation_space_shape', None),
+            'step_minutes': (getattr(single_env.cfg, 'step_minutes', 5) if hasattr(single_env, 'cfg') else 5),
+        }
+    except Exception:
+        single_env_snapshot = None
     del single_env
 
     this_run_id = run_id or str(uuid.uuid4())[:4].lower()
@@ -523,6 +547,32 @@ def train_tianshou_dqn(
     run_dir.mkdir(parents=True, exist_ok=True)
     model_path = run_dir / "model.pth"
     replay_path = run_dir / "replay.pkl"
+
+    # Флаги окружения/отладки читаем ДО manifest.json
+    force_dummy = False
+    force_single = False
+    debug_exploration = False
+    debug_run = False
+    try:
+        v = str(get_config_value('TS_FORCE_DUMMY', '0'))
+        force_dummy = v.lower() in ('1', 'true', 'yes', 'y')
+    except Exception:
+        force_dummy = False
+    try:
+        v = str(get_config_value('TS_FORCE_SINGLE', '0'))
+        force_single = v.lower() in ('1', 'true', 'yes', 'y')
+    except Exception:
+        force_single = False
+    try:
+        v = str(get_config_value('TS_DEBUG_EXPLORATION', '0'))
+        debug_exploration = v.lower() in ('1', 'true', 'yes', 'y')
+    except Exception:
+        debug_exploration = False
+    try:
+        v = str(get_config_value('TS_DEBUG_RUN', '0'))
+        debug_run = v.lower() in ('1', 'true', 'yes', 'y')
+    except Exception:
+        debug_run = False
 
     # Initial manifest.json (безусловно, чтобы он существовал даже при очень коротких запусках)
     try:
@@ -538,6 +588,15 @@ def train_tianshou_dqn(
             'episodes_last': 0,
             'episodes_best': None,
             'created_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'debug': bool(debug_run or debug_exploration),
+            'debug_flags': [
+                f for f, on in (
+                    ('TS_DEBUG_RUN', debug_run),
+                    ('TS_DEBUG_EXPLORATION', debug_exploration),
+                    ('TS_FORCE_SINGLE', force_single),
+                    ('TS_FORCE_DUMMY', force_dummy),
+                ) if on
+            ],
             'artifacts': {
                 'model': 'model.pth',
                 'replay': None,
@@ -545,6 +604,7 @@ def train_tianshou_dqn(
                 'best_model': 'best_model.pth' if (run_dir / 'best_model.pth').exists() else None,
                 'last_model': 'last_model.pth' if (run_dir / 'last_model.pth').exists() else None,
                 'encoder_only': 'encoder_only.pth' if (run_dir / 'encoder_only.pth').exists() else None,
+                'all_trades': 'all_trades.json',
             },
             'best_metrics': {
                 'winrate': None,
@@ -597,20 +657,18 @@ def train_tianshou_dqn(
     except Exception:
         pass
 
-    # Оборачиваем env в TradingEnvWrapper для прокидывания трейдов/метрик
+    # Env уже обёрнут в TradingEnvWrapper внутри make_env_fn
     def wrapped_env_fn():
-        return TradingEnvWrapper(make_env_fn(dfs, episode_length)())
-    # Форсировать DummyVectorEnv по флагу из env.json
-    force_dummy = False
-    try:
-        v = str(get_config_value('TS_FORCE_DUMMY', '0'))
-        force_dummy = v.lower() in ('1', 'true', 'yes', 'y')
-    except Exception:
-        force_dummy = False
+        return make_env_fn(dfs, episode_length)()
+    # Флаги окружения уже прочитаны выше (force_dummy/force_single/debug_*)
 
-    # Пытаемся создать subprocess-векторы; при ошибке или флаге откатываемся к DummyVectorEnv
+    # Пытаемся создать subprocess-векторы; при ошибке или флаге откатываемся к DummyVectorEnv/одиночным env
     try:
-        if not force_dummy:
+        if force_single:
+            train_envs = [wrapped_env_fn()]
+            test_envs = [wrapped_env_fn()]
+            print("ℹ️ Форсирован одиночный Env (TS_FORCE_SINGLE)")
+        elif not force_dummy:
             train_envs = SubprocVectorEnv([wrapped_env_fn for _ in range(n_envs)])
             test_envs = SubprocVectorEnv([wrapped_env_fn for _ in range(max(1, n_envs // 2))])
         else:
@@ -630,24 +688,56 @@ def train_tianshou_dqn(
             train_envs = [wrapped_env_fn()]
             test_envs = [wrapped_env_fn()]
     try:
-        print(f"🧩 Tianshou envs: train={n_envs}, test={max(1, n_envs // 2)}")
+        # Вычисляем фактическое число env для корректной конфигурации буфера/сборки
+        env_count = (len(train_envs) if isinstance(train_envs, (list, tuple)) else getattr(train_envs, 'env_num', n_envs))
+    except Exception:
+        env_count = max(1, n_envs)
+    try:
+        print(f"🧩 Tianshou envs: train={env_count}, test={len(test_envs) if isinstance(test_envs, (list, tuple)) else getattr(test_envs, 'env_num', max(1, env_count // 2))}")
     except Exception:
         pass
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # Включим CUDA оптимизации
+    # Детерминизм для воспроизводимости (может снизить скорость)
     if torch.cuda.is_available():
         try:
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cudnn.deterministic = False
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
             if hasattr(torch.backends.cuda, 'matmul') and hasattr(torch.backends.cuda.matmul, 'allow_tf32'):
-                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cuda.matmul.allow_tf32 = False
             if hasattr(torch.backends.cudnn, 'allow_tf32'):
-                torch.backends.cudnn.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = False
         except Exception:
             pass
     # Применим training_params overrides (lr, batch_size, eps, repeats, target_freq, memory)
-    override = get_symbol_override(symbol if not _is_multi_crypto(dfs) else None) if isinstance(dfs, dict) else None
+    # 1) Пытаемся взять оптимизированные конфиги по символу
+    override = None
+    try:
+        if isinstance(symbol, str):
+            symu = symbol.upper()
+            if 'TON' in symu:
+                from agents.vdqn.hyperparameter.ton_optimized_config import TON_OPTIMIZED_CONFIG as _SYM_CFG
+                override = _SYM_CFG
+                print("⚙️ Применяю оптимизированный конфиг для TON (hyperparameter/ton_optimized_config.py)")
+            elif 'BNB' in symu:
+                from agents.vdqn.hyperparameter.bnb_optimized_config import BNB_OPTIMIZED_CONFIG as _SYM_CFG
+                override = _SYM_CFG
+                print("⚙️ Применяю оптимизированный конфиг для BNB (hyperparameter/bnb_optimized_config.py)")
+            elif 'BTC' in symu:
+                from agents.vdqn.hyperparameter.btc_optimized_config import BTC_OPTIMIZED_CONFIG as _SYM_CFG
+                override = _SYM_CFG
+                print("⚙️ Применяю оптимизированный конфиг для BTC (hyperparameter/btc_optimized_config.py)")
+    except Exception as _e:
+        print(f"ℹ️ Не удалось загрузить оптимизированный конфиг по символу: {_e}")
+        override = None
+    # 2) Если есть внешний override из конфига символа — он приоритетнее
+    try:
+        ext_override = get_symbol_override(symbol if not _is_multi_crypto(dfs) else None) if isinstance(dfs, dict) else None
+        if ext_override:
+            override = ext_override
+            print("⚙️ Применяю внешний override из конфигурации символа (get_symbol_override)")
+    except Exception:
+        pass
     if override and 'training_params' in override:
         tp = override['training_params']
         try:
@@ -772,7 +862,8 @@ def train_tianshou_dqn(
     except Exception:
         pass
 
-    optim = torch.optim.Adam(net.parameters(), lr=lr)
+    # Оптимизатор как в legacy DQN: AdamW
+    optim = torch.optim.AdamW(net.parameters(), lr=lr)
     policy = DQNPolicy(
         model=net,
         optim=optim,
@@ -782,11 +873,24 @@ def train_tianshou_dqn(
         target_update_freq=target_update_freq,
         is_double=True,
     )
+    try:
+        print(f"🎯 target_update_freq={target_update_freq}")
+    except Exception:
+        pass
     # Начальный epsilon и плавное снижение — аналог твоей схемы
     try:
         # Можно передать извне значения, здесь — безопасные дефолты
         eps_start = eps_start_override if eps_start_override is not None else 0.3
         eps_final = eps_final_override if eps_final_override is not None else 0.05
+        # Режим ускоренной диагностики исследования
+        if debug_exploration:
+            try:
+                print("🧪 [DEBUG] Exploration override активен: eps_start=1.0, eps_final=0.05, eps_decay_steps=100000")
+            except Exception:
+                pass
+            eps_start = 1.0
+            eps_final = 0.05
+            eps_decay_steps_override = 100_000
         # Установим стартовый eps
         policy.set_eps(eps_start)
     except Exception:
@@ -798,9 +902,46 @@ def train_tianshou_dqn(
             effective_total = min(effective_total, int(max_samples_by_budget))
     except Exception:
         effective_total = int(memory_size)
-    buf = VectorReplayBuffer(total_size=effective_total, buffer_num=n_envs)
-    train_collector = Collector(policy, train_envs, buf, exploration_noise=True)
+    # Привязываем размер буфера к фактическому числу env (без умножения при одиночном env)
+    try:
+        env_count = (len(train_envs) if isinstance(train_envs, (list, tuple)) else getattr(train_envs, 'env_num', n_envs))
+    except Exception:
+        env_count = max(1, n_envs)
+    buf = VectorReplayBuffer(total_size=int(effective_total), buffer_num=int(env_count))
+    # исследование управляется policy.eps; шум коллектора отключаем
+    train_collector = Collector(policy, train_envs, buf, exploration_noise=False)
     test_collector = Collector(policy, test_envs, exploration_noise=False)
+    # Warmup буфера: ускоряет появление разнообразных переходов
+    try:
+        warmup_steps = 0
+        try:
+            warmup_steps = int(str(get_config_value('TS_WARMUP_STEPS', '0')))
+        except Exception:
+            warmup_steps = 0
+        if debug_exploration and warmup_steps <= 0:
+            warmup_steps = 10_000
+        if warmup_steps and warmup_steps > 0:
+            _prev_eps = getattr(policy, 'eps', None)
+            try:
+                policy.set_eps(1.0)
+            except Exception:
+                pass
+            try:
+                print(f"🧪 Warmup: collect {warmup_steps} steps (eps=1.0)")
+                _res = train_collector.collect(n_step=warmup_steps)
+                try:
+                    _buf_size = getattr(train_collector.buffer, 'size', None)
+                    print(f"🧪 Warmup завершён: buffer_size={_buf_size} result={_res}")
+                except Exception:
+                    pass
+            finally:
+                try:
+                    if _prev_eps is not None:
+                        policy.set_eps(_prev_eps)
+                except Exception:
+                    pass
+    except Exception:
+        pass
     # Warm-start буфера (поддержка Tianshou/legacy форматов)
     try:
         if load_buffer_path and os.path.isfile(load_buffer_path):
@@ -887,6 +1028,15 @@ def train_tianshou_dqn(
                     'episodes_last': approx_episodes,
                     'episodes_best': (best_epoch if best_epoch >= 0 else None),
                     'created_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    'debug': bool(debug_run or debug_exploration),
+                    'debug_flags': [
+                        f for f, on in (
+                            ('TS_DEBUG_RUN', debug_run),
+                            ('TS_DEBUG_EXPLORATION', debug_exploration),
+                            ('TS_FORCE_SINGLE', force_single),
+                            ('TS_FORCE_DUMMY', force_dummy),
+                        ) if on
+                    ],
                     'artifacts': {
                         'model': 'model.pth',
                         'replay': 'replay.pkl' if Path(replay_path).exists() else None,
@@ -894,6 +1044,7 @@ def train_tianshou_dqn(
                         'best_model': 'best_model.pth' if (run_dir / 'best_model.pth').exists() else None,
                         'last_model': 'last_model.pth' if (run_dir / 'last_model.pth').exists() else None,
                         'encoder_only': 'encoder_only.pth' if (run_dir / 'encoder_only.pth').exists() else None,
+                        'all_trades': 'all_trades.json' if (run_dir / 'all_trades.json').exists() else None,
                     },
                     'best_metrics': {
                         'winrate': (winrate_from_trades if (winrate_from_trades is not None) else (max(epoch_test_rewards) if epoch_test_rewards else None)),
@@ -944,8 +1095,8 @@ def train_tianshou_dqn(
         except Exception:
             return False
 
-    # Линейный шедулер epsilon по шагам (train_fn) + reduce-on-plateau после теста
-    eps_decay_steps = int(eps_decay_steps_override) if (isinstance(eps_decay_steps_override, (int, float)) and eps_decay_steps_override) else max(200_000, train_steps)
+    # Линейный шедулер epsilon по шагам (train_fn): строго как legacy DQN
+    eps_decay_steps = int(eps_decay_steps_override) if (isinstance(eps_decay_steps_override, (int, float)) and eps_decay_steps_override) else train_steps
 
     # Heartbeat: периодический лог раз в N секунд
     try:
@@ -959,8 +1110,8 @@ def train_tianshou_dqn(
         # Лог подтверждения вызова функции train_fn
         #print(f"⚙️ train_fn: Вызван. epoch={epoch}, env_step={env_step}")
         try:
-            frac = min(1.0, env_step / float(eps_decay_steps))
-            cur_eps = max(eps_final, eps_start * (1.0 - frac))
+            frac = min(1.0, env_step / float(max(1, eps_decay_steps)))
+            cur_eps = max(eps_final, eps_start + (eps_final - eps_start) * frac)
             policy.set_eps(cur_eps)
             # Периодический лог ресурсов
             if env_step % (n_envs * 1_000) == 0:
@@ -1081,12 +1232,24 @@ def train_tianshou_dqn(
     # Разбиваем тренинг на более короткие эпохи
     progress_step_per_epoch = steps_per_episode
     num_epochs = max(1, int(train_steps / float(progress_step_per_epoch)))
+    # Конфигурируем step_per_collect
+    try:
+        _spc = int(str(get_config_value('TS_STEP_PER_COLLECT', '0')))
+    except Exception:
+        _spc = 0
+    step_per_collect_value = _spc if _spc > 0 else (n_envs * 32)
+    if debug_run:
+        step_per_collect_value = max(step_per_collect_value, 256)
 
     # Соответствие train_repeats → update_per_step
     try:
         update_per_step_value = float(train_repeats) if isinstance(train_repeats, (int, float)) and float(train_repeats) > 0 else 1.0
     except Exception:
         update_per_step_value = 1.0
+    try:
+        print(f"🔄 update_per_step={update_per_step_value} (train_repeats={train_repeats})")
+    except Exception:
+        pass
 
     # Глобальный heartbeat: печатаем раз в N секунд независимо от train_fn
     try:
@@ -1118,7 +1281,7 @@ def train_tianshou_dqn(
     # ==========================================================================================
     #  Запуск тренировки Tianshou
     # ==========================================================================================
-    print(f"🗓️ Trainer: epochs={num_epochs}, step_per_epoch={progress_step_per_epoch}, step_per_collect={n_envs * 32}")
+    print(f"🗓️ Trainer: epochs={num_epochs}, step_per_epoch={progress_step_per_epoch}, step_per_collect={step_per_collect_value}")
     print(f"ℹ️ CryptoTradingEnv reset snapshot: requested_episode_length={episode_length}, env_episode_length={actual_episode_length}, min_start={min_valid_start_step if min_valid_start_step is not None else 'n/a'}, start_step={start_step_snapshot if start_step_snapshot is not None else 'n/a'}")
     test_collector.reset()
     train_collector.reset()
@@ -1136,10 +1299,11 @@ def train_tianshou_dqn(
             test_collector=test_collector,
             max_epoch=num_epochs,
             step_per_epoch=progress_step_per_epoch,
-            step_per_collect=n_envs * 32,
+            step_per_collect=step_per_collect_value,
             episode_per_test=1,
             batch_size=batch_size,
-            update_per_step=min(0.25, float(update_per_step_value)),
+            # выравниваем поведение: обновлений на шаг среды = train_repeats из legacy
+            update_per_step=float(update_per_step_value),
             test_in_train=False,
             train_fn=train_fn,
             test_fn=test_fn,
@@ -1162,6 +1326,11 @@ def train_tianshou_dqn(
 
     # Сохранение модели (+ encoder_only при наличии)
     print(f"✅ Tianshou offpolicy_trainer завершил работу.")
+    # Статус сохранения результатов
+    saved_train_result = False
+    # Подготовка данных
+    all_trades = []
+    collected_trades = []
     # Краткий итог времени и средних длительностей
     try:
         total_training_time = time.time() - training_start_time
@@ -1230,8 +1399,10 @@ def train_tianshou_dqn(
         pass
 
     # Подготовка train_result.pkl в формате, совместимом с анализатором
+    print("—> Начало общего блока подготовки train_result.pkl")
     try:
         total_training_time = time.time() - training_start_time
+        print("—> total_training_time вычислено: ", total_training_time)
 
         # Метаданные окружения (снимок с single_env)
         try:
@@ -1243,30 +1414,39 @@ def train_tianshou_dqn(
             funding_cols = ['funding_rate_bp', 'funding_rate_ema', 'funding_rate_change', 'funding_sign']
             funding_present = [c for c in funding_cols if c in df5_cols]
 
-            gym_snapshot = {
-                'symbol': getattr(single_env, 'symbol', None),
-                'lookback_window': getattr(single_env, 'lookback_window', None),
-                'indicators_config': getattr(single_env, 'indicators_config', None),
-                'reward_scale': getattr(single_env.cfg, 'reward_scale', 1.0) if hasattr(single_env, 'cfg') else 1.0,
-                'episode_length': getattr(single_env, 'episode_length', None),
-                'position_sizing': {
-                    'base_position_fraction': getattr(single_env, 'base_position_fraction', None),
-                    'position_fraction': getattr(single_env, 'position_fraction', None),
-                    'position_confidence_threshold': getattr(single_env, 'position_confidence_threshold', None),
-                },
-                'risk_management': {
-                    'STOP_LOSS_PCT': getattr(single_env, 'STOP_LOSS_PCT', None),
-                    'TAKE_PROFIT_PCT': getattr(single_env, 'TAKE_PROFIT_PCT', None),
-                    'min_hold_steps': getattr(single_env, 'min_hold_steps', None),
-                    'volume_threshold': getattr(single_env, 'volume_threshold', None),
-                },
-                'observation_space_shape': getattr(single_env, 'observation_space_shape', None),
-                'step_minutes': getattr(single_env.cfg, 'step_minutes', 5) if hasattr(single_env, 'cfg') else 5,
-                'funding_features': {
-                    'present_in_input_df': funding_present,
-                    'included': bool(funding_present),
-                },
-            }
+            gym_snapshot = {}
+            if single_env_snapshot is not None:
+                gym_snapshot = {
+                    'symbol': single_env_snapshot.get('symbol'),
+                    'lookback_window': single_env_snapshot.get('lookback_window'),
+                    'indicators_config': single_env_snapshot.get('indicators_config'),
+                    'reward_scale': single_env_snapshot.get('cfg_reward_scale', 1.0),
+                    'episode_length': single_env_snapshot.get('episode_length'),
+                    'position_sizing': single_env_snapshot.get('position_sizing', {}),
+                    'risk_management': single_env_snapshot.get('risk_management', {}),
+                    'observation_space_shape': single_env_snapshot.get('observation_space_shape'),
+                    'step_minutes': single_env_snapshot.get('step_minutes', 5),
+                    'funding_features': {
+                        'present_in_input_df': funding_present,
+                        'included': bool(funding_present),
+                    },
+                }
+            else:
+                gym_snapshot = {
+                    'symbol': None,
+                    'lookback_window': None,
+                    'indicators_config': None,
+                    'reward_scale': 1.0,
+                    'episode_length': None,
+                    'position_sizing': {},
+                    'risk_management': {},
+                    'observation_space_shape': None,
+                    'step_minutes': 5,
+                    'funding_features': {
+                        'present_in_input_df': funding_present,
+                        'included': bool(funding_present),
+                    },
+                }
         except Exception:
             gym_snapshot = {}
 
@@ -1455,7 +1635,7 @@ def train_tianshou_dqn(
             'symbol': symbol,
             'model_id': this_run_id,
             'early_stopping_triggered': bool(stopped_by_trend),
-            'reward_scale': float(getattr(single_env.cfg, 'reward_scale', 1.0)) if hasattr(single_env, 'cfg') else 1.0,
+            'reward_scale': float(single_env_snapshot.get('cfg_reward_scale', 1.0)) if isinstance(single_env_snapshot, dict) else 1.0,
             'total_steps_processed': env_steps_total,
             'episode_length': episode_length,
             'action_counts_total': action_counts_total,
@@ -1473,13 +1653,24 @@ def train_tianshou_dqn(
             ),
             'best_episode_idx': (best_epoch if isinstance(best_epoch, int) and best_epoch >= 0 else None),
         }
-
+        print(f"training_results train_result.pkl {training_results}")
         enriched_results = {
             **training_results,
             'train_metadata': train_metadata,
             'cfg_snapshot': cfg_like,
             'gym_snapshot': gym_snapshot,
             'adaptive_normalization': adaptive_snapshot,
+            'hyperparameters': {
+                'lr': lr,
+                'gamma': gamma,
+                'batch_size': batch_size,
+                'target_update_freq': target_update_freq,
+                'eps_start': (eps_start_override if 'eps_start_override' in locals() and eps_start_override is not None else None),
+                'eps_final': (eps_final_override if 'eps_final_override' in locals() and eps_final_override is not None else None),
+                'eps_decay_steps': (eps_decay_steps_override if 'eps_decay_steps_override' in locals() and eps_decay_steps_override is not None else None),
+                'memory_size': memory_size,
+                'train_repeats': train_repeats,
+            },
             'architecture': {
                 'main': {'model_class': net.__class__.__name__},
                 'target': {},
@@ -1487,33 +1678,40 @@ def train_tianshou_dqn(
             'weights': weights_info,
         }
 
+        print("—> Вхожу в блок сохранения train_result.pkl")
         results_file = run_dir / 'train_result.pkl'
         import pickle
         try:
             with open(results_file, 'wb') as f:
                 pickle.dump(enriched_results, f)
+            saved_train_result = True
             print(f"💾 train_result.pkl сохранён: {results_file}")
         except Exception as pe:
-            print(f"⚠️ Не удалось сохранить train_result.pkl ({pe}), пробую JSON-фолбэк")
-            try:
-                import json as _json2
-                # Грубая сериализация: преобразуем не-JSON объекты
-                def _fallback(o):
-                    try:
-                        import numpy as _np
-                        if isinstance(o, _np.generic):
-                            return o.item()
-                        if hasattr(o, 'tolist'):
-                            return o.tolist()
-                    except Exception:
-                        pass
-                    return str(o)
-                json_path = run_dir / 'train_result.json'
-                with open(json_path, 'w', encoding='utf-8') as jf:
-                    _json2.dump(enriched_results, jf, ensure_ascii=False, indent=2, default=_fallback)
-                print(f"💾 train_result.json сохранён (фолбэк): {json_path}")
-            except Exception as je:
-                print(f"❌ Сбой фолбэка train_result.json: {je}")
+            import traceback
+            traceback.print_exc()
+            print(f"⚠️ Не удалось сохранить train_result.pkl ({pe})")
+
+        # Сохраняем полный список сделок за ран в all_trades.json (если есть)
+        try:
+            if isinstance(all_trades, list) and len(all_trades) > 0:
+                trades_json_path = run_dir / 'all_trades.json'
+                try:
+                    # Нормализуем сделки к сериализуемому виду
+                    def _norm_trade(t):
+                        if isinstance(t, dict):
+                            return {
+                                k: v for k, v in t.items()
+                                if isinstance(k, str) and isinstance(v, (int, float, str, bool, type(None)))
+                            }
+                        return t
+                    safe_trades = [_norm_trade(t) for t in all_trades]
+                    with open(trades_json_path, 'w', encoding='utf-8') as tf:
+                        _json.dump(safe_trades, tf, ensure_ascii=False)
+                    print(f"💾 all_trades.json сохранён: {trades_json_path} (count={len(safe_trades)})")
+                except Exception as te:
+                    print(f"⚠️ Не удалось сохранить all_trades.json: {te}")
+        except Exception:
+            pass
 
         # Подробный финальный вывод (как в старом тренере)
         try:
@@ -1565,6 +1763,15 @@ def train_tianshou_dqn(
                 'episodes_last': approx_actual_episodes,
                 'episodes_best': (best_epoch if best_epoch >= 0 else None),
                 'created_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'debug': bool(debug_run or debug_exploration),
+                'debug_flags': [
+                    f for f, on in (
+                        ('TS_DEBUG_RUN', debug_run),
+                        ('TS_DEBUG_EXPLORATION', debug_exploration),
+                        ('TS_FORCE_SINGLE', force_single),
+                        ('TS_FORCE_DUMMY', force_dummy),
+                    ) if on
+                ],
                 'artifacts': {
                     'model': 'model.pth',
                     'replay': 'replay.pkl' if Path(replay_path).exists() else None,
@@ -1584,15 +1791,17 @@ def train_tianshou_dqn(
                 _json.dump(manifest, mf, ensure_ascii=False, indent=2)
             print(f"💾 manifest.json сохранён: {run_dir / 'manifest.json'}")
             try:
-                with open(run_dir / 'manifest.json', 'r+', encoding='utf-8') as _mf_check:
+                with open(run_dir / 'manifest.json', 'r', encoding='utf-8') as _mf_check:
                     _mf_check.flush(); os.fsync(_mf_check.fileno())
             except Exception:
                 pass
         except Exception as me:
             print(f"❌ Не удалось сохранить manifest.json: {me}")
             import traceback; traceback.print_exc()
-    except Exception:
-        pass
+    except Exception as e:
+        import traceback
+        print(f"❌ Ошибка в блоке подготовки train_result.pkl: {e}")
+        traceback.print_exc()
 
     print(f"✅ Tianshou DQN: модель сохранена в {model_path}")
     # Восстановим stdout/stderr и закроем лог
@@ -1635,51 +1844,88 @@ def train_tianshou_dqn(
                             pass
             except Exception:
                 pass
-    except Exception:
-        pass
+    except Exception as final_e:
+        import traceback
+        print(f"❌ Фатальное исключение после тренировки: {final_e}")
+        traceback.print_exc()
+        raise
 
+    # Финальное сохранение train_result.pkl (повтор) — только если ранее не удалось
+    if (not saved_train_result) and ('enriched_results' in locals()):
+        print("—> Выполняю финальное сохранение train_result.pkl (повтор)")
+        try:
+            import pickle, traceback
+            results_path = run_dir / 'train_result.pkl'
+            with open(results_path, 'wb') as _f:
+                pickle.dump(enriched_results, _f)
+            saved_train_result = True
+            print(f"💾 финальное train_result.pkl сохранён: {results_path}")
+        except Exception as _err:
+            traceback.print_exc()
     return str(run_dir)
 
 
 def _sanitize_info_for_tianshou(info: dict) -> dict:
-    """Оставляем только скаляры. Списки/массивы/сложные структуры отбрасываем или сводим к длине."""
+    """Возвращаем ТОЛЬКО фиксированный набор скалярных полей.
+    Никаких списков/массивов, стабильный набор ключей на каждом шаге,
+    чтобы избежать shape mismatch в буфере Tianshou.
+    """
+    # Набор ключей, который всегда присутствует
+    sanitized = {
+        'current_balance': 0.0,
+        'current_price': 0.0,
+        'total_profit': 0.0,
+        'reward': 0.0,
+        'action_counts_0': 0,
+        'action_counts_1': 0,
+        'action_counts_2': 0,
+        'trades_count': 0,
+    }
     if not isinstance(info, dict):
-        return {}
-    sanitized = {}
-    for k, v in list(info.items()):
-        try:
-            # Специальные случаи
-            if k == 'trades_episode' and isinstance(v, list):
-                sanitized['trades_count'] = len(v)
-                continue
-            if k == 'action_counts' and isinstance(v, dict):
-                c0 = int(v.get(0, 0)); c1 = int(v.get(1, 0)); c2 = int(v.get(2, 0))
-                sanitized['action_counts_0'] = c0
-                sanitized['action_counts_1'] = c1
-                sanitized['action_counts_2'] = c2
-                continue
-            # Скалярные типы
-            if isinstance(v, (int, float, bool)):
-                sanitized[k] = v
-                continue
-            # numpy скаляры
-            import numpy as _np
-            if isinstance(v, _np.generic) and _np.ndim(v) == 0:
-                sanitized[k] = v.item()
-                continue
-            # Массивы/списки — сводим к длине
-            if isinstance(v, (list, tuple)):
-                sanitized[f"{k}_len"] = len(v)
-                continue
-            if 'numpy' in str(type(v)):
-                try:
-                    arr = _np.asarray(v)
-                    if arr.ndim == 0:
-                        sanitized[k] = arr.item()
-                    else:
-                        sanitized[f"{k}_len"] = int(arr.size)
-                except Exception:
-                    pass
-        except Exception:
-            continue
+        return sanitized
+
+    # Безопасно извлекаем скаляры
+    try:
+        v = info.get('current_balance')
+        if isinstance(v, (int, float)):
+            sanitized['current_balance'] = float(v)
+    except Exception:
+        pass
+    try:
+        v = info.get('current_price')
+        if isinstance(v, (int, float)):
+            sanitized['current_price'] = float(v)
+    except Exception:
+        pass
+    try:
+        v = info.get('total_profit')
+        if isinstance(v, (int, float)):
+            sanitized['total_profit'] = float(v)
+    except Exception:
+        pass
+    try:
+        v = info.get('reward')
+        if isinstance(v, (int, float)):
+            sanitized['reward'] = float(v)
+    except Exception:
+        pass
+
+    # action_counts -> фиксированные ключи
+    try:
+        ac = info.get('action_counts')
+        if isinstance(ac, dict):
+            sanitized['action_counts_0'] = int(ac.get(0, 0))
+            sanitized['action_counts_1'] = int(ac.get(1, 0))
+            sanitized['action_counts_2'] = int(ac.get(2, 0))
+    except Exception:
+        pass
+
+    # trades_episode -> только количество
+    try:
+        te = info.get('trades_episode')
+        if isinstance(te, (list, tuple)):
+            sanitized['trades_count'] = int(len(te))
+    except Exception:
+        pass
+
     return sanitized

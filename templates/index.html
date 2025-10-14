@@ -9,18 +9,7 @@
     <title>MedoedAI - DQN Trading Bot</title>
 </head>
 <body>
-    <!-- Sidebar навигация -->
-    <nav class="sidebar">
-        <h3>📋 Навигация</h3>
-        <ul class="sidebar-nav">
-            <li><a href="#trading-agent" onclick="scrollToSection('trading-agent')">💰 Торговый агент</a></li>
-            <li><a href="/analitika">📊 Аналитика</a></li>
-            <li><a href="#models" onclick="scrollToSection('models')">🤖 Модели</a></li>
-            <li><a href="/oos">📈 OOS</a></li>
-            <li><a href="#data-management" onclick="scrollToSection('data-management')">📥 Данные</a></li>
-            <li><a href="#system" onclick="scrollToSection('system')">🔧 Система</a></li>
-        </ul>
-    </nav>
+    {% include 'include/_sidebar.html' %}
 
     <!-- Кнопка мобильного меню -->
     <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>

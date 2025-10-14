@@ -59,16 +59,7 @@
     </style>
 </head>
 <body>
-    <!-- Sidebar навигация -->
-    <nav class="sidebar">
-        <h3>📋 Навигация</h3>
-        <ul class="sidebar-nav">
-            <li><a href="/" class="back-link">← На главную</a></li>
-            <li><a href="javascript:history.back()">← Назад</a></li>
-            <li><a href="#agent-control" onclick="scrollToSection('agent-control')">🎯 Управление</a></li>
-            <li><a href="#symbol-navigation" onclick="scrollToSection('symbol-navigation')">🔀 Перейти к странице символа</a></li>
-        </ul>
-    </nav>
+    {% include 'include/_sidebar.html' %}
 
     <!-- Кнопка мобильного меню -->
     <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>

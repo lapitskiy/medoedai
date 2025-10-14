@@ -8,18 +8,7 @@
     <title>!Управление моделями DQN</title>
 </head>
 <body>
-    <!-- Sidebar навигация -->
-    <nav class="sidebar">
-        <h3>📋 Навигация</h3>
-        <ul class="sidebar-nav">
-            <li><a href="/" class="back-link">← На главную</a></li>
-            <li><a href="javascript:history.back()">← Назад</a></li>
-            <li><a href="#create-model" onclick="scrollToSection('create-model')">📦 Создать версию</a></li>
-            <li><a href="#training" onclick="scrollToSection('training')">🎯 Обучение DQN</a></li>
-            <li><a href="#continue-training" onclick="scrollToSection('continue-training')">🔁 Дообучить модель</a></li>
-            <li><a href="/oos">📈 OOS результаты</a></li>
-        </ul>
-    </nav>
+    {% include 'include/_sidebar.html' %}
 
     <!-- Кнопка мобильного меню -->
     <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>

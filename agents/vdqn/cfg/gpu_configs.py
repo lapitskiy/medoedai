@@ -116,6 +116,10 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
     )
 }
 
+# Флаги для подавления дублирующегося вывода
+_gpu_detect_printed = False
+_gpu_info_printed = False
+
 def detect_gpu() -> str:
     """
     Автоматически определяет тип GPU и возвращает ключ конфигурации
@@ -128,8 +132,11 @@ def detect_gpu() -> str:
         gpu_name = torch.cuda.get_device_name(0).lower()
         gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         
-        print(f"🔍 Обнаружена GPU: {torch.cuda.get_device_name(0)}")
-        print(f"💾 VRAM: {gpu_memory:.1f} GB")
+        global _gpu_detect_printed
+        if not _gpu_detect_printed:
+            print(f"🔍 Обнаружена GPU: {torch.cuda.get_device_name(0)}")
+            print(f"💾 VRAM: {gpu_memory:.1f} GB")
+            _gpu_detect_printed = True
         
         # Определяем тип GPU по названию
         if "tesla v100" in gpu_name:
@@ -164,6 +171,7 @@ def detect_gpu() -> str:
         return "cpu"
 
 def get_gpu_config(gpu_key: str = None) -> GPUConfig:
+    global _gpu_info_printed
     """
     Получает конфигурацию для указанной GPU или автоматически определяет
     """
@@ -171,7 +179,8 @@ def get_gpu_config(gpu_key: str = None) -> GPUConfig:
         # Проверяем переменную окружения для принудительного выбора GPU
         forced_gpu = os.environ.get('FORCE_GPU_CONFIG', '').strip().lower()
         if forced_gpu and forced_gpu in GPU_CONFIGS:
-            print(f"🔧 Принудительно выбрана GPU конфигурация: {forced_gpu}")
+            if not _gpu_info_printed:
+                print(f"🔧 Принудительно выбрана GPU конфигурация: {forced_gpu}")
             gpu_key = forced_gpu
         else:
             gpu_key = detect_gpu()
@@ -181,14 +190,16 @@ def get_gpu_config(gpu_key: str = None) -> GPUConfig:
         gpu_key = "cpu"
     
     config = GPU_CONFIGS[gpu_key]
-    print(f"✅ Выбрана конфигурация: {config.name}")
-    print(f"📊 Batch size: {config.batch_size}")
-    print(f"💾 Memory size: {config.memory_size}")
-    print(f"🧠 Hidden sizes: {config.hidden_sizes}")
-    print(f"🔄 Train repeats: {config.train_repeats}")
-    print(f"⚡ AMP: {config.use_amp}")
-    print(f"💾 GPU storage: {config.use_gpu_storage}")
-    print(f"🧩 torch.compile: {config.use_torch_compile}")
+    if not _gpu_info_printed:
+        print(f"✅ Выбрана конфигурация: {config.name}")
+        print(f"📊 Batch size: {config.batch_size}")
+        print(f"💾 Memory size: {config.memory_size}")
+        print(f"🧠 Hidden sizes: {config.hidden_sizes}")
+        print(f"🔄 Train repeats: {config.train_repeats}")
+        print(f"⚡ AMP: {config.use_amp}")
+        print(f"💾 GPU storage: {config.use_gpu_storage}")
+        print(f"🧩 torch.compile: {config.use_torch_compile}")
+        _gpu_info_printed = True
     
     return config
 

@@ -1,0 +1,73 @@
+<nav class="sidebar">
+  <style>
+    .sidebar-nav, .sidebar-nav ul { list-style: none; padding: 0; margin: 0; }
+    .sidebar-nav li { border-bottom: 1px solid #ddd; }
+    .sidebar-nav details > summary { cursor: pointer; padding: 8px; position: relative; list-style: none; }
+    .sidebar-nav details > summary::before { content: none !important; }
+    .sidebar-nav details > summary::marker { content: none !important; }
+    /* Скрыть стандартный маркер summary в WebKit */
+    .sidebar-nav details > summary::-webkit-details-marker { display: none; }
+    /* Скрыть стандартный маркер summary в Mozilla */
+    .sidebar-nav details > summary::-moz-list-bullet { display: none; }
+    .sidebar-nav details > summary::after {
+      content: "▶";
+      position: absolute;
+      right: 8px;
+      transition: transform 0.2s;
+    }
+    .sidebar-nav details[open] > summary::after { transform: rotate(90deg); }
+    .sidebar-nav ul.submenu { padding-left: 16px; }
+  </style>
+  <h3>📋 Навигация</h3>
+  <ul class="sidebar-nav">
+    <li><a href="/">🏠 Главная</a></li>
+    <li>
+      <details>
+        <summary>💰 Торговый агент</summary>
+        <ul class="submenu">
+          <li><a href="/trading_agent">Запустить</a></li>
+          <li><a href="/trading_agent">Мониторинг</a></li>
+          <li><a href="/agent/BTCUSDT">BTCUSDT</a></li>
+        </ul>
+      </details>
+    </li>
+    <li>
+      <details>
+        <summary>📊 Аналитика</summary>
+        <ul class="submenu">
+          <li><a href="/analitika">Результаты DQN/SAC</a></li>
+        </ul>
+      </details>
+    </li>
+    <li>
+      <details>
+        <summary>🤖 Модели</summary>
+        <ul class="submenu">
+          <li><a href="/models">Управление DQN</a></li>
+          <li><a href="/cnn_training">Обучение CNN</a></li>
+          <li><a href="/sac_models">Управление SAC</a></li>
+        </ul>
+      </details>
+    </li>
+    <li><a href="/oos">📈 OOS</a></li>
+    <li>
+      <details>
+        <summary>📥 Данные</summary>
+        <ul class="submenu">
+          <li><a href="/data">Управление</a></li>
+          <li><a href="/parser_multi_crypto">Скачать все</a></li>
+        </ul>
+      </details>
+    </li>
+    <li>
+      <details>
+        <summary>🔧 Система</summary>
+        <ul class="submenu">
+          <li><a href="/clean_data">Очистить данные</a></li>
+          <li><a href="/clear_redis">Очистить Redis</a></li>
+          <li><a href="/task-status/">Статус задач</a></li>
+        </ul>
+      </details>
+    </li>
+  </ul>
+</nav>

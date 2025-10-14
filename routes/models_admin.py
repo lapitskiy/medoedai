@@ -280,8 +280,9 @@ def api_runs_list():
                 'validation_avg': validation_avg,
                 'validation_last': validation_last,
                 'symbol_dir': symbol_dir.name if symbol_dir else requested_value,
-            'model_type': model_type,
-            'agent_type': model_type,
+                'train_result_exists': bool(result_path),
+                'model_type': model_type,
+                'agent_type': model_type,
             })
         # Простая сортировка по created_at, затем по run_id
         try:

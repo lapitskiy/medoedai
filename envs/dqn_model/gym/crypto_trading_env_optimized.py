@@ -805,10 +805,11 @@ class CryptoTradingEnvOptimized(gym.Env):
                 sell_amount = self.crypto_held * current_price
                 fee_exit = sell_amount * self.trade_fee_percent
                 self.balance += (sell_amount - fee_exit)
-                
+
                 # Рассчитываем прибыль/убыток
-                pnl = ((current_price - self.last_buy_price) / self.last_buy_price) - (self.fee_entry + fee_exit)/max(self.last_buy_price * self.crypto_held,1e-9)
-                net_profit_loss = sell_amount - (self.crypto_held * self.last_buy_price)
+                pnl = ((current_price - self.last_buy_price) / self.last_buy_price) - (self.fee_entry + fee_exit) / max(self.last_buy_price * self.crypto_held, 1e-9)
+                profit_loss = sell_amount - (self.crypto_held * self.last_buy_price)
+                net_profit_loss = profit_loss - ((self.fee_entry or 0.0) + (fee_exit or 0.0))
                 
                 # Награда за продажу (как в оригинале)
                 reward += np.tanh(pnl * 25) * 2  # За результат сделки
@@ -824,11 +825,32 @@ class CryptoTradingEnvOptimized(gym.Env):
                     reward -= 0.001  # Небольшой штраф за малые убытки
                 
                 # ИСПРАВЛЯЕМ: Записываем сделку в оба списка для правильного расчета winrate
+                # Включаем расширенные поля для последующей визуализации
+                try:
+                    exit_dt = None
+                    entry_dt = None
+                    if hasattr(self, '_candle_datetimes') and (self.current_step - 1) < len(self._candle_datetimes):
+                        exit_dt = self._candle_datetimes[self.current_step - 1]
+                    if hasattr(self, '_candle_datetimes') and self.last_buy_step is not None and (self.last_buy_step - 1) < len(self._candle_datetimes):
+                        entry_dt = self._candle_datetimes[self.last_buy_step - 1]
+                except Exception:
+                    exit_dt = None; entry_dt = None
                 trade_data = {
-                    "roi": pnl,
-                    "net": net_profit_loss,
-                    "reward": reward,
-                    "duration": (self.current_step - self.last_buy_step) * 5 if self.last_buy_step else 0
+                    "symbol": getattr(self, 'symbol', None),
+                    "side": "LONG",
+                    "entry_price": float(self.last_buy_price) if self.last_buy_price is not None else None,
+                    "exit_price": float(current_price),
+                    "qty": float(self.crypto_held),
+                    "fees": float((self.fee_entry or 0.0) + (fee_exit or 0.0)) if 'fee_exit' in locals() else float(self.fee_entry or 0.0),
+                    "entry_step": int(self.last_buy_step) if self.last_buy_step is not None else None,
+                    "exit_step": int(self.current_step),
+                    "entry_time": (entry_dt.isoformat() if entry_dt is not None else None),
+                    "exit_time": (exit_dt.isoformat() if exit_dt is not None else None),
+                    "roi": float(pnl),
+                    "pnl": float(profit_loss),
+                    "net": float(net_profit_loss),
+                    "reward": float(reward),
+                    "duration": float((self.current_step - self.last_buy_step) * 5 if self.last_buy_step else 0)
                 }
                 self.trades.append(trade_data)
                 
@@ -987,15 +1009,37 @@ class CryptoTradingEnvOptimized(gym.Env):
             if self.crypto_held > 0:
                 final_price = self.df_5min[self.current_step - 1, 3]
                 final_sell_amount = self.crypto_held * final_price
-                self.balance += final_sell_amount
-                pnl = (final_price - self.last_buy_price) / self.last_buy_price
-                net_profit_loss = final_sell_amount - (self.crypto_held * self.last_buy_price)
+                fee_exit = final_sell_amount * self.trade_fee_percent
+                self.balance += (final_sell_amount - fee_exit)
+                pnl = ((final_price - self.last_buy_price) / self.last_buy_price) - (self.fee_entry + fee_exit) / max(self.last_buy_price * self.crypto_held, 1e-9)
+                profit_loss = final_sell_amount - (self.crypto_held * self.last_buy_price)
+                net_profit_loss = profit_loss - ((self.fee_entry or 0.0) + (fee_exit or 0.0))
                 
+                try:
+                    exit_dt = None
+                    entry_dt = None
+                    if hasattr(self, '_candle_datetimes') and (self.current_step - 1) < len(self._candle_datetimes):
+                        exit_dt = self._candle_datetimes[self.current_step - 1]
+                    if hasattr(self, '_candle_datetimes') and self.last_buy_step is not None and (self.last_buy_step - 1) < len(self._candle_datetimes):
+                        entry_dt = self._candle_datetimes[self.last_buy_step - 1]
+                except Exception:
+                    exit_dt = None; entry_dt = None
                 trade_data = {
-                    "roi": pnl,
-                    "net": net_profit_loss,
-                    "reward": 0,
-                    "duration": (self.current_step - self.last_buy_step) * 5 if self.last_buy_step else 0
+                    "symbol": getattr(self, 'symbol', None),
+                    "side": "LONG",
+                    "entry_price": float(self.last_buy_price) if self.last_buy_price is not None else None,
+                    "exit_price": float(final_price),
+                    "qty": float(self.crypto_held),
+                    "fees": float((self.fee_entry or 0.0) + (fee_exit or 0.0)),
+                    "entry_step": int(self.last_buy_step) if self.last_buy_step is not None else None,
+                    "exit_step": int(self.current_step),
+                    "entry_time": (entry_dt.isoformat() if entry_dt is not None else None),
+                    "exit_time": (exit_dt.isoformat() if exit_dt is not None else None),
+                    "roi": float(pnl),
+                    "pnl": float(profit_loss),
+                    "net": float(net_profit_loss),
+                    "reward": 0.0,
+                    "duration": float((self.current_step - self.last_buy_step) * 5 if self.last_buy_step else 0)
                 }
                 self.trades.append(trade_data)
                 if self._can_log:

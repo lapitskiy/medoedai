@@ -26,15 +26,7 @@
     </style>
 </head>
 <body>
-    <nav class="sidebar">
-        <h3>📋 Навигация</h3>
-        <ul class="sidebar-nav">
-            <li><a href="/" class="back-link">← На главную</a></li>
-            <li><a href="javascript:history.back()">← Назад</a></li>
-            <li><a href="#result-models" onclick="scrollToSection('result-models')">🗑️ Модели в result</a></li>
-            <li><a href="#oos-results" onclick="scrollToSection('oos-results')">📈 OOS результаты</a></li>
-        </ul>
-    </nav>
+    {% include 'include/_sidebar.html' %}
 
     <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
 
@@ -192,56 +184,62 @@
                     let win = 'N/A', roi = 'N/A', max_dd = 'N/A', episodes = 'N/A', symbolOrRunId = '';
                     let isBad = false;
 
+                    const resultExists = run.train_result_exists;
+                    let resultNotFoundMsg = resultExists ? '' : '<span class="muted">(нет train_result.pkl)</span>';
+
                     if (agentType === 'dqn') {
-                        symbolOrRunId = run.symbol;
-                        if (typeof run.winrate === 'number') {
+                        symbolOrRunId = run.symbol; // Теперь это поле будет корректным символом
+                        if (resultExists && typeof run.winrate === 'number') {
                             win = (run.winrate * 100).toFixed(1) + '%';
                             if (run.winrate < 0.5) isBad = true;
                         }
-                        if (typeof run.pl_ratio === 'number') {
+                        if (resultExists && typeof run.pl_ratio === 'number') {
                             roi = run.pl_ratio.toFixed(2);
                             if (run.pl_ratio < 1.0) isBad = true;
                         }
                         // MaxDD may not be present for older DQN runs
-                        if (typeof run.max_dd === 'number') {
+                        if (resultExists && typeof run.max_dd === 'number') {
                             max_dd = (run.max_dd * 100).toFixed(1) + '%';
                             if (run.max_dd > 0.7) isBad = true;
                         }
                     } else if (agentType === 'sac') {
-                        symbolOrRunId = run.run_id;
-                        if (typeof run.winrate === 'number') {
+                        symbolOrRunId = run.run_id; // Для SAC это run_id
+                        if (resultExists && typeof run.winrate === 'number') {
                             win = (run.winrate * 100).toFixed(1) + '%';
                             if (run.winrate < 0.5) isBad = true;
                         }
-                        if (typeof run.roi === 'number') {
+                        if (resultExists && typeof run.roi === 'number') {
                             roi = run.roi.toFixed(2);
                             if (run.roi < 0) isBad = true;
                         }
-                        if (typeof run.max_dd === 'number') {
+                        if (resultExists && typeof run.max_dd === 'number') {
                             max_dd = (run.max_dd * 100).toFixed(1) + '%';
                             if (run.max_dd > 0.7) isBad = true;
                         }
                     }
 
-                    if (run.episodes != null) episodes = run.episodes;
+                    if (resultExists && run.episodes != null) episodes = run.episodes; else episodes = resultNotFoundMsg;
 
                     const oosBtn = run.model_path ? `<button class="btn btn-info" onclick="runOOSTest('${agentType}', '${symbolOrRunId}', '${run.model_path}')">Test</button>` : '';
                     const symbolHint = agentType === 'sac'
-                        ? (document.getElementById('sacRunNameSelect')?.value || '')
-                        : (document.getElementById('dqnSymbolSelect')?.value || '');
+                        ? (document.getElementById('sacRunNameSelect')?.value || '') // Для SAC символ может быть указан в селекте
+                        : (document.getElementById('dqnSymbolSelect')?.value || ''); // Для DQN символ берется из селекта
                     const showResultsBtn = `<button class="btn btn-secondary" onclick="showOOSResults('${agentType}', '${symbolOrRunId}', '${symbolHint}')">Result</button>`;
                     const graphBtn = `<a class="btn btn-secondary" target="_blank" href="/oos_graph?agent_type=${agentType}&id=${encodeURIComponent(symbolOrRunId)}">Graph</a>`;
-                    const delBtn = `<button class="btn btn-danger" onclick="deleteAgentRun('${agentType}', '${symbolOrRunId}', '${run.ensemble || 'ensemble-a'}', '${run.version || 'v1'}')">✖</button>`;
+                    // Для удаления DQN используем символ, для SAC - run_id, ensemble, version
+                    const delBtn = agentType === 'dqn'
+                        ? `<button class="btn btn-danger" onclick="deleteAgentRun('${agentType}', '${symbolOrRunId}', '', '')">✖</button>`
+                        : `<button class="btn btn-danger" onclick="deleteAgentRun('${agentType}', '${symbolOrRunId}', '${run.ensemble || 'ensemble-a'}', '${run.version || 'v1'}')">✖</button>`;
                     const buttonsHtml = `<div class="btn-group">${oosBtn}${showResultsBtn}${graphBtn}${delBtn}</div>`;
                     const rowStyle = isBad ? 'style="background-color: #fef2f2; border-left: 3px solid #ef4444;"' : '';
 
                     rows.push(`
                         <tr ${rowStyle}>
-                            <td class="nowrap">${run.agent_type || run.model_type || 'N/A'}</td>
-                            <td class="nowrap">${symbolOrRunId}</td>
-                            <td class="nowrap">${run.version || 'N/A'}</td>
-                            <td class="nowrap">${win}</td>
-                            <td class="nowrap">${roi}</td>
+                            <td class="nowrap">${run.agent_type || 'N/A'}</td>
+                            <td class="nowrap"><span class="truncate" title="${symbolOrRunId}">${symbolOrRunId}</span></td>
+                            <td class="nowrap">${run.version || 'N/A'}</td> <!-- Version может быть в манифесте SAC -->
+                            <td class="nowrap">${win} ${!resultExists && win === 'N/A' ? resultNotFoundMsg : ''}</td>
+                            <td class="nowrap">${roi} ${!resultExists && roi === 'N/A' ? resultNotFoundMsg : ''}</td>
                             <td class="nowrap">${max_dd}</td>
                             <td class="nowrap">${episodes}</td>
                             <td class="nowrap" style="text-align:right;">${buttonsHtml}</td>
