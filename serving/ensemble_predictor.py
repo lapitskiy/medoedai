@@ -13,6 +13,37 @@ class EnsemblePredictor:
         self._model_cache: Dict[str, torch.nn.Module] = {}
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    def _normalize_model_output(self, output):
+        """Приводит выход модели к torch.Tensor на правильном устройстве.
+        Поддерживает tuple/dict/ndarray/list и берёт первый элемент для tuple,
+        логиты для dict (logits/output) или первый попавшийся элемент.
+        """
+        try:
+            # tuple: берём первый элемент
+            if isinstance(output, tuple):
+                output = output[0]
+            # dict: берём logits/output или первый элемент
+            if isinstance(output, dict):
+                if 'logits' in output:
+                    output = output['logits']
+                elif 'output' in output:
+                    output = output['output']
+                else:
+                    # первый элемент по порядку
+                    output = next(iter(output.values()))
+            # превращаем в Tensor при необходимости
+            if not torch.is_tensor(output):
+                output = torch.as_tensor(output, device=self._device)
+            # переносим на целевое устройство
+            output = output.to(self._device)
+            # гарантируем наличие batch измерения при необходимости
+            if output.ndim == 0:
+                output = output.unsqueeze(0)
+            return output
+        except Exception:
+            # худший случай — попытаться создать тензор
+            return output if torch.is_tensor(output) else torch.as_tensor(output, device=self._device)
+
     def _resolve_path(self, path: str) -> str:
         # Приводим к унифицированному виду
         if not path:
@@ -94,7 +125,12 @@ class EnsemblePredictor:
             obs_dim = None
         model = self._load_model(model_path, obs_dim)
         x = torch.tensor(np.array(state, dtype=np.float32), device=self._device).unsqueeze(0)
-        q_values = model(x).detach().cpu().numpy()[0].tolist()
+        raw_out = model(x)
+        y = self._normalize_model_output(raw_out)
+        q_values_np = y.detach().float().cpu().numpy()
+        if q_values_np.ndim > 1:
+            q_values_np = q_values_np[0]
+        q_values = q_values_np.tolist()
         action_idx = int(np.argmax(q_values))
         # Простейшая уверенность как softmax max prob
         exps = np.exp(q_values - np.max(q_values))

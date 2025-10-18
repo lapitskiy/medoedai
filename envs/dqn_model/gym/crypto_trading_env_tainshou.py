@@ -61,6 +61,11 @@ class CryptoTradingEnvOptimized(gym.Env):
 
         # Константы окружения
         self.trade_fee_percent = 0.00055 # Комиссия 0.055%
+        # Параметры поощрения/штрафов (можно переопределить через cfg)
+        self.min_net_profit = float(getattr(self.cfg, 'min_net_profit', 0.002))  # 0.2%
+        self.gain_scale = float(getattr(self.cfg, 'gain_scale', 300.0))
+        self.loss_scale = float(getattr(self.cfg, 'loss_scale', 200.0))
+        self.time_penalty_after_hold = float(getattr(self.cfg, 'time_penalty_after_hold', 0.0005))
         
         # Адаптивные параметры риск-менеджмента
         # Корректно извлекаем символ из dfs (dict) или объекта
@@ -128,6 +133,15 @@ class CryptoTradingEnvOptimized(gym.Env):
          self.indicators, self.individual_indicators) = preprocess_dataframes(
             df_5min_raw, df_15min_raw, df_1h_raw, self.indicators_config
         )
+        # Безопасные дефолты для статистик индикаторов, если они будут отсутствовать
+        self.indicator_means = np.array([], dtype=np.float32)
+        self.indicator_stds = np.array([], dtype=np.float32)
+        
+        # Безопасные дефолты для статистик нормализации (будут перезаписаны в _calculate_normalization_stats)
+        self.price_mean = 0.0
+        self.price_std = 1.0
+        self.volume_mean = 0.0
+        self.volume_std = 1.0
         
         # Добавляем funding-фичи как дополнительные индикаторы, если есть в DataFrame
         try:
@@ -338,23 +352,21 @@ class CryptoTradingEnvOptimized(gym.Env):
         # ИСПРАВЛЕНИЕ: Добавляем общий список сделок для правильного расчета winrate
         self.all_trades = []
         
-        # Статистики для фильтров
-        self.vol_stats = {'mean': 0, 'std': 1}
-        self.roi_stats = {'mean': 0, 'std': 1}
-        
-        # Счетчик действий для статистики
-        self.action_counts = {0: 0, 1: 0, 2: 0}
-        
-        # Причины продаж (эпизодные и кумулятивные)
+        # Флаг открытой позиции для совместимости с wrapper
+        self.current_position = False
+
+        # Счётчики причин продаж
         self.sell_types = {
-            'agent': 0,
-            'stop_loss': 0,
-            'take_profit': 0,
-            'trailing': 0,
-            'timeout': 0,
-            'other': 0,
-            'invalid_sell': 0,
+            'agent': 0,       # Продажа по действию агента (action=2)
+            'stop_loss': 0,   # Принудительно: сработал стоп-лосс
+            'take_profit': 0, # Принудительно: сработал тейк-профит
+            'trailing': 0,    # Принудительно: трейлинг-стоп
+            'timeout': 0,     # Принудительно: конец эпизода
+            'other': 0,       # Прочие причины
+            'invalid_sell': 0 # Попытка продажи без позиции
         }
+
+        # Кумулятивные счётчики (не сбрасываются между эпизодами)
         self.cumulative_sell_types = {
             'agent': 0,
             'stop_loss': 0,
@@ -364,20 +376,13 @@ class CryptoTradingEnvOptimized(gym.Env):
             'other': 0,
             'invalid_sell': 0,
         }
-        # Кумулятивная статистика BUY/HOLD
-        self.buy_stats_total = {
-            'executed': 0,
-            'rejected_by_volume': 0,
-            'rejected_by_roi': 0,
-            'rejected_by_trend': 0,
-            'rejected_by_volatility': 0,
-            'rejected_by_trend_strength': 0,
-            'already_holding': 0,
-        }
-        self.hold_stats_total = {
-            'with_position': 0,
-            'no_position': 0,
-        }
+        
+        # Статистики для фильтров
+        self.vol_stats = {'mean': 0, 'std': 1}
+        self.roi_stats = {'mean': 0, 'std': 1}
+        
+        # Счетчик действий для статистики
+        self.action_counts = {0: 0, 1: 0, 2: 0}
         
         # Время для отслеживания производительности
         self.episode_start_time = None
@@ -396,6 +401,17 @@ class CryptoTradingEnvOptimized(gym.Env):
         для предотвращения look-ahead bias
         """
         print("Начинаю расчет статистик для нормализации...")
+
+    def export_cumulative_sell_types(self) -> Dict[str, int]:
+        """Возвращает копию кумулятивной статистики причин продаж.
+        Используется для безопасного сбора метрик из векторизованных env (в т.ч. SubprocVectorEnv).
+        """
+        try:
+            if isinstance(self.cumulative_sell_types, dict):
+                return dict(self.cumulative_sell_types)
+        except Exception:
+            pass
+        return {}
         
         # ИСПРАВЛЕНИЕ: Используем параметр train_split_ratio для разделения данных
         train_split_ratio = getattr(self.cfg, 'train_split_ratio', 0.8)  # По умолчанию 80% для обучения
@@ -512,7 +528,11 @@ class CryptoTradingEnvOptimized(gym.Env):
         print(f"  • df_1h: {self.df_1h.shape}")
         print(f"  • indicators: {self.indicators.shape if self.indicators.size > 0 else 'пустой'}")
         print(f"  • Объединенный X: {X.shape}")
-        print(f"  • indicator_means: {self.indicator_means.shape if len(self.indicator_means) > 0 else 'пустой'}")
+        try:
+            im_shape = self.indicator_means.shape if hasattr(self, 'indicator_means') and getattr(self, 'indicator_means', None) is not None and len(self.indicator_means) > 0 else 'пустой'
+        except Exception:
+            im_shape = 'пустой'
+        print(f"  • indicator_means: {im_shape}")
         
         # Нормализуем данные
         X_normalized = self._normalize_features(X)
@@ -622,9 +642,16 @@ class CryptoTradingEnvOptimized(gym.Env):
                 print(f"  • indicator_cols: {len(indicator_cols)} колонок")
                 print(f"  • indicator_means: {len(self.indicator_means)} значений")
                 print(f"  • X.shape: {X.shape}")
-                # Включаем нормализацию индикаторов
+                # Включаем нормализацию индикаторов (только если размеры согласованы)
                 if hasattr(self, 'indicator_stds') and self.indicator_stds is not None:
-                    normalized[:, indicator_cols] = (X[:, indicator_cols] - self.indicator_means) / np.where(self.indicator_stds==0, 1.0, self.indicator_stds)
+                    num_indicator_cols = len(list(indicator_cols))
+                    means = self.indicator_means
+                    stds = self.indicator_stds
+                    if not isinstance(means, np.ndarray) or means.size != num_indicator_cols:
+                        means = np.zeros((num_indicator_cols,), dtype=np.float32)
+                    if not isinstance(stds, np.ndarray) or stds.size != num_indicator_cols:
+                        stds = np.ones((num_indicator_cols,), dtype=np.float32)
+                    normalized[:, indicator_cols] = (X[:, indicator_cols] - means) / np.where(stds==0, 1.0, stds)
         
         # Очищаем от NaN
         normalized = np.nan_to_num(normalized, nan=0.0)
@@ -733,6 +760,9 @@ class CryptoTradingEnvOptimized(gym.Env):
         # Сброс счетчиков действий
         self.action_counts = {0: 0, 1: 0, 2: 0}
         
+        # Обновляем флаг открытой позиции
+        self.current_position = False
+        
         # Выбор случайной начальной точки с учетом длины эпизода
         if self._can_log:
             print(f"🌀 episode_length = {self.episode_length} шагов (≈ {self.episode_length*5/60:.1f} часов)")
@@ -773,16 +803,16 @@ class CryptoTradingEnvOptimized(gym.Env):
         done = False
         info = {}
         
-        # Подсчитываем действие
-        self.action_counts[action] += 1
+        # Подсчитываем действие (эффективное): HOLD всегда, BUY/SELL — только если прошло
+        if action == 0:
+            self.action_counts[0] += 1
         self.episode_step_count += 1
         
         # Выполняем действие
         if action == 1:  # BUY
             if self.crypto_held == 0:  # Только если не держим криптовалюту
-                # Проверяем фильтры (с возвратом причины)
-                allowed, reject_reason = self._check_buy_filters_reason()
-                if allowed:
+                # Проверяем фильтры
+                if self._check_buy_filters():
                     # ДИНАМИЧЕСКИЙ размер позиции на основе уверенности
                     entry_confidence = self._calculate_entry_confidence()
                     
@@ -810,6 +840,9 @@ class CryptoTradingEnvOptimized(gym.Env):
                     reward -= self.fee_entry / max(self.balance, 1e-9)  # мелкий штраф за комиссию
                     self.last_buy_price = current_price
                     self.last_buy_step = self.current_step
+                    self.current_position = True
+                    # Учитываем эффективный BUY
+                    self.action_counts[1] += 1
                     
                     # Награда зависит от уверенности входа
                     base_reward = 0.03
@@ -818,36 +851,10 @@ class CryptoTradingEnvOptimized(gym.Env):
                     
                     if self._can_log:
                         print(f"🔵 BUY: {crypto_to_buy:.4f} at {current_price:.2f}, уверенность: {entry_confidence:.2f}, награда: {reward:.4f}")
-                    # Статистика BUY
-                    try:
-                        self.buy_stats_total['executed'] += 1
-                    except Exception:
-                        pass
                 else:
                     reward = -0.002  # Уменьшил штраф за отклонение фильтрами
-                    # Статистика причины отклонения
-                    try:
-                        key = None
-                        if reject_reason == 'volume':
-                            key = 'rejected_by_volume'
-                        elif reject_reason == 'roi':
-                            key = 'rejected_by_roi'
-                        elif reject_reason == 'trend':
-                            key = 'rejected_by_trend'
-                        elif reject_reason == 'volatility':
-                            key = 'rejected_by_volatility'
-                        elif reject_reason == 'trend_strength':
-                            key = 'rejected_by_trend_strength'
-                        if key:
-                            self.buy_stats_total[key] += 1
-                    except Exception:
-                        pass
             else:
                 reward = -0.01  # Уменьшил штраф за попытку купить при наличии позиции
-                try:
-                    self.buy_stats_total['already_holding'] += 1
-                except Exception:
-                    pass
                 
         elif action == 2:  # SELL
             if self.crypto_held > 0:  # Только если держим криптовалюту
@@ -872,18 +879,26 @@ class CryptoTradingEnvOptimized(gym.Env):
                 profit_loss = sell_amount - (self.crypto_held * self.last_buy_price)
                 net_profit_loss = profit_loss - ((self.fee_entry or 0.0) + (fee_exit or 0.0))
                 
-                # Награда за продажу (как в оригинале)
-                reward += np.tanh(pnl * 25) * 2  # За результат сделки
-                
-                # Дополнительные награды за качество сделки (УЛУЧШЕНО)
-                if pnl > 0.05:  # Прибыль > 5%
-                    reward += 0.5  # Увеличил с 0.3 до 0.5 для больших прибылей
-                elif pnl > 0.02:  # Прибыль > 2%
-                    reward += 0.2  # Новая награда за среднюю прибыль
-                elif pnl < -0.03:  # Убыток > 3%
-                    reward -= 0.005  # Уменьшил штраф с -0.01 до -0.005
-                elif pnl < -0.01:  # Убыток > 1%
-                    reward -= 0.001  # Небольшой штраф за малые убытки
+                # Базовая часть (сохраняем мягкую нелинейность)
+                reward += np.tanh(pnl * 25) * 2
+
+                # Net-ROI с учетом комиссий уже в pnl → усиливаем поощрение закрытий
+                net_roi = float(pnl)
+                if net_roi >= self.min_net_profit:
+                    # Пропорциональная награда + небольшой бонус в диапазоне 0.2–1.0%
+                    reward += self.gain_scale * net_roi
+                    if net_roi < 0.005:       # < 0.5%
+                        reward += 0.05
+                    elif net_roi < 0.01:      # < 1.0%
+                        reward += 0.10
+                    else:
+                        reward += 0.15
+                elif 0.0 < net_roi < self.min_net_profit:
+                    # «Мелкий чёрн» — едва покрывает комиссию, не поощряем
+                    reward -= 0.02
+                else:
+                    # Убыток — штраф пропорционально величине
+                    reward -= self.loss_scale * abs(net_roi)
                 
                 # ИСПРАВЛЯЕМ: Записываем сделку в оба списка для правильного расчета winrate
                 # Включаем расширенные поля для последующей визуализации
@@ -919,12 +934,6 @@ class CryptoTradingEnvOptimized(gym.Env):
                 if not hasattr(self, 'all_trades'):
                     self.all_trades = []                    
                 self.all_trades.append(trade_data)
-                # Причина продажи: агент
-                try:
-                    self.sell_types['agent'] += 1
-                    self.cumulative_sell_types['agent'] += 1
-                except Exception:
-                    pass
                                 
                 
                 self.crypto_held = 0
@@ -932,6 +941,15 @@ class CryptoTradingEnvOptimized(gym.Env):
                 self.last_buy_step = None
                 self.trailing_stop_counter = 0
                 self.max_price_during_hold = None
+                self.current_position = False
+                # Причина продажи: агент
+                try:
+                    self.sell_types['agent'] += 1
+                    self.cumulative_sell_types['agent'] += 1
+                except Exception:
+                    pass
+                # Учитываем эффективный SELL
+                self.action_counts[2] += 1
                 
                 #self._log(f"[{self.current_step}] 🔴 SELL: {sell_amount:.2f}, PnL: {pnl:.2%}")
             else:
@@ -955,13 +973,6 @@ class CryptoTradingEnvOptimized(gym.Env):
         
         # Обработка HOLD действия (как в оригинале)
         if action == 0:
-            try:
-                if self.crypto_held > 0 and self.last_buy_price is not None:
-                    self.hold_stats_total['with_position'] += 1
-                else:
-                    self.hold_stats_total['no_position'] += 1
-            except Exception:
-                pass
             if self.crypto_held > 0 and self.last_buy_price is not None:
                 # Награда за длительное удержание позиции
                 if hasattr(self, 'last_buy_step') and self.last_buy_step is not None:
@@ -1036,6 +1047,12 @@ class CryptoTradingEnvOptimized(gym.Env):
                 else:
                     # Чем больше нереализованный убыток, тем больше штраф за удержание
                     reward += unrealized_pnl_percent * 2  # Уменьшил с 3 до 2 для меньшего давления
+
+                # Небольшой time-penalty после минимального времени удержания, чтобы не тянуть бесконечно
+                if hasattr(self, 'last_buy_step') and self.last_buy_step is not None:
+                    hold_time = self.current_step - self.last_buy_step
+                    if hold_time > self.min_hold_steps:
+                        reward -= self.time_penalty_after_hold
             else:
                 # Если action == HOLD и нет открытой позиции
                 reward = 0.001  # Небольшое поощрение за разумное бездействие вместо штрафа
@@ -1086,53 +1103,48 @@ class CryptoTradingEnvOptimized(gym.Env):
         if done:
             # Принудительно продаем если есть позиция
             if self.crypto_held > 0:
-                # Если установлен флаг подавления — НЕ продаём здесь. Продление/форс-SELL выполнит враппер
-                if getattr(self, '_suppress_timeout_force_sell', False):
+                final_price = self.df_5min[self.current_step - 1, 3]
+                final_sell_amount = self.crypto_held * final_price
+                fee_exit = final_sell_amount * self.trade_fee_percent
+                self.balance += (final_sell_amount - fee_exit)
+                pnl = ((final_price - self.last_buy_price) / self.last_buy_price) - (self.fee_entry + fee_exit) / max(self.last_buy_price * self.crypto_held, 1e-9)
+                profit_loss = final_sell_amount - (self.crypto_held * self.last_buy_price)
+                net_profit_loss = profit_loss - ((self.fee_entry or 0.0) + (fee_exit or 0.0))
+                
+                try:
+                    exit_dt = None
+                    entry_dt = None
+                    if hasattr(self, '_candle_datetimes') and (self.current_step - 1) < len(self._candle_datetimes):
+                        exit_dt = self._candle_datetimes[self.current_step - 1]
+                    if hasattr(self, '_candle_datetimes') and self.last_buy_step is not None and (self.last_buy_step - 1) < len(self._candle_datetimes):
+                        entry_dt = self._candle_datetimes[self.last_buy_step - 1]
+                except Exception:
+                    exit_dt = None; entry_dt = None
+                trade_data = {
+                    "symbol": getattr(self, 'symbol', None),
+                    "side": "LONG",
+                    "entry_price": float(self.last_buy_price) if self.last_buy_price is not None else None,
+                    "exit_price": float(final_price),
+                    "qty": float(self.crypto_held),
+                    "fees": float((self.fee_entry or 0.0) + (fee_exit or 0.0)),
+                    "entry_step": int(self.last_buy_step) if self.last_buy_step is not None else None,
+                    "exit_step": int(self.current_step),
+                    "entry_time": (entry_dt.isoformat() if entry_dt is not None else None),
+                    "exit_time": (exit_dt.isoformat() if exit_dt is not None else None),
+                    "roi": float(pnl),
+                    "pnl": float(profit_loss),
+                    "net": float(net_profit_loss),
+                    "reward": 0.0,
+                    "duration": float((self.current_step - self.last_buy_step) * 5 if self.last_buy_step else 0)
+                }
+                self.trades.append(trade_data)
+                try:
+                    self.sell_types['timeout'] += 1
+                    self.cumulative_sell_types['timeout'] += 1
+                except Exception:
                     pass
-                else:
-                    final_price = self.df_5min[self.current_step - 1, 3]
-                    final_sell_amount = self.crypto_held * final_price
-                    fee_exit = final_sell_amount * self.trade_fee_percent
-                    self.balance += (final_sell_amount - fee_exit)
-                    pnl = ((final_price - self.last_buy_price) / self.last_buy_price) - (self.fee_entry + fee_exit) / max(self.last_buy_price * self.crypto_held, 1e-9)
-                    profit_loss = final_sell_amount - (self.crypto_held * self.last_buy_price)
-                    net_profit_loss = profit_loss - ((self.fee_entry or 0.0) + (fee_exit or 0.0))
-                    
-                    try:
-                        exit_dt = None
-                        entry_dt = None
-                        if hasattr(self, '_candle_datetimes') and (self.current_step - 1) < len(self._candle_datetimes):
-                            exit_dt = self._candle_datetimes[self.current_step - 1]
-                        if hasattr(self, '_candle_datetimes') and self.last_buy_step is not None and (self.last_buy_step - 1) < len(self._candle_datetimes):
-                            entry_dt = self._candle_datetimes[self.last_buy_step - 1]
-                    except Exception:
-                        exit_dt = None; entry_dt = None
-                    trade_data = {
-                        "symbol": getattr(self, 'symbol', None),
-                        "side": "LONG",
-                        "entry_price": float(self.last_buy_price) if self.last_buy_price is not None else None,
-                        "exit_price": float(final_price),
-                        "qty": float(self.crypto_held),
-                        "fees": float((self.fee_entry or 0.0) + (fee_exit or 0.0)),
-                        "entry_step": int(self.last_buy_step) if self.last_buy_step is not None else None,
-                        "exit_step": int(self.current_step),
-                        "entry_time": (entry_dt.isoformat() if entry_dt is not None else None),
-                        "exit_time": (exit_dt.isoformat() if exit_dt is not None else None),
-                        "roi": float(pnl),
-                        "pnl": float(profit_loss),
-                        "net": float(net_profit_loss),
-                        "reward": 0.0,
-                        "duration": float((self.current_step - self.last_buy_step) * 5 if self.last_buy_step else 0)
-                    }
-                    self.trades.append(trade_data)
-                    if self._can_log:
-                        print(f"    📝 Финальная сделка: ROI={pnl:.4f}, прибыль={trade_data['roi'] > 0}, всего сделок={len(self.trades)}")
-                    # Причина продажи: завершение эпизода (timeout)
-                    try:
-                        self.sell_types['timeout'] += 1
-                        self.cumulative_sell_types['timeout'] += 1
-                    except Exception:
-                        pass
+                if self._can_log:
+                    print(f"    📝 Финальная сделка: ROI={pnl:.4f}, прибыль={trade_data['roi'] > 0}, всего сделок={len(self.trades)}")
             
             # Статистика времени эпизода (теперь выводится в train_model_optimized.py)
             # if self.episode_start_time is not None:
@@ -1161,9 +1173,10 @@ class CryptoTradingEnvOptimized(gym.Env):
         info["reward"] = reward
         return self._get_state(), reward, done, info
 
-    def _check_buy_filters_reason(self):
-        """Проверяет фильтры покупки и возвращает (allowed: bool, reason: str|None).
-        Возможные reason: 'volume', 'roi', 'trend', 'volatility', 'trend_strength'"""
+    def _check_buy_filters(self) -> bool:
+        """
+        Проверяет фильтры для покупки (УЛУЧШЕНО)
+        """
         self.buy_attempts += 1
         
         # АДАПТИВНАЯ СТРОГОСТЬ ФИЛЬТРОВ ПО ЭПСИЛОНУ
@@ -1177,7 +1190,7 @@ class CryptoTradingEnvOptimized(gym.Env):
             eps = 1.0
         
         if eps > 0.8:
-            return True, None
+            return True
         # Степень строгости [0..1]
         strictness = np.clip((0.8 - eps) / (0.8 - 0.2), 0.0, 1.0)
         
@@ -1194,7 +1207,7 @@ class CryptoTradingEnvOptimized(gym.Env):
             self.buy_rejected_vol += 1
             if self.current_step % 100 == 0:
                 print(f"🔍 Фильтр объема: vol_relative={vol_relative:.4f} < {vol_thr:.4f}, отклонено")
-            return False, 'volume'
+            return False
         
         # 2. Проверка ROI - УЛУЧШЕНО: Более умный фильтр
         if len(self.roi_buf) > 0:
@@ -1205,7 +1218,7 @@ class CryptoTradingEnvOptimized(gym.Env):
                 self.buy_rejected_roi += 1
                 if self.current_step % 100 == 0:
                     print(f"🔍 Фильтр ROI: recent_roi_mean={recent_roi_mean:.4f} < {roi_thr:.4f}, отклонено")
-                return False, 'roi'
+                return False
         
         # 3. НОВЫЙ: Фильтр по тренду цены
         if self.current_step >= 20:
@@ -1216,7 +1229,7 @@ class CryptoTradingEnvOptimized(gym.Env):
             if price_trend < trend_thr:
                 if self.current_step % 100 == 0:
                     print(f"🔍 Фильтр тренда: price_trend={price_trend:.4f} < {trend_thr:.4f}, отклонено")
-                return False, 'trend'
+                return False
         
         # 4. НОВЫЙ: Фильтр по волатильности
         if self.current_step >= 12:
@@ -1228,7 +1241,7 @@ class CryptoTradingEnvOptimized(gym.Env):
             if volatility < volat_thr:
                 if self.current_step % 100 == 0:
                     print(f"🔍 Фильтр волатильности: volatility={volatility:.4f} < {volat_thr:.4f}, отклонено")
-                return False, 'volatility'
+                return False
         
         # 5. НОВЫЙ: Фильтр по силе тренда (ADX-подобный)
         if self.current_step >= 20:
@@ -1241,10 +1254,10 @@ class CryptoTradingEnvOptimized(gym.Env):
             if trend_strength < ts_thr:
                 if self.current_step % 100 == 0:
                     print(f"🔍 Фильтр тренда: trend_strength={trend_strength:.4f} < {ts_thr:.4f}, отклонено")
-                return False, 'trend_strength'
+                return False
         
         # Все фильтры пройдены - разрешаем покупку
-        return True, None
+        return True
     
     def _calculate_entry_confidence(self) -> float:
         """
@@ -1342,16 +1355,16 @@ class CryptoTradingEnvOptimized(gym.Env):
             
             # Причина принудительной продажи
             try:
-                if 'STOP-LOSS' in reason.upper():
+                if 'STOP-LOSS' in reason:
                     self.sell_types['stop_loss'] += 1
                     self.cumulative_sell_types['stop_loss'] += 1
-                elif 'TAKE-PROFIT' in reason.upper():
+                elif 'TAKE-PROFIT' in reason:
                     self.sell_types['take_profit'] += 1
                     self.cumulative_sell_types['take_profit'] += 1
-                elif 'TRAILING' in reason.upper():
+                elif 'TRAILING' in reason:
                     self.sell_types['trailing'] += 1
                     self.cumulative_sell_types['trailing'] += 1
-                elif 'TIMEOUT' in reason.upper() or 'EPISODE' in reason.upper():
+                elif 'TIMEOUT' in reason:
                     self.sell_types['timeout'] += 1
                     self.cumulative_sell_types['timeout'] += 1
                 else:

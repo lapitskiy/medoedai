@@ -68,16 +68,24 @@
                     <label>Seed (если пусто — сгенерируем случайный)</label>
                     <input id="trainSeedInput" class="form-control" type="number" min="1" step="1" placeholder="например, 42">
                 </div>
+                <div class="form-group">
+                    <label>Encoder</label>
+                    <select id="encoderSelect" class="form-control">
+                        <option value="">Default</option>
+                        <option value="resnet">ResNet</option>
+                        <option value="transformer">Transformer</option>
+                    </select>
+                </div>
                 <div class="button-group">
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BTCUSDT', 'ts')">🚀 Обучить BTC</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('TONUSDT', 'ts')">🚀 Обучить TON</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ETHUSDT', 'ts')">🚀 Обучить ETH</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('SOLUSDT', 'ts')">🚀 Обучить SOL</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ADAUSDT', 'ts')">🚀 Обучить ADA</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BNBUSDT', 'ts')">🚀 Обучить BNB</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('XMRUSDT', 'ts')">🚀 Обучить XMR</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('XRPUSDT', 'ts')">🚀 Обучить XRP</button>
-                    <button class="btn btn-success" onclick="startTrainingMulti()">🌟 Обучить мультивалютную</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BTCUSDT', 'optimized')">🚀 Обучить BTC</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('TONUSDT', 'optimized')">🚀 Обучить TON</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ETHUSDT', 'optimized')">🚀 Обучить ETH</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('SOLUSDT', 'optimized')">🚀 Обучить SOL</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ADAUSDT', 'optimized')">🚀 Обучить ADA</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BNBUSDT', 'optimized')">🚀 Обучить BNB</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('XMRUSDT', 'optimized')">🚀 Обучить XMR</button>
+                    <button class="btn btn-primary" onclick="startTrainingForSymbol('XRPUSDT', 'optimized')">🚀 Обучить XRP</button>
+                    <button class="btn btn.success" onclick="startTrainingMulti()">🌟 Обучить мультивалютную</button>
                 </div>
                 <div id="trainStatus"></div>
             </div>
@@ -437,17 +445,18 @@ P/L Ratio: ${plr}
         }
 
         // Запуск обучения с выбранным количеством эпизодов
-        async function startTrainingForSymbol(symbol, engine='ts') {
+        async function startTrainingForSymbol(symbol, engine='optimized') {
             const episodes = document.getElementById('episodesInput').value || 1000;
             const episodeLength = document.getElementById('episodeLengthInput').value || 2000;
             const seedVal = (document.getElementById('trainSeedInput')?.value || '').trim();
+            const encoderVal = (document.getElementById('encoderSelect')?.value || '').trim();
             const statusDiv = document.getElementById('trainStatus');
             statusDiv.innerHTML = '<div class="status info">⏳ Запуск обучения ' + symbol + '...</div>';
             try {
                 const resp = await fetch('/training/train_dqn_symbol', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                    body: JSON.stringify({ symbol, episodes, episode_length: episodeLength, seed: seedVal, engine })
+                    body: JSON.stringify({ symbol, episodes, episode_length: episodeLength, seed: seedVal, engine, encoder: encoderVal })
                 });
                 const data = await resp.json().catch(() => null);
                 if (data && data.success) {

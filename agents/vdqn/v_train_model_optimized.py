@@ -1,13 +1,14 @@
 import os
 import re
 import sys
+import tempfile
 import logging
 import numpy as np
 import torch
 import wandb
 import time
 import psutil
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import pickle
 from pickle import HIGHEST_PROTOCOL
 import hashlib
@@ -17,12 +18,15 @@ import subprocess
 from utils.adaptive_normalization import adaptive_normalizer
 import json as _json
 
+from train.infrastructure.logging.tee import TailTruncatingTee
 # Добавляем путь к проекту
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from agents.vdqn.dqnsolver import DQNSolver
 from agents.vdqn.cfg.vconfig import vDqnConfig
 from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized
+from train.infrastructure.gym.position_aware_wrapper import PositionAwareEpisodeWrapper
+from train.domain.episode.extension_policy import EpisodeExtensionPolicy
 from envs.dqn_model.gym.gconfig import GymConfig
 from agents.vdqn.hyperparameter.symbol_overrides import get_symbol_override
 
@@ -82,6 +86,36 @@ def _sha256_of_file(path: str) -> Optional[str]:
         return h.hexdigest()
     except Exception:
         return None
+
+
+def _atomic_write_json(path: str, data: Dict) -> None:
+    try:
+        dir_path = os.path.dirname(path) or "."
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, prefix=".tmp_", suffix=".json")
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                _json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+            raise
+    except Exception:
+        # Безопасно игнорируем сбой записи (не ломаем обучение)
+        pass
+
+
+def _safe_read_json(path: str) -> Any:
+    try:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                return _json.load(f)
+    except Exception:
+        return None
+    return None
 
 
 def _safe_cfg_snapshot(cfg_obj) -> Dict:
@@ -222,11 +256,30 @@ def _save_training_results(
             'avg_minutes_between_buys': ( (total_steps_processed * 5.0) / float(action_counts_total.get(1, 0) or 1) ) if (action_counts_total.get(1, 0) or 0) > 0 else None,
             'total_steps_processed': total_steps_processed,
             'episode_length': episode_length, # Добавляем длину эпизода
+            # Продажи по причинам (кумулятивно из env)
+            'sell_types_total': (getattr(env, 'cumulative_sell_types', {}) if hasattr(env, 'cumulative_sell_types') else {}),
             # Дополнительные метрики из dqn_solver
             'epsilon_final_value': dqn_solver.epsilon if dqn_solver is not None else None,
             'learning_rate_final_value': dqn_solver.optimizer.param_groups[0]['lr'] if dqn_solver and dqn_solver.optimizer and dqn_solver.optimizer.param_groups else None,
+             # BUY/HOLD агрегаты
+             'buy_stats_total': (getattr(env, 'buy_stats_total', {}) if hasattr(env, 'buy_stats_total') else {}),
+             'hold_stats_total': (getattr(env, 'hold_stats_total', {}) if hasattr(env, 'hold_stats_total') else {}),
         }
         
+        # Печать BUY/HOLD статистики (если есть)
+        try:
+            buy_total = getattr(env, 'buy_stats_total', {}) if hasattr(env, 'buy_stats_total') else {}
+            hold_total = getattr(env, 'hold_stats_total', {}) if hasattr(env, 'hold_stats_total') else {}
+            if isinstance(buy_total, dict) and buy_total:
+                print("\n📊 Детализация BUY:")
+                for k, v in buy_total.items():
+                    print(f"  • {k}: {int(v)}")
+            if isinstance(hold_total, dict) and hold_total:
+                print("\n📊 Детализация HOLD:")
+                for k, v in hold_total.items():
+                    print(f"  • {k}: {int(v)}")
+        except Exception:
+            pass
         # Метаданные окружения и запуска
         git_commit = None
         try:
@@ -321,6 +374,8 @@ def _save_training_results(
             'buffer_path': getattr(cfg, 'replay_buffer_path', getattr(cfg, 'buffer_path', None)),
             'model_sha256': _sha256_of_file(cfg.model_path) if cfg and getattr(cfg, 'model_path', None) and os.path.exists(cfg.model_path) else None,
             'buffer_sha256': _sha256_of_file(getattr(cfg, 'replay_buffer_path', getattr(cfg, 'buffer_path', None))) if cfg and getattr(cfg, 'replay_buffer_path', getattr(cfg, 'buffer_path', None)) and os.path.exists(getattr(cfg, 'replay_buffer_path', getattr(cfg, 'buffer_path', None))) else None,
+            'encoder_path': getattr(cfg, 'encoder_path', None),
+            'encoder_sha256': _sha256_of_file(getattr(cfg, 'encoder_path', None)) if cfg and getattr(cfg, 'encoder_path', None) and os.path.exists(getattr(cfg, 'encoder_path', None)) else None,
         }
 
         # Объединяем
@@ -388,7 +443,8 @@ def _save_training_results(
                 'replay': 'replay.pkl' if (dqn_solver and getattr(dqn_solver, 'cfg', None) and getattr(dqn_solver.cfg, 'buffer_path', None)) else None,
                 'result': 'train_result.pkl',
                 'best_model': 'best_model.pth' if os.path.exists(os.path.join(run_dir, 'best_model.pth')) else None,
-                'last_model': 'last_model.pth' if os.path.exists(os.path.join(run_dir, 'last_model.pth')) else None
+                'last_model': 'last_model.pth' if os.path.exists(os.path.join(run_dir, 'last_model.pth')) else None,
+                'encoder': getattr(cfg, 'encoder_path', None)
             },
             'best_metrics': {
                 'winrate': float(best_winrate) if isinstance(best_winrate, (int, float)) else None
@@ -448,6 +504,8 @@ def train_model_optimized(
             use_wandb = False
     
     try:
+        # Инициализируем файловый лог с триммингом (DDD infra)
+        run_dir = None
         # Проверяем и создаем конфигурацию по умолчанию
         if cfg is None:
             cfg = vDqnConfig()
@@ -505,13 +563,16 @@ def train_model_optimized(
 
             # Создаем GymConfig для получения значения по умолчанию
             gym_cfg = GymConfig()
-            env = CryptoTradingEnvOptimized(
+            base_env = CryptoTradingEnvOptimized(
                 dfs=dfs,
                 cfg=gym_cfg,
                 lookback_window=override.get('gym_config', {}).get('lookback_window', gym_cfg.lookback_window) if override else gym_cfg.lookback_window,
                 indicators_config=indicators_config,
                 episode_length=episode_length or gym_cfg.episode_length
             )
+            # Оборачиваем env продлением эпизода на +100 шагов при открытой позиции
+            policy = EpisodeExtensionPolicy(max_extension=20, extension_steps=100)
+            env = PositionAwareEpisodeWrapper(base_env, policy=policy)
 
             # risk_management в env
             if override and 'risk_management' in override:
@@ -663,6 +724,13 @@ def train_model_optimized(
         run_dir = os.path.join("result", "dqn", symbol_dir_name, "runs", this_run_id)
         os.makedirs(run_dir, exist_ok=True)
 
+        # Перенаправляем stdout в файл train.log с ограничением 100 МБ (оставляем хвост)
+        try:
+            log_path = os.path.join(run_dir, 'train.log')
+            sys.stdout = TailTruncatingTee(log_path, max_bytes=100*1024*1024)
+        except Exception:
+            pass
+
         # Код для артефактов по умолчанию
         artifacts_code = f"{symbol_code}_{short_id}"
 
@@ -715,7 +783,54 @@ def train_model_optimized(
         # Подготавливаем НОВЫЕ пути сохранения: сразу в run_dir
         new_model_path = os.path.join(run_dir, 'model.pth')
         new_buffer_path = os.path.join(run_dir, 'replay.pkl')
-        new_encoder_path = os.path.join(run_dir, 'encoder_only.pth')
+        # Структура версионного хранения энкодеров: models/<symbol>/encoder/<frozen|unfrozen>/vN
+        try:
+            freeze_encoder = getattr(cfg, 'freeze_encoder', False)
+        except Exception:
+            freeze_encoder = False
+        encoder_base = os.path.join("result", "dqn", symbol_dir_name, "encoder")
+        encoder_type = "frozen" if freeze_encoder else "unfrozen"
+        encoder_type_dir = os.path.join(encoder_base, encoder_type)
+        try:
+            os.makedirs(encoder_type_dir, exist_ok=True)
+        except Exception:
+            pass
+        # Определяем следующую версию vN (один раз на запуск)
+        version = 1
+        try:
+            existing_versions = []
+            for _d in os.listdir(encoder_type_dir):
+                _p = os.path.join(encoder_type_dir, _d)
+                if os.path.isdir(_p) and _d.startswith('v'):
+                    try:
+                        existing_versions.append(int(_d[1:]))
+                    except Exception:
+                        continue
+            version = (max(existing_versions) + 1) if existing_versions else 1
+        except Exception:
+            version = 1
+        version_dir = os.path.join(encoder_type_dir, f"v{version}")
+        try:
+            os.makedirs(version_dir, exist_ok=True)
+        except Exception:
+            pass
+        new_encoder_path = os.path.join(version_dir, 'encoder_only.pth')
+        # Пробрасываем метаданные
+        try:
+            setattr(cfg, 'encoder_path', new_encoder_path)
+            setattr(cfg, 'encoder_version', version)
+            setattr(cfg, 'encoder_type', encoder_type)
+        except Exception:
+            pass
+        try:
+            print(f"🎯 Encoder target path: {new_encoder_path}")
+        except Exception:
+            pass
+        # Предварительно создаём пустой манифест (будет перезаписан атомарно после сохранения весов)
+        try:
+            _atomic_write_json(os.path.join(version_dir, 'encoder_manifest.json'), {'status': 'pending'})
+        except Exception:
+            pass
 
         # Если дообучаем из структурированного пути runs/... и parent/root не переданы — авто‑детект
         try:
@@ -1308,6 +1423,16 @@ def train_model_optimized(
             print(f"  • Средний winrate: {np.mean(episode_winrates):.3f}")
         else:
             print(f"\n⚠️ Нет сделок за все {episodes} эпизодов!")
+
+        # Печать причин продаж (если есть)
+        try:
+            sell_types_total = getattr(env, 'cumulative_sell_types', {}) if hasattr(env, 'cumulative_sell_types') else {}
+            if isinstance(sell_types_total, dict) and sell_types_total:
+                print("\n🧾 Причины продаж (агрегат):")
+                for k, v in sell_types_total.items():
+                    print(f"  • {k}: {int(v)}")
+        except Exception:
+            pass
         
         if hasattr(cfg, 'use_wandb') and cfg.use_wandb:
             wandb.log({**stats_all, "scope": "cumulative", "episode": episodes})
@@ -1322,11 +1447,91 @@ def train_model_optimized(
         except Exception:
             norm_stats = None
         dqn_solver.save(normalization_stats=norm_stats)
+        # После сохранения весов — финализируем encoder_manifest.json, encoder_index.json и current.json (атомарно)
+        try:
+            enc_path = getattr(cfg, 'encoder_path', None)
+            enc_sha = _sha256_of_file(enc_path) if enc_path and os.path.exists(enc_path) else None
+            enc_size = os.path.getsize(enc_path) if enc_path and os.path.exists(enc_path) else None
+            # Попытка оценить число параметров энкодера (если модель предоставляет метод)
+            try:
+                num_params = None
+                if hasattr(dqn_solver.model, 'get_feature_extractor'):
+                    _fe = dqn_solver.model.get_feature_extractor()
+                    if _fe is not None:
+                        num_params = sum(p.numel() for p in _fe.parameters())
+            except Exception:
+                num_params = None
+
+            manifest_data = {
+                'manifest_version': 1,
+                'run_id': this_run_id,
+                'training_run_dir': run_dir,
+                'freeze_encoder': bool(getattr(cfg, 'freeze_encoder', False)),
+                'encoder_type': getattr(cfg, 'encoder_type', None),
+                'version': int(getattr(cfg, 'encoder_version', 0) or 0),
+                'created_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'symbol': symbol_dir_name,
+                'encoder': {
+                    'path_abs': os.path.abspath(enc_path) if enc_path else None,
+                    'path_rel': enc_path,
+                    'sha256': enc_sha,
+                    'size_bytes': enc_size,
+                    'num_parameters': num_params,
+                },
+                'model': {
+                    'path_abs': os.path.abspath(cfg.model_path) if getattr(cfg, 'model_path', None) else None,
+                    'path_rel': getattr(cfg, 'model_path', None),
+                },
+                'parent_run_id': parent_run_id,
+                'root_id': this_root_id,
+                # Места для опциональных данных об обучении/датах/метриках можно заполнить позже
+            }
+            enc_manifest_path = os.path.join(os.path.dirname(enc_path) if enc_path else run_dir, 'encoder_manifest.json')
+            _atomic_write_json(enc_manifest_path, manifest_data)
+
+            # Обновляем encoder_index.json списком версий
+            encoder_base = os.path.join("result", "dqn", symbol_dir_name, "encoder")
+            encoder_type = getattr(cfg, 'encoder_type', 'unfrozen') or 'unfrozen'
+            encoder_type_dir = os.path.join(encoder_base, encoder_type)
+            index_path = os.path.join(encoder_type_dir, 'encoder_index.json')
+            index_data = _safe_read_json(index_path) or []
+            index_data.append({
+                'version': int(getattr(cfg, 'encoder_version', 0) or 0),
+                'run_id': this_run_id,
+                'date': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'encoder_type': encoder_type,
+                'encoder_path': enc_path,
+                'model_path': getattr(cfg, 'model_path', None),
+                'symbol': symbol_dir_name,
+                'sha256': enc_sha,
+                'size_bytes': enc_size,
+            })
+            _atomic_write_json(index_path, index_data)
+
+            # Указатель на текущую версию
+            current_path = os.path.join(encoder_type_dir, 'current.json')
+            _atomic_write_json(current_path, {'version': f"v{int(getattr(cfg, 'encoder_version', 0) or 0)}", 'sha256': enc_sha})
+        except Exception:
+            pass
+        # Гарантируем сохранение энкодера (fallback): если файл отсутствует — сохраним модель (включая encoder_only)
+        try:
+            enc_check = getattr(cfg, 'encoder_path', None)
+            if enc_check and not os.path.exists(enc_check):
+                dqn_solver.save_model()
+        except Exception:
+            pass
         # Финальный last_model снапшот
         try:
             import shutil as _sh
             if os.path.exists(cfg.model_path):
                 _sh.copy2(cfg.model_path, os.path.join(run_dir, 'last_model.pth'))
+            # Дополнительно сохраняем удобную копию энкодера в run_dir (если существует)
+            try:
+                enc_src = getattr(cfg, 'encoder_path', None)
+                if enc_src and os.path.exists(enc_src):
+                    _sh.copy2(enc_src, os.path.join(run_dir, 'last_encoder.pth'))
+            except Exception:
+                pass
         except Exception:
             pass
         
@@ -1358,6 +1563,13 @@ def train_model_optimized(
             training_start_time=training_start_time,
             current_total_training_time=total_training_time, # Используем final total_training_time
         )
+
+        # Вывод статистики продлений (если обёртка активна)
+        try:
+            if hasattr(env, 'episode_extensions_total'):
+                print(f"  • Продления эпизодов: {int(env.episode_extensions_total)} раз (+{int(env.episode_extension_steps_total)} шагов)")
+        except Exception:
+            pass
 
         # Анализ трендов
         if len(episode_winrates) > 10:

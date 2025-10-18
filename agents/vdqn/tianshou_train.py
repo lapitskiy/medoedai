@@ -33,7 +33,7 @@ except Exception:
     CSVLogger = None
 
 from agents.vdqn.dqnn import DQNN
-from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized
+from envs.dqn_model.gym.crypto_trading_env_tainshou import CryptoTradingEnvOptimized as CryptoTradingEnvOptimized
 from envs.dqn_model.gym.crypto_trading_env_multi import MultiCryptoTradingEnv
 from envs.dqn_model.gym.gconfig import GymConfig
 from agents.vdqn.hyperparameter.symbol_overrides import get_symbol_override
@@ -41,6 +41,8 @@ from utils.config_loader import get_config_value
 from utils.adaptive_normalization import adaptive_normalizer
 from threading import Thread
 from gymnasium.wrappers import TimeLimit
+from agents.vdqn.tianshou.env_wrappers import PositionAwareEpisodeWrapper
+from agents.vdqn.cfg.extension_config import SYMBOL_EXTENSION_CONFIG, DEFAULT_EXTENSION_CONFIG
 
 
 def _symbol_code(sym: str) -> str:
@@ -117,6 +119,9 @@ class TradingEnvWrapper(gym.Env):
         # Счетчики эпизода для лаконичного логирования
         self._episode_idx = -1
         self._episode_steps = 0
+
+        # Снимок кумулятивных причин продаж на границах эпизодов
+        self.cumulative_sell_stats = {}
         self._episode_reward = 0.0
 
     def reset(self, *args, **kwargs):
@@ -203,6 +208,19 @@ class TradingEnvWrapper(gym.Env):
                 info = dict(info)
                 if trades:
                     info['trades_episode'] = trades
+                # Снимем снапшот cumulative_sell_types до reset() со стороны Collector
+                try:
+                    base_env = self.env
+                    for _ in range(10):
+                        if hasattr(base_env, 'env'):
+                            base_env = getattr(base_env, 'env')
+                        else:
+                            break
+                    st = getattr(base_env, 'cumulative_sell_types', None)
+                    if isinstance(st, dict):
+                        self.cumulative_sell_stats = dict(st)
+                except Exception:
+                    pass
                 # Проксируем buy-* метрики, если доступны в env
                 for k_src, k_dst in (
                     ('buy_attempts', 'buy_attempts'),
@@ -320,7 +338,13 @@ def _is_multi_crypto(dfs: Dict) -> bool:
     return False
 
 
-def make_env_fn(dfs: Dict, episode_length: Optional[int], gym_override: Optional[GymConfig] = None) -> Callable[[], CryptoTradingEnvOptimized]:
+def make_env_fn(
+    dfs: Dict,
+    episode_length: Optional[int],
+    gym_override: Optional[GymConfig] = None,
+    *,
+    enable_extension: bool = True,
+) -> Callable[[], CryptoTradingEnvOptimized]:
     # Определим символ (если одиночные данные)
     symbol = None
     try:
@@ -357,13 +381,41 @@ def make_env_fn(dfs: Dict, episode_length: Optional[int], gym_override: Optional
             env = TradingEnvWrapper(env)
         except Exception:
             pass
-        # Затем нормируем длину эпизода стандартным TimeLimit
-        try:
-            max_steps = int(episode_length or gym_cfg.episode_length or 0)
-            if max_steps and max_steps > 0:
-                env = TimeLimit(env, max_episode_steps=max_steps)
-        except Exception:
-            pass
+        # Подключаем продление эпизода для train-окружений; для test — оставляем TimeLimit
+        if enable_extension:
+            try:
+                sym_key = None
+                try:
+                    if _is_multi_crypto(dfs):
+                        sym_key = 'MULTI'
+                    else:
+                        sym_key = (symbol or '').upper() if isinstance(symbol, str) else None
+                except Exception:
+                    sym_key = None
+                cfg_ext = DEFAULT_EXTENSION_CONFIG
+                if isinstance(sym_key, str) and sym_key in SYMBOL_EXTENSION_CONFIG:
+                    cfg_ext = SYMBOL_EXTENSION_CONFIG[sym_key]
+                env = PositionAwareEpisodeWrapper(
+                    env,
+                    max_extension=int(cfg_ext.get('max_extension', 20)),
+                    extension_steps=int(cfg_ext.get('extension_steps', 100)),
+                )
+            except Exception:
+                # Фолбэк: если не удалось подключить враппер — используем TimeLimit
+                try:
+                    max_steps = int(episode_length or gym_cfg.episode_length or 0)
+                    if max_steps and max_steps > 0:
+                        env = TimeLimit(env, max_episode_steps=max_steps)
+                except Exception:
+                    pass
+        else:
+            # Для тестовых окружений всегда используем TimeLimit, чтобы гарантировать завершение
+            try:
+                max_steps = int(episode_length or gym_cfg.episode_length or 0)
+                if max_steps and max_steps > 0:
+                    env = TimeLimit(env, max_episode_steps=max_steps)
+            except Exception:
+                pass
         # Применим risk-management overrides в env
         try:
             if override and 'risk_management' in override:
@@ -658,35 +710,60 @@ def train_tianshou_dqn(
         pass
 
     # Env уже обёрнут в TradingEnvWrapper внутри make_env_fn
-    def wrapped_env_fn():
-        return make_env_fn(dfs, episode_length)()
+    def wrapped_env_fn_train():
+        return make_env_fn(dfs, episode_length, enable_extension=True)()
+
+    def wrapped_env_fn_test():
+        return make_env_fn(dfs, episode_length, enable_extension=False)()
     # Флаги окружения уже прочитаны выше (force_dummy/force_single/debug_*)
 
     # Пытаемся создать subprocess-векторы; при ошибке или флаге откатываемся к DummyVectorEnv/одиночным env
+    # Префлайт: проверим, что одиночное окружение способно reset/step (ранний фейл, если зависание)
+    try:
+        _pre_env = wrapped_env_fn_train()
+        try:
+            _obs, _info = _pre_env.reset()
+            print(f"🧪 preflight: reset ok, obs type={type(_obs)}")
+            _a = _pre_env.action_space.sample()
+            _res = _pre_env.step(_a)
+            print("🧪 preflight: step ok")
+        except Exception as _pe:
+            print(f"❌ preflight failed: {_pe}")
+            raise
+        finally:
+            try:
+                if hasattr(_pre_env, 'close'):
+                    _pre_env.close()
+            except Exception:
+                pass
+    except Exception as _fatal_pe:
+        print("❌ Критическая ошибка инициализации окружения (preflight)")
+        raise
+
     try:
         if force_single:
-            train_envs = [wrapped_env_fn()]
-            test_envs = [wrapped_env_fn()]
+            train_envs = [wrapped_env_fn_train()]
+            test_envs = [wrapped_env_fn_test()]
             print("ℹ️ Форсирован одиночный Env (TS_FORCE_SINGLE)")
         elif not force_dummy:
-            train_envs = SubprocVectorEnv([wrapped_env_fn for _ in range(n_envs)])
-            test_envs = SubprocVectorEnv([wrapped_env_fn for _ in range(max(1, n_envs // 2))])
+            train_envs = SubprocVectorEnv([wrapped_env_fn_train for _ in range(n_envs)])
+            test_envs = SubprocVectorEnv([wrapped_env_fn_test for _ in range(max(1, n_envs // 2))])
         else:
             from tianshou.env import DummyVectorEnv
-            train_envs = DummyVectorEnv([wrapped_env_fn for _ in range(max(1, n_envs))])
-            test_envs = DummyVectorEnv([wrapped_env_fn for _ in range(max(1, n_envs // 2))])
+            train_envs = DummyVectorEnv([wrapped_env_fn_train for _ in range(max(1, n_envs))])
+            test_envs = DummyVectorEnv([wrapped_env_fn_test for _ in range(max(1, n_envs // 2))])
             print("ℹ️ Форсирован DummyVectorEnv (TS_FORCE_DUMMY)")
     except Exception as e:
         print(f"⚠️ SubprocVectorEnv не удалось создать, откатываюсь к DummyVectorEnv: {e}")
         try:
             from tianshou.env import DummyVectorEnv
-            train_envs = DummyVectorEnv([wrapped_env_fn for _ in range(max(1, n_envs))])
-            test_envs = DummyVectorEnv([wrapped_env_fn for _ in range(max(1, n_envs // 2))])
+            train_envs = DummyVectorEnv([wrapped_env_fn_train for _ in range(max(1, n_envs))])
+            test_envs = DummyVectorEnv([wrapped_env_fn_test for _ in range(max(1, n_envs // 2))])
         except Exception as e2:
             # Финальный шанс: одинарные окружения
             print(f"⚠️ DummyVectorEnv тоже не создался, пробую одиночные env: {e2}")
-            train_envs = [wrapped_env_fn()]
-            test_envs = [wrapped_env_fn()]
+            train_envs = [wrapped_env_fn_train()]
+            test_envs = [wrapped_env_fn_test()]
     try:
         # Вычисляем фактическое число env для корректной конфигурации буфера/сборки
         env_count = (len(train_envs) if isinstance(train_envs, (list, tuple)) else getattr(train_envs, 'env_num', n_envs))
@@ -1387,6 +1464,41 @@ def train_tianshou_dqn(
     except Exception:
         pass
 
+    # Соберём агрегаты продления эпизодов из train_envs (если возможно локально)
+    try:
+        def _collect_extension_stats(env_container):
+            total_ext = 0
+            total_steps_ext = 0
+            try:
+                # Доступно только для локальных env (список или DummyVectorEnv)
+                env_list = []
+                if hasattr(env_container, 'envs'):
+                    env_list = getattr(env_container, 'envs') or []
+                elif isinstance(env_container, (list, tuple)):
+                    env_list = env_container
+                for _env in env_list:
+                    try:
+                        cur = _env
+                        # Разворачиваем обёртки
+                        for _ in range(6):
+                            if hasattr(cur, 'env'):
+                                cur = getattr(cur, 'env')
+                            else:
+                                break
+                        te = getattr(cur, 'total_episode_extensions', 0)
+                        ts = getattr(cur, 'total_extension_steps', 0)
+                        total_ext += int(te or 0)
+                        total_steps_ext += int(ts or 0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return total_ext, total_steps_ext
+
+        total_ext_count, total_ext_steps = _collect_extension_stats(train_envs)
+    except Exception:
+        total_ext_count, total_ext_steps = 0, 0
+
     # Обновляем чекпоинт-метаданные (manifest, best_model и т.д.)
     try:
         save_checkpoint_fn(
@@ -1611,6 +1723,69 @@ def train_tianshou_dqn(
         except Exception:
             learning_rate_final_value = None
 
+        # Сбор агрегатов причин продаж через векторное API (устойчиво для Subproc/Dummy)
+        sell_types_agg = {}
+        try:
+            # 1) Попытка получить экспорт прямо из сред (работает в SubprocVectorEnv через call)
+            export_list = None
+            try:
+                if hasattr(train_envs, 'call'):
+                    export_list = train_envs.call('export_cumulative_sell_types')
+                elif hasattr(train_envs, 'get_attr'):
+                    export_list = train_envs.get_attr('export_cumulative_sell_types')
+            except Exception:
+                export_list = None
+            if isinstance(export_list, list) and export_list:
+                for st in export_list:
+                    try:
+                        if callable(st):
+                            st = st()
+                        if isinstance(st, dict):
+                            for k, v in st.items():
+                                sell_types_agg[k] = sell_types_agg.get(k, 0) + int(v or 0)
+                    except Exception:
+                        pass
+            # 2) Фолбэк: из врапперов (snapshot при done)
+            if not sell_types_agg:
+                env_list = []
+                if hasattr(train_envs, 'envs'):
+                    env_list = getattr(train_envs, 'envs') or []
+                elif isinstance(train_envs, (list, tuple)):
+                    env_list = train_envs
+                for _env in env_list:
+                    try:
+                        snap = getattr(_env, 'cumulative_sell_stats', None)
+                        if isinstance(snap, dict) and snap:
+                            for k, v in snap.items():
+                                sell_types_agg[k] = sell_types_agg.get(k, 0) + int(v or 0)
+                    except Exception:
+                        pass
+            # 3) Фолбэк: напрямую из базовых env (cumulative_sell_types / sell_types)
+            if not sell_types_agg:
+                env_list = []
+                if hasattr(train_envs, 'envs'):
+                    env_list = getattr(train_envs, 'envs') or []
+                elif isinstance(train_envs, (list, tuple)):
+                    env_list = train_envs
+                for _env in env_list:
+                    try:
+                        cur = _env
+                        for _ in range(10):
+                            if hasattr(cur, 'env'):
+                                cur = getattr(cur, 'env')
+                            else:
+                                break
+                        st = getattr(cur, 'cumulative_sell_types', None)
+                        if not isinstance(st, dict):
+                            st = getattr(cur, 'sell_types', None)
+                        if isinstance(st, dict):
+                            for k, v in st.items():
+                                sell_types_agg[k] = sell_types_agg.get(k, 0) + int(v or 0)
+                    except Exception:
+                        pass
+        except Exception:
+            sell_types_agg = {}
+
         training_results = {
             'episodes': episodes,
             'actual_episodes': approx_actual_episodes,
@@ -1652,6 +1827,10 @@ def train_tianshou_dqn(
                 if (action_counts_total.get(1, 0) or 0) > 0 else None
             ),
             'best_episode_idx': (best_epoch if isinstance(best_epoch, int) and best_epoch >= 0 else None),
+            # Продления эпизодов (агрегаты с train_envs)
+            'episode_extensions_total': int(total_ext_count),
+            'episode_extension_steps_total': int(total_ext_steps),
+            'sell_types_total': sell_types_agg,
         }
         print(f"training_results train_result.pkl {training_results}")
         enriched_results = {
@@ -1730,6 +1909,10 @@ def train_tianshou_dqn(
             print(f"  • Планируемые эпизоды: {planned}")
             print(f"  • Реальные эпизоды (оценка): {actual}")
             print(f"  • Early Stopping: {'Сработал' if stopped_by_trend else 'Не сработал'}")
+            try:
+                print(f"  • Продления эпизодов: {int(total_ext_count)} раз (+{int(total_ext_steps)} шагов)")
+            except Exception:
+                pass
             if epoch_test_rewards:
                 try:
                     avg_wr = float(np.mean(epoch_test_rewards))
@@ -1744,6 +1927,11 @@ def train_tianshou_dqn(
                     print(f"  • Общий убыток: {total_loss:.4f}")
                 if avg_duration is not None:
                     print(f"  • Средняя длительность сделки: {avg_duration:.1f} минут")
+            # Печать агрегатов причин продаж
+            if isinstance(sell_types_agg, dict) and sell_types_agg:
+                print(f"\n🧾 Причины продаж (агрегат):")
+                for k, v in sell_types_agg.items():
+                    print(f"  • {k}: {int(v)}")
             else:
                 print(f"\n⚠️ Нет сделок (по собранной выборке)")
         except Exception as se:
