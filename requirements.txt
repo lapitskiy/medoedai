@@ -70,5 +70,4 @@ uvicorn[standard]==0.30.1
 pydantic==2.7.4
 numpy
 python-dotenv
-tianshou>=1.2.0,<2
 setuptools>=70

@@ -96,6 +96,5 @@ tzdata==2024.1
 urllib3==2.2.1
 Werkzeug==3.0.3
 wrapt==1.16.0
-tianshou>=1.2.0,<2
 setuptools>=70
 
