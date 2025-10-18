@@ -37,7 +37,7 @@ alembic
 # Trading & Data
 ccxt
 binance_historical_data
-gymnasium
+gymnasium==0.29.1
 
 # Monitoring & Logging
 wandb

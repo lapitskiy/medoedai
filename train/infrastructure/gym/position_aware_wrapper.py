@@ -125,3 +125,12 @@ class PositionAwareEpisodeWrapper(gym.Wrapper):
         return int(self.policy.total_extension_steps if self.policy else 0)
 
 
+    # Делегирование методов базовой среды, которые используются снаружи, но не определены во враппере
+    def get_n_step_return(self, *args, **kwargs):
+        """Проксирует вызов к базовой среде.
+
+        Делается явным методом, чтобы не зависеть от поведения gymnasium.Wrapper в разных версиях.
+        """
+        return self.env.get_n_step_return(*args, **kwargs)
+
+
