@@ -187,8 +187,14 @@ services:
         chmod +x scripts/wait-for-redis.sh &&
         scripts/wait-for-redis.sh &&
         echo '🧹 Очищаю очередь train перед стартом воркера...' &&
+        # Удаляем оставшиеся невзятые сообщения из очереди train (purge)
+        (redis-cli -h redis -p 6379 DEL train >/dev/null 2>&1 || true) &&
+        # Чистим unacked/bindings для train
         (redis-cli -h redis -p 6379 DEL train >/dev/null 2>&1 || true) &&
         (redis-cli -h redis -p 6379 KEYS '_kombu.binding.train*' | xargs -r -n 1 redis-cli -h redis -p 6379 DEL >/dev/null 2>&1 || true) &&
+        (redis-cli -h redis -p 6379 KEYS 'unacked*' | xargs -r -n 1 redis-cli -h redis -p 6379 DEL >/dev/null 2>&1 || true) &&
+        # На всякий случай очистим отметки UI задач по train
+        (redis-cli -h redis -p 6379 LTRIM ui:tasks 1000000 -1 >/dev/null 2>&1 || true) &&
         echo '✅ Очередь train очищена' &&
         NPROC=$$(nproc); THREADS=$$(python -c 'import os,math; n=os.cpu_count() or 1; f=float(os.environ.get("TRAIN_CPU_FRACTION", "0.8")); print(max(1,int(n*f)))'); export OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$THREADS} MKL_NUM_THREADS=$${MKL_NUM_THREADS:-$$THREADS} TORCH_NUM_THREADS=$${TORCH_NUM_THREADS:-$$THREADS} OMP_SCHEDULE=$${OMP_SCHEDULE:-dynamic} MKL_DYNAMIC=$${MKL_DYNAMIC:-true} MKL_INTERFACE_LAYER=$${MKL_INTERFACE_LAYER:-LP64}; echo '🚀 CPU/GPU Optimization: Using '"$$THREADS"'/'"$$NPROC"' threads (OMP='"$$OMP_NUM_THREADS"', MKL='"$$MKL_NUM_THREADS"', TORCH='"$$TORCH_NUM_THREADS"')'; exec python -W ignore::DeprecationWarning -m celery -A tasks worker -Q train -P $${CELERY_POOL:-prefork} -c $${CELERY_CONCURRENCY:-1} --loglevel=info
       "

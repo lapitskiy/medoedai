@@ -57,6 +57,32 @@
                 <h2>🎯 Обучение DQN модели</h2>
                 <p>Запустите обучение Deep Q-Network модели для торговли криптовалютами</p>
                 <div class="form-group">
+                    <label>Символ для обучения</label>
+                    <select id="trainSymbolSelect" class="form-control">
+                        <option value="BTCUSDT">BTC</option>
+                        <option value="TONUSDT">TON</option>
+                        <option value="ETHUSDT">ETH</option>
+                        <option value="SOLUSDT">SOL</option>
+                        <option value="ADAUSDT">ADA</option>
+                        <option value="BNBUSDT">BNB</option>
+                        <option value="XMRUSDT">XMR</option>
+                        <option value="XRPUSDT">XRP</option>
+                    </select>
+                </div>
+                <div class="form-group" id="encoderGroup" style="display:none;">
+                    <label>Энкодер (@unfrozen)</label>
+                    <select id="encoderSelect" class="form-control">
+                        <option value="">Загрузка...</option>
+                    </select>
+                </div>
+                <div id="encoderManifest" class="status info" style="display:none; white-space: pre-wrap;"></div>
+                <div class="form-group" id="trainEncoderGroup" style="display:none;">
+                    <label>
+                        <input type="checkbox" id="trainEncoderCheckbox" checked>
+                        Обучать энкодер (unfrozen)
+                    </label>
+                </div>
+                <div class="form-group">
                     <label>Эпизоды обучения</label>
                     <input id="episodesInput" class="form-control" type="number" min="1" step="1" value="1000">
                 </div>
@@ -68,24 +94,8 @@
                     <label>Seed (если пусто — сгенерируем случайный)</label>
                     <input id="trainSeedInput" class="form-control" type="number" min="1" step="1" placeholder="например, 42">
                 </div>
-                <div class="form-group">
-                    <label>Encoder</label>
-                    <select id="encoderSelect" class="form-control">
-                        <option value="">Default</option>
-                        <option value="resnet">ResNet</option>
-                        <option value="transformer">Transformer</option>
-                    </select>
-                </div>
                 <div class="button-group">
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BTCUSDT', 'optimized')">🚀 Обучить BTC</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('TONUSDT', 'optimized')">🚀 Обучить TON</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ETHUSDT', 'optimized')">🚀 Обучить ETH</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('SOLUSDT', 'optimized')">🚀 Обучить SOL</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('ADAUSDT', 'optimized')">🚀 Обучить ADA</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('BNBUSDT', 'optimized')">🚀 Обучить BNB</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('XMRUSDT', 'optimized')">🚀 Обучить XMR</button>
-                    <button class="btn btn-primary" onclick="startTrainingForSymbol('XRPUSDT', 'optimized')">🚀 Обучить XRP</button>
-                    <button class="btn btn.success" onclick="startTrainingMulti()">🌟 Обучить мультивалютную</button>
+                    <button class="btn btn-primary" onclick="startTrainingSelected()">🚀 Обучить</button>
                 </div>
                 <div id="trainStatus"></div>
             </div>
@@ -141,6 +151,12 @@
             try{ loadResultSymbolsForCreate(); }catch(_){ }
             loadContinueModels();
             loadRunsSymbols();
+            // Автоподгрузка энкодеров для текущего выбранного символа
+            try{
+                const symSel = document.getElementById('trainSymbolSelect');
+                const val = (symSel && symSel.value) ? symSel.value.trim() : '';
+                if(val){ loadEncodersForSymbol(val); }
+            }catch(_){ }
         });
 
         // Создать новую версию модели
@@ -444,19 +460,80 @@ P/L Ratio: ${plr}
             }
         }
 
+        // Кэш манифестов энкодеров для выбранного символа
+        let __encodersCache = { list: [], byId: {} };
+
+        // Загрузка списка энкодеров для символа
+        async function loadEncodersForSymbol(symbol){
+            const encGroup = document.getElementById('encoderGroup');
+            const encSelect = document.getElementById('encoderSelect');
+            const encManifestDiv = document.getElementById('encoderManifest');
+            const trainEncGroup = document.getElementById('trainEncoderGroup');
+            if(!encGroup || !encSelect) return;
+            encGroup.style.display = 'block';
+            trainEncGroup && (trainEncGroup.style.display = 'block');
+            encSelect.innerHTML = '<option value="">Загрузка...</option>';
+            encManifestDiv && (encManifestDiv.style.display = 'none');
+            __encodersCache = { list: [], byId: {} };
+            try {
+                const resp = await fetch('/api/encoders?symbol=' + encodeURIComponent(symbol));
+                const data = await resp.json();
+                const items = (data && data.success && Array.isArray(data.encoders)) ? data.encoders : [];
+                __encodersCache.list = items;
+                __encodersCache.byId = Object.fromEntries(items.map(it => [it.id, it]));
+                if(items.length === 0){
+                    encSelect.innerHTML = '<option value="">Нет доступных энкодеров</option>';
+                } else {
+                    const opts = ['<option value="">Выберите энкодер</option>'].concat(items.map(it => `<option value="${it.id}">${it.name || it.id}</option>`)).join('');
+                    encSelect.innerHTML = opts;
+                }
+            } catch(e){
+                encSelect.innerHTML = '<option value="">Ошибка загрузки</option>';
+            }
+        }
+
+        // Отображение манифеста выбранного энкодера
+        function onEncoderChanged(){
+            const encSelect = document.getElementById('encoderSelect');
+            const encManifestDiv = document.getElementById('encoderManifest');
+            if(!encSelect || !encManifestDiv) return;
+            const encId = encSelect.value;
+            if(!encId){ encManifestDiv.style.display = 'none'; return; }
+            const item = __encodersCache.byId[encId];
+            if(item && item.manifest){
+                try{
+                    encManifestDiv.textContent = JSON.stringify(item.manifest, null, 2);
+                }catch(_){ encManifestDiv.textContent = String(item.manifest); }
+                encManifestDiv.style.display = 'block';
+            } else {
+                encManifestDiv.textContent = 'Информация об энкодере недоступна';
+                encManifestDiv.style.display = 'block';
+            }
+        }
+
         // Запуск обучения с выбранным количеством эпизодов
         async function startTrainingForSymbol(symbol, engine='optimized') {
             const episodes = document.getElementById('episodesInput').value || 1000;
             const episodeLength = document.getElementById('episodeLengthInput').value || 2000;
             const seedVal = (document.getElementById('trainSeedInput')?.value || '').trim();
-            const encoderVal = (document.getElementById('encoderSelect')?.value || '').trim();
+            const encoderId = (document.getElementById('encoderSelect')?.value || '').trim();
+            const trainEncoder = !!(document.getElementById('trainEncoderCheckbox')?.checked);
             const statusDiv = document.getElementById('trainStatus');
-            statusDiv.innerHTML = '<div class="status info">⏳ Запуск обучения ' + symbol + '...</div>';
+            const isNewEncoder = !encoderId;
+            statusDiv.innerHTML = '<div class="status info">⏳ Запуск обучения ' + symbol + (isNewEncoder ? ' (новый энкодер)' : '') + '...</div>';
             try {
+                const payload = { symbol, episodes, episode_length: episodeLength, seed: seedVal, engine };
+                if (encoderId) {
+                    payload.encoder_id = encoderId;
+                    payload.train_encoder = trainEncoder;
+                } else {
+                    // Если энкодер не выбран — не грузим существующий, создаём и обучаем новый
+                    payload.train_encoder = true;
+                }
                 const resp = await fetch('/training/train_dqn_symbol', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                    body: JSON.stringify({ symbol, episodes, episode_length: episodeLength, seed: seedVal, engine, encoder: encoderVal })
+                    body: JSON.stringify(payload)
                 });
                 const data = await resp.json().catch(() => null);
                 if (data && data.success) {
@@ -474,32 +551,32 @@ P/L Ratio: ${plr}
             }
         }
 
-        async function startTrainingMulti() {
+        function startTrainingSelected(){
+            const sel = document.getElementById('trainSymbolSelect');
+            const encSelect = document.getElementById('encoderSelect');
             const statusDiv = document.getElementById('trainStatus');
-            const episodes = document.getElementById('episodesInput').value || 1000;
-            const episodeLength = document.getElementById('episodeLengthInput').value || 2000;
-            const seedVal = (document.getElementById('trainSeedInput')?.value || '').trim();
-            if (statusDiv) statusDiv.innerHTML = '<div class="status info">⏳ Запуск мультивалютного обучения...</div>';
-            try {
-                const resp = await fetch('/training/train_dqn_multi_crypto', {
-                    method: 'POST',
-                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ episodes, episode_length: episodeLength, seed: seedVal })
-                });
-                const data = await resp.json().catch(() => null);
-                if (data && data.success) {
-                    if (statusDiv) statusDiv.innerHTML = '<div class="status success">✅ Обучение (multi) запущено (task: ' + data.task_id + ')</div>';
-                } else if (data && data.error) {
-                    if (statusDiv) statusDiv.innerHTML = '<div class="status error">❌ ' + data.error + '</div>';
-                } else if (resp.redirected) {
-                    if (statusDiv) statusDiv.innerHTML = '<div class="status info">ℹ️ Обучение запущено, оставайтесь на странице.</div>';
-                } else {
-                    if (statusDiv) statusDiv.innerHTML = '<div class="status error">❌ Неизвестный ответ сервера</div>';
-                }
-            } catch (e) {
-                if (statusDiv) statusDiv.innerHTML = '<div class="status error">❌ Ошибка запуска мультивалютного обучения: ' + e.message + '</div>';
+            const symbol = sel ? (sel.value || '').trim() : '';
+            if(!symbol){
+                if(statusDiv) statusDiv.innerHTML = '<div class="status error">❌ Выберите символ</div>';
+                return;
             }
+            // Если список энкодеров ещё не загружен для символа — подгрузим
+            try{ if(encSelect && encSelect.options.length<=1) loadEncodersForSymbol(symbol); }catch(_){ }
+            startTrainingForSymbol(symbol, 'optimized');
         }
+
+        // Привязки
+        document.addEventListener('DOMContentLoaded', function(){
+            try{
+                const symSel = document.getElementById('trainSymbolSelect');
+                symSel && symSel.addEventListener('change', function(){
+                    const val = (this.value||'').trim();
+                    if(val){ loadEncodersForSymbol(val); }
+                });
+                const encSel = document.getElementById('encoderSelect');
+                encSel && encSel.addEventListener('change', onEncoderChanged);
+            }catch(_){ }
+        });
 
         // Секция "Доступные модели" удалена
 

@@ -79,6 +79,13 @@ def train_dqn_symbol_route():
     except Exception:
         episode_length = None
 
+    # Новые параметры: выбор энкодера и режим обучения энкодера
+    encoder_id = (data.get('encoder_id') or request.form.get('encoder_id') or '').strip()
+    train_encoder = data.get('train_encoder')
+    if isinstance(train_encoder, str):
+        train_encoder = train_encoder.strip().lower() in ('1','true','yes','on')
+    train_encoder = bool(train_encoder) if train_encoder is not None else False
+
     # Проверка активной задачи per-symbol в Redis + Celery
     running_key = f"celery:train:task:{symbol.upper()}"
     try:
@@ -113,7 +120,7 @@ def train_dqn_symbol_route():
 
     # Переключаемся на Tianshou по умолчанию (engine='ts')
     engine = (data.get('engine') or request.args.get('engine') or 'ts').lower()
-    task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length, 'engine': engine}, queue="train")
+    task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length, 'engine': engine, 'encoder_id': encoder_id, 'train_encoder': train_encoder}, queue="train")
     logger.info(f"/train_dqn_symbol queued symbol={symbol} queue=train task_id={task.id}")
     # Сохраняем task_id для отображения на главной и отметку per-symbol
     try:

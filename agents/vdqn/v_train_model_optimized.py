@@ -158,6 +158,49 @@ def _architecture_summary(model: torch.nn.Module) -> Dict:
     except Exception:
         return {}
 
+
+def get_env_attr_safe(env, name: str, default=None):
+    """Безопасно читает атрибут среды без варнингов Gym.
+    1) Пытается через get_wrapper_attr (для обёрток)
+    2) Затем из env.unwrapped
+    3) Затем напрямую из env
+    """
+    try:
+        if hasattr(env, 'get_wrapper_attr'):
+            try:
+                val = env.get_wrapper_attr(name)
+                if val is not None:
+                    return val
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        base = getattr(env, 'unwrapped', None)
+        if base is not None and hasattr(base, name):
+            return getattr(base, name)
+    except Exception:
+        pass
+    return default
+
+
+def set_env_attr_safe(env, name: str, value) -> bool:
+    """Безопасно устанавливает атрибут базовой среды (unwrapped),
+    при неудаче — прямо на env. Возвращает True при успехе.
+    """
+    try:
+        base = getattr(env, 'unwrapped', None)
+        if base is not None:
+            setattr(base, name, value)
+            return True
+    except Exception:
+        pass
+    try:
+        setattr(env, name, value)
+        return True
+    except Exception:
+        return False
+
 def prepare_data_for_training(dfs: Dict) -> Dict:
     """
     Подготавливает данные для тренировки, конвертируя DataFrame в numpy массивы
@@ -244,7 +287,7 @@ def _save_training_results(
             'symbol': training_name,
             'model_id': getattr(cfg, 'run_id', None) or (run_dir.split(os.sep)[-1] if run_dir else None), # Используем run_id из cfg или из run_dir
             'early_stopping_triggered': current_episode < total_episodes_planned,  # True если early stopping сработал
-            'reward_scale': float(getattr(env.cfg, 'reward_scale', 1.0)) if hasattr(env, 'cfg') else 1.0,
+            'reward_scale': float(getattr(get_env_attr_safe(env, 'cfg'), 'reward_scale', 1.0)),
             # --- Новые агрегаты для анализа поведения ---
             'action_counts_total': action_counts_total,
             'buy_attempts_total': buy_attempts_total,
@@ -257,19 +300,19 @@ def _save_training_results(
             'total_steps_processed': total_steps_processed,
             'episode_length': episode_length, # Добавляем длину эпизода
             # Продажи по причинам (кумулятивно из env)
-            'sell_types_total': (getattr(env, 'cumulative_sell_types', {}) if hasattr(env, 'cumulative_sell_types') else {}),
+            'sell_types_total': (get_env_attr_safe(env, 'cumulative_sell_types', {})),
             # Дополнительные метрики из dqn_solver
             'epsilon_final_value': dqn_solver.epsilon if dqn_solver is not None else None,
             'learning_rate_final_value': dqn_solver.optimizer.param_groups[0]['lr'] if dqn_solver and dqn_solver.optimizer and dqn_solver.optimizer.param_groups else None,
              # BUY/HOLD агрегаты
-             'buy_stats_total': (getattr(env, 'buy_stats_total', {}) if hasattr(env, 'buy_stats_total') else {}),
-             'hold_stats_total': (getattr(env, 'hold_stats_total', {}) if hasattr(env, 'hold_stats_total') else {}),
+             'buy_stats_total': (get_env_attr_safe(env, 'buy_stats_total', {})),
+             'hold_stats_total': (get_env_attr_safe(env, 'hold_stats_total', {})),
         }
         
         # Печать BUY/HOLD статистики (если есть)
         try:
-            buy_total = getattr(env, 'buy_stats_total', {}) if hasattr(env, 'buy_stats_total') else {}
-            hold_total = getattr(env, 'hold_stats_total', {}) if hasattr(env, 'hold_stats_total') else {}
+            buy_total = get_env_attr_safe(env, 'buy_stats_total', {})
+            hold_total = get_env_attr_safe(env, 'hold_stats_total', {})
             if isinstance(buy_total, dict) and buy_total:
                 print("\n📊 Детализация BUY:")
                 for k, v in buy_total.items():
@@ -312,33 +355,33 @@ def _save_training_results(
         # Снимок параметров окружения и данных (для воспроизводимости) ---
         gym_snapshot = {}
         try:
-            # Reconstruct gym_snapshot from env
+            cfg_obj = get_env_attr_safe(env, 'cfg')
             gym_snapshot = {
-                'symbol': getattr(env, 'symbol', None),
-                'lookback_window': getattr(env, 'lookback_window', None),
-                'indicators_config': getattr(env, 'indicators_config', None),
-                'reward_scale': getattr(env.cfg, 'reward_scale', 1.0) if hasattr(env, 'cfg') else 1.0,
-                'episode_length': getattr(env, 'episode_length', None),
+                'symbol': get_env_attr_safe(env, 'symbol'),
+                'lookback_window': get_env_attr_safe(env, 'lookback_window'),
+                'indicators_config': get_env_attr_safe(env, 'indicators_config'),
+                'reward_scale': getattr(cfg_obj, 'reward_scale', 1.0),
+                'episode_length': get_env_attr_safe(env, 'episode_length'),
                 'funding_features': {
                     'present_in_input_df': [], # Not directly available from env, needs to be passed
                     'included': False,
                 },
                 'risk_management': {
-                    'STOP_LOSS_PCT': getattr(env, 'STOP_LOSS_PCT', None),
-                    'TAKE_PROFIT_PCT': getattr(env, 'TAKE_PROFIT_PCT', None),
-                    'min_hold_steps': getattr(env, 'min_hold_steps', None),
-                    'volume_threshold': getattr(env, 'volume_threshold', None),
-                    'base_stop_loss': getattr(env, 'base_stop_loss', None),
-                    'base_take_profit': getattr(env, 'base_take_profit', None),
-                    'base_min_hold': getattr(env, 'base_min_hold', None),
+                    'STOP_LOSS_PCT': get_env_attr_safe(env, 'STOP_LOSS_PCT'),
+                    'TAKE_PROFIT_PCT': get_env_attr_safe(env, 'TAKE_PROFIT_PCT'),
+                    'min_hold_steps': get_env_attr_safe(env, 'min_hold_steps'),
+                    'volume_threshold': get_env_attr_safe(env, 'volume_threshold'),
+                    'base_stop_loss': get_env_attr_safe(env, 'base_stop_loss'),
+                    'base_take_profit': get_env_attr_safe(env, 'base_take_profit'),
+                    'base_min_hold': get_env_attr_safe(env, 'base_min_hold'),
                 },
                 'position_sizing': {
-                    'base_position_fraction': getattr(env, 'base_position_fraction', None),
-                    'position_fraction': getattr(env, 'position_fraction', None),
-                    'position_confidence_threshold': getattr(env, 'position_confidence_threshold', None),
+                    'base_position_fraction': get_env_attr_safe(env, 'base_position_fraction'),
+                    'position_fraction': get_env_attr_safe(env, 'position_fraction'),
+                    'position_confidence_threshold': get_env_attr_safe(env, 'position_confidence_threshold'),
                 },
-                'observation_space_shape': getattr(env, 'observation_space_shape', None),
-                'step_minutes': getattr(env.cfg, 'step_minutes', 5) if hasattr(env, 'cfg') else 5,
+                'observation_space_shape': get_env_attr_safe(env, 'observation_space_shape'),
+                'step_minutes': getattr(cfg_obj, 'step_minutes', 5),
             }
         except Exception as e:
             logger.warning(f"Ошибка при создании gym_snapshot: {e}")
@@ -584,12 +627,9 @@ def train_model_optimized(
                     ('volume_threshold', 'volume_threshold'),
                 ]:
                     if field_name in rm:
-                        try:
-                            setattr(env, env_attr, rm[field_name])
-                        except Exception:
-                            pass
+                        set_env_attr_safe(env, env_attr, rm[field_name])
                 try:
-                    print(f"🔧 RISK OVERRIDE[{crypto_symbol}] | SL={getattr(env,'STOP_LOSS_PCT',None)} | TP={getattr(env,'TAKE_PROFIT_PCT',None)} | minHold={getattr(env,'min_hold_steps',None)} | volThr={getattr(env,'volume_threshold',None)}")
+                    print(f"🔧 RISK OVERRIDE[{crypto_symbol}] | SL={get_env_attr_safe(env,'STOP_LOSS_PCT')} | TP={get_env_attr_safe(env,'TAKE_PROFIT_PCT')} | minHold={get_env_attr_safe(env,'min_hold_steps')} | volThr={get_env_attr_safe(env,'volume_threshold')}")
                 except Exception:
                     pass
             print(f"✅ Создано обычное окружение для одной криптовалюты")
@@ -610,32 +650,33 @@ def train_model_optimized(
                 funding_present = []
 
             # Базовые параметры окружения и риск-менеджмента
+            cfg_obj2 = get_env_attr_safe(env, 'cfg')
             gym_snapshot = {
-                'symbol': getattr(env, 'symbol', None),
-                'lookback_window': getattr(env, 'lookback_window', None),
-                'indicators_config': getattr(env, 'indicators_config', None),
-                'reward_scale': getattr(env.cfg, 'reward_scale', 1.0),
-                'episode_length': getattr(env, 'episode_length', None),
+                'symbol': get_env_attr_safe(env, 'symbol'),
+                'lookback_window': get_env_attr_safe(env, 'lookback_window'),
+                'indicators_config': get_env_attr_safe(env, 'indicators_config'),
+                'reward_scale': getattr(cfg_obj2, 'reward_scale', 1.0),
+                'episode_length': get_env_attr_safe(env, 'episode_length'),
                 'funding_features': {
                     'present_in_input_df': funding_present,
                     'included': bool(funding_present),
                 },
                 'risk_management': {
-                    'STOP_LOSS_PCT': getattr(env, 'STOP_LOSS_PCT', None),
-                    'TAKE_PROFIT_PCT': getattr(env, 'TAKE_PROFIT_PCT', None),
-                    'min_hold_steps': getattr(env, 'min_hold_steps', None),
-                    'volume_threshold': getattr(env, 'volume_threshold', None),
-                    'base_stop_loss': getattr(env, 'base_stop_loss', None),
-                    'base_take_profit': getattr(env, 'base_take_profit', None),
-                    'base_min_hold': getattr(env, 'base_min_hold', None),
+                    'STOP_LOSS_PCT': get_env_attr_safe(env, 'STOP_LOSS_PCT'),
+                    'TAKE_PROFIT_PCT': get_env_attr_safe(env, 'TAKE_PROFIT_PCT'),
+                    'min_hold_steps': get_env_attr_safe(env, 'min_hold_steps'),
+                    'volume_threshold': get_env_attr_safe(env, 'volume_threshold'),
+                    'base_stop_loss': get_env_attr_safe(env, 'base_stop_loss'),
+                    'base_take_profit': get_env_attr_safe(env, 'base_take_profit'),
+                    'base_min_hold': get_env_attr_safe(env, 'base_min_hold'),
                 },
                 'position_sizing': {
-                    'base_position_fraction': getattr(env, 'base_position_fraction', None),
-                    'position_fraction': getattr(env, 'position_fraction', None),
-                    'position_confidence_threshold': getattr(env, 'position_confidence_threshold', None),
+                    'base_position_fraction': get_env_attr_safe(env, 'base_position_fraction'),
+                    'position_fraction': get_env_attr_safe(env, 'position_fraction'),
+                    'position_confidence_threshold': get_env_attr_safe(env, 'position_confidence_threshold'),
                 },
-                'observation_space_shape': getattr(env, 'observation_space_shape', None),
-                'step_minutes': getattr(env.cfg, 'step_minutes', 5) if hasattr(env, 'cfg') else 5,
+                'observation_space_shape': get_env_attr_safe(env, 'observation_space_shape'),
+                'step_minutes': getattr(cfg_obj2, 'step_minutes', 5),
             }
         except Exception:
             gym_snapshot = {}
@@ -678,21 +719,21 @@ def train_model_optimized(
             adaptive_snapshot = {}
         
         # Проверяем, что окружение правильно инициализировано
-        if not hasattr(env, 'observation_space_shape'):
+        if not hasattr(getattr(env, 'unwrapped', env), 'observation_space_shape'):
             # Попробуем вычислить размер состояния из observation_space
             if hasattr(env, 'observation_space') and hasattr(env.observation_space, 'shape'):
-                env.observation_space_shape = env.observation_space.shape[0]
-                print(f"⚠️ Вычислен размер состояния из observation_space: {env.observation_space_shape}")
+                set_env_attr_safe(env, 'observation_space_shape', env.observation_space.shape[0])
+                print(f"⚠️ Вычислен размер состояния из observation_space: {get_env_attr_safe(env,'observation_space_shape')}")
             else:
                 raise ValueError("Окружение не имеет observation_space_shape и не может быть вычислен")
         
         # Получаем символ криптовалюты для логирования
         if is_multi_crypto:
             crypto_symbol = "МУЛЬТИВАЛЮТА"  # Для мультивалютного окружения
-            print(f"✅ Мультивалютное окружение создано, размер состояния: {env.observation_space_shape}")
+            print(f"✅ Мультивалютное окружение создано, размер состояния: {get_env_attr_safe(env,'observation_space_shape')}")
         else:
-            crypto_symbol = getattr(env, 'symbol', 'UNKNOWN')
-            print(f"✅ Окружение создано для {crypto_symbol}, размер состояния: {env.observation_space_shape}")
+            crypto_symbol = get_env_attr_safe(env, 'symbol', 'UNKNOWN')
+            print(f"✅ Окружение создано для {crypto_symbol}, размер состояния: {get_env_attr_safe(env,'observation_space_shape')}")
 
         # Настраиваем директорию вывода и имена файлов под символ
         def _symbol_code(sym: str) -> str:
@@ -783,54 +824,112 @@ def train_model_optimized(
         # Подготавливаем НОВЫЕ пути сохранения: сразу в run_dir
         new_model_path = os.path.join(run_dir, 'model.pth')
         new_buffer_path = os.path.join(run_dir, 'replay.pkl')
-        # Структура версионного хранения энкодеров: models/<symbol>/encoder/<frozen|unfrozen>/vN
+
+        # --- Обработка выбора энкодера из dfs ---
+        encoder_cfg = dfs.get('encoder') if isinstance(dfs, dict) else {}
+        selected_encoder_id = None
+        train_encoder_flag = True
         try:
-            freeze_encoder = getattr(cfg, 'freeze_encoder', False)
+            if isinstance(encoder_cfg, dict):
+                val = encoder_cfg.get('id')
+                selected_encoder_id = str(val).strip() if val else None
+                train_encoder_flag = bool(encoder_cfg.get('train_encoder', True))
         except Exception:
-            freeze_encoder = False
+            selected_encoder_id = None
+            train_encoder_flag = True
+
+        # freeze_encoder = not train_encoder
+        try:
+            setattr(cfg, 'freeze_encoder', not train_encoder_flag)
+        except Exception:
+            pass
+
+        # Где искать выбранный энкодер (если указан):
+        base_encoder_path = None
+        base_encoder_root = None
+        if selected_encoder_id:
+            try:
+                # result/dqn/<SYMBOL>/encoder/unfrozen/vN/encoder_only.pth
+                cand1 = os.path.join("result", "dqn", symbol_dir_name, "encoder", "unfrozen", selected_encoder_id, "encoder_only.pth")
+                # models/<symbol>/encoder/unfrozen/vN/encoder_only.pth
+                cand2 = os.path.join("models", symbol_dir_name.lower(), "encoder", "unfrozen", selected_encoder_id, "encoder_only.pth")
+                for pth in (cand1, cand2):
+                    if os.path.exists(pth):
+                        base_encoder_path = pth
+                        base_encoder_root = 'result' if pth.startswith(os.path.join('result', 'dqn')) else 'models'
+                        break
+            except Exception:
+                base_encoder_path = None
+                base_encoder_root = None
+
+        # Тип энкодера для новой версии/артефактов
         encoder_base = os.path.join("result", "dqn", symbol_dir_name, "encoder")
-        encoder_type = "frozen" if freeze_encoder else "unfrozen"
+        encoder_type = "frozen" if getattr(cfg, 'freeze_encoder', False) else "unfrozen"
         encoder_type_dir = os.path.join(encoder_base, encoder_type)
         try:
             os.makedirs(encoder_type_dir, exist_ok=True)
         except Exception:
             pass
-        # Определяем следующую версию vN (один раз на запуск)
-        version = 1
-        try:
-            existing_versions = []
-            for _d in os.listdir(encoder_type_dir):
-                _p = os.path.join(encoder_type_dir, _d)
-                if os.path.isdir(_p) and _d.startswith('v'):
-                    try:
-                        existing_versions.append(int(_d[1:]))
-                    except Exception:
-                        continue
-            version = (max(existing_versions) + 1) if existing_versions else 1
-        except Exception:
+
+        # Создаём новую версию, только если тренируем энкодер или энкодер не выбран (новый)
+        create_new_encoder = bool(train_encoder_flag or not selected_encoder_id)
+        created_encoder_version = None
+        new_encoder_path = None
+        version_dir = None
+        if create_new_encoder:
+            # Определяем следующую версию vN (один раз на запуск)
             version = 1
-        version_dir = os.path.join(encoder_type_dir, f"v{version}")
-        try:
-            os.makedirs(version_dir, exist_ok=True)
-        except Exception:
-            pass
-        new_encoder_path = os.path.join(version_dir, 'encoder_only.pth')
-        # Пробрасываем метаданные
-        try:
-            setattr(cfg, 'encoder_path', new_encoder_path)
-            setattr(cfg, 'encoder_version', version)
-            setattr(cfg, 'encoder_type', encoder_type)
-        except Exception:
-            pass
-        try:
-            print(f"🎯 Encoder target path: {new_encoder_path}")
-        except Exception:
-            pass
-        # Предварительно создаём пустой манифест (будет перезаписан атомарно после сохранения весов)
-        try:
-            _atomic_write_json(os.path.join(version_dir, 'encoder_manifest.json'), {'status': 'pending'})
-        except Exception:
-            pass
+            try:
+                existing_versions = []
+                for _d in os.listdir(encoder_type_dir):
+                    _p = os.path.join(encoder_type_dir, _d)
+                    if os.path.isdir(_p) and _d.startswith('v'):
+                        try:
+                            existing_versions.append(int(_d[1:]))
+                        except Exception:
+                            continue
+                version = (max(existing_versions) + 1) if existing_versions else 1
+            except Exception:
+                version = 1
+            version_dir = os.path.join(encoder_type_dir, f"v{version}")
+            try:
+                os.makedirs(version_dir, exist_ok=True)
+            except Exception:
+                pass
+            new_encoder_path = os.path.join(version_dir, 'encoder_only.pth')
+            created_encoder_version = version
+            # Пробрасываем метаданные
+            try:
+                setattr(cfg, 'encoder_path', new_encoder_path)
+                setattr(cfg, 'encoder_version', version)
+                setattr(cfg, 'encoder_type', encoder_type)
+            except Exception:
+                pass
+            try:
+                print(f"🎯 Encoder target path: {new_encoder_path}")
+            except Exception:
+                pass
+            # Если есть базовый энкодер (fine-tune) — скопируем как стартовую точку
+            try:
+                if base_encoder_path and os.path.exists(base_encoder_path):
+                    import shutil as _sh
+                    _sh.copy2(base_encoder_path, new_encoder_path)
+            except Exception:
+                pass
+            # Предварительно создаём пустой манифест (будет перезаписан атомарно после сохранения весов)
+            try:
+                _atomic_write_json(os.path.join(version_dir, 'encoder_manifest.json'), {'status': 'pending'})
+            except Exception:
+                pass
+        else:
+            # Не создаём новую версию — используем выбранный энкодер как есть (frozen head)
+            try:
+                if base_encoder_path:
+                    setattr(cfg, 'encoder_path', base_encoder_path)
+                    setattr(cfg, 'encoder_version', None)
+                    setattr(cfg, 'encoder_type', 'unfrozen')
+            except Exception:
+                pass
 
         # Если дообучаем из структурированного пути runs/... и parent/root не переданы — авто‑детект
         try:
@@ -883,7 +982,7 @@ def train_model_optimized(
         print(f"🚀 Создаю DQN solver")
         
         dqn_solver = DQNSolver(
-            observation_space=env.observation_space_shape,
+            observation_space=get_env_attr_safe(env, 'observation_space_shape'),
             action_space=env.action_space.n
         )
         # Если указан путь загрузки существующей модели/буфера — загружаем сначала
@@ -969,6 +1068,17 @@ def train_model_optimized(
         buy_rejected_roi_total = 0
         episodes_with_trade_count = 0
         total_steps_processed = 0
+        # --- Метрики для freeze‑решений (лёгкие по ресурсу) ---
+        q_loss_history: list[float] = []  # история Q‑loss из experience_replay
+        probe_states: list[np.ndarray] = []  # фиксированный набор состояний для мониторинга
+        probe_size: int = int(getattr(cfg, 'probe_size', 64))
+        probe_collect_episodes: int = int(getattr(cfg, 'probe_collect_episodes', 3))
+        probe_collect_stride: int = int(getattr(cfg, 'probe_collect_stride', 100))  # брать состояние раз в N шагов
+        probe_interval_episodes: int = int(getattr(cfg, 'probe_interval_episodes', 10))  # как часто делать снэпшоты
+        drift_cosine_history: list[float] = []  # средняя косинусная близость к базовой проекции
+        drift_snapshot_episodes: list[int] = []
+        q_values_history: list[np.ndarray] = []  # средние Q по действиям для probe‑состояний
+        probe_embeddings_baseline: np.ndarray | None = None
         
         # Адаптивный patience_limit в зависимости от количества эпизодов
         if episodes >= 10000:
@@ -1091,6 +1201,12 @@ def train_model_optimized(
                         success, loss, abs_q, q_gap = dqn_solver.experience_replay(need_metrics=True)
                         if success:
                             grad_steps += 1
+                            # Копим историю Q‑loss для оценки стабилизации обучения
+                            try:
+                                if loss is not None:
+                                    q_loss_history.append(float(loss))
+                            except Exception:
+                                pass
                         else:
                             failed_train_attempts += 1
                             break
@@ -1100,6 +1216,15 @@ def train_model_optimized(
 
                 if terminal:
                     break
+                # Сбор probe‑состояний для дальнейшего мониторинга (лёгкий, редкий)
+                try:
+                    if (len(probe_states) < probe_size) and (episode < probe_collect_episodes) and (step_count % max(1, probe_collect_stride) == 1):
+                        if isinstance(state, np.ndarray):
+                            probe_states.append(state.copy())
+                        else:
+                            probe_states.append(np.array(state, dtype=np.float32))
+                except Exception:
+                    pass
             
             # Обновляем epsilon (только если не используем Noisy Networks)
             if not getattr(cfg, 'use_noisy_networks', True):
@@ -1113,28 +1238,29 @@ def train_model_optimized(
             # РАДИКАЛЬНОЕ ИСПРАВЛЕНИЕ: Используем env.all_trades для расчета winrate
             trades_before = len(all_trades)
             
-            # ИСПРАВЛЕНИЕ: Получаем сделки из env.all_trades вместо env.trades
-            if hasattr(env, 'all_trades') and env.all_trades:
-                episode_trades = env.all_trades
+            # ИСПРАВЛЕНИЕ: Получаем сделки через безопасный доступ
+            _all_trades = get_env_attr_safe(env, 'all_trades') or []
+            if _all_trades:
+                episode_trades = _all_trades
             else:
                 # Fallback: используем env.trades
-                episode_trades = env.trades if hasattr(env, 'trades') and env.trades else []
+                episode_trades = get_env_attr_safe(env, 'trades', []) or []
             
             # ИСПРАВЛЕНИЕ: Инициализируем episode_winrate по умолчанию
             episode_winrate = 0.0
             
-            if hasattr(env, 'all_trades') and env.all_trades:
+            if _all_trades:
                 # Используем все сделки из окружения для расчета winrate
-                all_profitable = [t for t in env.all_trades if t.get('roi', 0) > 0]
-                episode_winrate = len(all_profitable) / len(env.all_trades) if env.all_trades else 0
+                all_profitable = [t for t in _all_trades if t.get('roi', 0) > 0]
+                episode_winrate = len(all_profitable) / len(_all_trades) if _all_trades else 0
                 episode_winrates.append(episode_winrate)
                 
                 # Детальная статистика эпизода
-                episode_stats = dqn_solver.print_trade_stats(env.all_trades, failed_attempts=failed_train_attempts)
+                episode_stats = dqn_solver.print_trade_stats(_all_trades, failed_attempts=failed_train_attempts)
                 
                 # Добавляем сделки в общий список если их там нет
-                if len(all_trades) < len(env.all_trades):
-                    all_trades.extend(env.all_trades[len(all_trades):])
+                if len(all_trades) < len(_all_trades):
+                    all_trades.extend(_all_trades[len(all_trades):])
                     
             elif episode_trades:
                 # Fallback: используем env.trades
@@ -1164,17 +1290,61 @@ def train_model_optimized(
                 
                 # Объединяем всю статистику эпизода в одну строку
                 action_stats = ""
-                if hasattr(env, 'action_counts'):
-                    action_stats = f" | HOLD={env.action_counts.get(0, 0)}, BUY={env.action_counts.get(1, 0)}, SELL={env.action_counts.get(2, 0)}"
+                _ac = get_env_attr_safe(env, 'action_counts')
+                if isinstance(_ac, dict):
+                    action_stats = f" | HOLD={_ac.get(0, 0)}, BUY={_ac.get(1, 0)}, SELL={_ac.get(2, 0)}"
                 
                 # Добавляем информацию о времени выполнения
                 time_stats = ""
-                if hasattr(env, 'episode_start_time') and env.episode_start_time is not None:
-                    episode_duration = time.time() - env.episode_start_time
-                    steps_per_second = env.episode_step_count / episode_duration if episode_duration > 0 else 0
-                    time_stats = f" | {episode_duration:.2f}с, {env.episode_step_count} шагов, {steps_per_second:.1f} шаг/с"
+                _est = get_env_attr_safe(env, 'episode_start_time')
+                _esc = get_env_attr_safe(env, 'episode_step_count', 0)
+                if _est is not None:
+                    episode_duration = time.time() - _est
+                    steps_per_second = _esc / episode_duration if episode_duration > 0 else 0
+                    time_stats = f" | {episode_duration:.2f}с, {_esc} шагов, {steps_per_second:.1f} шаг/с"
                 
                 print(f"  🏁 Эпизод {episode} для {current_crypto} завершен | reward={episode_reward:.4f}{action_stats}{time_stats} | {episode_stats}")
+
+                # Периодический снэпшот feature drift и стабильности Q на фиксированном probe‑наборе
+                try:
+                    if (len(probe_states) > 0) and (episode % max(1, probe_interval_episodes) == 0):
+                        dqn_solver.model.eval()
+                        with torch.no_grad():
+                            st = torch.from_numpy(np.stack(probe_states)).float().to(dqn_solver.cfg.device)
+                            # Q‑values snapshot
+                            q_vals = dqn_solver.model(st)
+                            if isinstance(q_vals, torch.Tensor):
+                                q_avg = q_vals.mean(dim=1).detach().float().cpu().numpy()
+                                q_values_history.append(q_avg)
+                            # Feature embeddings snapshot (если есть extractor)
+                            cos_sim_mean = None
+                            if hasattr(dqn_solver.model, 'get_feature_extractor'):
+                                fe = dqn_solver.model.get_feature_extractor()
+                                if fe is not None:
+                                    try:
+                                        z = fe(st)
+                                        if isinstance(z, torch.Tensor):
+                                            z_np = z.detach().float().cpu().numpy()
+                                            # Нормируем
+                                            def _l2norm(x: np.ndarray) -> np.ndarray:
+                                                n = np.linalg.norm(x, axis=1, keepdims=True) + 1e-8
+                                                return x / n
+                                            z_np = _l2norm(z_np)
+                                            if probe_embeddings_baseline is None:
+                                                probe_embeddings_baseline = z_np.copy()
+                                                cos_sim_mean = 1.0
+                                            else:
+                                                base = _l2norm(probe_embeddings_baseline)
+                                                # Косинусная похожесть по батчу и среднее
+                                                cos = np.sum(z_np * base, axis=1)
+                                                cos_sim_mean = float(np.mean(cos))
+                                    except Exception:
+                                        pass
+                            if cos_sim_mean is not None:
+                                drift_cosine_history.append(cos_sim_mean)
+                                drift_snapshot_episodes.append(int(episode))
+                except Exception:
+                    pass
                 
                 # Проверяем на улучшение с более умной логикой
                 # Считаем улучшением только после warmup
@@ -1261,14 +1431,15 @@ def train_model_optimized(
             # --- Агрегируем поведенческие метрики эпизода ---
             try:
                 # Суммарные действия
-                if hasattr(env, 'action_counts') and isinstance(env.action_counts, dict):
-                    action_counts_total[0] = action_counts_total.get(0, 0) + int(env.action_counts.get(0, 0) or 0)
-                    action_counts_total[1] = action_counts_total.get(1, 0) + int(env.action_counts.get(1, 0) or 0)
-                    action_counts_total[2] = action_counts_total.get(2, 0) + int(env.action_counts.get(2, 0) or 0)
+                _ac2 = get_env_attr_safe(env, 'action_counts')
+                if isinstance(_ac2, dict):
+                    action_counts_total[0] = action_counts_total.get(0, 0) + int(_ac2.get(0, 0) or 0)
+                    action_counts_total[1] = action_counts_total.get(1, 0) + int(_ac2.get(1, 0) or 0)
+                    action_counts_total[2] = action_counts_total.get(2, 0) + int(_ac2.get(2, 0) or 0)
                 # Попытки покупок и причины отказов
-                buy_attempts_total += int(getattr(env, 'buy_attempts', 0) or 0)
-                buy_rejected_vol_total += int(getattr(env, 'buy_rejected_vol', 0) or 0)
-                buy_rejected_roi_total += int(getattr(env, 'buy_rejected_roi', 0) or 0)
+                buy_attempts_total += int(get_env_attr_safe(env, 'buy_attempts', 0) or 0)
+                buy_rejected_vol_total += int(get_env_attr_safe(env, 'buy_rejected_vol', 0) or 0)
+                buy_rejected_roi_total += int(get_env_attr_safe(env, 'buy_rejected_roi', 0) or 0)
                 # Была ли сделка в эпизоде
                 new_trades_added = len(all_trades) - trades_before
                 if new_trades_added > 0:
@@ -1426,7 +1597,7 @@ def train_model_optimized(
 
         # Печать причин продаж (если есть)
         try:
-            sell_types_total = getattr(env, 'cumulative_sell_types', {}) if hasattr(env, 'cumulative_sell_types') else {}
+            sell_types_total = get_env_attr_safe(env, 'cumulative_sell_types', {})
             if isinstance(sell_types_total, dict) and sell_types_total:
                 print("\n🧾 Причины продаж (агрегат):")
                 for k, v in sell_types_total.items():
@@ -1442,8 +1613,9 @@ def train_model_optimized(
         # Единый препроцессинг: сохраняем статистики нормализации env в чекпойнт
         norm_stats = None
         try:
-            if hasattr(env, 'export_normalization_stats'):
-                norm_stats = env.export_normalization_stats()
+            export_stats = get_env_attr_safe(env, 'export_normalization_stats')
+            if callable(export_stats):
+                norm_stats = export_stats()
         except Exception:
             norm_stats = None
         dqn_solver.save(normalization_stats=norm_stats)
@@ -1461,6 +1633,160 @@ def train_model_optimized(
                         num_params = sum(p.numel() for p in _fe.parameters())
             except Exception:
                 num_params = None
+
+            # Подготовим сводки обучения и датасета для манифеста энкодера
+            try:
+                avg_winrate_val = float(np.mean(episode_winrates)) if episode_winrates else None
+            except Exception:
+                avg_winrate_val = None
+            try:
+                frames_info = {}
+                if isinstance(dfs, dict):
+                    for _k in ('df_5min','df_15min','df_1h'):
+                        _dfx = dfs.get(_k)
+                        frames_info[_k] = {
+                            'rows': int(len(_dfx)) if _dfx is not None else None
+                        }
+                    # Диапазон дат для 5m
+                    _df5 = dfs.get('df_5min')
+                    if _df5 is not None and len(_df5) > 0:
+                        try:
+                            _start_ts = _df5.index.min()
+                            _end_ts = _df5.index.max()
+                            frames_info['df_5min']['date_range'] = {
+                                'start': str(_start_ts),
+                                'end': str(_end_ts),
+                            }
+                        except Exception:
+                            pass
+            except Exception:
+                frames_info = {}
+
+            # --- Итоговые индикаторы для freeze‑решения ---
+            training_indicators = None
+            try:
+                # 1) Q‑loss stability (EMA/STD/наклон на последней части)
+                q_loss_metrics = None
+                if q_loss_history:
+                    arr = np.array(q_loss_history, dtype=np.float32)
+                    # EMA (alpha=0.1)
+                    ema = float(arr[0])
+                    alpha = 0.1
+                    for v in arr[1:]:
+                        ema = alpha * float(v) + (1.0 - alpha) * ema
+                    # Последние 20% точек для STD и slope
+                    w = max(10, int(len(arr) * 0.2))
+                    tail = arr[-w:]
+                    std_last = float(np.std(tail)) if tail.size > 1 else 0.0
+                    # Линейный тренд (slope) по последнему окну
+                    x = np.arange(tail.size, dtype=np.float32)
+                    slope = float(np.polyfit(x, tail, deg=1)[0]) if tail.size >= 2 else 0.0
+                    thr_std = float(getattr(cfg, 'q_loss_std_threshold', 2e-3))
+                    thr_slope = float(getattr(cfg, 'q_loss_slope_threshold', 1e-4))
+                    loss_stable = (abs(slope) < thr_slope) and (std_last < thr_std)
+                    q_loss_metrics = {
+                        'ema': ema,
+                        'std_last_20pct': std_last,
+                        'slope_last_20pct': slope,
+                        'thresholds': { 'std': thr_std, 'abs_slope': thr_slope },
+                        'stable': bool(loss_stable),
+                        'count': int(len(arr)),
+                    }
+
+                # 2) Feature drift (косинусная схожесть эмбеддингов)
+                drift_metrics = None
+                if drift_cosine_history:
+                    mean_cos_last = float(drift_cosine_history[-1])
+                    # Считаем момент стабилизации: первый индекс, с которого все значения >= 0.99 подряд в последних 3 снэпшотах
+                    stable_since = None
+                    if len(drift_cosine_history) >= 3:
+                        for i in range(len(drift_cosine_history) - 3, -1, -1):
+                            if min(drift_cosine_history[i: i+3]) >= 0.99:
+                                stable_since = int(drift_snapshot_episodes[i]) if i < len(drift_snapshot_episodes) else None
+                                break
+                    drift_metrics = {
+                        'mean_cos_sim_last': mean_cos_last,
+                        'stable_since_episode': stable_since,
+                        'probe_size': int(len(probe_states)),
+                        'interval_episodes': probe_interval_episodes,
+                        'threshold': 0.99,
+                    }
+
+                # 3) Q‑value stability (коэфф. вариации и макс. осцилляция в последних 10%)
+                q_value_metrics = None
+                if q_values_history:
+                    H = len(q_values_history)
+                    m = max(2, int(np.ceil(H * 0.1)))
+                    window = q_values_history[-m:]
+                    # Матрица [m, N]
+                    mat = np.stack(window, axis=0)
+                    mean_per_state = np.mean(mat, axis=0)
+                    std_per_state = np.std(mat, axis=0)
+                    # Коэффициент вариации (стабильность)
+                    cv = std_per_state / (np.abs(mean_per_state) + 1e-8)
+                    mean_cv_last = float(np.mean(cv))
+                    # Макс. относительная осцилляция
+                    range_per_state = (np.max(mat, axis=0) - np.min(mat, axis=0)) / (np.abs(mean_per_state) + 1e-8)
+                    max_osc_last = float(np.max(range_per_state))
+                    thr_cv = float(getattr(cfg, 'q_value_cv_threshold', 0.10))
+                    thr_osc = float(getattr(cfg, 'q_value_osc_threshold', 0.10))
+                    q_value_metrics = {
+                        'mean_cv_last': mean_cv_last,
+                        'max_oscillation_last_10pct': max_osc_last,
+                        'thresholds': { 'cv': thr_cv, 'osc': thr_osc },
+                    }
+
+                # Итоговая рекомендация freeze
+                freeze_rec = None
+                try:
+                    cond_loss = (q_loss_metrics or {}).get('stable', False)
+                    cond_drift = (drift_metrics or {}).get('mean_cos_sim_last', 0.0) >= 0.99
+                    cond_q = ((q_value_metrics or {}).get('max_oscillation_last_10pct', 1.0) <= (q_value_metrics or {}).get('thresholds', {}).get('osc', 0.10))
+                    should_freeze = bool(cond_loss and cond_drift and cond_q)
+                    reasons = []
+                    if cond_loss: reasons.append('loss_stable')
+                    if cond_drift: reasons.append('drift_stopped')
+                    if cond_q: reasons.append('q_values_stable')
+                    freeze_rec = {
+                        'should_freeze': should_freeze,
+                        'reasons': reasons,
+                        'evaluated_at_episode': int(actual_episodes) if isinstance(actual_episodes, (int, float)) else None,
+                    }
+                except Exception:
+                    freeze_rec = None
+
+                training_indicators = {
+                    'q_loss_stability': q_loss_metrics,
+                    'feature_drift': drift_metrics,
+                    'q_value_stability': q_value_metrics,
+                    'freeze_recommendation': freeze_rec,
+                }
+            except Exception:
+                training_indicators = None
+
+            # Суммируем опыт с прошлого манифеста базового энкодера (если дообучаем)
+            prev_episodes_completed = None
+            prev_time_sec = None
+            prev_total_steps = None
+            try:
+                if base_encoder_path and os.path.exists(base_encoder_path):
+                    _prev_manifest_path = os.path.join(os.path.dirname(base_encoder_path), 'encoder_manifest.json')
+                    _prev = _safe_read_json(_prev_manifest_path) or {}
+                    _tr = _prev.get('training') or {}
+                    # Предпочитаем cumulative, иначе обычные значения
+                    prev_episodes_completed = _tr.get('cumulative_episodes_completed')
+                    if prev_episodes_completed is None:
+                        prev_episodes_completed = _tr.get('episodes_completed')
+                    prev_time_sec = _tr.get('cumulative_time_sec')
+                    if prev_time_sec is None:
+                        prev_time_sec = _tr.get('time_sec')
+                    prev_total_steps = _tr.get('cumulative_total_steps')
+                    if prev_total_steps is None:
+                        prev_total_steps = _tr.get('total_steps')
+            except Exception:
+                prev_episodes_completed = None
+                prev_time_sec = None
+                prev_total_steps = None
 
             manifest_data = {
                 'manifest_version': 1,
@@ -1484,33 +1810,83 @@ def train_model_optimized(
                 },
                 'parent_run_id': parent_run_id,
                 'root_id': this_root_id,
+                'base_encoder': {
+                    'selected_id': selected_encoder_id,
+                    'path': base_encoder_path,
+                    'root': base_encoder_root,
+                },
+                'seed': int(seed) if isinstance(seed, int) else None,
+                'training': {
+                    'episodes_planned': int(episodes) if isinstance(episodes, (int, float)) else None,
+                    'episodes_completed': int(actual_episodes) if isinstance(actual_episodes, (int, float)) else None,
+                    'episode_length': int(episode_length) if isinstance(episode_length, (int, float)) else None,
+                    'total_steps': int(total_steps_processed) if isinstance(total_steps_processed, (int, float)) else None,
+                    'time_sec': float(total_training_time) if isinstance(total_training_time, (int, float)) else None,
+                    'start_utc': datetime.utcfromtimestamp(training_start_time).strftime('%Y-%m-%dT%H:%M:%SZ') if isinstance(training_start_time, (int, float)) else None,
+                    'end_utc': datetime.utcfromtimestamp(training_start_time + total_training_time).strftime('%Y-%m-%dT%H:%M:%SZ') if isinstance(training_start_time, (int, float)) and isinstance(total_training_time, (int, float)) else None,
+                    'prev_episodes_completed': int(prev_episodes_completed) if isinstance(prev_episodes_completed, (int, float)) else None,
+                    'prev_time_sec': float(prev_time_sec) if isinstance(prev_time_sec, (int, float)) else None,
+                    'prev_total_steps': int(prev_total_steps) if isinstance(prev_total_steps, (int, float)) else None,
+                    'cumulative_episodes_completed': (
+                        int(prev_episodes_completed) + int(actual_episodes)
+                    ) if isinstance(prev_episodes_completed, (int, float)) and isinstance(actual_episodes, (int, float)) else int(actual_episodes) if isinstance(actual_episodes, (int, float)) else None,
+                    'cumulative_time_sec': (
+                        float(prev_time_sec) + float(total_training_time)
+                    ) if isinstance(prev_time_sec, (int, float)) and isinstance(total_training_time, (int, float)) else float(total_training_time) if isinstance(total_training_time, (int, float)) else None,
+                    'cumulative_total_steps': (
+                        int(prev_total_steps) + int(total_steps_processed)
+                    ) if isinstance(prev_total_steps, (int, float)) and isinstance(total_steps_processed, (int, float)) else int(total_steps_processed) if isinstance(total_steps_processed, (int, float)) else None,
+                },
+                'performance': {
+                    'avg_winrate': avg_winrate_val,
+                    'best_winrate': float(best_winrate) if isinstance(best_winrate, (int, float)) else None,
+                    'best_episode': int(best_episode_idx) if isinstance(best_episode_idx, (int, float)) else None,
+                },
+                'data': {
+                    'frames': frames_info,
+                },
                 # Места для опциональных данных об обучении/датах/метриках можно заполнить позже
             }
-            enc_manifest_path = os.path.join(os.path.dirname(enc_path) if enc_path else run_dir, 'encoder_manifest.json')
-            _atomic_write_json(enc_manifest_path, manifest_data)
+            # Вкладываем training_indicators при наличии
+            if training_indicators is not None:
+                manifest_data['training_indicators'] = training_indicators
+            # Записываем encoder_manifest.json ТОЛЬКО если создавали новую версию
+            if create_new_encoder:
+                enc_manifest_path = os.path.join(os.path.dirname(enc_path) if enc_path else run_dir, 'encoder_manifest.json')
+                _atomic_write_json(enc_manifest_path, manifest_data)
 
-            # Обновляем encoder_index.json списком версий
-            encoder_base = os.path.join("result", "dqn", symbol_dir_name, "encoder")
-            encoder_type = getattr(cfg, 'encoder_type', 'unfrozen') or 'unfrozen'
-            encoder_type_dir = os.path.join(encoder_base, encoder_type)
-            index_path = os.path.join(encoder_type_dir, 'encoder_index.json')
-            index_data = _safe_read_json(index_path) or []
-            index_data.append({
-                'version': int(getattr(cfg, 'encoder_version', 0) or 0),
-                'run_id': this_run_id,
-                'date': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
-                'encoder_type': encoder_type,
-                'encoder_path': enc_path,
-                'model_path': getattr(cfg, 'model_path', None),
-                'symbol': symbol_dir_name,
-                'sha256': enc_sha,
-                'size_bytes': enc_size,
-            })
-            _atomic_write_json(index_path, index_data)
+                # Обновляем encoder_index.json списком версий
+                encoder_base = os.path.join("result", "dqn", symbol_dir_name, "encoder")
+                encoder_type = getattr(cfg, 'encoder_type', 'unfrozen') or 'unfrozen'
+                encoder_type_dir = os.path.join(encoder_base, encoder_type)
+                index_path = os.path.join(encoder_type_dir, 'encoder_index.json')
+                index_data = _safe_read_json(index_path) or []
+                index_entry = {
+                    'version': int(getattr(cfg, 'encoder_version', 0) or 0),
+                    'run_id': this_run_id,
+                    'date': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    'encoder_type': encoder_type,
+                    'encoder_path': enc_path,
+                    'model_path': getattr(cfg, 'model_path', None),
+                    'symbol': symbol_dir_name,
+                    'sha256': enc_sha,
+                    'size_bytes': enc_size,
+                }
+                try:
+                    index_entry['episodes_completed'] = int(actual_episodes) if isinstance(actual_episodes, (int, float)) else None
+                    # Дополнительно фиксируем cumulative (если есть предыдущий опыт)
+                    cum_eps = (
+                        int(prev_episodes_completed) + int(actual_episodes)
+                    ) if isinstance(prev_episodes_completed, (int, float)) and isinstance(actual_episodes, (int, float)) else int(actual_episodes) if isinstance(actual_episodes, (int, float)) else None
+                    index_entry['cumulative_episodes_completed'] = cum_eps
+                except Exception:
+                    pass
+                index_data.append(index_entry)
+                _atomic_write_json(index_path, index_data)
 
-            # Указатель на текущую версию
-            current_path = os.path.join(encoder_type_dir, 'current.json')
-            _atomic_write_json(current_path, {'version': f"v{int(getattr(cfg, 'encoder_version', 0) or 0)}", 'sha256': enc_sha})
+                # Указатель на текущую версию
+                current_path = os.path.join(encoder_type_dir, 'current.json')
+                _atomic_write_json(current_path, {'version': f"v{int(getattr(cfg, 'encoder_version', 0) or 0)}", 'sha256': enc_sha})
         except Exception:
             pass
         # Гарантируем сохранение энкодера (fallback): если файл отсутствует — сохраним модель (включая encoder_only)
@@ -1563,6 +1939,21 @@ def train_model_optimized(
             training_start_time=training_start_time,
             current_total_training_time=total_training_time, # Используем final total_training_time
         )
+
+        # Добавим краткую информацию о выборе энкодера в отдельный JSON в run_dir
+        try:
+            selection = {
+                'selected_id': selected_encoder_id,
+                'train_encoder': bool(train_encoder_flag),
+                'mode': 'unfrozen' if train_encoder_flag else 'frozen',
+                'base_encoder_path': base_encoder_path,
+                'created_new_version': bool(create_new_encoder),
+                'new_version': f"v{created_encoder_version}" if create_new_encoder else None,
+                'final_encoder_path': getattr(cfg, 'encoder_path', None),
+            }
+            _atomic_write_json(os.path.join(run_dir, 'encoder_selection.json'), selection)
+        except Exception:
+            pass
 
         # Вывод статистики продлений (если обёртка активна)
         try:

@@ -344,10 +344,22 @@ class DQNSolver:
             # Включаем cudnn benchmark для ускорения
             torch.backends.cudnn.benchmark = True
             torch.backends.cudnn.deterministic = False
-            
+
+            # Включаем TF32 только на Ampere+ (compute capability >= 8.0)
+            try:
+                major, minor = torch.cuda.get_device_capability()
+                if major >= 8:
+                    if hasattr(torch.backends.cuda, 'matmul') and hasattr(torch.backends.cuda.matmul, 'allow_tf32'):
+                        torch.backends.cuda.matmul.allow_tf32 = True
+                    if hasattr(torch.backends.cudnn, 'allow_tf32'):
+                        torch.backends.cudnn.allow_tf32 = True
+            except Exception:
+                pass
+
             # Mixed precision training
-            if self.cfg.use_amp:
-                self.scaler = torch.cuda.amp.GradScaler()
+            if self.cfg.use_amp and torch.cuda.is_available():
+                # Новый API PyTorch 2.x
+                self.scaler = torch.amp.GradScaler('cuda')
             else:
                 self.scaler = None
         else:

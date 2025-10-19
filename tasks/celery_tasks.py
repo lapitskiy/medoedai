@@ -1,8 +1,12 @@
 import os
 import logging
+import time
+import json
 from datetime import datetime
+from redis import Redis  # type: ignore
+import pandas as pd  # type: ignore
 
-from dotenv import load_dotenv, find_dotenv
+from dotenv import load_dotenv, find_dotenv  # type: ignore
 
 from agents.vdqn.v_train_model import train_model
 from agents.vdqn.v_train_model_optimized import train_model_optimized
@@ -187,7 +191,7 @@ def train_dqn(self, seed: int | None = None):
     return {"message": result}
 
 @celery.task(bind=True, acks_late=False, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')  # добавлено acks_late=False
-def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None = None, episode_length: int = 2000, engine: str = 'optimized'):
+def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None = None, episode_length: int = 2000, engine: str = 'optimized', encoder_id: str | None = None, train_encoder: bool = False):
     """Обучение DQN для одного символа (BTCUSDT/ETHUSDT/...)
 
     Загружает данные из БД, готовит 5m/15m/1h, запускает train_model_optimized.
@@ -203,6 +207,8 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
             # ENV больше не используем для сидов
 
         print(f"\n🚀 Старт обучения для {symbol} [{datetime.now()}]")
+        if encoder_id:
+            print(f"🧩 Выбран энкодер: {encoder_id} | режим: {'unfrozen' if train_encoder else 'frozen'}")
         df_5min = db_get_or_fetch_ohlcv(
             symbol_name=symbol,
             timeframe='5m',
@@ -258,6 +264,10 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
             'df_15min': df_15min,
             'df_1h': df_1h,
             'symbol': symbol,
+            'encoder': {
+                'id': encoder_id,
+                'train_encoder': bool(train_encoder),
+            },
         }
 
         print(f"📈 {symbol}: 5m={len(df_5min)}, 15m={len(df_15min)}, 1h={len(df_1h)}")
@@ -364,6 +374,26 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
         import traceback
         traceback.print_exc()
         return {"message": f"❌ Ошибка обучения {symbol}: {str(e)}"}
+    finally:
+        # Снимаем per-symbol running_key и удаляем текущую задачу из UI-списка
+        try:
+            from utils.redis_utils import get_redis_client  # локальный импорт чтобы не тянуть при инициализации
+            redis_client = get_redis_client()
+            running_key = f"celery:train:task:{(symbol or '').upper()}"
+            try:
+                redis_client.delete(running_key)
+            except Exception:
+                pass
+            # Удаляем текущий task_id из ui:tasks
+            try:
+                ui_tasks_key = "ui:tasks"
+                current_task_id = getattr(getattr(self, 'request', None), 'id', None)
+                if current_task_id:
+                    redis_client.lrem(ui_tasks_key, 0, current_task_id)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')
 def train_dqn_multi_crypto(self, episodes: int | None = None, seed: int | None = None, episode_length: int = 2000):

@@ -374,3 +374,72 @@ def api_runs_trades():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# === Encoders API ===
+@models_admin_bp.get('/api/encoders')
+def api_encoders_list():
+    try:
+        symbol = (request.args.get('symbol') or '').strip().upper()
+        if not symbol:
+            return jsonify({'success': False, 'error': 'symbol required'}), 400
+
+        # Нормализуем базу символа: BTCUSDT -> btc, TONUSDT -> ton
+        base_lower = symbol.split('USDT')[0].lower()
+        base_upper = symbol.split('USDT')[0].upper()
+
+        # Два корня поиска:
+        # 1) Прод/релизы: models/<base>/encoder/unfrozen/vN
+        # 2) Черновики/результаты: result/dqn/<BASE_UPPER>/encoder/unfrozen/vN
+        roots = [
+            Path('models') / base_lower / 'encoder' / 'unfrozen',
+            Path('result') / 'dqn' / base_upper / 'encoder' / 'unfrozen',
+            Path('result') / base_upper / 'encoder' / 'unfrozen',  # совместимость со старой структурой result/<SYMBOL>
+        ]
+
+        seen_ids = set()
+        items = []
+
+        def read_manifest(dir_path: Path):
+            """Возвращает dict манифеста или None, если нет подходящих файлов."""
+            cand_json = dir_path / 'encoder_manifest.json'
+            cand_alt = dir_path / 'manifest.json'
+            cand_yaml = dir_path / 'manifest.yaml'
+            try:
+                if cand_json.exists():
+                    return json.loads(cand_json.read_text(encoding='utf-8'))
+                if cand_alt.exists():
+                    return json.loads(cand_alt.read_text(encoding='utf-8'))
+                if cand_yaml.exists():
+                    # Возвращаем raw YAML в удобной обёртке
+                    txt = cand_yaml.read_text(encoding='utf-8')
+                    return {'yaml': txt}
+            except Exception:
+                return None
+            return None
+
+        for root in roots:
+            if not (root.exists() and root.is_dir()):
+                continue
+            # Перебираем только директории vN
+            for d in sorted(root.iterdir()):
+                if not d.is_dir():
+                    continue
+                enc_id = d.name
+                if enc_id in seen_ids:
+                    continue
+                manifest = read_manifest(d)
+                # Показываем только версии, у которых есть читаемый манифест
+                if manifest is None:
+                    continue
+                seen_ids.add(enc_id)
+                items.append({'id': enc_id, 'name': enc_id, 'manifest': manifest})
+
+        # Стабильная сортировка по id (v1<v2<...)
+        try:
+            items.sort(key=lambda it: (it['id'][0] != 'v', int(it['id'][1:]) if (it['id'].startswith('v') and it['id'][1:].isdigit()) else it['id']))
+        except Exception:
+            items.sort(key=lambda it: it['id'])
+
+        return jsonify({'success': True, 'encoders': items})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
