@@ -76,15 +76,36 @@ class CryptoTradingEnvOptimized(gym.Env):
             self.TAKE_PROFIT_PCT = trading_params['take_profit_pct']
             self.min_hold_steps = trading_params['min_hold_steps']
             self.volume_threshold = trading_params['volume_threshold']
+            # Трендовая статистика/настройки
+            try:
+                self.regime_stats = trading_params.get('regime_stats') if isinstance(trading_params, dict) else None
+                self.regime_precomputed = trading_params.get('regime_precomputed') if isinstance(trading_params, dict) else None
+                self.trend_windows = trading_params.get('trend_windows') if isinstance(trading_params, dict) else [60, 180, 300]
+                self.trend_tau = trading_params.get('trend_tau') if isinstance(trading_params, dict) else {60: 0.02, 180: 0.05, 300: 0.08}
+                self._L_up_med = float((((self.regime_stats or {}).get('stats') or {}).get('up') or {}).get('median_len') or 0.0)
+                self._L_down_med = float((((self.regime_stats or {}).get('stats') or {}).get('down') or {}).get('median_len') or 0.0)
+            except Exception:
+                self.regime_stats = None
+                self.regime_precomputed = None
+                self.trend_windows = [60, 180, 300]
+                self.trend_tau = {60: 0.02, 180: 0.05, 300: 0.08}
+                self._L_up_med = 0.0
+                self._L_down_med = 0.0
             print(f"🔧 Адаптивные параметры для {self.symbol}:")
             print(f"  • Stop Loss: {self.STOP_LOSS_PCT:.3f}")
             print(f"  • Take Profit: {self.TAKE_PROFIT_PCT:.3f}")
             print(f"  • Min Hold: {self.min_hold_steps} шагов")
             print(f"  • Volume Threshold: {self.volume_threshold:.4f}")
+            try:
+                if isinstance(self.regime_stats, dict):
+                    up_med = ((self.regime_stats.get('stats') or {}).get('up') or {}).get('median_len')
+                    print(f"  • Regime up median len: {up_med}")
+            except Exception:
+                pass
         else:
             # УЛУЧШЕНО: Динамические параметры риск-менеджмента
             self.base_stop_loss = -0.03      # Базовый stop-loss
-            self.base_take_profit = +0.06    # Базовый take-profit
+            self.base_take_profit = +0.01    # Базовый take-profit
             self.base_min_hold = 8           # Базовое минимальное время удержания
             self.volume_threshold = 0.0001   # Базовый порог объема
             
@@ -378,6 +399,10 @@ class CryptoTradingEnvOptimized(gym.Env):
             'with_position': 0,
             'no_position': 0,
         }
+        # Текущее состояние тренда и длины серий
+        self._trend_regime = 0  # -1,0,1
+        self._run_len_up = 0
+        self._run_len_down = 0
         
         # Время для отслеживания производительности
         self.episode_start_time = None
@@ -732,6 +757,9 @@ class CryptoTradingEnvOptimized(gym.Env):
         
         # Сброс счетчиков действий
         self.action_counts = {0: 0, 1: 0, 2: 0}
+        # Шейпинг по объёму (сбрасываем на новый эпизод)
+        self._vol_shaping_reward = 0.0
+        self._vol_size_multiplier = 1.0
         
         # Выбор случайной начальной точки с учетом длины эпизода
         if self._can_log:
@@ -800,6 +828,12 @@ class CryptoTradingEnvOptimized(gym.Env):
                         self.position_fraction = max(self.base_position_fraction * 0.7, 0.15)  # Минимум 15%
                         if self._can_log:
                             print(f"🎯 Низкая уверенность ({entry_confidence:.2f}): уменьшаем позицию до {self.position_fraction:.1%}")
+                    # Применяем корректировку размера позиции по объёму (шейпинг)
+                    try:
+                        vm = float(getattr(self, '_vol_size_multiplier', 1.0))
+                        self.position_fraction = float(np.clip(self.position_fraction * vm, 0.10, 0.60))
+                    except Exception:
+                        pass
                     
                     # Покупаем с учётом комиссии
                     buy_amount = self.balance * self.position_fraction
@@ -815,6 +849,23 @@ class CryptoTradingEnvOptimized(gym.Env):
                     base_reward = 0.03
                     confidence_bonus = entry_confidence * 0.02  # Дополнительная награда за высокую уверенность
                     reward = base_reward + confidence_bonus
+                    # Трендовый шейпинг BUY
+                    try:
+                        m = 1.0
+                        if getattr(self, '_trend_regime', 0) == 1 and getattr(self, '_L_up_med', 0.0) > 0:
+                            u = float(np.clip(self._run_len_up / max(1.0, self._L_up_med), 0.0, 1.0))
+                            m = 1.0 + 0.30 * (1.0 - u)
+                        elif getattr(self, '_trend_regime', 0) == -1 and getattr(self, '_L_down_med', 0.0) > 0:
+                            u = float(np.clip(self._run_len_down / max(1.0, self._L_down_med), 0.0, 1.0))
+                            m = 1.0 - 0.20 * u
+                        reward *= float(np.clip(m, 0.7, 1.3))
+                    except Exception:
+                        pass
+                    # Добавляем shaping по объёму: бонус/штраф непрерывный
+                    try:
+                        reward += float(getattr(self, '_vol_shaping_reward', 0.0))
+                    except Exception:
+                        pass
                     
                     if self._can_log:
                         print(f"🔵 BUY: {crypto_to_buy:.4f} at {current_price:.2f}, уверенность: {entry_confidence:.2f}, награда: {reward:.4f}")
@@ -851,16 +902,20 @@ class CryptoTradingEnvOptimized(gym.Env):
                 
         elif action == 2:  # SELL
             if self.crypto_held > 0:  # Только если держим криптовалюту
-                # Проверяем минимальное время удержания
+                # Градуированный штраф за ранний SELL вместо блокировки
                 if hasattr(self, 'last_buy_step') and self.last_buy_step is not None:
                     hold_time = self.current_step - self.last_buy_step
                     if hold_time < self.min_hold_steps:
-                        # Штраф за слишком раннюю продажу
-                        reward = -0.02
-                        #self._log(f"[{self.current_step}] ⚠️ Слишком ранняя продажа: {hold_time} шагов < {self.min_hold_steps}")
-                        # Масштабируем награду перед возвратом
-                        reward = reward * reward_scale
-                        return self._get_state(), reward, False, {}
+                        # Линейный штраф: максимум при немедленном выходе, 0 на min_hold_steps
+                        try:
+                            steps_needed = max(1, int(self.min_hold_steps))
+                            progress = max(0.0, min(1.0, float(hold_time) / float(steps_needed)))
+                            max_penalty = 0.03  # максимальный штраф за мгновенный выход
+                            early_penalty = -max_penalty * (1.0 - progress)
+                            reward += early_penalty
+                            #self._log(f"[{self.current_step}] ⚠️ Ранний SELL: hold={hold_time}/{self.min_hold_steps}, penalty={early_penalty:.4f}")
+                        except Exception:
+                            reward += -0.02
                 
                 # Продаем
                 sell_amount = self.crypto_held * current_price
@@ -874,6 +929,34 @@ class CryptoTradingEnvOptimized(gym.Env):
                 
                 # Награда за продажу (как в оригинале)
                 reward += np.tanh(pnl * 25) * 2  # За результат сделки
+
+                # --- Reward shaping вокруг SL/TP ---
+                try:
+                    p = float(pnl)
+                    sl = float(getattr(self, 'STOP_LOSS_PCT', -0.03))
+                    tp = float(getattr(self, 'TAKE_PROFIT_PCT', 0.06))
+                    tau = max(float(getattr(self, 'trade_fee_percent', 0.00055)) * 2.5, 0.002)
+
+                    # SL shaping
+                    if p <= sl:
+                        a_sl, b_sl = 0.02, 0.5  # базовый бонус и штраф за запоздание ниже SL
+                        reward += a_sl - b_sl * max(0.0, (sl - p))
+                    elif sl < p < 0.0:
+                        c_sl = 0.01  # мягкий штраф за ранний выход до достижения SL
+                        denom = max(1e-6, abs(sl))
+                        reward += -c_sl * (sl - p) / denom
+
+                    # TP shaping
+                    if p >= tp:
+                        a_tp, k_tp, cap = 0.02, 0.1, 0.03  # базовый бонус, за избыток, кап
+                        reward += a_tp + min(cap, k_tp * (p - tp))
+                    elif 0.0 < p < tp:
+                        if p < tau:
+                            k_small = 0.05  # штраф за микоприбыль ниже комиссионного порога
+                            reward += -k_small * (tau - p)
+                        # иначе — нейтрально
+                except Exception:
+                    pass
                 
                 # Дополнительные награды за качество сделки (УЛУЧШЕНО)
                 if pnl > 0.05:  # Прибыль > 5%
@@ -884,6 +967,18 @@ class CryptoTradingEnvOptimized(gym.Env):
                     reward -= 0.005  # Уменьшил штраф с -0.01 до -0.005
                 elif pnl < -0.01:  # Убыток > 1%
                     reward -= 0.001  # Небольшой штраф за малые убытки
+                # Трендовый шейпинг SELL
+                try:
+                    m = 1.0
+                    if getattr(self, '_trend_regime', 0) == 1 and getattr(self, '_L_up_med', 0.0) > 0:
+                        u = float(np.clip(self._run_len_up / max(1.0, self._L_up_med), 0.0, 1.0))
+                        m = 1.0 + 0.30 * u
+                    elif getattr(self, '_trend_regime', 0) == -1 and getattr(self, '_L_down_med', 0.0) > 0:
+                        u = float(np.clip(self._run_len_down / max(1.0, self._L_down_med), 0.0, 1.0))
+                        m = 1.0 - 0.20 * u
+                    reward *= float(np.clip(m, 0.7, 1.3))
+                except Exception:
+                    pass
                 
                 # ИСПРАВЛЯЕМ: Записываем сделку в оба списка для правильного расчета winrate
                 # Включаем расширенные поля для последующей визуализации
@@ -1039,6 +1134,18 @@ class CryptoTradingEnvOptimized(gym.Env):
             else:
                 # Если action == HOLD и нет открытой позиции
                 reward = 0.001  # Небольшое поощрение за разумное бездействие вместо штрафа
+        # Трендовый шейпинг HOLD
+        try:
+            m = 1.0
+            if getattr(self, '_trend_regime', 0) == 1 and getattr(self, '_L_up_med', 0.0) > 0:
+                u = float(np.clip(self._run_len_up / max(1.0, self._L_up_med), 0.0, 1.0))
+                m = 1.0 + 0.20 * (1.0 - abs(2.0 * u - 1.0))
+            elif getattr(self, '_trend_regime', 0) == -1 and getattr(self, '_L_down_med', 0.0) > 0:
+                u = float(np.clip(self._run_len_down / max(1.0, self._L_down_med), 0.0, 1.0))
+                m = 1.0 - 0.15 * (1.0 - abs(2.0 * u - 1.0))
+            reward *= float(np.clip(m, 0.7, 1.3))
+        except Exception:
+            pass
         
         # Обновляем статистики
         self._update_stats(current_price)
@@ -1150,6 +1257,24 @@ class CryptoTradingEnvOptimized(gym.Env):
         })
         self.balance_history.append(self.balance + self.crypto_held * current_price)
         
+        # Обновляем трендовый режим/серии (после шага) если нет предвычисленного режима
+        try:
+            if not isinstance(getattr(self, 'regime_precomputed', None), dict):
+                self._update_trend_run_lengths()
+            else:
+                # Читаем предвычислённый прогресс и режим
+                idx = self.current_step - 1
+                reg = self.regime_precomputed.get('regime_seq') or []
+                if 0 <= idx < len(reg):
+                    self._trend_regime = int(reg[idx])
+                run_up = self.regime_precomputed.get('runlen_up') or []
+                run_dn = self.regime_precomputed.get('runlen_down') or []
+                if 0 <= idx < len(run_up):
+                    self._run_len_up = int(run_up[idx])
+                if 0 <= idx < len(run_dn):
+                    self._run_len_down = int(run_dn[idx])
+        except Exception:
+            pass
         # Обновляем next_state для всех переходов в n-step buffer
         for transition in self.n_step_buffer:
             if transition['next_state'] is None:
@@ -1160,6 +1285,51 @@ class CryptoTradingEnvOptimized(gym.Env):
         reward = reward * reward_scale
         info["reward"] = reward
         return self._get_state(), reward, done, info
+
+    def _update_trend_run_lengths(self) -> None:
+        """Обновляет текущий трендовый режим (-1/0/1) и длины серий up/down.
+        Использует простую эвристику дрейфа на коротком окне (например, 60 баров).
+        При наличии настроек из adaptive_normalization использует первый из trend_windows.
+        """
+        try:
+            w = None
+            try:
+                if hasattr(self, 'trend_windows') and self.trend_windows:
+                    w = int(self.trend_windows[0])
+            except Exception:
+                w = None
+            if not w:
+                w = 60
+            if self.current_step <= w:
+                return
+            idx = self.current_step - 1
+            c_now = float(self.df_5min[idx - 1, 3])
+            c_w = float(self.df_5min[idx - w, 3])
+            drift = (c_now - c_w) / max(c_w, 1e-12)
+            # Порог берём из trend_tau при наличии, иначе 0.02
+            tau = 0.02
+            try:
+                tau = float((self.trend_tau or {}).get(w, 0.02))
+            except Exception:
+                tau = 0.02
+            regime = 0
+            if drift > tau:
+                regime = 1
+            elif drift < -tau:
+                regime = -1
+            self._trend_regime = regime
+            if regime == 1:
+                self._run_len_up += 1
+                self._run_len_down = 0
+            elif regime == -1:
+                self._run_len_down += 1
+                self._run_len_up = 0
+            else:
+                # flat — сбрасываем коротко обе серии
+                self._run_len_up = 0
+                self._run_len_down = 0
+        except Exception:
+            pass
 
     def _check_buy_filters_reason(self):
         """Проверяет фильтры покупки и возвращает (allowed: bool, reason: str|None).
@@ -1181,7 +1351,7 @@ class CryptoTradingEnvOptimized(gym.Env):
         # Степень строгости [0..1]
         strictness = np.clip((0.8 - eps) / (0.8 - 0.2), 0.0, 1.0)
         
-        # 1. Проверка объема - АДАПТИВНЫЙ порог
+        # 1. Проверка объема - АДАПТИВНЫЙ порог с мягким шейпингом
         current_volume = self.df_5min[self.current_step - 1, 4]
         vol_relative = calc_relative_vol_numpy(self.df_5min, self.current_step - 1, 12)
         
@@ -1190,11 +1360,30 @@ class CryptoTradingEnvOptimized(gym.Env):
         base_lenient_vol = max(cfg_thr, 0.0010)
         base_strict_vol  = max(cfg_thr, 0.0030)
         vol_thr = base_lenient_vol + strictness * (base_strict_vol - base_lenient_vol)
-        if vol_relative < vol_thr:
+        # Жёсткий пол: совсем «мертвый» объём — запрещаем
+        vol_floor = 0.5 * base_lenient_vol
+        # Обнулим shaping по объёму на каждый вызов
+        self._vol_shaping_reward = 0.0
+        self._vol_size_multiplier = 1.0
+        if vol_relative < vol_floor:
             self.buy_rejected_vol += 1
             if self.current_step % 100 == 0:
-                print(f"🔍 Фильтр объема: vol_relative={vol_relative:.4f} < {vol_thr:.4f}, отклонено")
+                print(f"🔍 Фильтр объема (FLOOR): vol_relative={vol_relative:.4f} < {vol_floor:.4f}, отклонено")
             return False, 'volume'
+        else:
+            # Мягкий шейпинг: ниже порога — небольшой штраф и урезание размера позиции, выше — бонус и увеличение
+            try:
+                if vol_relative < vol_thr:
+                    deficit = float(np.clip((vol_thr - vol_relative) / max(vol_thr, 1e-6), 0.0, 1.0))
+                    self._vol_shaping_reward = -0.01 * deficit  # до -0.01
+                    self._vol_size_multiplier = 1.0 - 0.3 * deficit  # до -30% размера позиции
+                else:
+                    excess = float(np.clip((vol_relative - vol_thr) / max(vol_thr, 1e-6), 0.0, 2.0))
+                    self._vol_shaping_reward = +0.005 * min(1.0, excess)  # до +0.005
+                    self._vol_size_multiplier = 1.0 + 0.2 * min(1.0, excess)  # до +20%
+            except Exception:
+                self._vol_shaping_reward = 0.0
+                self._vol_size_multiplier = 1.0
         
         # 2. Проверка ROI - УЛУЧШЕНО: Более умный фильтр
         if len(self.roi_buf) > 0:
@@ -1440,10 +1629,10 @@ class CryptoTradingEnvOptimized(gym.Env):
             # 4. Ограничиваем параметры разумными пределами
             self.STOP_LOSS_PCT = max(self.STOP_LOSS_PCT, -0.08)  # Не более -8%
             self.STOP_LOSS_PCT = min(self.STOP_LOSS_PCT, -0.01)  # Не менее -1%
-            self.TAKE_PROFIT_PCT = max(self.TAKE_PROFIT_PCT, 0.03)   # Не менее 3%
-            self.TAKE_PROFIT_PCT = min(self.TAKE_PROFIT_PCT, 0.20)   # Не более 20%
+            self.TAKE_PROFIT_PCT = max(self.TAKE_PROFIT_PCT, 0.003)   # Не менее 0.3%
+            self.TAKE_PROFIT_PCT = min(self.TAKE_PROFIT_PCT, 0.05)   # Не более 20%
             self.min_hold_steps = max(self.min_hold_steps, 4)     # Не менее 4 шагов
-            self.min_hold_steps = min(self.min_hold_steps, 20)    # Не более 20 шагов
+            self.min_hold_steps = min(self.min_hold_steps, 100)    # Не более 100 шагов
             
             # 5. НОВЫЙ: Динамическое обновление размера позиции на основе рыночных условий
             if hasattr(self, 'base_position_fraction'):

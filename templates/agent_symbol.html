@@ -529,7 +529,26 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
         'Cache-Control': 'no-cache'
       }
     });
-    const data = await resp.json();
+    // Покажем детали, если сервер вернул ошибку
+    if(!resp.ok){
+      const box = document.getElementById('predictionsBox');
+      const el = document.getElementById('predictionsContent');
+      let body = '';
+      try{ body = await resp.text(); }catch(_){ body=''; }
+      if(el){ el.innerHTML = `<p>❌ Ошибка загрузки предсказаний (HTTP ${resp.status})</p>` + (body ? `<pre style="white-space:pre-wrap; font-size:12px; color:#666; max-height:300px; overflow:auto;">${body}</pre>` : ''); }
+      if(box){ box.style.display='block'; }
+      return;
+    }
+    let data = null;
+    try{
+      data = await resp.json();
+    }catch(parseErr){
+      const box = document.getElementById('predictionsBox');
+      const el = document.getElementById('predictionsContent');
+      if(el){ el.innerHTML = `<p>❌ Некорректный ответ сервера (ожидался JSON)</p><pre style="white-space:pre-wrap; font-size:12px; color:#666; max-height:300px; overflow:auto;">${String(parseErr)}</pre>`; }
+      if(box){ box.style.display='block'; }
+      return;
+    }
     const box = document.getElementById('predictionsBox');
     const el = document.getElementById('predictionsContent');
     const emptyState = document.getElementById('predictionsFilterEmpty');

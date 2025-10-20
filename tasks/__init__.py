@@ -23,8 +23,16 @@ celery = Celery(
 )
 
 # Настройки устойчивости к потере соединения с брокером
-celery.conf.worker_cancel_long_running_tasks_on_connection_loss = True
+# Не отменять долгие задачи при кратковременной потере соединения
+celery.conf.worker_cancel_long_running_tasks_on_connection_loss = False
 celery.conf.broker_connection_retry_on_startup = True
+celery.conf.broker_heartbeat = 30
+celery.conf.broker_transport_options = {
+    'visibility_timeout': 3600 * 24,  # 24h — время, пока сообщение считается доставленным, но не подтвержденным
+    'socket_keepalive': True,
+}
+celery.conf.task_acks_late = True
+celery.conf.worker_prefetch_multiplier = 1
 
 # Настройки для автоматической очистки результатов задач
 celery.conf.result_expires = 3600 * 24 * 7 # 7 дней TTL для результатов задач

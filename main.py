@@ -47,6 +47,7 @@ from utils.trade_utils import (
 import logging
 from flask import Response
 import json
+import math
 
 import time
 
@@ -1084,6 +1085,19 @@ def delete_model():
 def get_recent_predictions():
     """API для получения последних предсказаний модели"""
     try:
+        # Helper: sanitize NaN/Infinity → None for strict JSON
+        def _sanitize_for_json(value):
+            try:
+                if isinstance(value, float):
+                    return value if math.isfinite(value) else None
+                if isinstance(value, (list, tuple)):
+                    return [ _sanitize_for_json(v) for v in value ]
+                if isinstance(value, dict):
+                    return { str(k): _sanitize_for_json(v) for k, v in value.items() }
+                return value
+            except Exception:
+                return None
+
         symbol = request.args.get('symbol')
         action = request.args.get('action')
         limit = int(request.args.get('limit', 50))
@@ -1173,11 +1187,12 @@ def get_recent_predictions():
             except Exception:
                 pass
 
-        return jsonify({
+        safe_payload = _sanitize_for_json({
             'success': True,
             'predictions': predictions_data,
             'total_predictions': len(predictions_data)
         })
+        return jsonify(safe_payload)
         
     except Exception as e:
         return jsonify({

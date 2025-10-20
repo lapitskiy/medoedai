@@ -120,6 +120,29 @@ def train_dqn_symbol_route():
 
     # Переключаемся на Tianshou по умолчанию (engine='ts')
     engine = (data.get('engine') or request.args.get('engine') or 'ts').lower()
+    # Дедупликация на этапе постановки: не ставим, если такой же запуск уже в очереди/был недавно
+    try:
+        _engine = (engine or '').lower()
+        _enc = (encoder_id or '-')
+        _train_enc = 1 if train_encoder else 0
+        _eps = episodes if (episodes is not None) else 'env'
+        _ep_len = episode_length if (episode_length is not None) else 'cfg'
+        _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}"
+        _queued_key = f"celery:train:queued:{_biz_key}"
+        _running_key_biz = f"celery:train:running:{_biz_key}"
+        _finished_key = f"celery:train:finished:{_biz_key}"
+        if redis_client.get(_running_key_biz) or redis_client.get(_queued_key) or redis_client.get(_finished_key):
+            wants_json = request.is_json or 'application/json' in (request.headers.get('Accept') or '')
+            if wants_json:
+                return jsonify({
+                    "success": False,
+                    "error": f"training duplicate for {symbol} skipped",
+                    "duplicate": True,
+                })
+            return redirect(url_for("index"))
+    except Exception:
+        pass
+
     task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length, 'engine': engine, 'encoder_id': encoder_id, 'train_encoder': train_encoder}, queue="train")
     logger.info(f"/train_dqn_symbol queued symbol={symbol} queue=train task_id={task.id}")
     # Сохраняем task_id для отображения на главной и отметку per-symbol
@@ -128,6 +151,21 @@ def train_dqn_symbol_route():
         redis_client.lpush("ui:tasks", task.id)
         redis_client.ltrim("ui:tasks", 0, 49)     # ограничиваем список
         redis_client.setex(running_key, 24 * 3600, task.id)
+        # Отмечаем бизнес-‘queued’ на короткое время, чтобы двойные клики UI не ставили второй запуск
+        try:
+            _ttl = int(os.environ.get('TRAIN_QUEUED_TTL', '300'))  # 5 минут по умолчанию
+        except Exception:
+            _ttl = 300
+        try:
+            _engine = (engine or '').lower()
+            _enc = (encoder_id or '-')
+            _train_enc = 1 if train_encoder else 0
+            _eps = episodes if (episodes is not None) else 'env'
+            _ep_len = episode_length if (episode_length is not None) else 'cfg'
+            _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}"
+            redis_client.setex(f"celery:train:queued:{_biz_key}", max(30, _ttl), task.id)
+        except Exception:
+            pass
     except Exception as _e:
         logger.error(f"/train_dqn_symbol: не удалось записать ui:tasks: {_e}")
     # Ответ для fetch/XHR — JSON; для форм — редирект

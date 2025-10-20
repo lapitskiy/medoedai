@@ -198,6 +198,36 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
     """
     self.update_state(state="IN_PROGRESS", meta={"progress": 0, "symbol": symbol})
 
+    # Идемпотентность: если этот task_id уже успешно завершался, пропустим повторную доставку
+    try:
+        from utils.redis_utils import get_redis_client  # локальный импорт
+        _rc = get_redis_client()
+        _task_id = getattr(getattr(self, 'request', None), 'id', None)
+        if _task_id:
+            _done_key = f"celery:train:done:{_task_id}"
+            if _rc.get(_done_key):
+                return {"message": f"⏭️ Повторная доставка задачи {symbol} проигнорирована (уже завершена)", "skipped": True}
+        # Бизнес-дедупликация: тот же набор параметров недавно завершался — пропускаем
+        _engine = (engine or '').lower()
+        _enc = (encoder_id or '-')
+        _train_enc = 1 if train_encoder else 0
+        _eps = episodes if (episodes is not None) else 'env'
+        _ep_len = episode_length if (episode_length is not None) else 'cfg'
+        _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}"
+        _finished_key = f"celery:train:finished:{_biz_key}"
+        _queued_key = f"celery:train:queued:{_biz_key}"
+        _running_key_biz = f"celery:train:running:{_biz_key}"
+        if _rc.get(_finished_key):
+            return {"message": f"⏭️ {symbol}: такой запуск уже недавно завершался (дедупликация)", "skipped": True}
+        try:
+            # Помечаем бизнес-‘running’ и очищаем ‘queued’ (если был двойной клик)
+            _rc.setex(_running_key_biz, 48 * 3600, _task_id or '1')
+            _rc.delete(_queued_key)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
     try:
         # Сид до любых инициализаций
         seed = int(seed) if seed is not None else None
@@ -390,6 +420,30 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
                 current_task_id = getattr(getattr(self, 'request', None), 'id', None)
                 if current_task_id:
                     redis_client.lrem(ui_tasks_key, 0, current_task_id)
+                    # Помечаем задачу как завершённую для идемпотентности на 24 часа
+                    try:
+                        redis_client.setex(f"celery:train:done:{current_task_id}", 24 * 3600, "1")
+                    except Exception:
+                        pass
+                # Снимаем бизнес-‘running’ и отмечаем ‘finished’ по набору параметров
+                try:
+                    _engine = (engine or '').lower()
+                    _enc = (encoder_id or '-')
+                    _train_enc = 1 if train_encoder else 0
+                    _eps = episodes if (episodes is not None) else 'env'
+                    _ep_len = episode_length if (episode_length is not None) else 'cfg'
+                    _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}"
+                    _running_key_biz = f"celery:train:running:{_biz_key}"
+                    _finished_key = f"celery:train:finished:{_biz_key}"
+                    redis_client.delete(_running_key_biz)
+                    # TTL «недавно завершено»: по умолчанию 1 час (можно переопределить ENV TRAIN_FINISHED_TTL)
+                    try:
+                        _ttl = int(os.environ.get('TRAIN_FINISHED_TTL', '3600'))
+                    except Exception:
+                        _ttl = 3600
+                    redis_client.setex(_finished_key, max(60, _ttl), '1')
+                except Exception:
+                    pass
             except Exception:
                 pass
         except Exception:
