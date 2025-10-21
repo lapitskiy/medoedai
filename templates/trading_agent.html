@@ -123,6 +123,46 @@
                         </div>
                     </div>
                 </div>
+                <!-- Стратегия исполнения -->
+                <div class="form-group" style="margin-top:10px;">
+                    <label style="font-weight:600;">Стратегия исполнения</label>
+                    <select id="executionModeSelect" class="form-control" onchange="onExecutionModeChange()">
+                        <option value="market" selected>Рыночная (market)</option>
+                        <option value="limit_post_only">Лимитная (post-only, у края книги)</option>
+                    </select>
+                </div>
+                <div id="limitConfigBox" style="display:none; margin-top:8px; padding:10px; border:1px solid #e0e0e0; border-radius:6px; background:#fafafa;">
+                    <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:10px;">
+                        <div>
+                            <label style="font-weight:500;">Requote, сек</label>
+                            <input id="limitRequoteInput" type="number" min="5" max="60" step="1" class="form-control" value="15" />
+                        </div>
+                        <div>
+                            <label style="font-weight:500;">Max lifetime, сек (≤300)</label>
+                            <input id="limitMaxLifetimeInput" type="number" min="10" max="300" step="5" class="form-control" value="300" />
+                        </div>
+                        <div>
+                            <label style="font-weight:500;">Offset max, тиков</label>
+                            <input id="limitOffsetInput" type="number" min="2" max="128" step="1" class="form-control" value="16" />
+                        </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:10px; margin-top:10px;">
+                        <div>
+                            <label><input type="checkbox" id="immediateStartCheckbox" /> Запустить немедленно</label>
+                        </div>
+                        <div>
+                            <label>Сторона</label>
+                            <select id="immediateSideSelect" class="form-control">
+                                <option value="buy" selected>BUY</option>
+                                <option value="sell">SELL</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Количество (опц.)</label>
+                            <input id="immediateQtyInput" type="number" min="0" step="0.0001" class="form-control" placeholder="авто" />
+                        </div>
+                    </div>
+                </div>
                 <div class="form-group" style="margin-top:10px;">
                     <div id="ensembleVersions" style="max-height:320px; overflow:auto; border:1px solid #e0e0e0; border-radius:6px; padding:0;">
                         <div class="versions-table">
@@ -201,8 +241,12 @@
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px; margin-bottom:15px;">
                         <div>
                             <label style="font-weight:500; margin-bottom:5px; display:block;">Тейк-профит (%)</label>
+                            <label style="display:block; margin-bottom:6px; font-size:13px; color:#444;">
+                                <input type="checkbox" id="takeProfitEnabled" checked onchange="updateRiskManagementDisplay(); autoSaveTradingConfig();">
+                                Включить тейк‑профит
+                            </label>
                             <div class="range-inline">
-                                <input type="range" id="takeProfitPct" class="count-range" min="1" max="20" value="5" step="0.5" style="flex:1;" oninput="updateRiskManagementDisplay()">
+                                <input type="range" id="takeProfitPct" class="count-range" min="0.1" max="20" value="5" step="0.1" style="flex:1;" oninput="updateRiskManagementDisplay()">
                                 <span id="takeProfitPctValue" class="range-badge">5.0%</span>
                             </div>
                             <small style="color:#666; display:block; margin-top:6px;">Автоматическая продажа при достижении прибыли</small>
@@ -210,8 +254,12 @@
                         
                         <div>
                             <label style="font-weight:500; margin-bottom:5px; display:block;">Стоп-лосс (%)</label>
+                            <label style="display:block; margin-bottom:6px; font-size:13px; color:#444;">
+                                <input type="checkbox" id="stopLossEnabled" checked onchange="updateRiskManagementDisplay(); autoSaveTradingConfig();">
+                                Включить стоп‑лосс
+                            </label>
                             <div class="range-inline">
-                                <input type="range" id="stopLossPct" class="count-range" min="1" max="10" value="3" step="0.5" style="flex:1;" oninput="updateRiskManagementDisplay()">
+                                <input type="range" id="stopLossPct" class="count-range" min="0.1" max="10" value="3" step="0.1" style="flex:1;" oninput="updateRiskManagementDisplay()">
                                 <span id="stopLossPctValue" class="range-badge">-3.0%</span>
                             </div>
                             <small style="color:#666; display:block; margin-top:6px;">Автоматическая продажа при убытке</small>
@@ -613,15 +661,41 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ 
-                        symbols: selectedSymbols,
-                        model_paths: selectedPaths,
-                        consensus: consensusSettings,
-                        account_id: accountId,
-                        take_profit_pct: takeProfitPct,
-                        stop_loss_pct: stopLossPct,
-                        risk_management_type: riskType
-                    })
+                    body: JSON.stringify((()=>{
+                        const payload = { 
+                            symbols: selectedSymbols,
+                            model_paths: selectedPaths,
+                            consensus: consensusSettings,
+                            account_id: accountId,
+                            take_profit_pct: takeProfitPct,
+                            stop_loss_pct: stopLossPct,
+                            risk_management_type: riskType
+                        };
+                        // Стратегия исполнения
+                        const modeSel = document.getElementById('executionModeSelect');
+                        const mode = modeSel ? (modeSel.value||'').trim() : '';
+                        if (mode){
+                            payload.execution_mode = mode;
+                            if (mode === 'limit_post_only'){
+                                const rq = parseInt(document.getElementById('limitRequoteInput')?.value || '15', 10);
+                                const ml = parseInt(document.getElementById('limitMaxLifetimeInput')?.value || '300', 10);
+                                const mx = parseInt(document.getElementById('limitOffsetInput')?.value || '16', 10);
+                                payload.limit_config = {
+                                    requote_interval_sec: Math.max(5, Math.min(60, rq||15)),
+                                    max_lifetime_sec: Math.min(300, Math.max(10, ml||300)),
+                                    offset_max_ticks: Math.max(2, Math.min(128, mx||16))
+                                };
+                                const imm = !!(document.getElementById('immediateStartCheckbox')?.checked);
+                                payload.immediate = imm;
+                                if (imm){
+                                    payload.side = (document.getElementById('immediateSideSelect')?.value || 'buy');
+                                    const qv = parseFloat(document.getElementById('immediateQtyInput')?.value || '0');
+                                    if (!isNaN(qv) && qv>0) payload.qty = qv;
+                                }
+                            }
+                        }
+                        return payload;
+                    })())
                 });
                 
                 const result = await response.json();
@@ -1689,21 +1763,29 @@
             const takeProfitSlider = document.getElementById('takeProfitPct');
             const stopLossSlider = document.getElementById('stopLossPct');
             const riskTypeSelect = document.getElementById('riskManagementType');
+            const tpEnabled = document.getElementById('takeProfitEnabled');
+            const slEnabled = document.getElementById('stopLossEnabled');
             
             if (takeProfitSlider) {
+                const enabled = tpEnabled ? !!tpEnabled.checked : true;
+                takeProfitSlider.disabled = !enabled;
                 const value = parseFloat(takeProfitSlider.value);
                 const badge = document.getElementById('takeProfitPctValue');
                 const display = document.getElementById('takeProfitDisplay');
-                if (badge) badge.textContent = `${value.toFixed(1)}%`;
-                if (display) display.textContent = `${value.toFixed(1)}%`;
+                if (badge) badge.textContent = enabled ? `${value.toFixed(1)}%` : '—';
+                if (display) display.textContent = enabled ? `${value.toFixed(1)}%` : '—';
+                if (badge) badge.style.opacity = enabled ? '1' : '0.6';
             }
             
             if (stopLossSlider) {
+                const enabled = slEnabled ? !!slEnabled.checked : true;
+                stopLossSlider.disabled = !enabled;
                 const value = parseFloat(stopLossSlider.value);
                 const badge = document.getElementById('stopLossPctValue');
                 const display = document.getElementById('stopLossDisplay');
-                if (badge) badge.textContent = `-${value.toFixed(1)}%`;
-                if (display) display.textContent = `-${value.toFixed(1)}%`;
+                if (badge) badge.textContent = enabled ? `-${value.toFixed(1)}%` : '—';
+                if (display) display.textContent = enabled ? `-${value.toFixed(1)}%` : '—';
+                if (badge) badge.style.opacity = enabled ? '1' : '0.6';
             }
             
             if (riskTypeSelect) {
@@ -1723,6 +1805,8 @@
             const takeProfitSlider = document.getElementById('takeProfitPct');
             const stopLossSlider = document.getElementById('stopLossPct');
             const riskTypeSelect = document.getElementById('riskManagementType');
+            const tpEnabled = document.getElementById('takeProfitEnabled');
+            const slEnabled = document.getElementById('stopLossEnabled');
             
             if (takeProfitSlider) {
                 takeProfitSlider.addEventListener('input', () => {
@@ -1742,6 +1826,18 @@
                     autoSaveTradingConfig();
                 });
             }
+            if (tpEnabled) {
+                tpEnabled.addEventListener('change', () => {
+                    updateRiskManagementDisplay();
+                    autoSaveTradingConfig();
+                });
+            }
+            if (slEnabled) {
+                slEnabled.addEventListener('change', () => {
+                    updateRiskManagementDisplay();
+                    autoSaveTradingConfig();
+                });
+            }
             
             updateRiskManagementDisplay();
         }
@@ -1753,28 +1849,28 @@
                 const consensusSettings = getConsensusSettings();
                 
                 // Добавляем параметры риск-менеджмента
+                const tpEnabled = !!(document.getElementById('takeProfitEnabled')?.checked);
+                const slEnabled = !!(document.getElementById('stopLossEnabled')?.checked);
                 const takeProfitPct = parseFloat(document.getElementById('takeProfitPct')?.value || '5');
                 const stopLossPct = parseFloat(document.getElementById('stopLossPct')?.value || '3');
                 const riskType = document.getElementById('riskManagementType')?.value || 'exchange_orders';
                 
                 // Сохраняем в Redis через API
-                await fetch('/api/trading/save_config', {
+                const payload = {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        symbols: [symbol], 
-                        model_paths: selectedPaths, 
-                        consensus: consensusSettings,
-                        take_profit_pct: takeProfitPct,
-                        stop_loss_pct: stopLossPct,
-                        risk_management_type: riskType
-                    })
-                });
+                    body: null
+                };
+                const bodyObj = { symbols: [symbol], model_paths: selectedPaths, consensus: consensusSettings, risk_management_type: riskType };
+                if (tpEnabled) bodyObj.take_profit_pct = takeProfitPct;
+                if (slEnabled) bodyObj.stop_loss_pct = stopLossPct;
+                payload.body = JSON.stringify(bodyObj);
+                await fetch('/api/trading/save_config', payload);
                 
                 console.log(`Автосохранение настроек для ${symbol}:`, {
                     consensus: consensusSettings,
                     models: selectedPaths.length,
-                    risk: { takeProfitPct, stopLossPct, riskType }
+                    risk: { takeProfitEnabled: tpEnabled, takeProfitPct, stopLossEnabled: slEnabled, stopLossPct, riskType }
                 });
             }catch(e){ 
                 console.error('Ошибка автосохранения:', e);

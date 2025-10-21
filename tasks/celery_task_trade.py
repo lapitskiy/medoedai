@@ -18,6 +18,68 @@ from utils.redis_utils import get_redis_client
 from tasks import celery
 
 logger = logging.getLogger(__name__)
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='trade')
+def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', side: str = 'buy', qty: float | None = None, limit_config: dict | None = None):
+    """Запуск DDD-стратегии исполнения (market | limit_post_only).
+
+    - Ограничение max_lifetime_sec ≤ 300 соблюдается на уровне сервиса
+    - При активном intent для symbol — новая заявка отклоняется (guard)
+    - Лог каждой попытки сохранится в Redis (state store)
+    """
+    try:
+        from trading_agent.application.executor_service import ExecutionService
+        from trading_agent.infrastructure.state_store_redis import RedisStateStore
+        # Реальный Bybit gateway (fallback на stub при ошибке инициализации ключей)
+        try:
+            from trading_agent.infrastructure.exchange_gateway_bybit import BybitExchangeGateway
+            _gateway = BybitExchangeGateway()
+        except Exception:
+            from trading_agent.infrastructure.exchange_gateway_stub import ExchangeGatewayStub
+            _gateway = ExchangeGatewayStub()
+        from trading_agent.strategies.market_strategy import MarketStrategy
+        from trading_agent.strategies.limit_post_only_strategy import LimitPostOnlyStrategy
+        from trading_agent.domain.models import LimitConfig, Side
+
+        # 1) Количество, если не задано — рассчитать через TradingAgent
+        if qty is None or qty <= 0:
+            try:
+                from trading_agent.trading_agent import TradingAgent
+                agent = TradingAgent()
+                agent.symbol = symbol
+                agent.base_symbol = symbol
+                qty = float(agent._calculate_trade_amount())
+            except Exception:
+                qty = 0.001
+
+        # 2) Конфиг лимитной стратегии
+        cfg = None
+        if isinstance(limit_config, dict):
+            try:
+                rq = int(limit_config.get('requote_interval_sec', 15))
+                ml = int(limit_config.get('max_lifetime_sec', 300))
+                mx = int(limit_config.get('offset_max_ticks', 16))
+                cfg = LimitConfig(requote_interval_sec=max(5, min(60, rq)), max_lifetime_sec=min(300, max(10, ml)), offset_max_ticks=max(2, min(128, mx)))
+            except Exception:
+                cfg = LimitConfig()
+
+        # 3) Создаём сервис и стратегий
+        store = RedisStateStore()
+        gateway = _gateway
+        strategies = {
+            'market': MarketStrategy(store, gateway),
+            'limit_post_only': LimitPostOnlyStrategy(store, gateway),
+        }
+        service = ExecutionService(store, strategies)
+
+        # 4) Запуск
+        side_enum = Side.BUY if str(side).lower() == 'buy' else Side.SELL
+        intent = service.start(execution_mode=execution_mode, symbol=symbol, side=side_enum, qty=qty, cfg=cfg)
+
+        return {"success": True, "intent_id": intent.intent_id, "state": intent.state}
+    except Exception as e:
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
 
 # Определяем очереди и маршрутизацию задач:
 # По умолчанию все задачи идут в очередь 'celery',
@@ -680,6 +742,23 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 except Exception:
                     # Не ломаем торговый цикл из-за БД
                     pass
+        except Exception:
+            pass
+
+        # Guard: если активен intent в DDD-исполнении для symbol — блокируем новые BUY/SELL, пока он не завершён
+        try:
+            has_active_intent = False
+            if rc is not None:
+                aid = rc.get(f'exec:active_intent:{symbol}')
+                if aid:
+                    raw_intent = rc.get(f'exec:intent:{aid}')
+                    if raw_intent:
+                        _ji = json.loads(raw_intent)
+                        st = str(_ji.get('state') or '').lower()
+                        if st not in ('filled','cancelled','failed','expired'):
+                            has_active_intent = True
+            if has_active_intent:
+                decision = 'hold'
         except Exception:
             pass
 

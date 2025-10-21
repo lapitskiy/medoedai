@@ -114,6 +114,11 @@ def start_trading():
         data = request.get_json() or {}
         symbols = data.get('symbols', ['BTCUSDT'])
         account_id = str(data.get('account_id') or '').strip()
+        # Новые параметры стратегии исполнения
+        execution_mode = str(data.get('execution_mode') or '').strip() or None  # 'market' | 'limit_post_only'
+        limit_config = data.get('limit_config') if isinstance(data.get('limit_config'), dict) else None
+        immediate = bool(data.get('immediate') or False)
+        immediate_side = str(data.get('side') or '').lower() if data.get('side') else None  # 'buy' | 'sell'
         # Поддержка многомодельного запуска: model_paths (список) + совместимость с model_path
         model_paths = data.get('model_paths') or []
         model_path = data.get('model_path')
@@ -156,6 +161,14 @@ def start_trading():
             # Сохраняем настройки для конкретного символа
             symbol = symbols[0] if symbols else 'ALL'
             _rc.set(f'trading:symbols:{symbol}', _json.dumps(symbols, ensure_ascii=False))
+            # Сохраняем выбранный режим исполнения и конфиг (per-symbol)
+            try:
+                if execution_mode:
+                    _rc.set(f'trading:execution_mode:{symbol}', execution_mode)
+                if isinstance(limit_config, dict):
+                    _rc.set(f'trading:limit_config:{symbol}', _json.dumps(limit_config, ensure_ascii=False))
+            except Exception:
+                pass
             _rc.set(f'trading:model_path:{symbol}', model_path)
             if isinstance(model_paths, list):
                 _rc.set(f'trading:model_paths:{symbol}', _json.dumps(model_paths, ensure_ascii=False))
@@ -201,8 +214,24 @@ def start_trading():
         except Exception:
             pass
 
-        # Запускаем Celery задачу для старта торговли в очереди 'trade'
+        # Запускаем Celery задачу для старта торговли (старый поток предсказаний/торгового шага)
         task = start_trading_task.apply_async(args=[symbols, model_path], countdown=0, expires=300, queue='trade')
+
+        # Опционально: немедленно запустить стратегию исполнения (DDD) для текущего символа
+        try:
+            from tasks.celery_task_trade import start_execution_strategy as _start_exec
+            if execution_mode and immediate and immediate_side in ('buy','sell'):
+                sym0 = symbols[0] if symbols else 'BTCUSDT'
+                # qty: возьмётся по умолчанию внутри задачи, если не задан
+                _start_exec.apply_async(kwargs={
+                    'symbol': sym0,
+                    'execution_mode': execution_mode,
+                    'side': immediate_side,
+                    'qty': data.get('qty'),
+                    'limit_config': (limit_config or {})
+                }, queue='trade')
+        except Exception:
+            pass
         
         return jsonify({
             'success': True,
@@ -481,6 +510,30 @@ def trading_status():
                     flat = {'success': True, 'agent_status': status_obj}
                     if isinstance(status_obj, dict):
                         flat.update(status_obj)
+                    # Добавим pending_order (DDD), если активен intent
+                    try:
+                        import time as _t
+                        import redis as _r
+                        _rc2 = _r.Redis(host='redis', port=6379, db=0, decode_responses=True)
+                        sym = flat.get('symbol') or flat.get('symbol_display')
+                        if sym:
+                            aid = _rc2.get(f'exec:active_intent:{sym}')
+                            if aid:
+                                raw = _rc2.get(f'exec:intent:{aid}')
+                                if raw:
+                                    import json as _json
+                                    data = _json.loads(raw)
+                                    flat['pending_order'] = {
+                                        'symbol': data.get('symbol'),
+                                        'intent_id': data.get('intent_id'),
+                                        'state': data.get('state'),
+                                        'price': data.get('price'),
+                                        'attempts': data.get('attempts'),
+                                        'age_sec': int(max(0, (_t.time() - float(data.get('created_at') or 0)))) if data.get('created_at') else None,
+                                        'last_error': data.get('last_error')
+                                    }
+                    except Exception:
+                        pass
                     try:
                         logging.info(f"[trading_status] ✓ using cached status | keys={list(flat.keys())}")
                         # Краткий обзор важных полей
@@ -494,6 +547,36 @@ def trading_status():
 
         # Нет свежего статуса в Redis — возвращаем понятный OFF статус для UI
         try:
+            # Попробуем дополнить OFF статус сведениями о pending intent (DDD)
+            pending_block = None
+            try:
+                import redis as _r
+                _rc2 = _r.Redis(host='redis', port=6379, db=0, decode_responses=True)
+                # Пройдём по известным символам и найдём active_intent
+                known = ['BTCUSDT','ETHUSDT','SOLUSDT','TONUSDT','ADAUSDT','BNBUSDT','XRPUSDT']
+                for sym in known:
+                    aid = _rc2.get(f'exec:active_intent:{sym}')
+                    if aid:
+                        raw = _rc2.get(f'exec:intent:{aid}')
+                        if raw:
+                            import json as _json
+                            data = _json.loads(raw)
+                            pending_block = {
+                                'symbol': data.get('symbol'),
+                                'intent_id': data.get('intent_id'),
+                                'state': data.get('state'),
+                                'price': data.get('price'),
+                                'attempts': data.get('attempts'),
+                                'age_sec': int(max(0, (time.time() - float(data.get('created_at') or 0)))) if data.get('created_at') else None,
+                                'last_error': data.get('last_error')
+                            }
+                            break
+                    # если нашли — прекращаем цикл
+                    if pending_block:
+                        break
+            except Exception:
+                pending_block = None
+
             default_status = {
                 'success': True,
                 'is_trading': False,
@@ -511,7 +594,8 @@ def trading_status():
                 'current_price': 0.0,
                 'last_model_prediction': None,
                 'is_fresh': False,
-                'reason': 'status not available in redis'
+                'reason': 'status not available in redis',
+                'pending_order': pending_block
             }
             flat = {'success': True, 'agent_status': default_status}
             flat.update(default_status)
