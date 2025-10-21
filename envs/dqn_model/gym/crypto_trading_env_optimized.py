@@ -894,9 +894,10 @@ class CryptoTradingEnvOptimized(gym.Env):
                     except Exception:
                         pass
             else:
-                reward = -0.01  # Уменьшил штраф за попытку купить при наличии позиции
+                # Трактуем как HOLD при открытой позиции: без штрафа и без учёта already_holding
+                reward = 0.0
                 try:
-                    self.buy_stats_total['already_holding'] += 1
+                    self.hold_stats_total['with_position'] += 1
                 except Exception:
                     pass
                 
@@ -1030,10 +1031,10 @@ class CryptoTradingEnvOptimized(gym.Env):
                 
                 #self._log(f"[{self.current_step}] 🔴 SELL: {sell_amount:.2f}, PnL: {pnl:.2%}")
             else:
-                reward = -0.01  # Уменьшил штраф за попытку продать без позиции
+                # Трактуем как HOLD без позиции: не считаем invalid_sell и не штрафуем
+                reward = 0.0
                 try:
-                    self.sell_types['invalid_sell'] += 1
-                    self.cumulative_sell_types['invalid_sell'] += 1
+                    self.hold_stats_total['no_position'] += 1
                 except Exception:
                     pass
         
