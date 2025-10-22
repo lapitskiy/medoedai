@@ -43,7 +43,7 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
     # Tesla V100 - еще быстрее с Tensor Cores
     "tesla_v100": GPUConfig(
         name="Tesla V100",
-        vram_gb=8.0,
+        vram_gb=7.0, # !не трогать, иначе out of memory!
         batch_size=1024,
         memory_size=500_000,  # Увеличиваем размер реплея для стабильности и разнообразия на 16GB
         hidden_sizes=(512, 256, 128),
