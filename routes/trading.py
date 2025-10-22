@@ -263,15 +263,13 @@ def execute_now():
     try:
         data = request.get_json(silent=True) or {}
         symbols = data.get('symbols') or [data.get('symbol') or 'BTCUSDT']
-        # dry_run=false по умолчанию; можно передать true для проверки без сделок
-        dry_run = bool(data.get('dry_run') or False)
+        # dry_run не передаём в таск для совместимости со старыми воркерами
         # Передаём напрямую в очередь trade ту же задачу, что и периодика
         from tasks.celery_task_trade import execute_trade as _exec
         res = _exec.apply_async(kwargs={
             'symbols': symbols,
             'model_path': None,
             'model_paths': None,
-            'dry_run': dry_run,
         }, queue='trade')
         return jsonify({'success': True, 'enqueued': True, 'task_id': res.id}), 200
     except Exception as e:

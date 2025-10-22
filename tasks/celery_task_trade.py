@@ -822,6 +822,83 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         trade_result = agent._execute_buy()
                 else:
                     trade_result = agent._execute_buy()
+                    # После рыночной покупки — выставим TP/SL, если включено
+                    try:
+                        tp_pct = None; sl_pct = None; rtype = None
+                        try:
+                            if rc is not None:
+                                tp_raw = rc.get('trading:take_profit_pct')
+                                sl_raw = rc.get('trading:stop_loss_pct')
+                                rtype = rc.get('trading:risk_management_type') or 'exchange_orders'
+                                tp_pct = float(tp_raw) if tp_raw is not None and str(tp_raw) != '' else None
+                                sl_pct = float(sl_raw) if sl_raw is not None and str(sl_raw) != '' else None
+                        except Exception:
+                            tp_pct = None; sl_pct = None; rtype = None
+                        if (rtype in ('exchange_orders','both')) and (tp_pct is not None or sl_pct is not None):
+                            entry_price = None; amount = None
+                            try:
+                                pos = getattr(agent, 'current_position', None) or {}
+                                entry_price = float(pos.get('entry_price')) if pos and (pos.get('entry_price') is not None) else None
+                                amount = float(pos.get('amount')) if pos and (pos.get('amount') is not None) else None
+                            except Exception:
+                                entry_price = None; amount = None
+                            if entry_price is None:
+                                try:
+                                    entry_price = float(agent._get_current_price())
+                                except Exception:
+                                    entry_price = None
+                            if amount is None or amount <= 0:
+                                try:
+                                    amount = float(getattr(agent, 'trade_amount', 0.0))
+                                except Exception:
+                                    amount = 0.0
+                            if (entry_price and entry_price > 0) and (amount and amount > 0):
+                                # Нормализация цены по precision
+                                try:
+                                    mkt = agent.exchange.market(symbol)
+                                    p_prec = int((mkt.get('precision', {}) or {}).get('price', 2))
+                                except Exception:
+                                    p_prec = 2
+                                def _roundp(x):
+                                    try:
+                                        return float(f"{float(x):.{max(0,p_prec)}f}")
+                                    except Exception:
+                                        return float(x)
+                                # Выставляем TP (лимит sell reduceOnly)
+                                if tp_pct is not None and tp_pct > 0:
+                                    try:
+                                        tp_price = _roundp(entry_price * (1.0 + float(tp_pct)/100.0))
+                                        agent.exchange.create_limit_sell_order(
+                                            symbol,
+                                            amount,
+                                            tp_price,
+                                            { 'reduceOnly': True, 'timeInForce': 'GTC' }
+                                        )
+                                    except Exception:
+                                        pass
+                                # Выставляем SL (стоп‑маркет reduceOnly)
+                                if sl_pct is not None and sl_pct > 0:
+                                    try:
+                                        sl_price = _roundp(entry_price * (1.0 - float(sl_pct)/100.0))
+                                        # Пытаемся использовать stop‑market API
+                                        try:
+                                            agent.exchange.create_stop_market_sell_order(
+                                                symbol,
+                                                amount,
+                                                sl_price,
+                                                { 'reduceOnly': True, 'stopPrice': sl_price }
+                                            )
+                                        except Exception:
+                                            # Фолбэк: обычный stop/trigger, если доступно через params
+                                            agent.exchange.create_market_sell_order(
+                                                symbol,
+                                                amount,
+                                                { 'reduceOnly': True, 'stopPrice': sl_price, 'triggerPrice': sl_price }
+                                            )
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
             elif decision == 'sell' and agent.current_position:
                 sell_strategy = agent._determine_sell_amount(agent._get_current_price())
                 if exec_mode == 'limit_post_only':
