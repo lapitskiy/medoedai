@@ -69,6 +69,7 @@
                                 <button class="btn btn-info" onclick="getAllTradingStatus()">🌐 Все активные агенты</button>
                                 <button class="btn btn-info" onclick="getBalance()">💰 Баланс</button>
                                 <button class="btn btn-success" onclick="executeNow('{{ symbol }}')">⚡ Выполнить торговый шаг сейчас</button>
+                                <button class="btn btn-warning" onclick="manualBypassBuy('{{ symbol }}')">🛒 Покупка в обход предсказания</button>
                             </div>
                             <div id="allStatusBox" class="trading-status" style="display:none;">
                                 <h3>🌐 Все активные агенты</h3>
@@ -421,6 +422,31 @@ async function executeNow(symbol){
       try{ loadCeleryResults(symbol, false); }catch(_){ }
     }, 1500);
     alert('⚡ Торговый шаг поставлен в очередь. Task ID: ' + (data.task_id || 'N/A'));
+  }catch(e){
+    alert('❌ Ошибка сети: ' + (e && e.message || e));
+  }
+}
+
+// Ручная покупка в обход предсказания с установкой TP/SL
+async function manualBypassBuy(symbol){
+  try{
+    const qtyStr = prompt('Количество (опционально, пусто = авто-расчёт):','');
+    const qty = qtyStr && qtyStr.trim() !== '' ? Number(qtyStr) : null;
+    const payload = { symbol };
+    if(qty && isFinite(qty) && qty>0){ payload.qty = qty; }
+    const resp = await fetch('/api/trading/manual_buy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    if(!data.success){
+      alert('❌ Ошибка ручной покупки: ' + (data.error || 'Неизвестная ошибка'));
+      return;
+    }
+    alert('✅ Покупка выполнена. Цена: ' + (data.executed_price||'N/A'));
+    try{ getTradingStatus(symbol); }catch(_){ }
+    try{ loadCeleryResults(symbol, false); }catch(_){ }
   }catch(e){
     alert('❌ Ошибка сети: ' + (e && e.message || e));
   }

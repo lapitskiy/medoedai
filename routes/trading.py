@@ -6,6 +6,7 @@ import logging
 import docker
 import json
 from datetime import datetime
+from typing import Optional
 import time
 
 trading_bp = Blueprint('trading', __name__)
@@ -760,6 +761,166 @@ def trading_balance():
         return jsonify(resp_obj), 200
     except Exception as e:
         logging.error(f"Ошибка получения баланса: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@trading_bp.post('/api/trading/manual_buy')
+def trading_manual_buy_bypass_prediction():
+    """Реальная покупка в обход предсказания с установкой TP/SL по текущим настройкам.
+
+    Body JSON: { symbol: 'BTCUSDT', qty?: float }
+    """
+    try:
+        data = request.get_json() or {}
+        sym = str(data.get('symbol') or 'BTCUSDT').upper().strip()
+        if not sym.endswith('USDT'):
+            sym = f"{sym}USDT"
+
+        # 1) Создаём TradingAgent и считаем количество (если qty не задан)
+        try:
+            from trading_agent.trading_agent import TradingAgent
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'TradingAgent import error: {e}'}), 500
+
+        # Путь модели из Redis (если есть)
+        model_path: Optional[str] = None
+        try:
+            rc = get_redis_client()
+            mp = rc.get('trading:model_path')
+            if mp:
+                try:
+                    model_path = mp.decode('utf-8') if isinstance(mp, (bytes, bytearray)) else str(mp)
+                except Exception:
+                    model_path = str(mp)
+        except Exception:
+            rc = None
+
+        agent = TradingAgent(model_path=model_path)  # type: ignore
+        agent.symbol = sym
+        agent.base_symbol = sym
+
+        qty = data.get('qty')
+        try:
+            qty = float(qty) if qty is not None else None
+        except Exception:
+            qty = None
+        if qty is None or qty <= 0:
+            try:
+                qty = float(agent._calculate_trade_amount())  # type: ignore
+            except Exception:
+                qty = 0.001
+
+        # 2) Реальный market BUY
+        buy_result = agent.execute_direct_order('buy', symbol=sym, quantity=qty)  # type: ignore
+        if not buy_result or not buy_result.get('success'):
+            return jsonify({'success': False, 'error': buy_result.get('error') if isinstance(buy_result, dict) else 'buy failed'}), 500
+
+        # 3) Определяем цену исполнения
+        executed_price = None
+        try:
+            order = buy_result.get('order') or {}
+            executed_price = order.get('average') or order.get('price')
+            if executed_price is None or float(executed_price) <= 0:
+                executed_price = agent._get_current_price()  # type: ignore
+            executed_price = float(executed_price)
+        except Exception:
+            executed_price = 0.0
+
+        # 4) Получаем параметры риск-менеджмента из Redis
+        take_profit_pct = 1.0
+        stop_loss_pct = 1.0
+        risk_type = 'exchange_orders'
+        try:
+            if rc is None:
+                rc = get_redis_client()
+            tp = rc.get('trading:take_profit_pct')
+            sl = rc.get('trading:stop_loss_pct')
+            rt = rc.get('trading:risk_management_type')
+            if tp is not None:
+                tp = tp.decode('utf-8') if isinstance(tp, (bytes, bytearray)) else tp
+                take_profit_pct = float(tp)
+            if sl is not None:
+                sl = sl.decode('utf-8') if isinstance(sl, (bytes, bytearray)) else sl
+                stop_loss_pct = float(sl)
+            if rt:
+                risk_type = rt.decode('utf-8') if isinstance(rt, (bytes, bytearray)) else str(rt)
+        except Exception:
+            pass
+
+        risk_orders = {}
+        if executed_price and executed_price > 0 and risk_type in ('exchange_orders', 'both'):
+            # 5) Рассчитываем цены TP/SL и нормализуем по tickSize
+            try:
+                m = agent.exchange.market(sym)  # type: ignore
+                tick = None
+                try:
+                    info = m.get('info', {})
+                    pf = info.get('priceFilter', {})
+                    tick = float(pf.get('tickSize')) if pf.get('tickSize') else None
+                except Exception:
+                    tick = None
+                if tick is None:
+                    precision = m.get('precision', {}).get('price', 2)
+                    tick = 10 ** (-precision)
+
+                def _norm_price(p: float) -> float:
+                    try:
+                        return round((round(p / tick)) * tick, 8)  # type: ignore
+                    except Exception:
+                        return float(p)
+
+                tp_price = _norm_price(executed_price * (1.0 + take_profit_pct / 100.0))
+                sl_price = _norm_price(executed_price * (1.0 - stop_loss_pct / 100.0))
+
+                amount = float(qty)
+                # Устанавливаем TP (лимитный reduceOnly)
+                try:
+                    tp_order = agent.exchange.create_limit_sell_order(  # type: ignore
+                        sym,
+                        amount,
+                        tp_price,
+                        {
+                            'reduceOnly': True,
+                            'timeInForce': 'GTC',
+                            'postOnly': False,
+                        }
+                    )
+                    risk_orders['take_profit'] = {
+                        'order_id': tp_order.get('id'),
+                        'price': tp_price,
+                        'amount': amount,
+                    }
+                except Exception as e:
+                    risk_orders['take_profit_error'] = str(e)
+
+                # Устанавливаем SL (стоп‑маркет reduceOnly)
+                try:
+                    sl_order = agent.exchange.create_stop_market_sell_order(  # type: ignore
+                        sym,
+                        amount,
+                        sl_price,
+                        {
+                            'reduceOnly': True,
+                            'stopPrice': sl_price,
+                        }
+                    )
+                    risk_orders['stop_loss'] = {
+                        'order_id': sl_order.get('id'),
+                        'stop_price': sl_price,
+                        'amount': amount,
+                    }
+                except Exception as e:
+                    risk_orders['stop_loss_error'] = str(e)
+            except Exception as e:
+                risk_orders['error'] = f'risk setup failed: {e}'
+
+        return jsonify({
+            'success': True,
+            'symbol': sym,
+            'buy': buy_result,
+            'executed_price': executed_price,
+            'risk_orders': risk_orders,
+        }), 200
+    except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @trading_bp.post('/api/trading/test_order')
