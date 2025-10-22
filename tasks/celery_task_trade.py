@@ -90,7 +90,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
 
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='trade')
-def execute_trade(self, symbols: list, model_path: str | None = None, model_paths: list | None = None):
+def execute_trade(self, symbols: list, model_path: str | None = None, model_paths: list | None = None, dry_run: bool = False):
     """Исполнение торгового шага: предсказание через serving, торговля через TradingAgent."""
     try:
         from trading_agent.trading_agent import TradingAgent
@@ -129,6 +129,15 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 "error": "Символы должны быть переданы в виде непустого списка"
             }
         
+        # Ранний выход: символ отключён пользователем
+        try:
+            if rc is not None and symbols:
+                sym0 = str(symbols[0]).upper()
+                if rc.get(f'trading:disabled:{sym0}'):
+                    return {"success": False, "skipped": True, "reason": "symbol_disabled", "symbol": sym0}
+        except Exception:
+            pass
+
         syms = symbols
 
         symbol = syms[0]
@@ -775,63 +784,66 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             pass
 
         trade_result = None
-        # Попробуем прочитать режим исполнения и конфиг лимитной стратегии из Redis (per-symbol)
-        exec_mode = None
-        limit_cfg = None
-        try:
-            if rc is not None:
-                _em = rc.get(f'trading:execution_mode:{symbol}')
-                if _em:
-                    exec_mode = str(_em).strip()
-                _lc = rc.get(f'trading:limit_config:{symbol}')
-                if _lc:
-                    try:
-                        limit_cfg = json.loads(_lc)
-                    except Exception:
-                        limit_cfg = None
-        except Exception:
+        if dry_run:
+            trade_result = {"success": True, "action": "dry_run"}
+        else:
+            # Попробуем прочитать режим исполнения и конфиг лимитной стратегии из Redis (per-symbol)
             exec_mode = None
             limit_cfg = None
+            try:
+                if rc is not None:
+                    _em = rc.get(f'trading:execution_mode:{symbol}')
+                    if _em:
+                        exec_mode = str(_em).strip()
+                    _lc = rc.get(f'trading:limit_config:{symbol}')
+                    if _lc:
+                        try:
+                            limit_cfg = json.loads(_lc)
+                        except Exception:
+                            limit_cfg = None
+            except Exception:
+                exec_mode = None
+                limit_cfg = None
 
-        if decision == 'buy' and not agent.current_position:
-            if exec_mode == 'limit_post_only':
-                try:
-                    # Запускаем DDD-стратегию исполнения лимитным post-only ордером
-                    start_execution_strategy.apply_async(kwargs={
-                        'symbol': symbol,
-                        'execution_mode': 'limit_post_only',
-                        'side': 'buy',
-                        'qty': float(getattr(agent, 'trade_amount', 0.0)) or None,
-                        'limit_config': (limit_cfg or {})
-                    }, queue='trade')
-                    trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "buy"}
-                except Exception as _e:
-                    # Фолбэк на рыночное исполнение через агента
+            if decision == 'buy' and not agent.current_position:
+                if exec_mode == 'limit_post_only':
+                    try:
+                        # Запускаем DDD-стратегию исполнения лимитным post-only ордером
+                        start_execution_strategy.apply_async(kwargs={
+                            'symbol': symbol,
+                            'execution_mode': 'limit_post_only',
+                            'side': 'buy',
+                            'qty': float(getattr(agent, 'trade_amount', 0.0)) or None,
+                            'limit_config': (limit_cfg or {})
+                        }, queue='trade')
+                        trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "buy"}
+                    except Exception as _e:
+                        # Фолбэк на рыночное исполнение через агента
+                        trade_result = agent._execute_buy()
+                else:
                     trade_result = agent._execute_buy()
-            else:
-                trade_result = agent._execute_buy()
-        elif decision == 'sell' and agent.current_position:
-            sell_strategy = agent._determine_sell_amount(agent._get_current_price())
-            if exec_mode == 'limit_post_only':
-                try:
-                    sell_qty = float(sell_strategy.get('sell_amount', 0) or 0)
-                    if sell_strategy.get('sell_all') and sell_qty <= 0:
-                        # Если не удалось рассчитать количество — пусть стратегия сама решит
-                        sell_qty = None
-                    start_execution_strategy.apply_async(kwargs={
-                        'symbol': symbol,
-                        'execution_mode': 'limit_post_only',
-                        'side': 'sell',
-                        'qty': sell_qty,
-                        'limit_config': (limit_cfg or {})
-                    }, queue='trade')
-                    trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "sell"}
-                except Exception:
+            elif decision == 'sell' and agent.current_position:
+                sell_strategy = agent._determine_sell_amount(agent._get_current_price())
+                if exec_mode == 'limit_post_only':
+                    try:
+                        sell_qty = float(sell_strategy.get('sell_amount', 0) or 0)
+                        if sell_strategy.get('sell_all') and sell_qty <= 0:
+                            # Если не удалось рассчитать количество — пусть стратегия сама решит
+                            sell_qty = None
+                        start_execution_strategy.apply_async(kwargs={
+                            'symbol': symbol,
+                            'execution_mode': 'limit_post_only',
+                            'side': 'sell',
+                            'qty': sell_qty,
+                            'limit_config': (limit_cfg or {})
+                        }, queue='trade')
+                        trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "sell"}
+                    except Exception:
+                        trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
+                else:
                     trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
             else:
-                trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
-        else:
-            trade_result = {"success": True, "action": "hold"}
+                trade_result = {"success": True, "action": "hold"}
 
         status_after = agent.get_trading_status()
 
@@ -892,6 +904,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             "status_before": current_status_before,
             "status_after": status_after,
             "trade_result": trade_result,
+            "dry_run": bool(dry_run),
         }
     except Exception as e:
         import traceback
@@ -1005,6 +1018,25 @@ def start_trading_task(self, symbols, model_path=None):
             return {"success": False, "skipped": True, "reason": "empty_symbols_list", "error": "Список символов из Redis пуст"}
         
         logger.warning(f"DEBUG: Using symbols from Redis: {final_symbols}")
+
+    # Фильтр: исключаем символы, вручную отключённые пользователем
+    try:
+        from redis import Redis as _Redis
+        _rcd = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+        filtered = []
+        for s in (final_symbols or []):
+            try:
+                if _rcd.get(f'trading:disabled:{str(s).upper()}'):
+                    continue
+            except Exception:
+                pass
+            filtered.append(s)
+        final_symbols = filtered
+    except Exception:
+        pass
+
+    if not final_symbols:
+        return {"success": False, "skipped": True, "reason": "all_symbols_disabled"}
 
     # Определяем lock_symbol из final_symbols
     lock_symbol = final_symbols[0] if final_symbols else None

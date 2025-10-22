@@ -68,6 +68,7 @@
                             <div class="button-group">
                                 <button class="btn btn-info" onclick="getAllTradingStatus()">🌐 Все активные агенты</button>
                                 <button class="btn btn-info" onclick="getBalance()">💰 Баланс</button>
+                                <button class="btn btn-success" onclick="executeNow('{{ symbol }}')">⚡ Выполнить торговый шаг сейчас</button>
                             </div>
                             <div id="allStatusBox" class="trading-status" style="display:none;">
                                 <h3>🌐 Все активные агенты</h3>
@@ -393,6 +394,35 @@ async function getAllTradingStatus(){
       el.innerHTML = `<p>❌ Ошибка сети</p><pre style="white-space:pre-wrap; font-size:12px; color:#666;">${String(e && e.message || e)}</pre>`;
       box.style.display='block';
     }catch(_){ }
+  }
+}
+
+// Разовый немедленный торговый шаг (боевой по умолчанию)
+async function executeNow(symbol){
+  try{
+    const payload = { symbols: [symbol], dry_run: false };
+    const resp = await fetch('/api/trading/execute_now', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    if(!data.success){
+      alert('❌ Не удалось запустить торговый шаг: ' + (data.error || 'Неизвестная ошибка'));
+      return;
+    }
+    // Обновим ключевые панели сразу и через короткую задержку
+    try{ getTradingStatus(symbol); }catch(_){ }
+    try{ loadPredictions(symbol, currentPredictionFilter); }catch(_){ }
+    try{ loadCeleryResults(symbol, false); }catch(_){ }
+    setTimeout(()=>{
+      try{ getTradingStatus(symbol); }catch(_){ }
+      try{ loadPredictions(symbol, currentPredictionFilter); }catch(_){ }
+      try{ loadCeleryResults(symbol, false); }catch(_){ }
+    }, 1500);
+    alert('⚡ Торговый шаг поставлен в очередь. Task ID: ' + (data.task_id || 'N/A'));
+  }catch(e){
+    alert('❌ Ошибка сети: ' + (e && e.message || e));
   }
 }
 

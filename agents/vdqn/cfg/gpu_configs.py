@@ -43,15 +43,15 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
     # Tesla V100 - еще быстрее с Tensor Cores
     "tesla_v100": GPUConfig(
         name="Tesla V100",
-        vram_gb=6.0,
-        batch_size=256,
-        memory_size=90_000,  # Увеличиваем до ~2.7GB VRAM (45% от 6GB)
+        vram_gb=16.0,
+        batch_size=1024,
+        memory_size=500_000,  # Увеличиваем размер реплея для стабильности и разнообразия на 16GB
         hidden_sizes=(512, 256, 128),
-        train_repeats=1,
+        train_repeats=2,
         use_amp=True,
         use_gpu_storage=True,  # Включаем GPU storage для синхронизации устройств
-        learning_rate=0.0001,
-        description="Оптимальная конфигурация для GTX 1660 Super",
+        learning_rate=0.0003,
+        description="Оптимальная конфигурация для Tesla V100 с Tensor Cores",
         use_torch_compile=True
         #vram_gb=16.0,
         #batch_size=2048,

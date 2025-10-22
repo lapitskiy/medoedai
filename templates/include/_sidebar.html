@@ -27,7 +27,12 @@
         <ul class="submenu">
           <li><a href="/trading_agent">Запустить</a></li>
           <li><a href="/trading_agent">Мониторинг</a></li>
-          <li><a href="/agent/BTCUSDT">BTCUSDT</a></li>
+          <li>
+            <details>
+              <summary>Символы</summary>
+              <ul class="submenu" id="sidebarSymbols"></ul>
+            </details>
+          </li>
         </ul>
       </details>
     </li>
@@ -71,3 +76,24 @@
     </li>
   </ul>
 </nav>
+<script>
+  (function(){
+    try{
+      const defaults = ['BTCUSDT','ETHUSDT','SOLUSDT','TONUSDT','ADAUSDT','BNBUSDT','XRPUSDT'];
+      const ul = document.getElementById('sidebarSymbols');
+      if(!ul) return;
+      const render = (symbols)=>{
+        ul.innerHTML = symbols.map(sym=>`<li><a href="/agent/${sym}">${sym}</a></li>`).join('');
+      };
+      fetch('/api/trading/status_all').then(r=>r.json()).then(data=>{
+        try{
+          const agents = Array.isArray(data.active_agents)? data.active_agents : [];
+          const set = new Set();
+          agents.forEach(a=>{ if(a && a.symbol) set.add(String(a.symbol)); });
+          const list = (set.size>0) ? Array.from(set) : defaults;
+          render(list);
+        }catch(_){ render(defaults); }
+      }).catch(()=>render(defaults));
+    }catch(_){ }
+  })();
+</script>

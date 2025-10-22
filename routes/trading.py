@@ -6,6 +6,7 @@ import logging
 import docker
 import json
 from datetime import datetime
+import time
 
 trading_bp = Blueprint('trading', __name__)
 
@@ -131,6 +132,13 @@ def start_trading():
         try:
             import json as _json
             _rc = get_redis_client()
+            # Снимаем флаг ручного отключения для основного символа (если был выставлен стопом)
+            try:
+                sym0 = symbols[0] if symbols else None
+                if sym0:
+                    _rc.delete(f'trading:disabled:{sym0}')
+            except Exception:
+                pass
             _rc.set('trading:model_path', model_path)
             # НЕ перезаписываем общие модели, чтобы не убить другие агенты
             # try:
@@ -245,6 +253,30 @@ def start_trading():
             'error': str(e)
         }), 500
 
+@trading_bp.post('/api/trading/execute_now')
+def execute_now():
+    """
+    Разовый немедленный торговый шаг для конкретного символа (без ожидания периодики).
+    Использует тот же пайплайн, что и периодический цикл, но единично.
+    По умолчанию работает в боевом режиме (не dry_run), чтобы реально исполнять сделки.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        symbols = data.get('symbols') or [data.get('symbol') or 'BTCUSDT']
+        # dry_run=false по умолчанию; можно передать true для проверки без сделок
+        dry_run = bool(data.get('dry_run') or False)
+        # Передаём напрямую в очередь trade ту же задачу, что и периодика
+        from tasks.celery_task_trade import execute_trade as _exec
+        res = _exec.apply_async(kwargs={
+            'symbols': symbols,
+            'model_path': None,
+            'model_paths': None,
+            'dry_run': dry_run,
+        }, queue='trade')
+        return jsonify({'success': True, 'enqueued': True, 'task_id': res.id}), 200
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @trading_bp.post('/api/trading/stop')
 def stop_trading():
     """Остановка торговли в контейнере trading_agent"""
@@ -343,6 +375,11 @@ def stop_trading_symbol():
         # Снимаем лок
         try:
             rc.delete(f'trading:agent_lock:{symbol}')
+        except Exception:
+            pass
+        # Ставим флаг ручного отключения символа
+        try:
+            rc.set(f'trading:disabled:{symbol}', '1')
         except Exception:
             pass
         # Обновляем статус

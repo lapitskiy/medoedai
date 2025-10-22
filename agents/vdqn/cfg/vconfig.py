@@ -9,28 +9,28 @@ from .gpu_configs import get_optimal_config, apply_gpu_config_to_vconfig
 class vDqnConfig:  
     # === ε‑greedy exploration ===
     eps_start: float       = 1.0     # начальное ε
-    eps_final: float       = 0.05    # увеличил минимальное ε для большего исследования
-    eps_decay_steps: int   = 1_000_000 # увеличил для более медленного затухания исследования
+    eps_final: float       = 0.005   # быстрее выйти в эксплуатацию
+    eps_decay_steps: int   = 1_200_000 # ориентируемся на ~25% от плановых шагов
 
     # === replay‑buffer ===
-    memory_size: int       = 200_000  # уменьшил для ускорения
-    batch_size: int        = 4096     # максимальный batch size для Tesla P100 (16GB VRAM)
+    memory_size: int       = 200_000  # будет переопределено GPU-конфигом
+    batch_size: int        = 4096     # будет переопределено GPU-конфигом
     prioritized: bool      = True     # Prioritized Experience Replay
     alpha: float           = 0.6      # приоритет для PER
     beta: float            = 0.4      # importance sampling для PER
     beta_increment: float  = 0.001    # увеличение beta
 
     # === сеть / обучение ===
-    lr: float              = 0.001     # уменьшил learning rate для стабильности
+    lr: float              = 3e-4     # базовый lr; может быть переопределен GPU-конфигом
     gamma: float           = 0.99     # discount factor
-    soft_tau: float        = 5e-3     # уменьшил для более стабильного обновления
-    soft_update_every: int = 4        # обновляем реже для стабильности
-    hidden_sizes: tuple    = (1024, 512, 256, 128)  # увеличил размеры для лучшей способности обучения
+    soft_tau: float        = 1e-2     # мягкие обновления таргета
+    soft_update_every: int = 1        # применяем каждый шаг
+    hidden_sizes: tuple    = (512, 256, 128)  # компактная архитектура по умолчанию
     target_update_freq: int = 5_000   # увеличил для более стабильного обучения
-    train_repeats: int     = 1        # уменьшил количество тренировок
+    train_repeats: int     = 2        # меньше переобучения на свежем реплее
     
     # === улучшения сети ===
-    dropout_rate: float    = 0.2      # увеличил dropout для регуляризации
+    dropout_rate: float    = 0.1      # умеренная регуляризация для DQN
     layer_norm: bool       = True     # Layer Normalization
     double_dqn: bool       = True     # Double DQN
     dueling_dqn: bool      = True     # Dueling DQN
@@ -39,7 +39,7 @@ class vDqnConfig:
     use_swiglu_gate: bool  = True     # SwiGLU gating inside MLP blocks
     
     # === градиентный клиппинг ===
-    grad_clip: float       = 1.0      # градиентный клиппинг
+    grad_clip: float       = 0.5      # более жесткий клиппинг градиентов
     
     # === GPU оптимизации ===
     device: str             = "cuda"      # GPU (быстрее, но DDR4 используется минимально)
@@ -79,6 +79,7 @@ class vDqnConfig:
             self.use_amp = gpu_settings['use_amp']
             self.use_gpu_storage = gpu_settings['use_gpu_storage']
             self.lr = gpu_settings['learning_rate']
+            self.use_torch_compile = gpu_settings['use_torch_compile']
             
             print(f"🚀 Применены оптимальные настройки для {gpu_config.name}")
             
@@ -89,9 +90,9 @@ class vDqnConfig:
     # === оптимизации скорости ===
     use_mixed_precision: bool = True   # Mixed Precision Training
     use_amp: bool          = True      # Automatic Mixed Precision
-    num_workers: int       = 4         # количество worker процессов
+    num_workers: int       = 8         # количество worker процессов (ускорение на V100)
     pin_memory: bool       = True      # pin memory для GPU
-    prefetch_factor: int   = 2         # prefetch factor для DataLoader
+    prefetch_factor: int   = 4         # prefetch factor для DataLoader
     
     # === сохранение модели ===
     save_frequency: int    = 50        # Сохранять модель каждые N эпизодов
