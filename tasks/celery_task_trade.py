@@ -775,11 +775,61 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             pass
 
         trade_result = None
+        # Попробуем прочитать режим исполнения и конфиг лимитной стратегии из Redis (per-symbol)
+        exec_mode = None
+        limit_cfg = None
+        try:
+            if rc is not None:
+                _em = rc.get(f'trading:execution_mode:{symbol}')
+                if _em:
+                    exec_mode = str(_em).strip()
+                _lc = rc.get(f'trading:limit_config:{symbol}')
+                if _lc:
+                    try:
+                        limit_cfg = json.loads(_lc)
+                    except Exception:
+                        limit_cfg = None
+        except Exception:
+            exec_mode = None
+            limit_cfg = None
+
         if decision == 'buy' and not agent.current_position:
-            trade_result = agent._execute_buy()
+            if exec_mode == 'limit_post_only':
+                try:
+                    # Запускаем DDD-стратегию исполнения лимитным post-only ордером
+                    start_execution_strategy.apply_async(kwargs={
+                        'symbol': symbol,
+                        'execution_mode': 'limit_post_only',
+                        'side': 'buy',
+                        'qty': float(getattr(agent, 'trade_amount', 0.0)) or None,
+                        'limit_config': (limit_cfg or {})
+                    }, queue='trade')
+                    trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "buy"}
+                except Exception as _e:
+                    # Фолбэк на рыночное исполнение через агента
+                    trade_result = agent._execute_buy()
+            else:
+                trade_result = agent._execute_buy()
         elif decision == 'sell' and agent.current_position:
             sell_strategy = agent._determine_sell_amount(agent._get_current_price())
-            trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
+            if exec_mode == 'limit_post_only':
+                try:
+                    sell_qty = float(sell_strategy.get('sell_amount', 0) or 0)
+                    if sell_strategy.get('sell_all') and sell_qty <= 0:
+                        # Если не удалось рассчитать количество — пусть стратегия сама решит
+                        sell_qty = None
+                    start_execution_strategy.apply_async(kwargs={
+                        'symbol': symbol,
+                        'execution_mode': 'limit_post_only',
+                        'side': 'sell',
+                        'qty': sell_qty,
+                        'limit_config': (limit_cfg or {})
+                    }, queue='trade')
+                    trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "sell"}
+                except Exception:
+                    trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
+            else:
+                trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
         else:
             trade_result = {"success": True, "action": "hold"}
 
