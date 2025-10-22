@@ -800,6 +800,9 @@ class CryptoTradingEnvOptimized(gym.Env):
         reward = 0.0
         done = False
         info = {}
+        # Маскирование невалидных действий → HOLD
+        effective_action = action
+        masked_to_hold = False
         
         # Подсчитываем действие
         self.action_counts[action] += 1
@@ -894,10 +897,18 @@ class CryptoTradingEnvOptimized(gym.Env):
                     except Exception:
                         pass
             else:
-                # Трактуем как HOLD при открытой позиции: без штрафа и без учёта already_holding
-                reward = 0.0
+                # Маскируем BUY в позиции → HOLD с лёгким негативным шейпингом и БЕЗ activity-reward
+                effective_action = 0
+                masked_to_hold = True
+                reward = -0.001
                 try:
                     self.hold_stats_total['with_position'] += 1
+                except Exception:
+                    pass
+                # Корректируем статистику действий
+                try:
+                    self.action_counts[action] -= 1
+                    self.action_counts[0] += 1
                 except Exception:
                     pass
                 
@@ -1031,10 +1042,18 @@ class CryptoTradingEnvOptimized(gym.Env):
                 
                 #self._log(f"[{self.current_step}] 🔴 SELL: {sell_amount:.2f}, PnL: {pnl:.2%}")
             else:
-                # Трактуем как HOLD без позиции: не считаем invalid_sell и не штрафуем
-                reward = 0.0
+                # Маскируем SELL без позиции → HOLD с лёгким негативным шейпингом и БЕЗ activity-reward
+                effective_action = 0
+                masked_to_hold = True
+                reward = -0.001
                 try:
                     self.hold_stats_total['no_position'] += 1
+                except Exception:
+                    pass
+                # Корректируем статистику действий
+                try:
+                    self.action_counts[action] -= 1
+                    self.action_counts[0] += 1
                 except Exception:
                     pass
         
@@ -1042,7 +1061,7 @@ class CryptoTradingEnvOptimized(gym.Env):
         if not done:
             transition = {
                 'state': self._get_state(),
-                'action': action,
+                'action': effective_action,
                 'reward': reward,
                 'next_state': None,  # Будет заполнено позже
                 'done': done
@@ -1152,7 +1171,7 @@ class CryptoTradingEnvOptimized(gym.Env):
         self._update_stats(current_price)
         
         # АДАПТИВНЫЕ НАГРАДЫ для разных рыночных условий
-        if action != 0:  # Если действие не HOLD
+        if effective_action != 0:  # Если эффективное действие не HOLD
             base_activity_reward = 0.001
             
             # Адаптируем награду к времени дня (НЕ блокируем, а обучаем)

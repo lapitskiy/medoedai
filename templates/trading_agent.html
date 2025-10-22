@@ -246,8 +246,8 @@
                                 Включить тейк‑профит
                             </label>
                             <div class="range-inline">
-                                <input type="range" id="takeProfitPct" class="count-range" min="0.1" max="20" value="5" step="0.1" style="flex:1;" oninput="updateRiskManagementDisplay()">
-                                <span id="takeProfitPctValue" class="range-badge">5.0%</span>
+                                <input type="range" id="takeProfitPct" class="count-range" min="0.2" max="5" value="1" step="0.1" style="flex:1;" oninput="updateRiskManagementDisplay()">
+                                <span id="takeProfitPctValue" class="range-badge">1.0%</span>
                             </div>
                             <small style="color:#666; display:block; margin-top:6px;">Автоматическая продажа при достижении прибыли</small>
                         </div>
@@ -259,8 +259,8 @@
                                 Включить стоп‑лосс
                             </label>
                             <div class="range-inline">
-                                <input type="range" id="stopLossPct" class="count-range" min="0.1" max="10" value="3" step="0.1" style="flex:1;" oninput="updateRiskManagementDisplay()">
-                                <span id="stopLossPctValue" class="range-badge">-3.0%</span>
+                                <input type="range" id="stopLossPct" class="count-range" min="0.2" max="5" value="1" step="0.1" style="flex:1;" oninput="updateRiskManagementDisplay()">
+                                <span id="stopLossPctValue" class="range-badge">-1.0%</span>
                             </div>
                             <small style="color:#666; display:block; margin-top:6px;">Автоматическая продажа при убытке</small>
                         </div>
@@ -270,8 +270,8 @@
                         <div style="font-size:14px; color:#495057;">
                             <strong>Текущие настройки риск-менеджмента:</strong><br>
                             • Способ: <span id="riskTypeDisplay">Ордера на бирже</span><br>
-                            • Тейк-профит: <span id="takeProfitDisplay">5.0%</span><br>
-                            • Стоп-лосс: <span id="stopLossDisplay">-3.0%</span>
+                            • Тейк-профит: <span id="takeProfitDisplay">1.0%</span><br>
+                            • Стоп-лосс: <span id="stopLossDisplay">-1.0%</span>
                         </div>
                     </div>
                 </div>
@@ -651,8 +651,8 @@
             const accountId = accountSel ? (accountSel.value || '') : '';
             
             // Получаем параметры риск-менеджмента
-            const takeProfitPct = parseFloat(document.getElementById('takeProfitPct')?.value || '5');
-            const stopLossPct = parseFloat(document.getElementById('stopLossPct')?.value || '3');
+            const takeProfitPct = parseFloat(document.getElementById('takeProfitPct')?.value || '1');
+            const stopLossPct = parseFloat(document.getElementById('stopLossPct')?.value || '1');
             const riskType = document.getElementById('riskManagementType')?.value || 'exchange_orders';
             
             try {
@@ -1851,8 +1851,8 @@
                 // Добавляем параметры риск-менеджмента
                 const tpEnabled = !!(document.getElementById('takeProfitEnabled')?.checked);
                 const slEnabled = !!(document.getElementById('stopLossEnabled')?.checked);
-                const takeProfitPct = parseFloat(document.getElementById('takeProfitPct')?.value || '5');
-                const stopLossPct = parseFloat(document.getElementById('stopLossPct')?.value || '3');
+            const takeProfitPct = parseFloat(document.getElementById('takeProfitPct')?.value || '1');
+            const stopLossPct = parseFloat(document.getElementById('stopLossPct')?.value || '1');
                 const riskType = document.getElementById('riskManagementType')?.value || 'exchange_orders';
                 
                 // Сохраняем в Redis через API

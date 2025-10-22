@@ -75,6 +75,27 @@
                         <option value="">Загрузка...</option>
                     </select>
                 </div>
+                <!-- Ключевые метрики выбранного энкодера -->
+                <div id="encoderKeyMetrics" class="statistics-grid" style="display:none; margin-top:10px;">
+                    <div class="stat-item">
+                        <div class="stat-label">Avg Winrate</div>
+                        <div class="stat-value" id="kmAvgWinrate">N/A</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Episodes (cum)</div>
+                        <div class="stat-value" id="kmEpisodesCum">N/A</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Seed</div>
+                        <div class="stat-value" id="kmSeed">N/A</div>
+                    </div>
+                </div>
+                <!-- Индикатор стабильности q_loss -->
+                <div id="qLossIndicator" class="status info" style="display:none; margin-top:10px;"></div>
+                <!-- Кнопка сворачивания/разворачивания манифеста -->
+                <div class="button-group" id="manifestToggleGroup" style="display:none; margin-top:10px;">
+                    <button id="toggleManifestBtn" type="button" class="btn btn-info">Показать манифест</button>
+                </div>
                 <div id="encoderManifest" class="status info" style="display:none; white-space: pre-wrap;"></div>
                 <div class="form-group" id="trainEncoderGroup" style="display:none;">
                     <label>
@@ -496,18 +517,134 @@ P/L Ratio: ${plr}
         function onEncoderChanged(){
             const encSelect = document.getElementById('encoderSelect');
             const encManifestDiv = document.getElementById('encoderManifest');
+            const metricsGrid = document.getElementById('encoderKeyMetrics');
+            const kmAvg = document.getElementById('kmAvgWinrate');
+            const kmEps = document.getElementById('kmEpisodesCum');
+            const kmSeed = document.getElementById('kmSeed');
+            const qLossDiv = document.getElementById('qLossIndicator');
+            const toggleGroup = document.getElementById('manifestToggleGroup');
+            const toggleBtn = document.getElementById('toggleManifestBtn');
             if(!encSelect || !encManifestDiv) return;
             const encId = encSelect.value;
-            if(!encId){ encManifestDiv.style.display = 'none'; return; }
+            if(!encId){
+                encManifestDiv.style.display = 'none';
+                if (metricsGrid) metricsGrid.style.display = 'none';
+                if (qLossDiv) qLossDiv.style.display = 'none';
+                if (toggleGroup) toggleGroup.style.display = 'none';
+                return;
+            }
             const item = __encodersCache.byId[encId];
+            // Функция форматирования процентов
+            const fmtPct = (v)=>{
+                if (typeof v !== 'number') return 'N/A';
+                return (v*100).toFixed(2) + '%';
+            };
+            // Сброс отображения
+            if (metricsGrid) metricsGrid.style.display = 'none';
+            if (qLossDiv) qLossDiv.style.display = 'none';
+            if (toggleGroup) toggleGroup.style.display = 'none';
+            encManifestDiv.style.display = 'none';
+
             if(item && item.manifest){
-                try{
-                    encManifestDiv.textContent = JSON.stringify(item.manifest, null, 2);
-                }catch(_){ encManifestDiv.textContent = String(item.manifest); }
-                encManifestDiv.style.display = 'block';
+                // Печать полного манифеста в скрытый блок
+                try{ encManifestDiv.textContent = JSON.stringify(item.manifest, null, 2); }
+                catch(_){ encManifestDiv.textContent = String(item.manifest); }
+
+                // Тогглер манифеста
+                if (toggleGroup && toggleBtn){
+                    toggleGroup.style.display = 'flex';
+                    toggleBtn.textContent = 'Показать манифест';
+                    // Сброс обработчика
+                    try{ toggleBtn.onclick = null; }catch(_){ }
+                    toggleBtn.addEventListener('click', function(){
+                        const isHidden = encManifestDiv.style.display === 'none';
+                        encManifestDiv.style.display = isHidden ? 'block' : 'none';
+                        toggleBtn.textContent = isHidden ? 'Скрыть манифест' : 'Показать манифест';
+                    }, { once: false });
+                }
+
+                // Если манифест пришёл как YAML, ключевые метрики извлечь нельзя
+                if (item.manifest && typeof item.manifest === 'object' && !('yaml' in item.manifest)){
+                    const m = item.manifest;
+                    const perf = m.performance || {};
+                    const train = m.training || {};
+                    const avg_wr = (typeof perf.avg_winrate === 'number') ? perf.avg_winrate : null;
+                    const cum_eps = (typeof train.cumulative_episodes_completed === 'number') ? train.cumulative_episodes_completed : null;
+                    const seedVal = (typeof m.seed === 'number') ? m.seed : null;
+
+                    if (metricsGrid){
+                        kmAvg && (kmAvg.textContent = (avg_wr != null ? fmtPct(avg_wr) : 'N/A'));
+                        kmEps && (kmEps.textContent = (cum_eps != null ? String(cum_eps) : 'N/A'));
+                        kmSeed && (kmSeed.textContent = (seedVal != null ? String(seedVal) : 'N/A'));
+                        metricsGrid.style.display = 'grid';
+                    }
+
+                    // Анализ q_loss_stability
+                    const ind = (m.training_indicators || {});
+                    const qlm = ind.q_loss_stability || null;
+                    if (qLossDiv){
+                        if (qlm && typeof qlm === 'object'){
+                            const thr = qlm.thresholds || {};
+                            const slope = Number(qlm.slope_last_20pct);
+                            const std20 = Number(qlm.std_last_20pct);
+                            const absSlopeThr = Number(thr.abs_slope);
+                            const stdThr = Number(thr.std);
+                            const isStableFlag = !!qlm.stable;
+
+                            let level = 'error'; // red по умолчанию
+                            if (isFinite(slope) && isFinite(std20) && isFinite(absSlopeThr) && isFinite(stdThr)){
+                                const okSlope = Math.abs(slope) <= absSlopeThr;
+                                const okStd = std20 <= stdThr;
+                                if (isStableFlag && okSlope && okStd){
+                                    level = 'success'; // green
+                                } else if ((Math.abs(slope) <= absSlopeThr*2) && (std20 <= stdThr*2)){
+                                    level = 'warning'; // yellow
+                                } else {
+                                    level = 'error'; // red
+                                }
+                            } else if (isStableFlag){
+                                level = 'warning';
+                            }
+
+                            qLossDiv.className = 'status ' + (level === 'warning' ? 'warning' : (level === 'success' ? 'success' : 'error'));
+                            qLossDiv.innerHTML = (
+                                '<b>q_loss_stability</b><br>'+
+                                'count: ' + (qlm.count ?? 'N/A') + '<br>'+
+                                'ema: ' + (typeof qlm.ema === 'number' ? qlm.ema.toFixed(6) : 'N/A') + '<br>'+
+                                'slope_last_20pct: ' + (isFinite(slope) ? slope.toExponential(3) : 'N/A') + '<br>'+
+                                'std_last_20pct: ' + (isFinite(std20) ? std20.toFixed(6) : 'N/A') + '<br>'+
+                                'stable: ' + String(isStableFlag) + '<br>'+
+                                'thresholds: { abs_slope: ' + (isFinite(absSlopeThr)? absSlopeThr : 'N/A') + ', std: ' + (isFinite(stdThr)? stdThr : 'N/A') + ' }' + '<br>'+
+                                ((ind.freeze_recommendation && typeof ind.freeze_recommendation === 'object')
+                                    ? ('<br><b>freeze_recommendation</b>: ' + (ind.freeze_recommendation.should_freeze ? 'FREEZE (заморозить энкодер)' : 'CONTINUE (ещё учить)') +
+                                       (Array.isArray(ind.freeze_recommendation.reasons) ? ('<br>reasons: ' + ind.freeze_recommendation.reasons.join(', ')) : ''))
+                                    : '')
+                            );
+                            qLossDiv.style.display = 'block';
+                        } else {
+                            qLossDiv.className = 'status info';
+                            qLossDiv.textContent = 'q_loss_stability: нет данных в манифесте';
+                            qLossDiv.style.display = 'block';
+                        }
+                    }
+                } else {
+                    if (metricsGrid) metricsGrid.style.display = 'none';
+                    if (qLossDiv){
+                        qLossDiv.className = 'status info';
+                        qLossDiv.textContent = 'Манифест в формате YAML — метрики не извлечь';
+                        qLossDiv.style.display = 'block';
+                    }
+                }
             } else {
                 encManifestDiv.textContent = 'Информация об энкодере недоступна';
-                encManifestDiv.style.display = 'block';
+                if (toggleGroup) toggleGroup.style.display = 'none';
+                encManifestDiv.style.display = 'none';
+                if (metricsGrid) metricsGrid.style.display = 'none';
+                if (qLossDiv){
+                    qLossDiv.className = 'status info';
+                    qLossDiv.textContent = 'Нет данных о манифесте';
+                    qLossDiv.style.display = 'block';
+                }
             }
         }
 

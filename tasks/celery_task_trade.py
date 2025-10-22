@@ -583,11 +583,15 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                             if act == 'buy':
                                 q_buy = float(qv[1])
                                 other = max(float(qv[0]), float(qv[2]))
-                                gate_ok = (q_buy >= eff_T1) and ((q_buy - other) >= eff_T2)
+                                _pass_max = True if float(eff_T1) == 0.0 else (q_buy >= eff_T1)
+                                _pass_gap = True if float(eff_T2) == 0.0 else ((q_buy - other) >= eff_T2)
+                                gate_ok = _pass_max and _pass_gap
                             elif act == 'sell':
                                 q_sell = float(qv[2])
                                 other = max(float(qv[0]), float(qv[1]))
-                                gate_ok = (q_sell >= eff_T1) and ((q_sell - other) >= eff_T2)
+                                _pass_max = True if float(eff_T1) == 0.0 else (q_sell >= eff_T1)
+                                _pass_gap = True if float(eff_T2) == 0.0 else ((q_sell - other) >= eff_T2)
+                                gate_ok = _pass_max and _pass_gap
                             else:
                                 gate_ok = True # HOLD не блокируем Q‑gate
                         else:
@@ -644,7 +648,9 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     q_sorted = sorted([float(x) for x in q_values], reverse=True)
                     maxQ = q_sorted[0]
                     gapQ = q_sorted[0] - q_sorted[1]
-                    passed = (maxQ >= eff_T1) and (gapQ >= eff_T2)
+                    pass_max = True if float(eff_T1) == 0.0 else (maxQ >= eff_T1)
+                    pass_gap = True if float(eff_T2) == 0.0 else (gapQ >= eff_T2)
+                    passed = pass_max and pass_gap
                     if not passed:
                         decision = 'hold'
                     try:
@@ -700,10 +706,16 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         if isinstance(qv, list) and len(qv) >= 3:
                             if str(act or 'hold').lower() == 'buy':
                                 qb = float(qv[1]); other = max(float(qv[0]), float(qv[2]))
-                                q_max = qb; q_gap = qb - other; q_pass = (qb >= T1) and (q_gap >= T2)
+                                q_max = qb; q_gap = qb - other
+                                _pass_max = True if float(T1) == 0.0 else (qb >= T1)
+                                _pass_gap = True if float(T2) == 0.0 else (q_gap >= T2)
+                                q_pass = _pass_max and _pass_gap
                             elif str(act or 'hold').lower() == 'sell':
                                 qs = float(qv[2]); other = max(float(qv[0]), float(qv[1]))
-                                q_max = qs; q_gap = qs - other; q_pass = (qs >= T1) and (q_gap >= T2)
+                                q_max = qs; q_gap = qs - other
+                                _pass_max = True if float(T1) == 0.0 else (qs >= T1)
+                                _pass_gap = True if float(T2) == 0.0 else (q_gap >= T2)
+                                q_pass = _pass_max and _pass_gap
                             else:
                                 q_pass = True
                     except Exception:

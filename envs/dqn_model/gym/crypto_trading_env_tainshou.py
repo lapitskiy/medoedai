@@ -802,8 +802,11 @@ class CryptoTradingEnvOptimized(gym.Env):
         reward = 0.0
         done = False
         info = {}
+        # Маскирование невалидных действий → HOLD
+        effective_action = action
+        masked_to_hold = False
         
-        # Подсчитываем действие (эффективное): HOLD всегда, BUY/SELL — только если прошло
+        # Подсчитываем действие (первичное)
         if action == 0:
             self.action_counts[0] += 1
         self.episode_step_count += 1
@@ -854,8 +857,14 @@ class CryptoTradingEnvOptimized(gym.Env):
                 else:
                     reward = -0.002  # Уменьшил штраф за отклонение фильтрами
             else:
-                # Трактуем BUY при открытой позиции как HOLD: без штрафа и без дополнительных счетчиков
-                reward = 0.0
+                # Маскируем BUY в позиции → HOLD: лёгкий негативный шейпинг и корректируем счётчики
+                effective_action = 0
+                masked_to_hold = True
+                reward = -0.001
+                try:
+                    self.action_counts[0] += 1
+                except Exception:
+                    pass
                 
         elif action == 2:  # SELL
             if self.crypto_held > 0:  # Только если держим криптовалюту
@@ -954,14 +963,20 @@ class CryptoTradingEnvOptimized(gym.Env):
                 
                 #self._log(f"[{self.current_step}] 🔴 SELL: {sell_amount:.2f}, PnL: {pnl:.2%}")
             else:
-                # Трактуем SELL без позиции как HOLD: не считаем invalid_sell и не штрафуем
-                reward = 0.0
+                # Маскируем SELL без позиции → HOLD: лёгкий негативный шейпинг и корректируем счётчики
+                effective_action = 0
+                masked_to_hold = True
+                reward = -0.001
+                try:
+                    self.action_counts[0] += 1
+                except Exception:
+                    pass
         
         # Добавляем переход в n-step buffer только если не terminal
         if not done:
             transition = {
                 'state': self._get_state(),
-                'action': action,
+                'action': effective_action,
                 'reward': reward,
                 'next_state': None,  # Будет заполнено позже
                 'done': done
