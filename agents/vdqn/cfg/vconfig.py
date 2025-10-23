@@ -80,6 +80,15 @@ class vDqnConfig:
             self.use_gpu_storage = gpu_settings['use_gpu_storage']
             self.lr = gpu_settings['learning_rate']
             self.use_torch_compile = gpu_settings['use_torch_compile']
+            # Новые параметры из GPU-конфига
+            try:
+                self.eps_decay_steps = gpu_settings.get('eps_decay_steps', self.eps_decay_steps)
+            except Exception:
+                pass
+            try:
+                self.dropout_rate = gpu_settings.get('dropout_rate', self.dropout_rate)
+            except Exception:
+                pass
             
             print(f"🚀 Применены оптимальные настройки для {gpu_config.name}")
             

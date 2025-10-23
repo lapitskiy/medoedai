@@ -22,6 +22,8 @@ class GPUConfig:
     learning_rate: float
     description: str
     use_torch_compile: bool = False
+    eps_decay_steps: int = 100000
+    dropout_rate: float = 0.1
 
 # Конфигурации для разных GPU
 GPU_CONFIGS: Dict[str, GPUConfig] = {
@@ -29,30 +31,34 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
     "tesla_p100": GPUConfig(
         name="Tesla P100",
         vram_gb=16.0,
-        batch_size=512,  # Уменьшено с 4096 для сокращения времени обучения
-        memory_size=150_000,  # Увеличиваем для стабильности: ~7.5GB VRAM (47% от 16GB)
-        hidden_sizes=(1024, 512, 256),  # Сбалансированная архитектура
-        train_repeats=2,  # Уменьшено с 4 для сокращения времени обучения
-        use_amp=True,
-        use_gpu_storage=True,  # Включаем для стабильности
-        learning_rate=0.0002,  # Уменьшаем для стабильности с большим батчем
+        batch_size=128,  # Уменьшено с 4096 для сокращения времени обучения
+        memory_size=90_000,  # Увеличиваем для стабильности: ~7.5GB VRAM (47% от 16GB)
+        hidden_sizes=(256, 128, 64),  # Сбалансированная архитектура
+        train_repeats=3,  # Уменьшено с 4 для сокращения времени обучения
+        use_amp=False,
+        use_gpu_storage=False,  # Включаем для стабильности
+        learning_rate=0.00015,  # Уменьшаем для стабильности с большим батчем
         description="Максимальная скорость эпизодов для Tesla P100 (используем все CPU ядра)",
-        use_torch_compile=False
+        use_torch_compile=True,
+        eps_decay_steps=3_000_000,
+        dropout_rate=0.25
     ),
     
     # Tesla V100 - еще быстрее с Tensor Cores
     "tesla_v100": GPUConfig(
         name="Tesla V100",
         vram_gb=16.0, # 
-        batch_size=1024,
-        memory_size=300_000,  # Уменьшено для снижения пиков памяти (реплей-буфер)
+        batch_size=512,
+        memory_size=200_000,  # Уменьшено для снижения пиков памяти (реплей-буфер)
         hidden_sizes=(512, 256, 128),
-        train_repeats=2,
+        train_repeats=3,
         use_amp=True,
         use_gpu_storage=True,  # Включаем GPU storage для синхронизации устройств
-        learning_rate=0.0002,
+        learning_rate=0.00018,
         description="Оптимальная конфигурация для Tesla V100 с Tensor Cores",
-        use_torch_compile=True
+        use_torch_compile=True,
+        eps_decay_steps=3_000_000,
+        dropout_rate=0.25
         #vram_gb=16.0,
         #batch_size=2048,
         #memory_size=300_000,
@@ -77,7 +83,9 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         use_gpu_storage=True,  # Включаем GPU storage для синхронизации устройств
         learning_rate=0.0001,
         description="Оптимальная конфигурация для GTX 1660 Super",
-        use_torch_compile=True
+        use_torch_compile=True,
+        eps_decay_steps=3_000_000,
+        dropout_rate=0.25
     ),
     
     # RTX 3080 - высокопроизводительная карта
@@ -92,7 +100,9 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         use_gpu_storage=True,
         learning_rate=0.0001,
         description="Высокая производительность для RTX 3080",
-        use_torch_compile=True
+        use_torch_compile=True,
+        eps_decay_steps=3_000_000,
+        dropout_rate=0.25
     ),
     
     # RTX 4090 - топовая карта
@@ -107,7 +117,9 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         use_gpu_storage=True,
         learning_rate=0.0001,
         description="Максимальная производительность для RTX 4090",
-        use_torch_compile=True
+        use_torch_compile=True,
+        eps_decay_steps=3_000_000,
+        dropout_rate=0.25
     ),
     
     # CPU fallback
@@ -122,7 +134,9 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         use_gpu_storage=False,
         learning_rate=0.0001,
         description="Fallback конфигурация для CPU",
-        use_torch_compile=False
+        use_torch_compile=False,
+        eps_decay_steps=3_000_000,
+        dropout_rate=0.25
     )
 }
 
@@ -225,7 +239,9 @@ def apply_gpu_config_to_vconfig(gpu_config: GPUConfig) -> Dict[str, Any]:
         'use_amp': gpu_config.use_amp,
         'use_gpu_storage': gpu_config.use_gpu_storage,
         'learning_rate': gpu_config.learning_rate,
-        'use_torch_compile': gpu_config.use_torch_compile
+        'use_torch_compile': gpu_config.use_torch_compile,
+        'eps_decay_steps': gpu_config.eps_decay_steps,
+        'dropout_rate': gpu_config.dropout_rate
     }
 
 # Функция для быстрого получения настроек
