@@ -39,7 +39,7 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         use_gpu_storage=False,  # Включаем для стабильности
         learning_rate=0.00015,  # Уменьшаем для стабильности с большим батчем
         description="Максимальная скорость эпизодов для Tesla P100 (используем все CPU ядра)",
-        use_torch_compile=True,
+        use_torch_compile=False,
         eps_decay_steps=3_000_000,
         dropout_rate=0.25
     ),
@@ -75,17 +75,17 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
     "gtx_1660_super": GPUConfig(
         name="GTX 1660 Super",
         vram_gb=6.0,
-        batch_size=256,
-        memory_size=90_000,  # Увеличиваем до ~2.7GB VRAM (45% от 6GB)
-        hidden_sizes=(512, 256, 128),
-        train_repeats=1,
+        batch_size=192,
+        memory_size=75_000,  # Увеличиваем до ~2.7GB VRAM (45% от 6GB)
+        hidden_sizes=(384, 192, 96),
+        train_repeats=2,
         use_amp=True,
         use_gpu_storage=True,  # Включаем GPU storage для синхронизации устройств
-        learning_rate=0.0001,
-        description="Оптимальная конфигурация для GTX 1660 Super",
+        learning_rate=0.00015,        
         use_torch_compile=True,
-        eps_decay_steps=3_000_000,
-        dropout_rate=0.25
+        eps_decay_steps=2_000_000,
+        dropout_rate=0.25,
+        description="Оптимальная конфигурация для GTX 1660 Super"
     ),
     
     # RTX 3080 - высокопроизводительная карта
