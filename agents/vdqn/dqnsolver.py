@@ -31,7 +31,8 @@ class PrioritizedReplayBuffer:
         self.beta = beta
         self.beta_increment = beta_increment
         self.device = cfg.device
-        self.use_gpu_storage = use_gpu_storage and torch.cuda.is_available()
+        # Включаем GPU storage только если и флаг включен, и CUDA доступна, и конфиг-устройство — CUDA
+        self.use_gpu_storage = bool(use_gpu_storage) and torch.cuda.is_available() and getattr(self.device, 'type', 'cpu') == 'cuda'
         
         # Инициализируем буферы на GPU или CPU с pinned memory
         if self.use_gpu_storage:
@@ -74,14 +75,28 @@ class PrioritizedReplayBuffer:
         if not isinstance(gamma_n, torch.Tensor):
             gamma_n = torch.FloatTensor([gamma_n])
         
-        # Перемещаем на нужное устройство
-        if not self.use_gpu_storage:
+        # Перемещаем на нужное устройство (только если хранилище на GPU)
+        if self.use_gpu_storage:
             state = state.to(self.device, non_blocking=True)
             next_state = next_state.to(self.device, non_blocking=True)
             action = action.to(self.device, non_blocking=True)
             reward = reward.to(self.device, non_blocking=True)
             done = done.to(self.device, non_blocking=True)
             gamma_n = gamma_n.to(self.device, non_blocking=True)
+        else:
+            # Гарантируем CPU тензоры для CPU-хранилища
+            if state.is_cuda:
+                state = state.cpu()
+            if next_state.is_cuda:
+                next_state = next_state.cpu()
+            if action.is_cuda:
+                action = action.cpu()
+            if reward.is_cuda:
+                reward = reward.cpu()
+            if done.is_cuda:
+                done = done.cpu()
+            if gamma_n.is_cuda:
+                gamma_n = gamma_n.cpu()
         
         # Сохраняем данные
         self.states[self.position] = state
@@ -257,6 +272,12 @@ class DQNSolver:
                 dueling=self.cfg.dueling_dqn
             ).to(self.cfg.device)
         
+        # Принудительно переносим модели на устройство конфига
+        device = torch.device(self.cfg.device)
+        self.model = self.model.to(device)
+        self.target_model = self.target_model.to(device)
+        print(f"✅ Модель и target-модель переведены на {device}")
+
         # 🚀 PyTorch 2.x Compile для максимального ускорения!
         if (getattr(self.cfg, 'use_torch_compile', True) and 
             not getattr(self.cfg, 'torch_compile_force_disable', False) and 
@@ -312,6 +333,13 @@ class DQNSolver:
                 print("📝 PyTorch < 2.0, torch.compile недоступен")
             else:
                 print("📝 torch.compile отключен в конфигурации")
+        # Повторно гарантируем устройство после возможной компиляции
+        device_post = next(self.model.parameters()).device
+        if device_post != device:
+            self.model = self.model.to(device)
+        target_post = next(self.target_model.parameters()).device
+        if target_post != device:
+            self.target_model = self.target_model.to(device)
         
         # Копируем веса
         self.target_model.load_state_dict(self.model.state_dict())
@@ -435,7 +463,8 @@ class DQNSolver:
         
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.cfg.device)
-            q_values = self.model(state_tensor)
+            out = self.model(state_tensor)
+            q_values = out[0] if isinstance(out, tuple) else out
             
             # Проверяем на NaN в выходе
             if torch.isnan(q_values).any():
@@ -456,21 +485,26 @@ class DQNSolver:
             # Проверяем на None (пустой буфер)
             if states is None:
                 return False, None, None, None
-            
-            # Данные уже на правильном устройстве благодаря GPU storage!
-            # Никаких дополнительных .to() не нужно
         else:
             batch = random.sample(self.memory, self.cfg.batch_size)
             states, actions, rewards, next_states, dones, gamma_ns = zip(*batch)
             
-            # Конвертируем в тензоры и перемещаем на GPU
-            states = torch.stack(states).to(self.cfg.device, non_blocking=True)
-            actions = torch.LongTensor(actions).to(self.cfg.device, non_blocking=True)
-            rewards = torch.FloatTensor(rewards).to(self.cfg.device, non_blocking=True)
-            next_states = torch.stack(next_states).to(self.cfg.device, non_blocking=True)
-            dones = torch.BoolTensor(dones).to(self.cfg.device, non_blocking=True)
-            gamma_ns = torch.FloatTensor(gamma_ns).to(self.cfg.device, non_blocking=True)
-            weights = torch.ones(self.cfg.batch_size).to(self.cfg.device, non_blocking=True)
+            # Конвертируем в тензоры (перенос на устройство ниже, единообразно)
+            states = torch.stack(states)
+            actions = torch.LongTensor(actions)
+            rewards = torch.FloatTensor(rewards)
+            next_states = torch.stack(next_states)
+            dones = torch.BoolTensor(dones)
+            gamma_ns = torch.FloatTensor(gamma_ns)
+            weights = torch.ones(self.cfg.batch_size)
+
+        # Универсальный перенос батча на устройство модели
+        model_device = next(self.model.parameters()).device
+        def _move(t):
+            return t.to(model_device, non_blocking=True) if t is not None else None
+        states, actions, rewards, next_states, dones, gamma_ns, weights = map(
+            _move, [states, actions, rewards, next_states, dones, gamma_ns, weights]
+        )
         
         # Проверяем на NaN
         if torch.isnan(states).any() or torch.isnan(next_states).any():
@@ -480,20 +514,27 @@ class DQNSolver:
         # Переводим модель в режим обучения
         self.model.train()
         
+        # Вспомогательная функция на случай, если модель возвращает кортеж (logits, state)
+        def _model_logits(mdl, x):
+            out = mdl(x)
+            if isinstance(out, tuple):
+                return out[0]
+            return out
+
         # Double DQN: используем основную сеть для выбора действий, целевую для оценки
         if self.cfg.double_dqn:
             with torch.no_grad():
-                next_actions = self.model(next_states).argmax(dim=1)
-                next_q_values = self.target_model(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+                next_actions = _model_logits(self.model, next_states).argmax(dim=1)
+                next_q_values = _model_logits(self.target_model, next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
         else:
             with torch.no_grad():
-                next_q_values = self.target_model(next_states).max(1)[0]
+                next_q_values = _model_logits(self.target_model, next_states).max(1)[0]
         
         # Вычисляем target Q-values
         target_q_values = rewards + (gamma_ns * next_q_values * ~dones)
         
         # Текущие Q-values
-        current_q_values = self.model(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        current_q_values = _model_logits(self.model, states).gather(1, actions.unsqueeze(1)).squeeze(1)
         
         # Вычисляем loss с importance sampling weights
         td_errors = target_q_values - current_q_values

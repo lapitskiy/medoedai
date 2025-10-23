@@ -39,7 +39,7 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         use_gpu_storage=False,  # Включаем для стабильности
         learning_rate=0.00015,  # Уменьшаем для стабильности с большим батчем
         description="Максимальная скорость эпизодов для Tesla P100 (используем все CPU ядра)",
-        use_torch_compile=False,
+        use_torch_compile=True,
         eps_decay_steps=3_000_000,
         dropout_rate=0.25
     ),
