@@ -809,23 +809,7 @@ def trading_manual_buy_bypass_prediction():
             except Exception:
                 qty = 0.001
 
-        # 2) Реальный market BUY
-        buy_result = agent.execute_direct_order('buy', symbol=sym, quantity=qty)  # type: ignore
-        if not buy_result or not buy_result.get('success'):
-            return jsonify({'success': False, 'error': buy_result.get('error') if isinstance(buy_result, dict) else 'buy failed'}), 500
-
-        # 3) Определяем цену исполнения
-        executed_price = None
-        try:
-            order = buy_result.get('order') or {}
-            executed_price = order.get('average') or order.get('price')
-            if executed_price is None or float(executed_price) <= 0:
-                executed_price = agent._get_current_price()  # type: ignore
-            executed_price = float(executed_price)
-        except Exception:
-            executed_price = 0.0
-
-        # 4) Получаем параметры риск-менеджмента из Redis
+        # 2) Получаем параметры риск-менеджмента из Redis
         take_profit_pct = 1.0
         stop_loss_pct = 1.0
         risk_type = 'exchange_orders'
@@ -846,80 +830,134 @@ def trading_manual_buy_bypass_prediction():
         except Exception:
             pass
 
+        # 3) Пытаемся прикрепить TP/SL прямо к заявке BUY (предпочтительно)
+        executed_price = 0.0
         risk_orders = {}
-        if executed_price and executed_price > 0 and risk_type in ('exchange_orders', 'both'):
-            # 5) Рассчитываем цены TP/SL и нормализуем по tickSize
+        try:
+            # Рассчитываем TP/SL до покупки на основе текущей цены и нормализуем
+            m = agent.exchange.market(sym)  # type: ignore
+            tick = None
             try:
-                m = agent.exchange.market(sym)  # type: ignore
+                info = m.get('info', {})
+                pf = info.get('priceFilter', {})
+                tick = float(pf.get('tickSize')) if pf.get('tickSize') else None
+            except Exception:
                 tick = None
+            if tick is None:
+                precision = m.get('precision', {}).get('price', 2)
+                tick = 10 ** (-precision)
+            cur_price = float(agent._get_current_price() or 0.0)  # type: ignore
+            def _norm_price(p: float) -> float:
                 try:
-                    info = m.get('info', {})
-                    pf = info.get('priceFilter', {})
-                    tick = float(pf.get('tickSize')) if pf.get('tickSize') else None
+                    return round((round(p / tick)) * tick, 8)  # type: ignore
                 except Exception:
+                    return float(p)
+            tp_price_pre = _norm_price(cur_price * (1.0 + take_profit_pct / 100.0))
+            sl_price_pre = _norm_price(cur_price * (1.0 - stop_loss_pct / 100.0))
+
+            attach_params = {
+                'leverage': '1',
+                'marginMode': 'isolated',
+            }
+            if risk_type in ('exchange_orders', 'both'):
+                # Параметры Bybit для привязки TP/SL к позиции
+                attach_params.update({
+                    'takeProfit': tp_price_pre,
+                    'stopLoss': sl_price_pre,
+                    'tpTriggerBy': 'LastPrice',
+                    'slTriggerBy': 'LastPrice',
+                })
+            order = agent.exchange.create_market_buy_order(  # type: ignore
+                sym,
+                float(qty),
+                attach_params,
+            )
+            buy_result = {
+                'success': True,
+                'symbol': sym,
+                'action': 'buy',
+                'quantity': float(qty),
+                'order': order,
+            }
+            executed_price = float(order.get('average') or order.get('price') or cur_price or 0.0)
+            risk_orders = {'mode': 'attached'}
+        except Exception:
+            # Fallback: обычная покупка + отдельные reduceOnly ордера TP/SL
+            buy_result = agent.execute_direct_order('buy', symbol=sym, quantity=qty)  # type: ignore
+            if not buy_result or not buy_result.get('success'):
+                return jsonify({'success': False, 'error': buy_result.get('error') if isinstance(buy_result, dict) else 'buy failed'}), 500
+            try:
+                order = buy_result.get('order') or {}
+                executed_price = order.get('average') or order.get('price')
+                if executed_price is None or float(executed_price) <= 0:
+                    executed_price = agent._get_current_price()  # type: ignore
+                executed_price = float(executed_price)
+            except Exception:
+                executed_price = 0.0
+
+            if executed_price and executed_price > 0 and risk_type in ('exchange_orders', 'both'):
+                try:
+                    # Рассчитываем цены TP/SL и нормализуем по tickSize
+                    m = agent.exchange.market(sym)  # type: ignore
                     tick = None
-                if tick is None:
-                    precision = m.get('precision', {}).get('price', 2)
-                    tick = 10 ** (-precision)
-
-                def _norm_price(p: float) -> float:
                     try:
-                        return round((round(p / tick)) * tick, 8)  # type: ignore
+                        info = m.get('info', {})
+                        pf = info.get('priceFilter', {})
+                        tick = float(pf.get('tickSize')) if pf.get('tickSize') else None
                     except Exception:
-                        return float(p)
-
-                tp_price = _norm_price(executed_price * (1.0 + take_profit_pct / 100.0))
-                sl_price = _norm_price(executed_price * (1.0 - stop_loss_pct / 100.0))
-
-                amount = float(qty)
-                # Устанавливаем TP (лимитный reduceOnly)
-                try:
-                    tp_order = agent.exchange.create_limit_sell_order(  # type: ignore
-                        sym,
-                        amount,
-                        tp_price,
-                        {
-                            'reduceOnly': True,
-                            'timeInForce': 'GTC',
-                            'postOnly': False,
+                        tick = None
+                    if tick is None:
+                        precision = m.get('precision', {}).get('price', 2)
+                        tick = 10 ** (-precision)
+                    def _norm_price2(p: float) -> float:
+                        try:
+                            return round((round(p / tick)) * tick, 8)  # type: ignore
+                        except Exception:
+                            return float(p)
+                    tp_price = _norm_price2(executed_price * (1.0 + take_profit_pct / 100.0))
+                    sl_price = _norm_price2(executed_price * (1.0 - stop_loss_pct / 100.0))
+                    amount = float(qty)
+                    # TP
+                    try:
+                        tp_order = agent.exchange.create_limit_sell_order(  # type: ignore
+                            sym,
+                            amount,
+                            tp_price,
+                            {
+                                'reduceOnly': True,
+                                'timeInForce': 'GTC',
+                                'postOnly': False,
+                            }
+                        )
+                        risk_orders['take_profit'] = {
+                            'order_id': tp_order.get('id'),
+                            'price': tp_price,
+                            'amount': amount,
                         }
-                    )
-                    risk_orders['take_profit'] = {
-                        'order_id': tp_order.get('id'),
-                        'price': tp_price,
-                        'amount': amount,
-                    }
-                except Exception as e:
-                    risk_orders['take_profit_error'] = str(e)
-
-                # Устанавливаем SL (стоп‑маркет reduceOnly)
-                try:
-                    sl_order = agent.exchange.create_stop_market_sell_order(  # type: ignore
-                        sym,
-                        amount,
-                        sl_price,
-                        {
-                            'reduceOnly': True,
-                            'stopPrice': sl_price,
+                    except Exception as e:
+                        risk_orders['take_profit_error'] = str(e)
+                    # SL
+                    try:
+                        sl_order = agent.exchange.create_stop_market_sell_order(  # type: ignore
+                            sym,
+                            amount,
+                            sl_price,
+                            {
+                                'reduceOnly': True,
+                                'stopPrice': sl_price,
+                            }
+                        )
+                        risk_orders['stop_loss'] = {
+                            'order_id': sl_order.get('id'),
+                            'stop_price': sl_price,
+                            'amount': amount,
                         }
-                    )
-                    risk_orders['stop_loss'] = {
-                        'order_id': sl_order.get('id'),
-                        'stop_price': sl_price,
-                        'amount': amount,
-                    }
+                    except Exception as e:
+                        risk_orders['stop_loss_error'] = str(e)
                 except Exception as e:
-                    risk_orders['stop_loss_error'] = str(e)
-            except Exception as e:
-                risk_orders['error'] = f'risk setup failed: {e}'
+                    risk_orders['error'] = f'risk setup failed: {e}'
 
-        return jsonify({
-            'success': True,
-            'symbol': sym,
-            'buy': buy_result,
-            'executed_price': executed_price,
-            'risk_orders': risk_orders,
-        }), 200
+        return jsonify({'success': True, 'symbol': sym, 'buy': buy_result, 'executed_price': executed_price, 'risk_orders': risk_orders}), 200
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
