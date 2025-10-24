@@ -48,7 +48,7 @@
                     </select>
                 </div>
                 <div class="button-group">
-                    <button class="btn btn-success" onclick="createModelVersion()">🚀 Создать новую версию</button>
+                    <button id="createModelBtn" class="btn btn-success" onclick="createModelVersion(this)">🚀 Создать новую версию</button>
                 </div>
             </div>
 
@@ -181,9 +181,9 @@
         });
 
         // Создать новую версию модели
-        async function createModelVersion() {
+        async function createModelVersion(btnEl) {
             const statusDiv = document.getElementById('createStatus');
-            const button = event.target;
+            const button = btnEl || document.getElementById('createModelBtn');
             const fileSelect = document.getElementById('resultFileSelect');
             const symbolSelect = document.getElementById('resultSymbolSelect');
             const selectedFile = fileSelect ? fileSelect.value : '';
@@ -196,22 +196,39 @@
                 return;
             }
             
-            button.disabled = true;
-            button.textContent = '⏳ Создание...';
+            if (button) { button.disabled = true; button.textContent = '⏳ Создание...'; }
             statusDiv.innerHTML = '<div class="status info">Создание новой версии модели...</div>';
             
             try {
+                const payload = { file: selectedFile, symbol: selectedSymbol, ensemble: selectedEns };
+                try { console.log('[createModelVersion] payload', payload); } catch(_){}
                 const response = await fetch('/create_model_version', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ file: selectedFile, symbol: selectedSymbol, ensemble: selectedEns })
+                    body: JSON.stringify(payload)
                 });
+                try { console.log('[createModelVersion] response', response.status, response.statusText); } catch(_){}
+                if(!response.ok){
+                    let bodyText = '';
+                    try { bodyText = await response.text(); } catch(_){}
+                    try { console.error('[createModelVersion] HTTP error', response.status, bodyText); } catch(_){}
+                    statusDiv.innerHTML = `<div class="status error">❌ Ошибка HTTP ${response.status}: ${response.statusText || ''}<br><pre style="white-space:pre-wrap;">${(bodyText||'').slice(0,2000)}</pre></div>`;
+                    return;
+                }
                 
-                const result = await response.json();
+                let result = null;
+                try { result = await response.json(); } catch(e){
+                    let bodyText = '';
+                    try { bodyText = await response.text(); } catch(_){}
+                    statusDiv.innerHTML = `<div class="status error">❌ Некорректный JSON от сервера<br><pre style="white-space:pre-wrap;">${(bodyText||String(e)).slice(0,2000)}</pre></div>`;
+                    try { console.error('[createModelVersion] JSON parse error', e, bodyText); } catch(_){}
+                    return;
+                }
                 
                 if (result.success) {
+                    try { console.log('[createModelVersion] success', result); } catch(_){}
                     statusDiv.innerHTML = `<div class="status success">
                         ✅ Новая версия создана!<br>
                         ID: ${result.model_id}<br>
@@ -219,17 +236,18 @@
                     </div>`;
                     // Секция доступных моделей удалена
                 } else {
+                    try { console.warn('[createModelVersion] server error', result); } catch(_){}
                     statusDiv.innerHTML = `<div class="status error">
                         ❌ Ошибка: ${result.error}
                     </div>`;
                 }
             } catch (error) {
+                try { console.error('[createModelVersion] network error', error); } catch(_){}
                 statusDiv.innerHTML = `<div class="status error">
                     ❌ Ошибка сети: ${error.message}
                 </div>`;
             } finally {
-                button.disabled = false;
-                button.textContent = '🚀 Создать новую версию';
+                if (button) { button.disabled = false; button.textContent = '🚀 Создать новую версию'; }
             }
         }
 
@@ -328,7 +346,7 @@
             const select = document.getElementById('continueModelSelect');
             if (!select) return;
             try {
-                const resp = await fetch('/list_result_models');
+                const resp = await fetch('/get_models_list');
                 const data = await resp.json();
                 if (!data.success || !data.files || data.files.length === 0) {
                     select.innerHTML = '<option value="">Нет доступных файлов</option>';

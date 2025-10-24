@@ -824,16 +824,24 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     trade_result = agent._execute_buy()
                     # После рыночной покупки — выставим TP/SL, если включено
                     try:
-                        tp_pct = None; sl_pct = None; rtype = None
+                        # Дефолтные значения как в ручной покупке: 1%/1%, тип по умолчанию — exchange_orders
+                        tp_pct = 1.0; sl_pct = 1.0; rtype = 'exchange_orders'
                         try:
                             if rc is not None:
                                 tp_raw = rc.get('trading:take_profit_pct')
                                 sl_raw = rc.get('trading:stop_loss_pct')
-                                rtype = rc.get('trading:risk_management_type') or 'exchange_orders'
-                                tp_pct = float(tp_raw) if tp_raw is not None and str(tp_raw) != '' else None
-                                sl_pct = float(sl_raw) if sl_raw is not None and str(sl_raw) != '' else None
+                                rt = rc.get('trading:risk_management_type')
+                                # Тип риск-менеджмента (если задан)
+                                if rt is not None and str(rt).strip() != '':
+                                    rtype = str(rt)
+                                # TP/SL из Redis, иначе остаются дефолты 1.0
+                                if tp_raw is not None and str(tp_raw).strip() != '':
+                                    tp_pct = float(tp_raw)
+                                if sl_raw is not None and str(sl_raw).strip() != '':
+                                    sl_pct = float(sl_raw)
                         except Exception:
-                            tp_pct = None; sl_pct = None; rtype = None
+                            # При ошибке чтения Redis остаёмся на дефолтах
+                            tp_pct = 1.0; sl_pct = 1.0; rtype = 'exchange_orders'
                         if (rtype in ('exchange_orders','both')) and (tp_pct is not None or sl_pct is not None):
                             entry_price = None; amount = None
                             try:

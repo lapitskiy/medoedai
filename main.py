@@ -85,8 +85,29 @@ redis_client = get_redis_client()
 
 @app.before_request
 def log_request_info():
-    logging.info(f"Request from {request.remote_addr}: {request.method} {request.path}")
-    logging.info("Headers: %s", dict(request.headers))  # Логируем все заголовки
+    # По умолчанию шумные логи отключены. Включить: UI_LOG_REQUESTS=1 (и опционально UI_LOG_HEADERS=1)
+    try:
+        if str(os.environ.get('UI_LOG_REQUESTS', '0')).lower() not in ('1', 'true', 'yes', 'on'):
+            return
+        path = request.path or ''
+        # Фильтруем статические и шумные частые запросы UI
+        noisy_prefixes = (
+            '/static/',
+            '/api/runs/',
+            '/api/encoders',
+        )
+        noisy_exact = {
+            '/api/trading/status_all',
+            '/list_result_models',
+            '/get_result_model_info',
+        }
+        if path.startswith(noisy_prefixes) or path in noisy_exact:
+            return
+        logging.info(f"Request from {request.remote_addr}: {request.method} {path}")
+        if str(os.environ.get('UI_LOG_HEADERS', '0')).lower() in ('1', 'true', 'yes', 'on'):
+            logging.info("Headers: %s", dict(request.headers))
+    except Exception:
+        pass
 
 @app.route("/")
 def index():
@@ -616,15 +637,17 @@ def create_model_version():
                     except Exception:
                         pass
                 # 2) Если выбрали train_result_*.pkl — валидируем и ищем рядом .pth и replay
-                elif cand_resolved.suffix == '.pkl' and name_low.startswith('train_result_'):
+                elif cand_resolved.suffix == '.pkl' and (name_low.startswith('train_result_') or name_low == 'train_result.pkl'):
                     selected_result_file = cand_resolved
                     for f in run_dir.iterdir():
                         if not f.is_file():
                             continue
                         n = f.name.lower()
-                        if n.endswith('.pth'):
+                        # Новая структура: веса называются model.pth; также поддержим любые *.pth
+                        if n == 'model.pth' or n.endswith('.pth'):
                             selected_model_file = selected_model_file or f
-                        elif n.endswith('.pkl') and (n.startswith('replay_buffer') or 'replay' in n):
+                        # Новая структура: буфер называется replay.pkl; также поддержим старые имена
+                        elif n == 'replay.pkl' or (n.endswith('.pkl') and (n.startswith('replay_buffer') or 'replay' in n)):
                             selected_replay_file = selected_replay_file or f
                     if not selected_model_file:
                         return jsonify({
@@ -632,10 +655,20 @@ def create_model_version():
                             "error": "Не найдена модель *.pth рядом с файлом результатов"
                         })
                     try:
-                        fname = selected_result_file.stem
-                        parts = fname.split('_', 2)
-                        if len(parts) >= 3:
-                            base_code = parts[2].lower()
+                        # Попробуем извлечь base_code из родительского символа, если файл без суффикса
+                        if name_low == 'train_result.pkl':
+                            # Ожидаем путь вида result/<agent>/<SYMBOL>/runs/<run_id>/train_result.pkl
+                            parts = list(run_dir.parts)
+                            # Найдём индекс 'runs' и возьмём символ перед ним
+                            if 'runs' in parts:
+                                idx = parts.index('runs')
+                                if idx >= 1:
+                                    base_code = parts[idx-1].lower()
+                        else:
+                            fname = selected_result_file.stem
+                            parts = fname.split('_', 2)
+                            if len(parts) >= 3:
+                                base_code = parts[2].lower()
                     except Exception:
                         pass
                 else:
@@ -679,20 +712,47 @@ def create_model_version():
         if not base_code:
             base_code = "model"
         
-        # Определяем пути источников
-        if selected_model_file and selected_replay_file and selected_result_file:
-            model_file = selected_model_file
-            replay_file = selected_replay_file
-        else:
-            model_file = result_dir / f'dqn_model_{base_code}.pth'
-            replay_file = result_dir / f'replay_buffer_{base_code}.pkl'
-        
-        if not model_file.exists():
+        # Определяем пути источников (гибкая логика под новую структуру runs)
+        # 1) Модель: сначала выбранная, затем model.pth в run, затем любой *.pth в run, затем старый dqn_model_<code>.pth в result/
+        model_file = None
+        candidates_model = []
+        if 'selected_model_file' in locals() and selected_model_file is not None:
+            candidates_model.append(selected_model_file)
+        if run_dir_path is not None:
+            candidates_model.append(run_dir_path / 'model.pth')
+            try:
+                for f in run_dir_path.iterdir():
+                    if f.is_file() and f.suffix.lower() == '.pth' and f not in candidates_model:
+                        candidates_model.append(f)
+            except Exception:
+                pass
+        candidates_model.append(result_dir / f'dqn_model_{base_code}.pth')
+        for c in candidates_model:
+            try:
+                if c.exists() and c.is_file():
+                    model_file = c
+                    break
+            except Exception:
+                continue
+        if model_file is None:
             return jsonify({
                 "success": False,
-                "error": f"Файл {model_file.name} не найден в result/"
+                "error": f"Не найден файл модели (.pth) ни в {run_dir_path or 'result/runs'}, ни в result/",
             })
+
+        # 2) Буфер: выбранный, затем replay.pkl в run, затем старый replay_buffer_<code>.pkl в result/
+        replay_file = None
+        if 'selected_replay_file' in locals() and selected_replay_file is not None and selected_replay_file.exists():
+            replay_file = selected_replay_file
+        elif run_dir_path is not None and (run_dir_path / 'replay.pkl').exists():
+            replay_file = run_dir_path / 'replay.pkl'
+        else:
+            replay_file = result_dir / f'replay_buffer_{base_code}.pkl'
         # replay и results могут отсутствовать — это не критично
+        try:
+            print(f"[create_model_version] SOURCES | base_code={base_code} | model={model_file} | replay={replay_file if 'replay_file' in locals() else None} | result={selected_result_file}")
+        except Exception:
+            pass
         
         # Сохраняем в структуру models/<symbol>/<ensemble>/vN
         named_id = f"{base_code}_{model_id}"
@@ -732,21 +792,55 @@ def create_model_version():
             version_dir = ensemble_dir / version_name
             version_dir.mkdir(exist_ok=False)
             
-            # Копируем артефакты версии (сохраняем оригинальные имена файлов)
-            ver_model = version_dir / model_file.name
-            ver_replay = version_dir / (replay_file.name if replay_file.exists() else 'replay_buffer.pkl')
-            ver_result = version_dir / (selected_result_file.name if (selected_result_file and selected_result_file.exists()) else 'train_result.pkl')
-            shutil.copy2(model_file, ver_model)
+            # Копируем артефакты версии с унифицированными именами, чтобы список моделей корректно находил файлы
+            try:
+                print(f"[create_model_version] DEST | version_dir={version_dir} | files: model=dqn_model_{base_code}.pth, replay=replay_buffer_{base_code}.pkl, result=train_result_{base_code}.pkl")
+            except Exception:
+                pass
+            ver_model = version_dir / f'dqn_model_{base_code}.pth'
+            ver_replay = version_dir / f'replay_buffer_{base_code}.pkl'
+            ver_result = version_dir / f'train_result_{base_code}.pkl'
+            try:
+                shutil.copy2(model_file, ver_model)
+                try:
+                    print(f"[create_model_version] COPY OK model: {model_file} -> {ver_model}")
+                except Exception:
+                    pass
+            except Exception as _copy_err:
+                try:
+                    print(f"[create_model_version] COPY FAIL model: {model_file} -> {ver_model} | err={_copy_err}")
+                except Exception:
+                    pass
+                return jsonify({
+                    "success": False,
+                    "error": f"Не удалось скопировать модель: {str(_copy_err)}",
+                    "src": str(model_file),
+                    "dst": str(ver_model)
+                }), 500
             try:
                 if replay_file.exists():
                     shutil.copy2(replay_file, ver_replay)
+                    try:
+                        print(f"[create_model_version] COPY OK replay: {replay_file} -> {ver_replay}")
+                    except Exception:
+                        pass
             except Exception:
-                pass
+                try:
+                    print(f"[create_model_version] COPY SKIP/ERR replay: {replay_file} -> {ver_replay}")
+                except Exception:
+                    pass
             try:
                 if selected_result_file and selected_result_file.exists():
                     shutil.copy2(selected_result_file, ver_result)
+                    try:
+                        print(f"[create_model_version] COPY OK result: {selected_result_file} -> {ver_result}")
+                    except Exception:
+                        pass
             except Exception:
-                pass
+                try:
+                    print(f"[create_model_version] COPY SKIP/ERR result: {selected_result_file} -> {ver_result}")
+                except Exception:
+                    pass
             
             # Пишем manifest.yaml (без зависимости от PyYAML)
             manifest_path = version_dir / 'manifest.yaml'
@@ -809,6 +903,10 @@ def create_model_version():
             # Не валим основной сценарий, если models/ недоступна
             pass
         
+        try:
+            print(f"[create_model_version] DONE | version={version_name} | out={{'model': '{ver_model.name}', 'replay': '{ver_replay.name if ver_replay.exists() else None}', 'result': '{ver_result.name if ver_result.exists() else None}'}}")
+        except Exception:
+            pass
         return jsonify({
             "success": True,
             "model_id": (run_dir_path.name if run_dir_path is not None else named_id),

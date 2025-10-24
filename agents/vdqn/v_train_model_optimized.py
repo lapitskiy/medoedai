@@ -1021,7 +1021,9 @@ def train_model_optimized(
         # Обновляем пути сохранения на структурированные независимо от наличия внешней cfg
         try:
             dqn_solver.cfg.model_path = new_model_path
+            # ВАЖНО: DQNSolver.save() сохраняет по cfg.buffer_path, поэтому задаём оба пути
             dqn_solver.cfg.replay_buffer_path = new_buffer_path
+            dqn_solver.cfg.buffer_path = new_buffer_path
             if hasattr(dqn_solver.cfg, 'encoder_path'):
                 dqn_solver.cfg.encoder_path = new_encoder_path
         except Exception:
@@ -1030,6 +1032,8 @@ def train_model_optimized(
             if cfg is not None:
                 cfg.model_path = dqn_solver.cfg.model_path
                 cfg.replay_buffer_path = dqn_solver.cfg.replay_buffer_path
+                # Для совместимости с потребляющим кодом используем одинаковый путь
+                cfg.buffer_path = dqn_solver.cfg.replay_buffer_path
                 if hasattr(cfg, 'encoder_path'):
                     cfg.encoder_path = dqn_solver.cfg.encoder_path
         except Exception:
