@@ -233,9 +233,6 @@ def _save_training_results(
     total_episodes_planned: int, # Общее количество запланированных эпизодов
     all_trades: list,
     episode_winrates: list,
-    episode_epsilons: list | None = None,
-    eps_threshold: float | None = None,
-    eval_summary: dict | None = None,
     best_winrate: float,
     best_episode_idx: int,
     action_counts_total: dict,
@@ -253,6 +250,9 @@ def _save_training_results(
     root_id: Optional[str],
     training_start_time: float,
     current_total_training_time: float, # Текущее время обучения для промежуточных сохранений
+    episode_epsilons: list | None = None,
+    eps_threshold: float | None = None,
+    eval_summary: dict | None = None,
     dfs: Optional[Dict] = None,
 ):
     try:
