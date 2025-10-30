@@ -11,6 +11,10 @@ class vDqnConfig:
     eps_start: float       = 1.0     # начальное ε
     eps_final: float       = 0.005   # быстрее выйти в эксплуатацию
     eps_decay_steps: int   = 1_200_000 # ориентируемся на ~25% от плановых шагов
+    # Порог для «эксплуатационного» винрейта (эпизоды с ε ≤ этого порога)
+    winrate_eps_threshold: float = 0.2
+    # Количество greedy-эпизодов для финальной оценки (ε=0)
+    eval_episodes: int = 5
 
     # === replay‑buffer ===
     memory_size: int       = 200_000  # будет переопределено GPU-конфигом
@@ -22,6 +26,7 @@ class vDqnConfig:
 
     # === сеть / обучение ===
     lr: float              = 3e-4     # базовый lr; может быть переопределен GPU-конфигом
+    encoder_lr_scale: float = 0.1     # множитель LR для энкодера (медленнее головы)
     gamma: float           = 0.99     # discount factor
     soft_tau: float        = 1e-2     # мягкие обновления таргета
     soft_update_every: int = 1        # применяем каждый шаг

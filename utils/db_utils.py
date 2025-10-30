@@ -176,15 +176,20 @@ def db_get_or_fetch_ohlcv(
 
         # Инициализация биржи
         try:            
+            init_t0 = time.monotonic()
+            if detailed_logs:
+                logging.info(f"[OHLCV] EXCHANGE_INIT start: exchange={exchange_id}, symbol={symbol_name}, tf={timeframe}")
             
             symbol_cctx = normalize_symbol(symbol_name)
             
             exchange_class = getattr(ccxt, exchange_id)
             
+            bybit_auth_used = None
             # Для Bybit: используем API ключи, если заданы, иначе публичные эндпоинты (они достаточны для OHLCV)
             if exchange_id == 'bybit':
                 # Поддержка BYBIT_API_KEY/BYBIT_SECRET_KEY и множественных BYBIT_<N>_*
                 api_key, secret_key = _discover_bybit_api_keys()
+                bybit_auth_used = bool(api_key and secret_key)
                 if api_key and secret_key:
                     exchange = exchange_class({
                         'apiKey': api_key,
@@ -219,8 +224,17 @@ def db_get_or_fetch_ohlcv(
                     'enableRateLimit': True,
                     'timeout': 30000, # Увеличение таймаута
                 })
+            if detailed_logs:
+                logging.info(f"[OHLCV] EXCHANGE_OBJ created: exchange={exchange_id}, bybit_auth={bybit_auth_used}")
             
+            lm_t0 = time.monotonic()
+            if detailed_logs:
+                logging.info("[OHLCV] load_markets() start")
             exchange.load_markets()
+            lm_dt = (time.monotonic() - lm_t0) * 1000
+            if detailed_logs:
+                logging.info(f"[OHLCV] load_markets() done in {lm_dt:.0f} ms; symbols={len(getattr(exchange,'symbols',[]) or [])}")
+            
             # Синхронизация времени для избежания retCode 10002 (recv_window)
             try:
                 if hasattr(exchange, 'load_time_difference'):
@@ -254,7 +268,7 @@ def db_get_or_fetch_ohlcv(
                 markets = getattr(exchange, 'markets', {}) or {}
                 symbol_fetch = symbol_cctx if symbol_cctx in markets else None
             if detailed_logs:
-                logging.info(f"Биржа {exchange_id} успешно инициализирована.")
+                logging.info(f"[OHLCV] EXCHANGE_INIT done in {(time.monotonic()-init_t0)*1000:.0f} ms; symbol_fetch={symbol_fetch}")
         except Exception as e:
             logging.error(f"Не удалось инициализировать биржу {exchange_id}: {e}")
             error_reason = f"exchange_init_failed: {exchange_id}: {e}"

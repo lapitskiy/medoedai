@@ -131,6 +131,34 @@
                         <option value="limit_post_only">Лимитная (post-only, у края книги)</option>
                     </select>
                 </div>
+                <!-- Плечо -->
+                <div class="form-group" style="margin-top:10px;">
+                    <label style="font-weight:600;">Плечо (x1–x5)</label>
+                    <select id="leverageSelect" class="form-control">
+                        <option value="1" selected>x1</option>
+                        <option value="2">x2</option>
+                        <option value="3">x3</option>
+                        <option value="4">x4</option>
+                        <option value="5">x5</option>
+                    </select>
+                </div>
+                <!-- Доля счёта для торговли -->
+                <div class="form-group" style="margin-top:10px;">
+                    <label style="font-weight:600;">Доля счёта для сделки (%)</label>
+                    <div class="range-inline">
+                        <input type="range" id="accountPct" class="count-range" min="1" max="100" step="1" value="100" style="flex:1;" oninput="updateAccountPctDisplay()">
+                        <span id="accountPctValue" class="range-badge">100%</span>
+                    </div>
+                    <small style="color:#666; display:block; margin-top:6px;">Будет использована указанная доля свободного USDT при входе (market/limit)</small>
+                </div>
+                <!-- Стратегия выхода -->
+                <div class="form-group" style="margin-top:10px;">
+                    <label style="font-weight:600;">Стратегия выхода</label>
+                    <select id="exitModeSelect" class="form-control">
+                        <option value="prediction" selected>По предсказаниям (AI)</option>
+                        <option value="risk_orders">Только по SL/TP (биржа)</option>
+                    </select>
+                </div>
                 <div id="limitConfigBox" style="display:none; margin-top:8px; padding:10px; border:1px solid #e0e0e0; border-radius:6px; background:#fafafa;">
                     <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:10px;">
                         <div>
@@ -139,7 +167,8 @@
                         </div>
                         <div>
                             <label style="font-weight:500;">Max lifetime, сек (≤300)</label>
-                            <input id="limitMaxLifetimeInput" type="number" min="10" max="300" step="5" class="form-control" value="300" />
+                            <input id="limitMaxLifetimeInput" type="number" min="10" max="300" step="5" class="form-control" value="180" />
+                            <small style="color:#666; display:block; margin-top:6px;">После дедлайна все лимиты снимаются и реквотинг прекращается</small>
                         </div>
                         <div>
                             <label style="font-weight:500;">Offset max, тиков</label>
@@ -694,6 +723,23 @@
                                 }
                             }
                         }
+                        // Плечо
+                        try{
+                            const levSel = document.getElementById('leverageSelect');
+                            const lev = levSel ? parseInt(levSel.value||'1',10) : 1;
+                            if (lev && lev>=1 && lev<=5) payload.leverage = lev;
+                        }catch(_){ }
+                        // Доля счёта
+                        try{
+                            const ap = parseInt(document.getElementById('accountPct')?.value||'100',10);
+                            if (ap && ap>=1 && ap<=100) payload.account_pct = ap;
+                        }catch(_){ }
+                        // Стратегия выхода
+                        try{
+                            const exitSel = document.getElementById('exitModeSelect');
+                            const exitMode = exitSel ? (exitSel.value||'').trim() : '';
+                            if(exitMode){ payload.exit_mode = exitMode; }
+                        }catch(_){ }
                         return payload;
                     })())
                 });
@@ -1801,6 +1847,15 @@
             // НЕ автосохранение при инициализации - только при изменении пользователем
         }
 
+        function updateAccountPctDisplay(){
+            try{
+                const el = document.getElementById('accountPct');
+                const badge = document.getElementById('accountPctValue');
+                const v = parseInt(el?.value||'100',10);
+                if (badge) badge.textContent = `${isNaN(v)?100:v}%`;
+            }catch(_){ }
+        }
+
         function initRiskManagementSliders() {
             const takeProfitSlider = document.getElementById('takeProfitPct');
             const stopLossSlider = document.getElementById('stopLossPct');
@@ -1854,6 +1909,9 @@
             const takeProfitPct = parseFloat(document.getElementById('takeProfitPct')?.value || '1');
             const stopLossPct = parseFloat(document.getElementById('stopLossPct')?.value || '1');
                 const riskType = document.getElementById('riskManagementType')?.value || 'exchange_orders';
+                // Доля счёта
+                let accountPct = 100;
+                try{ accountPct = parseInt(document.getElementById('accountPct')?.value||'100',10) || 100; }catch(_){ accountPct = 100; }
                 
                 // Сохраняем в Redis через API
                 const payload = {
@@ -1861,16 +1919,19 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: null
                 };
-                const bodyObj = { symbols: [symbol], model_paths: selectedPaths, consensus: consensusSettings, risk_management_type: riskType };
+                const bodyObj = { symbols: [symbol], model_paths: selectedPaths, consensus: consensusSettings, risk_management_type: riskType, account_pct: accountPct };
                 if (tpEnabled) bodyObj.take_profit_pct = takeProfitPct;
                 if (slEnabled) bodyObj.stop_loss_pct = stopLossPct;
                 payload.body = JSON.stringify(bodyObj);
                 await fetch('/api/trading/save_config', payload);
                 
+                // Пишем в localStorage для восстановления UI
+                try{ localStorage.setItem('trading:account_pct', String(accountPct)); }catch(_){ }
                 console.log(`Автосохранение настроек для ${symbol}:`, {
                     consensus: consensusSettings,
                     models: selectedPaths.length,
-                    risk: { takeProfitEnabled: tpEnabled, takeProfitPct, stopLossEnabled: slEnabled, stopLossPct, riskType }
+                    risk: { takeProfitEnabled: tpEnabled, TakeProfitPct: takeProfitPct, stopLossEnabled: slEnabled, StopLossPct: stopLossPct, riskType },
+                    account_pct: accountPct
                 });
             }catch(e){ 
                 console.error('Ошибка автосохранения:', e);
@@ -1910,6 +1971,13 @@
             
             // Загружаем настройки консенсуса для BTCUSDT по умолчанию
             loadConsensusSettingsForSymbol('BTCUSDT');
+            // Восстанавливаем долю счёта из localStorage
+            try{
+                const v = parseInt(localStorage.getItem('trading:account_pct')||'100',10);
+                const el = document.getElementById('accountPct');
+                if (el && !isNaN(v) && v>=1 && v<=100){ el.value = String(v); }
+            }catch(_){ }
+            updateAccountPctDisplay();
         });
 
         async function loadAgents(){

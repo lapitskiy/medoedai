@@ -52,6 +52,9 @@ def save_trading_config():
         take_profit_pct = data.get('take_profit_pct')  # Процент тейк-профита
         stop_loss_pct = data.get('stop_loss_pct')      # Процент стоп-лосса
         risk_management_type = data.get('risk_management_type')  # Способ управления рисками
+        account_pct = data.get('account_pct')  # Доля счёта для сделки, %
+        exit_mode = str(data.get('exit_mode') or '').strip() or None  # 'prediction' | 'risk_orders'
+        leverage = data.get('leverage')  # 1..5
         import json as _json
         rc = get_redis_client()
 
@@ -99,6 +102,27 @@ def save_trading_config():
             rc.set('trading:stop_loss_pct', str(stop_loss_pct))
         if risk_management_type is not None:
             rc.set('trading:risk_management_type', str(risk_management_type))
+        if account_pct is not None:
+            try:
+                ap = int(account_pct)
+                if 1 <= ap <= 100:
+                    rc.set('trading:account_pct', str(ap))
+            except Exception:
+                pass
+        try:
+            if exit_mode and symbols:
+                sym = (symbols[0] if isinstance(symbols, list) and symbols else 'ALL')
+                rc.set(f'trading:exit_mode:{sym}', exit_mode)
+            if leverage is not None and symbols:
+                try:
+                    lev_int = int(leverage)
+                    if 1 <= lev_int <= 5:
+                        sym = (symbols[0] if isinstance(symbols, list) and symbols else 'ALL')
+                        rc.set(f'trading:leverage:{sym}', str(lev_int))
+                except Exception:
+                    pass
+        except Exception:
+            pass
         try:
             logging.info("[save_config] ✓ done")
         except Exception:
@@ -121,6 +145,9 @@ def start_trading():
         limit_config = data.get('limit_config') if isinstance(data.get('limit_config'), dict) else None
         immediate = bool(data.get('immediate') or False)
         immediate_side = str(data.get('side') or '').lower() if data.get('side') else None  # 'buy' | 'sell'
+        exit_mode = str(data.get('exit_mode') or '').strip() or None  # 'prediction' | 'risk_orders'
+        leverage = data.get('leverage')  # 1..5
+        account_pct = data.get('account_pct')  # Доля счёта, %
         # Поддержка многомодельного запуска: model_paths (список) + совместимость с model_path
         model_paths = data.get('model_paths') or []
         model_path = data.get('model_path')
@@ -176,6 +203,22 @@ def start_trading():
                     _rc.set(f'trading:execution_mode:{symbol}', execution_mode)
                 if isinstance(limit_config, dict):
                     _rc.set(f'trading:limit_config:{symbol}', _json.dumps(limit_config, ensure_ascii=False))
+                if exit_mode:
+                    _rc.set(f'trading:exit_mode:{symbol}', exit_mode)
+                if leverage is not None:
+                    try:
+                        lev_int = int(leverage)
+                        if 1 <= lev_int <= 5:
+                            _rc.set(f'trading:leverage:{symbol}', str(lev_int))
+                    except Exception:
+                        pass
+                if account_pct is not None:
+                    try:
+                        ap = int(account_pct)
+                        if 1 <= ap <= 100:
+                            _rc.set('trading:account_pct', str(ap))
+                    except Exception:
+                        pass
             except Exception:
                 pass
             _rc.set(f'trading:model_path:{symbol}', model_path)
@@ -546,6 +589,15 @@ def trading_status():
                     flat = {'success': True, 'agent_status': status_obj}
                     if isinstance(status_obj, dict):
                         flat.update(status_obj)
+                    # Приложим exit_mode per-symbol, если есть
+                    try:
+                        sym = flat.get('symbol') or flat.get('symbol_display')
+                        if sym:
+                            em = _rc.get(f'trading:exit_mode:{sym}')
+                            if em:
+                                flat['exit_mode'] = em.decode('utf-8') if isinstance(em, (bytes, bytearray)) else str(em)
+                    except Exception:
+                        pass
                     # Добавим pending_order (DDD), если активен intent
                     try:
                         import time as _t
@@ -767,7 +819,7 @@ def trading_balance():
 def trading_manual_buy_bypass_prediction():
     """Реальная покупка в обход предсказания с установкой TP/SL по текущим настройкам.
 
-    Body JSON: { symbol: 'BTCUSDT', qty?: float }
+    Body JSON: { symbol: 'BTCUSDT', qty?: float, override?: {execution_mode, leverage, limit_config, exit_mode, take_profit_pct, stop_loss_pct, risk_management_type} }
     """
     try:
         data = request.get_json() or {}
@@ -775,7 +827,7 @@ def trading_manual_buy_bypass_prediction():
         if not sym.endswith('USDT'):
             sym = f"{sym}USDT"
 
-        # 1) Создаём TradingAgent и считаем количество (если qty не задан)
+        # 1) Создаём TradingAgent
         try:
             from trading_agent.trading_agent import TradingAgent
         except Exception as e:
@@ -798,6 +850,7 @@ def trading_manual_buy_bypass_prediction():
         agent.symbol = sym
         agent.base_symbol = sym
 
+        # Количество (если не задано — рассчитать)
         qty = data.get('qty')
         try:
             qty = float(qty) if qty is not None else None
@@ -809,80 +862,151 @@ def trading_manual_buy_bypass_prediction():
             except Exception:
                 qty = 0.001
 
-        # 2) Получаем параметры риск-менеджмента из Redis
+        # 2) Эффективные настройки (per-symbol с фолбэком на глобальные)
         take_profit_pct = 1.0
         stop_loss_pct = 1.0
         risk_type = 'exchange_orders'
+        exit_mode = 'prediction'
+        execution_mode = 'market'
+        leverage_val = 1
+        limit_config = None
         try:
             if rc is None:
                 rc = get_redis_client()
-            tp = rc.get('trading:take_profit_pct')
-            sl = rc.get('trading:stop_loss_pct')
-            rt = rc.get('trading:risk_management_type')
-            if tp is not None:
-                tp = tp.decode('utf-8') if isinstance(tp, (bytes, bytearray)) else tp
-                take_profit_pct = float(tp)
-            if sl is not None:
-                sl = sl.decode('utf-8') if isinstance(sl, (bytes, bytearray)) else sl
-                stop_loss_pct = float(sl)
-            if rt:
-                risk_type = rt.decode('utf-8') if isinstance(rt, (bytes, bytearray)) else str(rt)
-        except Exception:
-            pass
 
-        # 3) Пытаемся прикрепить TP/SL прямо к заявке BUY (предпочтительно)
+            # Глобальные/пер-символьные ключи
+            tp_sym = rc.get(f'trading:take_profit_pct:{sym}')
+            sl_sym = rc.get(f'trading:stop_loss_pct:{sym}')
+            tp_glob = rc.get('trading:take_profit_pct')
+            sl_glob = rc.get('trading:stop_loss_pct')
+            rt = rc.get('trading:risk_management_type')
+            em = rc.get(f'trading:exit_mode:{sym}')
+            ex_mode = rc.get(f'trading:execution_mode:{sym}')
+            lev = rc.get(f'trading:leverage:{sym}')
+            lc = rc.get(f'trading:limit_config:{sym}')
+
+            # Переопределения из запроса (если пришли)
+            override = data.get('override') or {}
+            def _pick_num(val, redis_val, default):
+                if val is not None:
+                    return float(val)
+                if redis_val is not None:
+                    rv = redis_val.decode('utf-8') if isinstance(redis_val, (bytes, bytearray)) else redis_val
+                    try:
+                        return float(rv)
+                    except Exception:
+                        return default
+                return default
+
+            take_profit_pct = _pick_num(override.get('take_profit_pct') or data.get('take_profit_pct'), tp_sym or tp_glob, take_profit_pct)
+            stop_loss_pct = _pick_num(override.get('stop_loss_pct') or data.get('stop_loss_pct'), sl_sym or sl_glob, stop_loss_pct)
+
+            if override.get('risk_management_type') or data.get('risk_management_type') or rt:
+                raw = override.get('risk_management_type') or data.get('risk_management_type') or rt
+                risk_type = raw.decode('utf-8') if isinstance(raw, (bytes, bytearray)) else str(raw)
+
+            # exit_mode / execution_mode / leverage / limit_config
+            raw_exit = override.get('exit_mode') or data.get('exit_mode') or em
+            if raw_exit:
+                exit_mode = raw_exit.decode('utf-8') if isinstance(raw_exit, (bytes, bytearray)) else str(raw_exit)
+            raw_exec = override.get('execution_mode') or data.get('execution_mode') or ex_mode
+            if raw_exec:
+                execution_mode = raw_exec.decode('utf-8') if isinstance(raw_exec, (bytes, bytearray)) else str(raw_exec)
+            raw_lev = override.get('leverage') or data.get('leverage') or lev
+            if raw_lev is not None:
+                try:
+                    leverage_val = max(1, min(5, int(raw_lev.decode('utf-8') if isinstance(raw_lev, (bytes, bytearray)) else str(raw_lev))))
+                except Exception:
+                    leverage_val = 1
+            if override.get('limit_config') or data.get('limit_config') or lc:
+                try:
+                    limit_config = override.get('limit_config') or data.get('limit_config') or json.loads(lc)  # type: ignore
+                except Exception:
+                    limit_config = None
+        except Exception as e:
+            logging.warning(f"[manual_buy] Не удалось прочитать настройки: {e}")
+
+        # 3) Исполнение по execution_mode
         executed_price = 0.0
         risk_orders = {}
+        buy_result = None
         try:
-            # Рассчитываем TP/SL до покупки на основе текущей цены и нормализуем
-            m = agent.exchange.market(sym)  # type: ignore
-            tick = None
-            try:
-                info = m.get('info', {})
-                pf = info.get('priceFilter', {})
-                tick = float(pf.get('tickSize')) if pf.get('tickSize') else None
-            except Exception:
-                tick = None
-            if tick is None:
-                precision = m.get('precision', {}).get('price', 2)
-                tick = 10 ** (-precision)
-            cur_price = float(agent._get_current_price() or 0.0)  # type: ignore
-            def _norm_price(p: float) -> float:
+            if execution_mode == 'limit_post_only':
+                # Запускаем DDD-стратегию с заданным плечом
+                from tasks.celery_task_trade import start_execution_strategy
+                start_execution_strategy.apply_async(kwargs={
+                    'symbol': sym,
+                    'execution_mode': 'limit_post_only',
+                    'side': 'buy',
+                    'qty': float(qty),
+                    'limit_config': (limit_config or {}),
+                    'leverage': leverage_val
+                }, queue='trade')
+                buy_result = {"success": True, "action": "limit_post_only_enqueued", "side": "buy"}
+                return jsonify({'success': True, 'symbol': sym, 'buy': buy_result, 'risk_orders': {'mode': 'pending_ddd'}}), 200
+            else:
+                # Market: явно ставим плечо, затем покупка
                 try:
-                    return round((round(p / tick)) * tick, 8)  # type: ignore
+                    if hasattr(agent, 'exchange') and hasattr(agent.exchange, 'set_leverage'):
+                        try:
+                            agent.exchange.set_leverage(leverage_val, sym)  # type: ignore
+                        except Exception:
+                            try:
+                                agent.exchange.set_leverage(str(leverage_val), sym, {'buyLeverage': str(leverage_val), 'sellLeverage': str(leverage_val)})  # type: ignore
+                            except Exception:
+                                pass
                 except Exception:
-                    return float(p)
-            tp_price_pre = _norm_price(cur_price * (1.0 + take_profit_pct / 100.0))
-            sl_price_pre = _norm_price(cur_price * (1.0 - stop_loss_pct / 100.0))
+                    pass
 
-            attach_params = {
-                'leverage': '1',
-                'marginMode': 'isolated',
-            }
-            if risk_type in ('exchange_orders', 'both'):
-                # Параметры Bybit для привязки TP/SL к позиции
-                attach_params.update({
-                    'takeProfit': tp_price_pre,
-                    'stopLoss': sl_price_pre,
-                    'tpTriggerBy': 'LastPrice',
-                    'slTriggerBy': 'LastPrice',
-                })
-            order = agent.exchange.create_market_buy_order(  # type: ignore
-                sym,
-                float(qty),
-                attach_params,
-            )
-            buy_result = {
-                'success': True,
-                'symbol': sym,
-                'action': 'buy',
-                'quantity': float(qty),
-                'order': order,
-            }
-            executed_price = float(order.get('average') or order.get('price') or cur_price or 0.0)
-            risk_orders = {'mode': 'attached'}
-        except Exception:
-            # Fallback: обычная покупка + отдельные reduceOnly ордера TP/SL
+                # Предрасчет TP/SL
+                m = agent.exchange.market(sym)  # type: ignore
+                tick = None
+                try:
+                    info = m.get('info', {})
+                    pf = info.get('priceFilter', {})
+                    tick = float(pf.get('tickSize')) if pf.get('tickSize') else None
+                except Exception:
+                    tick = None
+                if tick is None:
+                    precision = m.get('precision', {}).get('price', 2)
+                    tick = 10 ** (-precision)
+                cur_price = float(agent._get_current_price() or 0.0)  # type: ignore
+                def _norm_price(p: float) -> float:
+                    try:
+                        return round((round(p / tick)) * tick, 8)  # type: ignore
+                    except Exception:
+                        return float(p)
+                tp_price_pre = _norm_price(cur_price * (1.0 + take_profit_pct / 100.0))
+                sl_price_pre = _norm_price(cur_price * (1.0 - stop_loss_pct / 100.0))
+
+                attach_params = {
+                    'leverage': str(leverage_val),
+                    'marginMode': 'isolated',
+                }
+                if risk_type in ('exchange_orders', 'both'):
+                    attach_params.update({
+                        'takeProfit': tp_price_pre,
+                        'stopLoss': sl_price_pre,
+                        'tpTriggerBy': 'LastPrice',
+                        'slTriggerBy': 'LastPrice',
+                    })
+
+                order = agent.exchange.create_market_buy_order(  # type: ignore
+                    sym,
+                    float(qty),
+                    attach_params,
+                )
+                buy_result = {
+                    'success': True,
+                    'symbol': sym,
+                    'action': 'buy',
+                    'quantity': float(qty),
+                    'order': order,
+                }
+                executed_price = float(order.get('average') or order.get('price') or cur_price or 0.0)
+                risk_orders = {'mode': 'attached'}
+        except Exception as _ex:
+            # Fallback: обычная покупка + отдельные reduceOnly TP/SL
             buy_result = agent.execute_direct_order('buy', symbol=sym, quantity=qty)  # type: ignore
             if not buy_result or not buy_result.get('success'):
                 return jsonify({'success': False, 'error': buy_result.get('error') if isinstance(buy_result, dict) else 'buy failed'}), 500
@@ -897,7 +1021,7 @@ def trading_manual_buy_bypass_prediction():
 
             if executed_price and executed_price > 0 and risk_type in ('exchange_orders', 'both'):
                 try:
-                    # Рассчитываем цены TP/SL и нормализуем по tickSize
+                    # Нормализация цен по tickSize
                     m = agent.exchange.market(sym)  # type: ignore
                     tick = None
                     try:
@@ -959,6 +1083,7 @@ def trading_manual_buy_bypass_prediction():
 
         return jsonify({'success': True, 'symbol': sym, 'buy': buy_result, 'executed_price': executed_price, 'risk_orders': risk_orders}), 200
     except Exception as e:
+        logging.error(f"[manual_buy] Error: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @trading_bp.post('/api/trading/test_order')

@@ -233,6 +233,9 @@ def _save_training_results(
     total_episodes_planned: int, # Общее количество запланированных эпизодов
     all_trades: list,
     episode_winrates: list,
+    episode_epsilons: list | None = None,
+    eps_threshold: float | None = None,
+    eval_summary: dict | None = None,
     best_winrate: float,
     best_episode_idx: int,
     action_counts_total: dict,
@@ -275,6 +278,7 @@ def _save_training_results(
             'actual_episodes': current_episode,  # Реальное количество завершенных эпизодов (текущий эпизод)
             'total_training_time': total_training_time,
             'episode_winrates': episode_winrates,
+            'episode_epsilons': episode_epsilons or [],
             'all_trades': all_trades,
             'bad_trades': bad_trades_list,
             'bad_trades_count': bad_trades_count,
@@ -288,6 +292,7 @@ def _save_training_results(
             'model_id': getattr(cfg, 'run_id', None) or (run_dir.split(os.sep)[-1] if run_dir else None), # Используем run_id из cfg или из run_dir
             'early_stopping_triggered': current_episode < total_episodes_planned,  # True если early stopping сработал
             'reward_scale': float(getattr(get_env_attr_safe(env, 'cfg'), 'reward_scale', 1.0)),
+            'winrates': None,
             # --- Новые агрегаты для анализа поведения ---
             'action_counts_total': action_counts_total,
             'buy_attempts_total': buy_attempts_total,
@@ -323,6 +328,34 @@ def _save_training_results(
                     print(f"  • {k}: {int(v)}")
         except Exception:
             pass
+        # Агрегация винрейтов (общий, эксплуатационный) и eval, если передан
+        try:
+            wr_all = float(np.mean(episode_winrates)) if episode_winrates else None
+        except Exception:
+            wr_all = None
+        wr_exploit = None
+        try:
+            thr = eps_threshold if eps_threshold is not None else float(getattr(cfg, 'winrate_eps_threshold', 0.2))
+            if episode_epsilons and episode_winrates and len(episode_epsilons) == len(episode_winrates):
+                exploit_indices = [i for i, e in enumerate(episode_epsilons) if isinstance(e, (int, float)) and e <= thr]
+                if exploit_indices:
+                    wr_exploit = float(np.mean([episode_winrates[i] for i in exploit_indices]))
+        except Exception:
+            wr_exploit = None
+        try:
+            training_results['winrates'] = {
+                'train_all': wr_all,
+                'train_exploit': wr_exploit,
+                'eps_threshold': float(eps_threshold) if eps_threshold is not None else float(getattr(cfg, 'winrate_eps_threshold', 0.2)),
+                'counts': {
+                    'episodes_total': int(len(episode_winrates) if episode_winrates else 0),
+                    'episodes_exploit': int(sum(1 for e in (episode_epsilons or []) if isinstance(e, (int, float)) and e <= (eps_threshold if eps_threshold is not None else getattr(cfg, 'winrate_eps_threshold', 0.2))))
+                }
+            }
+        except Exception:
+            training_results['winrates'] = None
+        if isinstance(eval_summary, dict) and eval_summary:
+            training_results['eval'] = eval_summary
         # Метаданные окружения и запуска
         git_commit = None
         try:
@@ -1042,6 +1075,7 @@ def train_model_optimized(
         # Переменные для отслеживания прогресса
         all_trades = []
         episode_winrates = []
+        episode_epsilons = []
         best_winrate = 0.0
         best_episode_idx = -1
          # Reduce-on-plateau и warmup для best
@@ -1138,6 +1172,14 @@ def train_model_optimized(
                 current_crypto = env.current_symbol
             
             print(f"  🎯 Эпизод {episode} для {current_crypto} начат, reward={episode_reward}")
+            # Фиксируем ε, использованный в этом эпизоде (до обновления)
+            try:
+                episode_epsilons.append(float(dqn_solver.epsilon))
+            except Exception:
+                try:
+                    episode_epsilons.append(None)
+                except Exception:
+                    pass
             
             # Эпизод
             step_count = 0
@@ -1493,6 +1535,9 @@ def train_model_optimized(
                     total_episodes_planned=episodes,
                     all_trades=all_trades,
                     episode_winrates=episode_winrates,
+                    episode_epsilons=episode_epsilons,
+                    eps_threshold=getattr(cfg, 'winrate_eps_threshold', 0.2),
+                    eval_summary=None,
                     best_winrate=best_winrate,
                     best_episode_idx=best_episode_idx,
                     action_counts_total=action_counts_total,
@@ -1915,6 +1960,65 @@ def train_model_optimized(
         except Exception:
             pass
         
+        # Greedy-оценка политики (ε=0) — отдельные eval-эпизоды без обучения
+        eval_summary = None
+        try:
+            eval_episodes_count = int(getattr(cfg, 'eval_episodes', 5))
+        except Exception:
+            eval_episodes_count = 5
+        try:
+            if eval_episodes_count and eval_episodes_count > 0:
+                eval_episode_winrates = []
+                saved_eps = dqn_solver.epsilon
+                try:
+                    for _ in range(eval_episodes_count):
+                        # Отсечём текущее количество кумулятивных сделок, чтобы выделить сделки этого eval-эпизода
+                        try:
+                            _before_count = len(get_env_attr_safe(env, 'all_trades') or [])
+                        except Exception:
+                            _before_count = None
+                        state_eval = env.reset()
+                        # Убедимся, что состояние — numpy
+                        if isinstance(state_eval, (list, tuple)):
+                            state_eval = np.array(state_eval, dtype=np.float32)
+                        elif not isinstance(state_eval, np.ndarray):
+                            state_eval = np.array(state_eval, dtype=np.float32)
+                        dqn_solver.epsilon = 0.0
+                        while True:
+                            action_eval = dqn_solver.act(state_eval)
+                            state_eval, _, terminal_eval, _ = env.step(action_eval)
+                            if isinstance(state_eval, (list, tuple)):
+                                state_eval = np.array(state_eval, dtype=np.float32)
+                            elif not isinstance(state_eval, np.ndarray):
+                                state_eval = np.array(state_eval, dtype=np.float32)
+                            if terminal_eval:
+                                break
+                        # Определяем сделки этого eval-эпизода
+                        trades_after = get_env_attr_safe(env, 'all_trades') or []
+                        if _before_count is not None and isinstance(trades_after, list) and len(trades_after) >= _before_count:
+                            ep_trades = trades_after[_before_count:]
+                        else:
+                            ep_trades = get_env_attr_safe(env, 'trades', []) or []
+                        if ep_trades:
+                            wins = sum(1 for t in ep_trades if t.get('roi', 0) > 0)
+                            wr_ep = (wins / len(ep_trades)) if len(ep_trades) > 0 else 0.0
+                            eval_episode_winrates.append(float(wr_ep))
+                        else:
+                            eval_episode_winrates.append(0.0)
+                finally:
+                    dqn_solver.epsilon = saved_eps
+                try:
+                    eval_wr = float(np.mean(eval_episode_winrates)) if eval_episode_winrates else None
+                except Exception:
+                    eval_wr = None
+                eval_summary = {
+                    'episodes': int(eval_episodes_count),
+                    'winrate': eval_wr,
+                    'episode_winrates': eval_episode_winrates,
+                }
+        except Exception:
+            eval_summary = None
+
         # Сохраняем детальные результаты обучения
         _save_training_results(
             run_dir=run_dir,
@@ -1925,6 +2029,9 @@ def train_model_optimized(
             total_episodes_planned=episodes,
             all_trades=all_trades,
             episode_winrates=episode_winrates,
+            episode_epsilons=episode_epsilons,
+            eps_threshold=getattr(cfg, 'winrate_eps_threshold', 0.2),
+            eval_summary=eval_summary,
             best_winrate=best_winrate,
             best_episode_idx=best_episode_idx,
             action_counts_total=action_counts_total,

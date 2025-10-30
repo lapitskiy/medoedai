@@ -344,13 +344,50 @@ class DQNSolver:
         # Копируем веса
         self.target_model.load_state_dict(self.model.state_dict())
         
-        # Оптимизатор с увеличенным learning rate
-        self.optimizer = optim.AdamW(
-            self.model.parameters(), 
-            lr=self.cfg.lr,
-            weight_decay=1e-4,
-            eps=1e-7
-        )
+        # Оптимизатор: отдельные группы параметров для энкодера и головы
+        try:
+            encoder_params = None
+            head_params = None
+            encoder_lr_scale = float(getattr(self.cfg, 'encoder_lr_scale', 0.1))
+
+            # Вариант 1: классический DQNN без dueling — есть _feature_extractor и head
+            if hasattr(self.model, '_feature_extractor') and getattr(self.model, '_feature_extractor', None) is not None \
+               and hasattr(self.model, 'head') and getattr(self.model, 'head', None) is not None:
+                encoder_params = list(self.model._feature_extractor.parameters())
+                # Остальные параметры как "голова"
+                head_params = [p for p in self.model.parameters() if p not in encoder_params]
+
+            # Вариант 2: dueling/noisy-dueling — энкодер внутри self.model.net.feature_extractor
+            elif hasattr(self.model, 'net') and getattr(self.model, 'net', None) is not None \
+                 and hasattr(self.model.net, 'feature_extractor') and getattr(self.model.net, 'feature_extractor', None) is not None:
+                encoder_params = list(self.model.net.feature_extractor.parameters())
+                head_params = [p for p in self.model.parameters() if p not in encoder_params]
+
+            if encoder_params is not None and head_params is not None and len(encoder_params) > 0 and len(head_params) > 0:
+                self.optimizer = optim.AdamW(
+                    [
+                        {"params": encoder_params, "lr": max(1e-8, float(self.cfg.lr) * encoder_lr_scale)},
+                        {"params": head_params,    "lr": float(self.cfg.lr)},
+                    ],
+                    weight_decay=1e-4,
+                    eps=1e-7,
+                )
+            else:
+                # Фоллбек на единый LR, если не удалось разделить параметры
+                self.optimizer = optim.AdamW(
+                    self.model.parameters(),
+                    lr=self.cfg.lr,
+                    weight_decay=1e-4,
+                    eps=1e-7,
+                )
+        except Exception:
+            # Любая ошибка — безопасный фоллбек на единый LR
+            self.optimizer = optim.AdamW(
+                self.model.parameters(), 
+                lr=self.cfg.lr,
+                weight_decay=1e-4,
+                eps=1e-7
+            )
         
         # Scheduler для динамического learning rate
         self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(

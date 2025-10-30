@@ -74,8 +74,33 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
             if time.time() >= deadline:
                 self._expire_and_cleanup(cur)
                 break
+            # Перед любыми действиями проверим статус ордера на бирже и завершим при частичном/полном исполнении
+            try:
+                if getattr(cur, 'exchange_order_id', None):
+                    st = self.gateway.get_order_status(cur.symbol, cur.exchange_order_id) or {}
+                    status = str(st.get('status') or '').lower()
+                    if status in ('closed', 'filled', 'done'):
+                        # Полностью исполнен — фиксируем и выходим
+                        self.store.set_state(cur.intent_id, IntentState.FILLED)
+                        self.store.remove_pending(cur.symbol, cur.intent_id)
+                        break
+                    if status in ('partially_filled', 'partial', 'open'):  # есть частичное исполнение — отменяем остаток и завершаем
+                        try:
+                            self.gateway.cancel_order(cur.symbol, cur.exchange_order_id)
+                        except Exception:
+                            pass
+                        self.store.set_state(cur.intent_id, IntentState.FILLED)
+                        self.store.remove_pending(cur.symbol, cur.intent_id)
+                        break
+            except Exception:
+                # Игнорируем ошибки опроса статуса — продолжим по SLA
+                pass
             # Requote по SLA, если долго без событий
             time.sleep(max(1, int(cur.cfg.requote_interval_sec)))
+            # Повторная проверка дедлайна после ожидания, чтобы исключить реквотинг по истечении времени
+            if time.time() >= deadline:
+                self._expire_and_cleanup(cur)
+                break
             self._requote_if_needed(cur)
         return self.store.load_intent(intent.intent_id) or intent
 
@@ -160,6 +185,25 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
     def _requote_if_needed(self, cur: Intent) -> None:
         # периодический SLA-ребаланс на край книги
         try:
+            # Перед реквотом проверим, не исполнен ли ордер полностью/частично
+            try:
+                if getattr(cur, 'exchange_order_id', None):
+                    st = self.gateway.get_order_status(cur.symbol, cur.exchange_order_id) or {}
+                    status = str(st.get('status') or '').lower()
+                    if status in ('closed', 'filled', 'done'):
+                        self.store.set_state(cur.intent_id, IntentState.FILLED)
+                        self.store.remove_pending(cur.symbol, cur.intent_id)
+                        return
+                    if status in ('partially_filled', 'partial', 'open'):
+                        try:
+                            self.gateway.cancel_order(cur.symbol, cur.exchange_order_id)
+                        except Exception:
+                            pass
+                        self.store.set_state(cur.intent_id, IntentState.FILLED)
+                        self.store.remove_pending(cur.symbol, cur.intent_id)
+                        return
+            except Exception:
+                pass
             best_bid, best_ask = self.gateway.get_best_bid_ask(cur.symbol)
             self._requote_edge(cur, best_bid, best_ask)
         except Exception as e:

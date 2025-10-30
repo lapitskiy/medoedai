@@ -809,15 +809,24 @@ class TradingAgent:
             # Получаем ограничения Bybit
             bybit_limits = self._get_bybit_limits()
             
-            # Настройки риск-менеджмента
-            risk_percentage = 0.15  # 15% от баланса на одну сделку
-            min_trade_usdt = max(10.0, bybit_limits['min_cost'])  # Минимальная сделка (больше из: $10 или требования Bybit)
-            max_trade_usdt = min(100.0, bybit_limits['max_cost'])  # Максимальная сделка (меньше из: $100 или требования Bybit)
-            
-            # Рассчитываем количество USDT для торговли
-            trade_usdt = usdt_balance * risk_percentage
-            
-            # Ограничиваем минимальным и максимальным значением
+            # Доля счёта для сделки из Redis (по умолчанию 100%)
+            account_pct = 100
+            try:
+                from redis import Redis as _Redis
+                _rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+                _ap = _rc.get('trading:account_pct')
+                if _ap is not None and str(_ap).strip() != '':
+                    account_pct = max(1, min(100, int(str(_ap))))
+            except Exception:
+                account_pct = 100
+            # Минимальная/максимальная стоимость из лимитов биржи
+            min_trade_usdt = max(10.0, float(bybit_limits['min_cost']))
+            max_trade_usdt = float(bybit_limits['max_cost']) if bybit_limits['max_cost'] else float('inf')
+
+            # Рассчитываем количество USDT для торговли как долю свободного USDT
+            trade_usdt = float(usdt_balance) * (float(account_pct) / 100.0)
+
+            # Ограничиваем по требованиям биржи
             trade_usdt = max(min_trade_usdt, min(trade_usdt, max_trade_usdt))
             
             # Если USDT недостаточно, используем баланс базовой валюты
@@ -826,7 +835,7 @@ class TradingAgent:
                 base_balance = balance_result['balance'].get(base_currency, 0.0)
                 
                 if base_balance > bybit_limits['min_amount']:
-                    trade_amount = base_balance * risk_percentage
+                    trade_amount = base_balance * (float(account_pct) / 100.0)
                     trade_amount = max(bybit_limits['min_amount'], min(trade_amount, bybit_limits['max_amount']))
                     logger.info(f"Используем {base_currency} баланс: {trade_amount} {base_currency} (${trade_amount * self._get_current_price():.2f})")
                     return self._normalize_amount(trade_amount)

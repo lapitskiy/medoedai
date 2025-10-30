@@ -19,7 +19,7 @@ from tasks import celery
 
 logger = logging.getLogger(__name__)
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='trade')
-def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', side: str = 'buy', qty: float | None = None, limit_config: dict | None = None):
+def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', side: str = 'buy', qty: float | None = None, limit_config: dict | None = None, leverage: int | None = None):
     """Запуск DDD-стратегии исполнения (market | limit_post_only).
 
     - Ограничение max_lifetime_sec ≤ 300 соблюдается на уровне сервиса
@@ -65,6 +65,24 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
         # 3) Создаём сервис и стратегий
         store = RedisStateStore()
         gateway = _gateway
+        # Устанавливаем плечо (1..5) перед стартом стратегии, только для лимитного исполнения
+        try:
+            lev = int(leverage) if leverage is not None else 1
+            if lev < 1 or lev > 5:
+                lev = 1
+        except Exception:
+            lev = 1
+        try:
+            if execution_mode == 'limit_post_only' and hasattr(gateway, 'ex') and hasattr(gateway.ex, 'set_leverage'):
+                try:
+                    gateway.ex.set_leverage(lev, symbol)
+                except Exception:
+                    try:
+                        gateway.ex.set_leverage(str(lev), symbol, {'buyLeverage': str(lev), 'sellLeverage': str(lev)})
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         strategies = {
             'market': MarketStrategy(store, gateway),
             'limit_post_only': LimitPostOnlyStrategy(store, gateway),
@@ -74,6 +92,108 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
         # 4) Запуск
         side_enum = Side.BUY if str(side).lower() == 'buy' else Side.SELL
         intent = service.start(execution_mode=execution_mode, symbol=symbol, side=side_enum, qty=qty, cfg=cfg)
+
+        # После успешного лимитного входа по BUY — выставляем SL/TP согласно настройкам из Redis
+        try:
+            from trading_agent.domain.models import IntentState as _IS
+            if (str(execution_mode) == 'limit_post_only') and (side_enum.name.lower() == 'buy') and (intent.state == _IS.FILLED):
+                try:
+                    from redis import Redis as _Redis
+                    rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+                except Exception:
+                    rc = None
+                tp_pct = None; sl_pct = None; risk_type = 'exchange_orders'
+                try:
+                    if rc is not None:
+                        _tp = rc.get('trading:take_profit_pct')
+                        _sl = rc.get('trading:stop_loss_pct')
+                        _rt = rc.get('trading:risk_management_type')
+                        if _tp is not None and str(_tp).strip() != '':
+                            tp_pct = float(_tp)
+                        if _sl is not None and str(_sl).strip() != '':
+                            sl_pct = float(_sl)
+                        if _rt is not None and str(_rt).strip() != '':
+                            risk_type = str(_rt)
+                except Exception:
+                    tp_pct = tp_pct if tp_pct is not None else 1.0
+                    sl_pct = sl_pct if sl_pct is not None else 1.0
+                    risk_type = 'exchange_orders'
+                # Брейкет-ордера ставим только если выбраны биржевые ордера
+                if risk_type in ('exchange_orders', 'both'):
+                    try:
+                        from trading_agent.trading_agent import TradingAgent as _TA
+                        agent2 = _TA()
+                        agent2.symbol = symbol
+                        agent2.base_symbol = symbol
+                        try:
+                            agent2._restore_position_from_exchange()
+                        except Exception:
+                            pass
+                        pos = getattr(agent2, 'current_position', None) or {}
+                        entry_price = None; amount = None
+                        try:
+                            entry_price = float(pos.get('entry_price')) if pos.get('entry_price') is not None else None
+                            amount = float(pos.get('amount')) if pos.get('amount') is not None else None
+                        except Exception:
+                            entry_price = None; amount = None
+                        # fallback на текущую цену/расчитанное qty, если позиция не прочиталась
+                        if entry_price is None or entry_price <= 0:
+                            try:
+                                entry_price = float(agent2._get_current_price())
+                            except Exception:
+                                entry_price = None
+                        if amount is None or amount <= 0:
+                            try:
+                                amount = float(getattr(agent2, 'trade_amount', 0.0) or qty)
+                            except Exception:
+                                amount = float(qty or 0.0)
+                        if (entry_price and entry_price > 0) and (amount and amount > 0):
+                            # Нормализуем цену под precision рынка
+                            try:
+                                mkt = agent2.exchange.market(symbol)
+                                p_prec = int((mkt.get('precision', {}) or {}).get('price', 2))
+                            except Exception:
+                                p_prec = 2
+                            def _roundp(x):
+                                try:
+                                    return float(f"{float(x):.{max(0,p_prec)}f}")
+                                except Exception:
+                                    return float(x)
+                            # TP
+                            if tp_pct is not None and float(tp_pct) > 0:
+                                try:
+                                    tp_price = _roundp(entry_price * (1.0 + float(tp_pct)/100.0))
+                                    agent2.exchange.create_limit_sell_order(
+                                        symbol,
+                                        amount,
+                                        tp_price,
+                                        { 'reduceOnly': True, 'timeInForce': 'GTC' }
+                                    )
+                                except Exception:
+                                    pass
+                            # SL
+                            if sl_pct is not None and float(sl_pct) > 0:
+                                try:
+                                    sl_price = _roundp(entry_price * (1.0 - float(sl_pct)/100.0))
+                                    try:
+                                        agent2.exchange.create_stop_market_sell_order(
+                                            symbol,
+                                            amount,
+                                            sl_price,
+                                            { 'reduceOnly': True, 'stopPrice': sl_price }
+                                        )
+                                    except Exception:
+                                        agent2.exchange.create_market_sell_order(
+                                            symbol,
+                                            amount,
+                                            { 'reduceOnly': True, 'stopPrice': sl_price, 'triggerPrice': sl_price }
+                                        )
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
         return {"success": True, "intent_id": intent.intent_id, "state": intent.state}
     except Exception as e:
@@ -224,7 +344,19 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         if not max_window:
             max_window = 2880
         limit_candles = max(120, int(max_window) + 50)
+        t_ohlcv_start = time.monotonic()
+        logging.warning(f"[EXECUTE] OHLCV call: symbol={symbol}, tf=5m, limit={limit_candles}, exchange=bybit")
         df_5m, data_error = db_get_or_fetch_ohlcv(symbol_name=symbol, timeframe='5m', limit_candles=limit_candles, exchange_id='bybit', include_error=True)
+        t_ohlcv_dt = time.monotonic() - t_ohlcv_start
+        try:
+            _rows = 0 if (df_5m is None) else len(df_5m)
+            _tmin = int(df_5m['timestamp'].min()) if _rows else None
+            _tmax = int(df_5m['timestamp'].max()) if _rows else None
+            _tmin_h = datetime.fromtimestamp(_tmin/1000).isoformat() if _tmin else '—'
+            _tmax_h = datetime.fromtimestamp(_tmax/1000).isoformat() if _tmax else '—'
+            logging.warning(f"[EXECUTE] OHLCV done in {t_ohlcv_dt:.2f}s; rows={_rows}; range={_tmin_h}..{_tmax_h}; error={bool(data_error)}")
+        except Exception:
+            logging.warning(f"[EXECUTE] OHLCV done in {t_ohlcv_dt:.2f}s; (range format error)")
         if data_error:
             error_msg = data_error
             human_error = error_msg
@@ -693,6 +825,42 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
 
         current_status_before = agent.get_trading_status()
 
+        # Если уже в позиции и свободной USDT мало — отменим лишние входящие лимитные заявки (кроме SL/TP)
+        try:
+            if getattr(agent, 'current_position', None):
+                free_usdt = 0.0
+                try:
+                    bal = agent._get_current_balance()
+                    free_usdt = float(bal) if isinstance(bal, (int, float)) else 0.0
+                except Exception:
+                    free_usdt = 0.0
+                min_cost = 10.0
+                try:
+                    limits = agent._get_bybit_limits()
+                    if isinstance(limits, dict) and limits.get('min_cost'):
+                        min_cost = max(min_cost, float(limits.get('min_cost')))
+                except Exception:
+                    pass
+                if free_usdt < min_cost and hasattr(agent, 'exchange') and agent.exchange:
+                    try:
+                        open_orders = agent.exchange.fetch_open_orders(symbol)
+                        for od in (open_orders or []):
+                            try:
+                                side = str(od.get('side') or '').lower()
+                                params = od.get('info') or {}
+                                reduce_only = bool(params.get('reduceOnly') or params.get('reduce_only') or False)
+                                if side == 'buy' and not reduce_only:
+                                    try:
+                                        agent.exchange.cancel_order(od.get('id'), symbol)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         # 4.1) Сохраняем предсказания в БД (по каждому пути модели) + сводка консенсуса и per‑model Q‑gate
         try:
             # Текущая цена: возьмём close последней закрытой свечи
@@ -787,9 +955,11 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         if dry_run:
             trade_result = {"success": True, "action": "dry_run"}
         else:
-            # Попробуем прочитать режим исполнения и конфиг лимитной стратегии из Redis (per-symbol)
+            # Попробуем прочитать режим исполнения, конфиг лимитной стратегии и стратегию выхода из Redis (per-symbol)
             exec_mode = None
             limit_cfg = None
+            exit_mode = 'prediction'
+            leverage_val = 1
             try:
                 if rc is not None:
                     _em = rc.get(f'trading:execution_mode:{symbol}')
@@ -801,22 +971,47 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                             limit_cfg = json.loads(_lc)
                         except Exception:
                             limit_cfg = None
+                    _xm = rc.get(f'trading:exit_mode:{symbol}')
+                    if _xm:
+                        exit_mode = str(_xm).strip()
+                    _lev = rc.get(f'trading:leverage:{symbol}')
+                    if _lev:
+                        try:
+                            leverage_val = max(1, min(5, int(str(_lev))))
+                        except Exception:
+                            leverage_val = 1
             except Exception:
                 exec_mode = None
                 limit_cfg = None
+                exit_mode = 'prediction'
+                leverage_val = 1
 
             if decision == 'buy' and not agent.current_position:
                 if exec_mode == 'limit_post_only':
                     try:
-                        # Запускаем DDD-стратегию исполнения лимитным post-only ордером
+                        # Двухсторонняя постановка лимитов (BUY ниже / SELL выше) до дедлайна
+                        base_qty = float(getattr(agent, 'trade_amount', 0.0)) or 0.0
+                        qty_buy = base_qty * 0.5 if base_qty > 0 else None
+                        qty_sell = base_qty * 0.5 if base_qty > 0 else None
+                        # Enqueue BUY
                         start_execution_strategy.apply_async(kwargs={
                             'symbol': symbol,
                             'execution_mode': 'limit_post_only',
                             'side': 'buy',
-                            'qty': float(getattr(agent, 'trade_amount', 0.0)) or None,
-                            'limit_config': (limit_cfg or {})
+                            'qty': qty_buy,
+                            'limit_config': (limit_cfg or {}),
+                            'leverage': leverage_val
                         }, queue='trade')
-                        trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "buy"}
+                        # Enqueue SELL (для входа в short при доступном режиме)
+                        start_execution_strategy.apply_async(kwargs={
+                            'symbol': symbol,
+                            'execution_mode': 'limit_post_only',
+                            'side': 'sell',
+                            'qty': qty_sell,
+                            'limit_config': (limit_cfg or {}),
+                            'leverage': leverage_val
+                        }, queue='trade')
+                        trade_result = {"success": True, "action": "limit_post_only_enqueued_two_sided", "sides": ["buy", "sell"], "qty_each": qty_buy}
                     except Exception as _e:
                         # Фолбэк на рыночное исполнение через агента
                         trade_result = agent._execute_buy()
@@ -908,25 +1103,30 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     except Exception:
                         pass
             elif decision == 'sell' and agent.current_position:
-                sell_strategy = agent._determine_sell_amount(agent._get_current_price())
-                if exec_mode == 'limit_post_only':
-                    try:
-                        sell_qty = float(sell_strategy.get('sell_amount', 0) or 0)
-                        if sell_strategy.get('sell_all') and sell_qty <= 0:
-                            # Если не удалось рассчитать количество — пусть стратегия сама решит
-                            sell_qty = None
-                        start_execution_strategy.apply_async(kwargs={
-                            'symbol': symbol,
-                            'execution_mode': 'limit_post_only',
-                            'side': 'sell',
-                            'qty': sell_qty,
-                            'limit_config': (limit_cfg or {})
-                        }, queue='trade')
-                        trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "sell"}
-                    except Exception:
-                        trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
+                # Если выбрана стратегия выхода через биржевые SL/TP — не продаём по предсказанию
+                if str(exit_mode).lower() == 'risk_orders':
+                    trade_result = {"success": True, "action": "hold_exit_via_risk", "reason": "exit_mode=risk_orders"}
                 else:
-                    trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
+                    sell_strategy = agent._determine_sell_amount(agent._get_current_price())
+                    if exec_mode == 'limit_post_only':
+                        try:
+                            sell_qty = float(sell_strategy.get('sell_amount', 0) or 0)
+                            if sell_strategy.get('sell_all') and sell_qty <= 0:
+                                # Если не удалось рассчитать количество — пусть стратегия сама решит
+                                sell_qty = None
+                            start_execution_strategy.apply_async(kwargs={
+                                'symbol': symbol,
+                                'execution_mode': 'limit_post_only',
+                                'side': 'sell',
+                                'qty': sell_qty,
+                                'limit_config': (limit_cfg or {}),
+                                'leverage': leverage_val
+                            }, queue='trade')
+                            trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "sell"}
+                        except Exception:
+                            trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
+                    else:
+                        trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
             else:
                 trade_result = {"success": True, "action": "hold"}
 
@@ -972,6 +1172,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         } or {'buy':0,'sell':0,'hold':0}
                     },
                     'trade_result': trade_result,
+                    'exit_mode': exit_mode,
                 }
                 rc.setex(f'trading:latest_result_{datetime.now().strftime("%Y%m%d_%H%M%S")}', 3600, json.dumps(result_data, default=str))
                 # Сохраняем статус для конкретного символа
