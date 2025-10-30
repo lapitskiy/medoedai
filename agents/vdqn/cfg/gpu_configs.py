@@ -30,7 +30,7 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
     # Tesla P100 - максимальная скорость эпизодов
     "tesla_p100": GPUConfig(
         name="Tesla P100",
-        vram_gb=16.0,
+        vram_gb=15.0,
         batch_size=128,  # Уменьшено с 4096 для сокращения времени обучения
         memory_size=90_000,  # Увеличиваем для стабильности: ~7.5GB VRAM (47% от 16GB)
         hidden_sizes=(256, 128, 64),  # Сбалансированная архитектура
