@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from typing import Optional, Callable
+import logging
 
 from trading_agent.domain.interfaces import ExecutionStrategy, StateStore, ExchangeGateway
 from trading_agent.domain.models import Intent, IntentState, LimitConfig, Side
@@ -16,6 +17,7 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
     def __init__(self, store: StateStore, gateway: ExchangeGateway):
         self.store = store
         self.gateway = gateway
+        self._log = logging.getLogger(__name__)
 
     def place_intent(self, symbol: str, side: Side, qty: float, cfg: Optional[LimitConfig] = None) -> Intent:
         cfg = cfg or LimitConfig()
@@ -44,16 +46,47 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
             intent.state = IntentState.WORKING
             intent.add_log(price, event='place', reason=None)
             self.store.update_intent(intent)
+            try:
+                self._log.info(f"[LimitPO] placed order: symbol={symbol} side={side.name} qty={qty} price={price} id={intent.exchange_order_id}")
+            except Exception:
+                pass
         except Exception as e:
             intent.add_log(price, event='place', reason=str(e))
             # отступ x2 и повтор на следующем цикле run_until_done
             intent.offset_ticks = min(intent.cfg.offset_max_ticks, max(2, intent.offset_ticks * 2))
             self.store.update_intent(intent)
+            try:
+                self._log.warning(f"[LimitPO] place failed: {e}")
+            except Exception:
+                pass
         return intent
 
     def run_until_done(self, intent: Intent) -> Intent:
         start_ts = time.time()
-        deadline = start_ts + min(300, intent.cfg.max_lifetime_sec)
+        # TTL лимитки: per-symbol из Redis -> глобальный -> cfg.max_lifetime_sec -> 300s
+        ttl_seconds = 300
+        try:
+            try:
+                from redis import Redis as _Redis
+                rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+            except Exception:
+                rc = None
+            ttl_val = None
+            if rc is not None:
+                ttl_val = rc.get(f'trading:limit_ttl_s:{intent.symbol}') or rc.get('trading:limit_ttl_s')
+            if ttl_val is not None and str(ttl_val).strip() != '':
+                ttl_seconds = int(float(ttl_val))
+            elif getattr(intent, 'cfg', None) and getattr(intent.cfg, 'max_lifetime_sec', None):
+                ttl_seconds = int(float(intent.cfg.max_lifetime_sec))
+        except Exception:
+            ttl_seconds = 300
+        if ttl_seconds <= 0:
+            ttl_seconds = 300
+        deadline = start_ts + ttl_seconds
+        try:
+            self._log.info(f"[LimitPO] TTL resolved: symbol={intent.symbol} ttl_s={ttl_seconds}")
+        except Exception:
+            pass
 
         # WS подписки
         order_cb = self._make_order_cb(intent.intent_id)
@@ -83,6 +116,10 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                         # Полностью исполнен — фиксируем и выходим
                         self.store.set_state(cur.intent_id, IntentState.FILLED)
                         self.store.remove_pending(cur.symbol, cur.intent_id)
+                        try:
+                            self._log.info(f"[LimitPO] filled: id={cur.intent_id} symbol={cur.symbol} price={cur.price}")
+                        except Exception:
+                            pass
                         break
                     if status in ('partially_filled', 'partial', 'open'):  # есть частичное исполнение — отменяем остаток и завершаем
                         try:
@@ -91,6 +128,10 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                             pass
                         self.store.set_state(cur.intent_id, IntentState.FILLED)
                         self.store.remove_pending(cur.symbol, cur.intent_id)
+                        try:
+                            self._log.info(f"[LimitPO] partial/open -> cancel rest, mark filled: id={cur.intent_id} symbol={cur.symbol}")
+                        except Exception:
+                            pass
                         break
             except Exception:
                 # Игнорируем ошибки опроса статуса — продолжим по SLA
@@ -100,6 +141,10 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
             # Повторная проверка дедлайна после ожидания, чтобы исключить реквотинг по истечении времени
             if time.time() >= deadline:
                 self._expire_and_cleanup(cur)
+                try:
+                    self._log.warning(f"[LimitPO] expired by deadline: id={cur.intent_id} symbol={cur.symbol}")
+                except Exception:
+                    pass
                 break
             self._requote_if_needed(cur)
         return self.store.load_intent(intent.intent_id) or intent

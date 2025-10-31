@@ -96,7 +96,12 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
         # После успешного лимитного входа по BUY — выставляем SL/TP согласно настройкам из Redis
         try:
             from trading_agent.domain.models import IntentState as _IS
-            if (str(execution_mode) == 'limit_post_only') and (side_enum.name.lower() == 'buy') and (intent.state == _IS.FILLED):
+            if (str(execution_mode) == 'limit_post_only') and (side_enum.name.lower() in ('buy','sell')):
+                try:
+                    logger.info(f"[DDD-Risk] intent_id={getattr(intent, 'intent_id', 'n/a')} state={getattr(intent, 'state', 'n/a')} exec_mode={execution_mode} side={side_enum.name}")
+                except Exception:
+                    pass
+                # Не прерываемся на not FILLED: сначала попробуем прочитать фактическую позицию
                 try:
                     from redis import Redis as _Redis
                     rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
@@ -105,15 +110,20 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
                 tp_pct = None; sl_pct = None; risk_type = 'exchange_orders'
                 try:
                     if rc is not None:
-                        _tp = rc.get('trading:take_profit_pct')
-                        _sl = rc.get('trading:stop_loss_pct')
-                        _rt = rc.get('trading:risk_management_type')
+                        # Сначала читаем per-symbol, затем фолбэк на глобальные ключи
+                        _tp = rc.get(f'trading:take_profit_pct:{symbol}') or rc.get('trading:take_profit_pct')
+                        _sl = rc.get(f'trading:stop_loss_pct:{symbol}') or rc.get('trading:stop_loss_pct')
+                        _rt = rc.get(f'trading:risk_management_type:{symbol}') or rc.get('trading:risk_management_type')
                         if _tp is not None and str(_tp).strip() != '':
                             tp_pct = float(_tp)
                         if _sl is not None and str(_sl).strip() != '':
                             sl_pct = float(_sl)
                         if _rt is not None and str(_rt).strip() != '':
                             risk_type = str(_rt)
+                    try:
+                        logger.info(f"[DDD-Risk] params: risk_type={risk_type} tp_pct={tp_pct} sl_pct={sl_pct}")
+                    except Exception:
+                        pass
                 except Exception:
                     tp_pct = tp_pct if tp_pct is not None else 1.0
                     sl_pct = sl_pct if sl_pct is not None else 1.0
@@ -147,6 +157,18 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
                                 amount = float(getattr(agent2, 'trade_amount', 0.0) or qty)
                             except Exception:
                                 amount = float(qty or 0.0)
+                        try:
+                            logger.info(f"[DDD-Risk] position: entry_price={entry_price} amount={amount}")
+                        except Exception:
+                            pass
+                        # Если интент не FILLED, но позиция уже есть (amount>0) — ставим TP/SL
+                        # Если позиции нет — логируем и выходим без ошибок
+                        if (intent.state != _IS.FILLED) and not (amount and amount > 0):
+                            try:
+                                logger.warning(f"[DDD-Risk] Skip TP/SL: intent not FILLED and no position on exchange (state={intent.state})")
+                            except Exception:
+                                pass
+                            return {"success": True, "intent_id": intent.intent_id, "state": intent.state}
                         if (entry_price and entry_price > 0) and (amount and amount > 0):
                             # Нормализуем цену под precision рынка
                             try:
@@ -159,37 +181,92 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
                                     return float(f"{float(x):.{max(0,p_prec)}f}")
                                 except Exception:
                                     return float(x)
-                            # TP
-                            if tp_pct is not None and float(tp_pct) > 0:
+                        is_buy = (side_enum.name.lower() == 'buy')
+                        # Для long (BUY): TP=limit sell выше, SL=stop-market sell ниже
+                        # Для short (SELL): TP=limit buy ниже,   SL=stop-market buy выше
+                        if tp_pct is not None and float(tp_pct) > 0:
+                            try:
+                                tp_price = _roundp(entry_price * (1.0 + float(tp_pct)/100.0)) if is_buy else _roundp(entry_price * (1.0 - float(tp_pct)/100.0))
                                 try:
-                                    tp_price = _roundp(entry_price * (1.0 + float(tp_pct)/100.0))
+                                    logger.info(f"[DDD-Risk] placing TP: symbol={symbol} side={'SELL' if is_buy else 'BUY'} price={tp_price} amount={amount}")
+                                except Exception:
+                                    pass
+                                if is_buy:
                                     agent2.exchange.create_limit_sell_order(
                                         symbol,
                                         amount,
                                         tp_price,
                                         { 'reduceOnly': True, 'timeInForce': 'GTC' }
                                     )
+                                else:
+                                    agent2.exchange.create_limit_buy_order(
+                                        symbol,
+                                        amount,
+                                        tp_price,
+                                        { 'reduceOnly': True, 'timeInForce': 'GTC' }
+                                    )
+                                try:
+                                    logger.info(f"[DDD-Risk] TP placed OK at {tp_price}")
                                 except Exception:
                                     pass
-                            # SL
-                            if sl_pct is not None and float(sl_pct) > 0:
+                            except Exception:
                                 try:
-                                    sl_price = _roundp(entry_price * (1.0 - float(sl_pct)/100.0))
-                                    try:
+                                    logger.exception("[DDD-Risk] TP place failed")
+                                except Exception:
+                                    pass
+                        if sl_pct is not None and float(sl_pct) > 0:
+                            try:
+                                sl_price = _roundp(entry_price * (1.0 - float(sl_pct)/100.0)) if is_buy else _roundp(entry_price * (1.0 + float(sl_pct)/100.0))
+                                try:
+                                    logger.info(f"[DDD-Risk] placing SL: symbol={symbol} side={'SELL' if is_buy else 'BUY'} stopPrice={sl_price} amount={amount}")
+                                except Exception:
+                                    pass
+                                try:
+                                    if is_buy:
                                         agent2.exchange.create_stop_market_sell_order(
                                             symbol,
                                             amount,
                                             sl_price,
                                             { 'reduceOnly': True, 'stopPrice': sl_price }
                                         )
-                                    except Exception:
+                                    else:
+                                        agent2.exchange.create_stop_market_buy_order(
+                                            symbol,
+                                            amount,
+                                            sl_price,
+                                            { 'reduceOnly': True, 'stopPrice': sl_price }
+                                        )
+                                except Exception:
+                                    # Фолбэк на обычный маркет с триггер‑параметрами
+                                    if is_buy:
                                         agent2.exchange.create_market_sell_order(
                                             symbol,
                                             amount,
                                             { 'reduceOnly': True, 'stopPrice': sl_price, 'triggerPrice': sl_price }
                                         )
+                                    else:
+                                        agent2.exchange.create_market_buy_order(
+                                            symbol,
+                                            amount,
+                                            { 'reduceOnly': True, 'stopPrice': sl_price, 'triggerPrice': sl_price }
+                                        )
+                                try:
+                                    logger.info(f"[DDD-Risk] SL placed OK at {sl_price}")
                                 except Exception:
                                     pass
+                            except Exception:
+                                try:
+                                    logger.exception("[DDD-Risk] SL place failed")
+                                except Exception:
+                                    pass
+                    except Exception:
+                        try:
+                            logger.exception("[DDD-Risk] Risk order placement block failed")
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        logger.warning(f"[DDD-Risk] Skip TP/SL: risk_type={risk_type}")
                     except Exception:
                         pass
         except Exception:
@@ -989,29 +1066,50 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             if decision == 'buy' and not agent.current_position:
                 if exec_mode == 'limit_post_only':
                     try:
-                        # Двухсторонняя постановка лимитов (BUY ниже / SELL выше) до дедлайна
                         base_qty = float(getattr(agent, 'trade_amount', 0.0)) or 0.0
-                        qty_buy = base_qty * 0.5 if base_qty > 0 else None
-                        qty_sell = base_qty * 0.5 if base_qty > 0 else None
-                        # Enqueue BUY
-                        start_execution_strategy.apply_async(kwargs={
-                            'symbol': symbol,
-                            'execution_mode': 'limit_post_only',
-                            'side': 'buy',
-                            'qty': qty_buy,
-                            'limit_config': (limit_cfg or {}),
-                            'leverage': leverage_val
-                        }, queue='trade')
-                        # Enqueue SELL (для входа в short при доступном режиме)
-                        start_execution_strategy.apply_async(kwargs={
-                            'symbol': symbol,
-                            'execution_mode': 'limit_post_only',
-                            'side': 'sell',
-                            'qty': qty_sell,
-                            'limit_config': (limit_cfg or {}),
-                            'leverage': leverage_val
-                        }, queue='trade')
-                        trade_result = {"success": True, "action": "limit_post_only_enqueued_two_sided", "sides": ["buy", "sell"], "qty_each": qty_buy}
+                        # Флаг двухстороннего входа управляется через Redis
+                        two_sided = False
+                        try:
+                            if rc is not None:
+                                ts = rc.get(f'trading:limit_two_sided:{symbol}') or rc.get('trading:limit_two_sided')
+                                if ts is not None and str(ts).lower() in ('1','true','yes','on'):
+                                    two_sided = True
+                        except Exception:
+                            two_sided = False
+                        if two_sided and base_qty > 0:
+                            qty_buy = base_qty * 0.5
+                            qty_sell = base_qty * 0.5
+                            # Enqueue BUY
+                            start_execution_strategy.apply_async(kwargs={
+                                'symbol': symbol,
+                                'execution_mode': 'limit_post_only',
+                                'side': 'buy',
+                                'qty': qty_buy,
+                                'limit_config': (limit_cfg or {}),
+                                'leverage': leverage_val
+                            }, queue='trade')
+                            # Enqueue SELL (вход в short, только если явно разрешено)
+                            start_execution_strategy.apply_async(kwargs={
+                                'symbol': symbol,
+                                'execution_mode': 'limit_post_only',
+                                'side': 'sell',
+                                'qty': qty_sell,
+                                'limit_config': (limit_cfg or {}),
+                                'leverage': leverage_val
+                            }, queue='trade')
+                            trade_result = {"success": True, "action": "limit_post_only_enqueued_two_sided", "sides": ["buy", "sell"], "qty_each": qty_buy}
+                        else:
+                            # Только BUY по решению модели
+                            qty_buy = base_qty if base_qty > 0 else None
+                            start_execution_strategy.apply_async(kwargs={
+                                'symbol': symbol,
+                                'execution_mode': 'limit_post_only',
+                                'side': 'buy',
+                                'qty': qty_buy,
+                                'limit_config': (limit_cfg or {}),
+                                'leverage': leverage_val
+                            }, queue='trade')
+                            trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "buy", "qty": qty_buy}
                     except Exception as _e:
                         # Фолбэк на рыночное исполнение через агента
                         trade_result = agent._execute_buy()

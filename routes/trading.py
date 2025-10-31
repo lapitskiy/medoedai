@@ -942,6 +942,10 @@ def trading_manual_buy_bypass_prediction():
                     'limit_config': (limit_config or {}),
                     'leverage': leverage_val
                 }, queue='trade')
+                try:
+                    logging.info(f"[/api/trading/manual_buy] enqueued limit_post_only: symbol={sym} qty={qty} lev={leverage_val} has_limit_cfg={bool(limit_config)}")
+                except Exception:
+                    pass
                 buy_result = {"success": True, "action": "limit_post_only_enqueued", "side": "buy"}
                 return jsonify({'success': True, 'symbol': sym, 'buy': buy_result, 'risk_orders': {'mode': 'pending_ddd'}}), 200
             else:
