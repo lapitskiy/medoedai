@@ -7,7 +7,7 @@ from typing import Optional
 import redis
 
 from trading_agent.domain.interfaces import StateStore
-from trading_agent.domain.models import Intent, IntentState
+from trading_agent.domain.models import Intent, IntentState, Side, LimitConfig
 
 
 class RedisStateStore(StateStore):
@@ -32,11 +32,25 @@ class RedisStateStore(StateStore):
         if not raw:
             return None
         data = json.loads(raw)
+        # Реконструкция Side (enum) из сериализованного значения
+        def _restore_side(val):
+            try:
+                if isinstance(val, str):
+                    return Side(val.lower())
+                if isinstance(val, dict):
+                    v = val.get('value') or val.get('_value_') or val.get('name') or ''
+                    return Side(str(v).lower())
+                return Side(val)
+            except Exception:
+                return Side.BUY
+
+        side = _restore_side(data.get('side'))
+
         # лёгкая реконструкция (достаточно для хранения и UI)
         intent = Intent(
             intent_id=data['intent_id'],
             symbol=data['symbol'],
-            side=data['side'],
+            side=side,
             qty_total=data['qty_total'],
             qty_remaining=data['qty_remaining'],
         )
@@ -51,6 +65,18 @@ class RedisStateStore(StateStore):
         intent.attempts = int(data.get('attempts', 0))
         intent.last_error = data.get('last_error')
         intent.logs = list(data.get('logs', []))
+        intent.exchange_order_id = data.get('exchange_order_id')
+        # Восстановление cfg (важно для SLA-реквота и TTL)
+        try:
+            cfg = data.get('cfg') or {}
+            intent.cfg = LimitConfig(
+                requote_interval_sec=int((cfg or {}).get('requote_interval_sec', intent.cfg.requote_interval_sec)),
+                max_lifetime_sec=int((cfg or {}).get('max_lifetime_sec', intent.cfg.max_lifetime_sec)),
+                offset_max_ticks=int((cfg or {}).get('offset_max_ticks', intent.cfg.offset_max_ticks)),
+            )
+        except Exception:
+            pass
+
         return intent
 
     def update_intent(self, intent: Intent) -> None:

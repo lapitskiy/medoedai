@@ -25,6 +25,50 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
         best_bid, best_ask = self.gateway.get_best_bid_ask(symbol)
         price = self._edge_price(side, best_bid, best_ask, tick, offset_ticks=1)
 
+        # Подготовим TP/SL, если включён биржевой риск-менеджмент (берём проценты из Redis)
+        extra_params = {}
+        try:
+            try:
+                from redis import Redis as _Redis
+                rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+            except Exception:
+                rc = None
+            risk_type = 'exchange_orders'
+            tp_pct = None
+            sl_pct = None
+            try:
+                if rc is not None:
+                    _tp = rc.get(f'trading:take_profit_pct:{symbol}') or rc.get('trading:take_profit_pct')
+                    _sl = rc.get(f'trading:stop_loss_pct:{symbol}') or rc.get('trading:stop_loss_pct')
+                    _rt = rc.get(f'trading:risk_management_type:{symbol}') or rc.get('trading:risk_management_type')
+                    if _rt is not None and str(_rt).strip() != '':
+                        risk_type = str(_rt)
+                    if _tp is not None and str(_tp).strip() != '':
+                        tp_pct = float(_tp)
+                    if _sl is not None and str(_sl).strip() != '':
+                        sl_pct = float(_sl)
+            except Exception:
+                pass
+            # Только если включены биржевые ордера
+            if risk_type in ('exchange_orders', 'both'):
+                # На этапе лимит-заявки опираемся на цену лимита
+                if isinstance(tp_pct, (int, float)) and float(tp_pct) > 0:
+                    if side == Side.BUY:
+                        extra_params['takeProfit'] = float(f"{price * (1.0 + float(tp_pct)/100.0):.8f}")
+                    else:
+                        extra_params['takeProfit'] = float(f"{price * (1.0 - float(tp_pct)/100.0):.8f}")
+                if isinstance(sl_pct, (int, float)) and float(sl_pct) > 0:
+                    if side == Side.BUY:
+                        extra_params['stopLoss'] = float(f"{price * (1.0 - float(sl_pct)/100.0):.8f}")
+                    else:
+                        extra_params['stopLoss'] = float(f"{price * (1.0 + float(sl_pct)/100.0):.8f}")
+                if 'takeProfit' in extra_params or 'stopLoss' in extra_params:
+                    # Триггеры по последней цене
+                    extra_params['tpTriggerBy'] = 'LastPrice'
+                    extra_params['slTriggerBy'] = 'LastPrice'
+        except Exception:
+            extra_params = {}
+
         intent = Intent(
             intent_id=f"limitpo-{symbol}-{int(time.time()*1000)}",
             symbol=symbol,
@@ -39,15 +83,15 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
         self.store.save_intent(intent)
         self.store.add_pending(symbol, intent.intent_id)
 
-        # Размещаем стартовый лимит post-only
+        # Размещаем стартовый лимит post-only (с TP/SL, если доступны)
         try:
-            resp = self.gateway.place_limit_post_only(symbol, side, qty, price)
+            resp = self.gateway.place_limit_post_only(symbol, side, qty, price, extra_params=extra_params or None)
             intent.exchange_order_id = resp.get('id')
             intent.state = IntentState.WORKING
             intent.add_log(price, event='place', reason=None)
             self.store.update_intent(intent)
             try:
-                self._log.info(f"[LimitPO] placed order: symbol={symbol} side={side.name} qty={qty} price={price} id={intent.exchange_order_id}")
+                self._log.info(f"[LimitPO] placed order: symbol={symbol} side={side.name} qty={qty} price={price} id={intent.exchange_order_id} tp={extra_params.get('takeProfit') if isinstance(extra_params, dict) else None} sl={extra_params.get('stopLoss') if isinstance(extra_params, dict) else None}")
             except Exception:
                 pass
         except Exception as e:
@@ -121,7 +165,7 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                         except Exception:
                             pass
                         break
-                    if status in ('partially_filled', 'partial', 'open'):  # есть частичное исполнение — отменяем остаток и завершаем
+                    if status in ('partially_filled', 'partial'):  # есть частичное исполнение — отменяем остаток и завершаем
                         try:
                             self.gateway.cancel_order(cur.symbol, cur.exchange_order_id)
                         except Exception:
@@ -129,7 +173,7 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                         self.store.set_state(cur.intent_id, IntentState.FILLED)
                         self.store.remove_pending(cur.symbol, cur.intent_id)
                         try:
-                            self._log.info(f"[LimitPO] partial/open -> cancel rest, mark filled: id={cur.intent_id} symbol={cur.symbol}")
+                            self._log.info(f"[LimitPO] partial -> cancel rest, mark filled: id={cur.intent_id} symbol={cur.symbol}")
                         except Exception:
                             pass
                         break
@@ -215,7 +259,44 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                 self.gateway.amend_order(cur.symbol, cur.exchange_order_id, target)
                 self.store.append_log(cur.intent_id, target, event='amend', reason=None)
             else:
-                resp = self.gateway.place_limit_post_only(cur.symbol, cur.side, cur.qty_remaining, target)
+                # При пере‑размещении отсутствующей заявки — повторим TP/SL расчёт на новой цене
+                extra_params = {}
+                try:
+                    try:
+                        from redis import Redis as _Redis
+                        rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
+                    except Exception:
+                        rc = None
+                    risk_type = 'exchange_orders'
+                    tp_pct = None
+                    sl_pct = None
+                    if rc is not None:
+                        _tp = rc.get(f'trading:take_profit_pct:{cur.symbol}') or rc.get('trading:take_profit_pct')
+                        _sl = rc.get(f'trading:stop_loss_pct:{cur.symbol}') or rc.get('trading:stop_loss_pct')
+                        _rt = rc.get(f'trading:risk_management_type:{cur.symbol}') or rc.get('trading:risk_management_type')
+                        if _rt is not None and str(_rt).strip() != '':
+                            risk_type = str(_rt)
+                        if _tp is not None and str(_tp).strip() != '':
+                            tp_pct = float(_tp)
+                        if _sl is not None and str(_sl).strip() != '':
+                            sl_pct = float(_sl)
+                    if risk_type in ('exchange_orders', 'both'):
+                        if isinstance(tp_pct, (int, float)) and float(tp_pct) > 0:
+                            if cur.side == Side.BUY:
+                                extra_params['takeProfit'] = float(f"{target * (1.0 + float(tp_pct)/100.0):.8f}")
+                            else:
+                                extra_params['takeProfit'] = float(f"{target * (1.0 - float(tp_pct)/100.0):.8f}")
+                        if isinstance(sl_pct, (int, float)) and float(sl_pct) > 0:
+                            if cur.side == Side.BUY:
+                                extra_params['stopLoss'] = float(f"{target * (1.0 - float(sl_pct)/100.0):.8f}")
+                            else:
+                                extra_params['stopLoss'] = float(f"{target * (1.0 + float(sl_pct)/100.0):.8f}")
+                        if 'takeProfit' in extra_params or 'stopLoss' in extra_params:
+                            extra_params['tpTriggerBy'] = 'LastPrice'
+                            extra_params['slTriggerBy'] = 'LastPrice'
+                except Exception:
+                    extra_params = {}
+                resp = self.gateway.place_limit_post_only(cur.symbol, cur.side, cur.qty_remaining, target, extra_params=extra_params or None)
                 cur.exchange_order_id = resp.get('id')
                 self.store.append_log(cur.intent_id, target, event='place', reason=None)
             cur.price = target
@@ -239,7 +320,7 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                         self.store.set_state(cur.intent_id, IntentState.FILLED)
                         self.store.remove_pending(cur.symbol, cur.intent_id)
                         return
-                    if status in ('partially_filled', 'partial', 'open'):
+                    if status in ('partially_filled', 'partial'):
                         try:
                             self.gateway.cancel_order(cur.symbol, cur.exchange_order_id)
                         except Exception:

@@ -109,6 +109,7 @@ def save_trading_config():
                     rc.set('trading:account_pct', str(ap))
             except Exception:
                 pass
+        # debug_buy более не сохраняем в Redis: управляется только через ENV
         try:
             if exit_mode and symbols:
                 sym = (symbols[0] if isinstance(symbols, list) and symbols else 'ALL')
@@ -822,6 +823,10 @@ def trading_manual_buy_bypass_prediction():
     Body JSON: { symbol: 'BTCUSDT', qty?: float, override?: {execution_mode, leverage, limit_config, exit_mode, take_profit_pct, stop_loss_pct, risk_management_type} }
     """
     try:
+        try:
+            logging.info("[/api/trading/manual_buy] ▶ request received")
+        except Exception:
+            pass
         data = request.get_json() or {}
         sym = str(data.get('symbol') or 'BTCUSDT').upper().strip()
         if not sym.endswith('USDT'):
@@ -923,6 +928,12 @@ def trading_manual_buy_bypass_prediction():
                     limit_config = override.get('limit_config') or data.get('limit_config') or json.loads(lc)  # type: ignore
                 except Exception:
                     limit_config = None
+            try:
+                logging.info(
+                    f"[/api/trading/manual_buy] effective settings: sym={sym} exec={execution_mode} risk_type={risk_type} tp={take_profit_pct} sl={stop_loss_pct} lev={leverage_val} limit_cfg={'yes' if isinstance(limit_config, dict) else 'no'}"
+                )
+            except Exception:
+                pass
         except Exception as e:
             logging.warning(f"[manual_buy] Не удалось прочитать настройки: {e}")
 
@@ -934,16 +945,33 @@ def trading_manual_buy_bypass_prediction():
             if execution_mode == 'limit_post_only':
                 # Запускаем DDD-стратегию с заданным плечом
                 from tasks.celery_task_trade import start_execution_strategy
-                start_execution_strategy.apply_async(kwargs={
+                payload = {
                     'symbol': sym,
                     'execution_mode': 'limit_post_only',
                     'side': 'buy',
                     'qty': float(qty),
                     'limit_config': (limit_config or {}),
                     'leverage': leverage_val
-                }, queue='trade')
+                }
+                try:
+                    logging.info(f"[/api/trading/manual_buy] enqueue limit_post_only: {payload}")
+                except Exception:
+                    pass
+                start_execution_strategy.apply_async(kwargs=payload, queue='trade')
                 try:
                     logging.info(f"[/api/trading/manual_buy] enqueued limit_post_only: symbol={sym} qty={qty} lev={leverage_val} has_limit_cfg={bool(limit_config)}")
+                except Exception:
+                    pass
+                # Инициируем гарантированную постановку TP/SL после возможного fill'а
+                try:
+                    from tasks.celery_task_trade import ensure_risk_orders as _ensure
+                    # Немедленно и отложенно (на случай гонок/задержек)
+                    _ensure.apply_async(kwargs={'symbol': sym}, countdown=5, queue='trade')
+                    _ensure.apply_async(kwargs={'symbol': sym}, countdown=60, queue='trade')
+                    try:
+                        logging.info(f"[/api/trading/manual_buy] ensure_risk enqueued for {sym} (5s, 60s)")
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 buy_result = {"success": True, "action": "limit_post_only_enqueued", "side": "buy"}
@@ -994,6 +1022,10 @@ def trading_manual_buy_bypass_prediction():
                         'tpTriggerBy': 'LastPrice',
                         'slTriggerBy': 'LastPrice',
                     })
+                try:
+                    logging.info(f"[/api/trading/manual_buy] market attach_params: {attach_params}")
+                except Exception:
+                    pass
 
                 order = agent.exchange.create_market_buy_order(  # type: ignore
                     sym,
@@ -1009,8 +1041,26 @@ def trading_manual_buy_bypass_prediction():
                 }
                 executed_price = float(order.get('average') or order.get('price') or cur_price or 0.0)
                 risk_orders = {'mode': 'attached'}
+                try:
+                    logging.info(f"[/api/trading/manual_buy] market order placed: id={order.get('id')} avg={executed_price}")
+                except Exception:
+                    pass
+                # Дополнительная гарантированная постановка TP/SL (на случай игнорирования attached параметров биржей)
+                try:
+                    from tasks.celery_task_trade import ensure_risk_orders as _ensure
+                    _ensure.apply_async(kwargs={'symbol': sym}, countdown=2, queue='trade')
+                    try:
+                        logging.info(f"[/api/trading/manual_buy] ensure_risk enqueued for {sym} (2s)")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
         except Exception as _ex:
             # Fallback: обычная покупка + отдельные reduceOnly TP/SL
+            try:
+                logging.warning(f"[/api/trading/manual_buy] market path failed, fallback to direct order: {str(_ex)}")
+            except Exception:
+                pass
             buy_result = agent.execute_direct_order('buy', symbol=sym, quantity=qty)  # type: ignore
             if not buy_result or not buy_result.get('success'):
                 return jsonify({'success': False, 'error': buy_result.get('error') if isinstance(buy_result, dict) else 'buy failed'}), 500
@@ -1062,8 +1112,16 @@ def trading_manual_buy_bypass_prediction():
                             'price': tp_price,
                             'amount': amount,
                         }
+                        try:
+                            logging.info(f"[/api/trading/manual_buy] TP placed: id={tp_order.get('id')} price={tp_price} amount={amount}")
+                        except Exception:
+                            pass
                     except Exception as e:
                         risk_orders['take_profit_error'] = str(e)
+                        try:
+                            logging.error(f"[/api/trading/manual_buy] TP place failed: {e}")
+                        except Exception:
+                            pass
                     # SL
                     try:
                         sl_order = agent.exchange.create_stop_market_sell_order(  # type: ignore
@@ -1080,11 +1138,27 @@ def trading_manual_buy_bypass_prediction():
                             'stop_price': sl_price,
                             'amount': amount,
                         }
+                        try:
+                            logging.info(f"[/api/trading/manual_buy] SL placed: id={sl_order.get('id')} stopPrice={sl_price} amount={amount}")
+                        except Exception:
+                            pass
                     except Exception as e:
                         risk_orders['stop_loss_error'] = str(e)
+                        try:
+                            logging.error(f"[/api/trading/manual_buy] SL place failed: {e}")
+                        except Exception:
+                            pass
                 except Exception as e:
                     risk_orders['error'] = f'risk setup failed: {e}'
+                    try:
+                        logging.error(f"[/api/trading/manual_buy] risk setup failed: {e}")
+                    except Exception:
+                        pass
 
+        try:
+            logging.info(f"[/api/trading/manual_buy] ✓ done: symbol={sym} mode={execution_mode} risk={risk_type} executed_price={executed_price} risk_orders_keys={list(risk_orders.keys()) if isinstance(risk_orders, dict) else 'n/a'}")
+        except Exception:
+            pass
         return jsonify({'success': True, 'symbol': sym, 'buy': buy_result, 'executed_price': executed_price, 'risk_orders': risk_orders}), 200
     except Exception as e:
         logging.error(f"[manual_buy] Error: {e}", exc_info=True)
@@ -1154,6 +1228,24 @@ def trading_history():
         }), 200
     except Exception as e:
         logging.error(f"Ошибка получения истории торговли: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@trading_bp.post('/api/trading/ensure_risk')
+def ensure_risk():
+    """Ручной запуск идемпотентной постановки TP/SL для символа"""
+    try:
+        data = request.get_json(silent=True) or {}
+        sym = str(data.get('symbol') or '').upper().strip()
+        if not sym:
+            return jsonify({'success': False, 'error': 'symbol is required'}), 400
+        try:
+            from tasks.celery_task_trade import ensure_risk_orders as _ensure
+            _ensure.apply_async(kwargs={'symbol': sym}, countdown=0, queue='trade')
+            _ensure.apply_async(kwargs={'symbol': sym}, countdown=10, queue='trade')
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'ensure enqueue failed: {e}'}), 500
+        return jsonify({'success': True}), 200
+    except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @trading_bp.route('/api/trading/regime_config', methods=['GET', 'POST'])

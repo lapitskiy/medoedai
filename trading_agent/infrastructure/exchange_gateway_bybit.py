@@ -70,12 +70,18 @@ class BybitExchangeGateway(ExchangeGateway):
         ask = float(ob['asks'][0][0]) if ob.get('asks') else 0.0
         return bid, ask
 
-    def place_limit_post_only(self, symbol: str, side: Side, qty: float, price: float) -> Dict[str, Any]:
+    def place_limit_post_only(self, symbol: str, side: Side, qty: float, price: float, extra_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         params = {
             'postOnly': True,
             'timeInForce': 'GTC',
             'reduceOnly': False,
         }
+        try:
+            if isinstance(extra_params, dict) and extra_params:
+                # Поверх дефолтов — чтобы postOnly/timeInForce не были затёрты
+                params.update(extra_params)
+        except Exception:
+            pass
         if side == Side.BUY:
             order = self.ex.create_limit_buy_order(symbol, qty, price, params)
         else:

@@ -93,6 +93,15 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
         side_enum = Side.BUY if str(side).lower() == 'buy' else Side.SELL
         intent = service.start(execution_mode=execution_mode, symbol=symbol, side=side_enum, qty=qty, cfg=cfg)
 
+        # Идемпотентные постановки TP/SL после запуска лимитной стратегии: накрываем момент фактического fill
+        try:
+            if str(execution_mode) == 'limit_post_only':
+                ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=2, queue='trade')
+                ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=15, queue='trade')
+                ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=60, queue='trade')
+        except Exception:
+            pass
+
         # После успешного лимитного входа по BUY — выставляем SL/TP согласно настройкам из Redis
         try:
             from trading_agent.domain.models import IntentState as _IS
@@ -278,6 +287,183 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
         return {"success": False, "error": str(e)}
 
 
+# --- Ensure TP/SL idempotent task ---
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='trade')
+def ensure_risk_orders(self, symbol: str):
+    """
+    Идемпотентная постановка TP/SL для открытой позиции по символу.
+    - Читает risk_type/tp/sl из Redis (per-symbol → global → дефолт)
+    - Восстанавливает позицию с биржи
+    - Если reduceOnly ордера уже есть — не дублирует
+    - Для long: TP limit SELL выше, SL stop-market SELL ниже
+      Для short: TP limit BUY ниже, SL stop-market BUY выше
+    - Антидублирование через Redis setex 120s
+    """
+    try:
+        try:
+            logger.info(f"[ensure_risk] ▶ start for {symbol}")
+        except Exception:
+            pass
+        from redis import Redis
+        rc = Redis(host='redis', port=6379, db=0, decode_responses=True)
+    except Exception:
+        rc = None
+
+    # Антидублирование
+    try:
+        if rc is not None:
+            k = f"risk:ensured:{symbol}"
+            if rc.get(k):
+                try:
+                    logger.info(f"[ensure_risk] skip {symbol}: recently_ensured")
+                except Exception:
+                    pass
+                return {"success": True, "skipped": True, "reason": "recently_ensured"}
+            rc.setex(k, 120, "1")
+    except Exception:
+        pass
+
+    from trading_agent.trading_agent import TradingAgent
+    agent = TradingAgent()
+    agent.symbol = symbol
+    agent.base_symbol = symbol
+
+    # Параметры
+    def _pick_num(v):
+        try:
+            return float(v) if v is not None and str(v).strip() != '' else None
+        except Exception:
+            return None
+    risk_type = 'exchange_orders'
+    tp_pct = 1.0
+    sl_pct = 1.0
+    try:
+        if rc is not None:
+            _rt = rc.get(f'trading:risk_management_type:{symbol}') or rc.get('trading:risk_management_type')
+            if _rt:
+                risk_type = str(_rt)
+            _tp = rc.get(f'trading:take_profit_pct:{symbol}') or rc.get('trading:take_profit_pct')
+            _sl = rc.get(f'trading:stop_loss_pct:{symbol}') or rc.get('trading:stop_loss_pct')
+            if _pick_num(_tp) is not None:
+                tp_pct = _pick_num(_tp)
+            if _pick_num(_sl) is not None:
+                sl_pct = _pick_num(_sl)
+    except Exception:
+        pass
+
+    if risk_type not in ('exchange_orders', 'both'):
+        try:
+            logger.info(f"[ensure_risk] skip {symbol}: risk_type={risk_type}")
+        except Exception:
+            pass
+        return {"success": True, "skipped": True, "reason": f"risk_type={risk_type}"}
+
+    # Позиция
+    try:
+        agent._restore_position_from_exchange()
+    except Exception:
+        pass
+    pos = getattr(agent, 'current_position', None) or {}
+    entry_price = pos.get('entry_price')
+    amount = pos.get('amount')
+    ptype = str(pos.get('type') or '').lower()
+
+    if not (entry_price and amount and amount > 0):
+        try:
+            logger.info(f"[ensure_risk] skip {symbol}: no_position")
+        except Exception:
+            pass
+        return {"success": True, "skipped": True, "reason": "no_position"}
+
+    # Уже открытые reduceOnly
+    try:
+        open_orders = agent.exchange.fetch_open_orders(symbol) or []
+    except Exception:
+        open_orders = []
+
+    def _has_reduce_only(side_needed: str):
+        for od in open_orders:
+            try:
+                params = od.get('info') or {}
+                ro = bool(params.get('reduceOnly') or params.get('reduce_only') or False)
+                side = str(od.get('side') or '').lower()
+                if ro and side == side_needed:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    # Нормализация цены
+    try:
+        mkt = agent.exchange.market(symbol)
+        p_prec = int((mkt.get('precision', {}) or {}).get('price', 2))
+    except Exception:
+        p_prec = 2
+    def _roundp(x):
+        try:
+            return float(f"{float(x):.{max(0,p_prec)}f}")
+        except Exception:
+            return float(x)
+
+    is_long = (ptype == 'long') or (ptype == '')
+    if is_long:
+        # Long
+        if not _has_reduce_only('sell'):
+            if tp_pct and tp_pct > 0:
+                tp_price = _roundp(float(entry_price) * (1.0 + float(tp_pct)/100.0))
+                try:
+                    agent.exchange.create_limit_sell_order(symbol, float(amount), tp_price, { 'reduceOnly': True, 'timeInForce': 'GTC' })
+                    try:
+                        logger.info(f"[ensure_risk] TP SELL placed {symbol}: price={tp_price} amount={amount}")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            if sl_pct and sl_pct > 0:
+                sl_price = _roundp(float(entry_price) * (1.0 - float(sl_pct)/100.0))
+                try:
+                    try:
+                        agent.exchange.create_stop_market_sell_order(symbol, float(amount), sl_price, { 'reduceOnly': True, 'stopPrice': sl_price })
+                    except Exception:
+                        agent.exchange.create_market_sell_order(symbol, float(amount), { 'reduceOnly': True, 'stopPrice': sl_price, 'triggerPrice': sl_price })
+                    try:
+                        logger.info(f"[ensure_risk] SL SELL placed {symbol}: stopPrice={sl_price} amount={amount}")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+    else:
+        # Short
+        if not _has_reduce_only('buy'):
+            if tp_pct and tp_pct > 0:
+                tp_price = _roundp(float(entry_price) * (1.0 - float(tp_pct)/100.0))
+                try:
+                    agent.exchange.create_limit_buy_order(symbol, float(amount), tp_price, { 'reduceOnly': True, 'timeInForce': 'GTC' })
+                    try:
+                        logger.info(f"[ensure_risk] TP BUY placed {symbol}: price={tp_price} amount={amount}")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            if sl_pct and sl_pct > 0:
+                sl_price = _roundp(float(entry_price) * (1.0 + float(sl_pct)/100.0))
+                try:
+                    try:
+                        agent.exchange.create_stop_market_buy_order(symbol, float(amount), sl_price, { 'reduceOnly': True, 'stopPrice': sl_price })
+                    except Exception:
+                        agent.exchange.create_market_buy_order(symbol, float(amount), { 'reduceOnly': True, 'stopPrice': sl_price, 'triggerPrice': sl_price })
+                    try:
+                        logger.info(f"[ensure_risk] SL BUY placed {symbol}: stopPrice={sl_price} amount={amount}")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+    try:
+        logger.info(f"[ensure_risk] ✓ ensured for {symbol}")
+    except Exception:
+        pass
+    return {"success": True, "ensured": True}
 # Определяем очереди и маршрутизацию задач:
 # По умолчанию все задачи идут в очередь 'celery',
 # а тренировочные задачи направляем в отдельную очередь 'train'.
@@ -1025,6 +1211,32 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                             has_active_intent = True
             if has_active_intent:
                 decision = 'hold'
+        except Exception:
+            pass
+
+        # Debug-buy (ENV only): форсировать BUY при любом предсказании, если включён в окружении
+        try:
+            import os
+            def _truthy(v):
+                try:
+                    return str(v).strip().lower() in ('1','true','yes','on')
+                except Exception:
+                    return False
+
+            debug_buy = False
+            env_sym = os.getenv(f"DEBUG_BUY_{str(symbol).upper()}")
+            env_glob = os.getenv("DEBUG_BUY")
+            if env_sym is not None:
+                debug_buy = _truthy(env_sym)
+            elif env_glob is not None:
+                debug_buy = _truthy(env_glob)
+
+            if debug_buy and not has_active_intent and not getattr(agent, 'current_position', None):
+                decision = 'buy'
+                try:
+                    logger.warning(f"[debug_buy] Forcing BUY for {symbol} (ENV)")
+                except Exception:
+                    pass
         except Exception:
             pass
 
