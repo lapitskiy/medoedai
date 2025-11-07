@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class TradingAgent:
-    def __init__(self, model_path: str = "/workspace/models/btc/ensemble-a/current/dqn_model.pth"):
+    def __init__(self, model_path: str = "/workspace/models/btc/ensemble-a/current/dqn_model.pth", direction: str = None):
         """
         Инициализация торгового агента
         
@@ -29,6 +29,10 @@ class TradingAgent:
             model_path: путь к обученной модели
         """
         self.model_path = model_path
+        try:
+            self.direction = (direction or os.getenv("AGENT_DIRECTION", "long")).strip().lower()
+        except Exception:
+            self.direction = "long"
         self.exchange = None
         self.model = None
         self.is_trading = False
@@ -824,10 +828,17 @@ class TradingAgent:
             max_trade_usdt = float(bybit_limits['max_cost']) if bybit_limits['max_cost'] else float('inf')
 
             # Рассчитываем количество USDT для торговли как долю свободного USDT
-            trade_usdt = float(usdt_balance) * (float(account_pct) / 100.0)
+            pre_trade_usdt = float(usdt_balance) * (float(account_pct) / 100.0)
 
             # Ограничиваем по требованиям биржи
-            trade_usdt = max(min_trade_usdt, min(trade_usdt, max_trade_usdt))
+            trade_usdt = max(min_trade_usdt, min(pre_trade_usdt, max_trade_usdt))
+            try:
+                logger.info(
+                    f"[SIZE] symbol={self.symbol} USDT_free={usdt_balance:.4f} account_pct={account_pct}% "
+                    f"pre_usdt={pre_trade_usdt:.4f} clamp[min={min_trade_usdt:.2f},max={max_trade_usdt if max_trade_usdt!=float('inf') else 'inf'}] -> usdt={trade_usdt:.4f}"
+                )
+            except Exception:
+                pass
             
             # Если USDT недостаточно, используем баланс базовой валюты
             if trade_usdt > usdt_balance:
@@ -1229,39 +1240,66 @@ class TradingAgent:
                 if auto_sell_result:
                     result["auto_sell_executed"] = auto_sell_result
             
-            # Выполняем торговую операцию
-            if action == 'buy' and not self.current_position:
-                logger.info(f"🟢 Выполняем покупку {self.trade_amount} BTC по цене ${current_price:.2f}")
-                buy_result = self._execute_buy()
-                result["trade_executed"] = "buy"
-                result["trade_details"] = buy_result
-            elif action == 'sell' and self.current_position:
-                # ИИ решил продавать - определяем СКОЛЬКО продавать
-                sell_strategy = self._determine_sell_amount(current_price)
-                logger.info(f"🔴 ИИ сигнал SELL: {sell_strategy['reason']}")
-                
-                if sell_strategy['sell_all']:
-                    logger.info(f"🔴 Продаем ВСЕ {self.current_position['amount']} {self.base_symbol} по цене ${current_price:.2f}")
-                    sell_result = self._execute_sell()
-                    result["trade_executed"] = "sell_all"
-                    result["trade_details"] = sell_result
-                    result["sell_strategy"] = sell_strategy
+            # Выполняем торговую операцию с учётом self.direction
+            if (getattr(self, 'direction', 'long') == 'short'):
+                if action == 'sell' and not self.current_position:
+                    logger.info(f"🔻 Открываем шорт {self.trade_amount} по цене ${current_price:.2f}")
+                    short_open = self._execute_open_short()
+                    result["trade_executed"] = "short_open"
+                    result["trade_details"] = short_open
+                elif action == 'buy' and self.current_position and self.current_position.get('type') == 'short':
+                    logger.info(f"🔺 Покрываем шорт {self.current_position['amount']} по цене ${current_price:.2f}")
+                    short_cover = self._execute_cover_short()
+                    result["trade_executed"] = "short_cover"
+                    result["trade_details"] = short_cover
+                elif action == 'sell' and self.current_position and self.current_position.get('type') == 'long':
+                    sell_strategy = self._determine_sell_amount(current_price)
+                    logger.info(f"🔴 ИИ сигнал SELL (закрытие long): {sell_strategy['reason']}")
+                    if sell_strategy['sell_all']:
+                        sell_result = self._execute_sell()
+                        result["trade_executed"] = "sell_all"
+                        result["trade_details"] = sell_result
+                        result["sell_strategy"] = sell_strategy
+                    else:
+                        partial_sell_result = self._execute_partial_sell(sell_strategy['sell_amount'])
+                        result["trade_executed"] = "sell_partial"
+                        result["trade_details"] = partial_sell_result
+                        result["sell_strategy"] = sell_strategy
                 else:
-                    logger.info(f"🟡 Частичная продажа: {sell_strategy['sell_amount']} {self.base_symbol} (оставляем {sell_strategy['keep_amount']})")
-                    partial_sell_result = self._execute_partial_sell(sell_strategy['sell_amount'])
-                    result["trade_executed"] = "sell_partial"
-                    result["trade_details"] = partial_sell_result
-                    result["sell_strategy"] = sell_strategy
-            elif action == 'hold':
-                if self.current_position:
-                    # Показываем текущий P&L для открытой позиции
-                    entry_price = self.current_position['entry_price']
-                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
-                    logger.info(f"📊 Удерживаем позицию: P&L {pnl_pct:.2f}% (${current_price:.2f} vs ${entry_price:.2f})")
-                    result["position_pnl"] = pnl_pct
-                else:
-                    logger.info(f"⏸️ Ожидаем сигнал для входа в позицию")
-                result["trade_executed"] = "hold"
+                    result["trade_executed"] = "hold"
+            else:
+                if action == 'buy' and not self.current_position:
+                    logger.info(f"🟢 Выполняем покупку {self.trade_amount} BTC по цене ${current_price:.2f}")
+                    buy_result = self._execute_buy()
+                    result["trade_executed"] = "buy"
+                    result["trade_details"] = buy_result
+                elif action == 'sell' and self.current_position:
+                    # ИИ решил продавать - определяем СКОЛЬКО продавать
+                    sell_strategy = self._determine_sell_amount(current_price)
+                    logger.info(f"🔴 ИИ сигнал SELL: {sell_strategy['reason']}")
+                    
+                    if sell_strategy['sell_all']:
+                        logger.info(f"🔴 Продаем ВСЕ {self.current_position['amount']} {self.base_symbol} по цене ${current_price:.2f}")
+                        sell_result = self._execute_sell()
+                        result["trade_executed"] = "sell_all"
+                        result["trade_details"] = sell_result
+                        result["sell_strategy"] = sell_strategy
+                    else:
+                        logger.info(f"🟡 Частичная продажа: {sell_strategy['sell_amount']} {self.base_symbol} (оставляем {sell_strategy['keep_amount']})")
+                        partial_sell_result = self._execute_partial_sell(sell_strategy['sell_amount'])
+                        result["trade_executed"] = "sell_partial"
+                        result["trade_details"] = partial_sell_result
+                        result["sell_strategy"] = sell_strategy
+                elif action == 'hold':
+                    if self.current_position:
+                        # Показываем текущий P&L для открытой позиции
+                        entry_price = self.current_position['entry_price']
+                        pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                        logger.info(f"📊 Удерживаем позицию: P&L {pnl_pct:.2f}% (${current_price:.2f} vs ${entry_price:.2f})")
+                        result["position_pnl"] = pnl_pct
+                    else:
+                        logger.info(f"⏸️ Ожидаем сигнал для входа в позицию")
+                    result["trade_executed"] = "hold"
             
             return result
             
@@ -2014,6 +2052,187 @@ class TradingAgent:
                 "error": str(e)
             }
     
+    def _execute_open_short(self) -> Dict:
+        """Открытие шорт-позиции (market SELL, reduceOnly=False)."""
+        try:
+            # QGate аналогично BUY — используем SELL пороги, если заданы
+            try:
+                t1 = float(get_config_value('QGATE_SELL_MAXQ', 'nan'))
+                t2 = float(get_config_value('QGATE_SELL_GAPQ', 'nan'))
+            except Exception:
+                t1 = float('nan'); t2 = float('nan')
+
+            if self._last_q_values:
+                try:
+                    max_q = max(self._last_q_values)
+                    sorted_q = sorted(self._last_q_values, reverse=True)
+                    second_q = sorted_q[1] if len(sorted_q) > 1 else None
+                    gap_q = (max_q - second_q) if (max_q is not None and second_q is not None) else float('nan')
+                    if (max_q != max_q) or (gap_q != gap_q) or (t1 != t1) or (t2 != t2):
+                        self._save_qgate_filtered_prediction('sell', max_q if max_q is not None else float('nan'), gap_q, t1, t2)
+                        return {"success": False, "error": "QGate filtered (invalid thresholds/values)"}
+                    if (max_q < t1) or (gap_q < t2):
+                        self._save_qgate_filtered_prediction('sell', max_q, gap_q, t1, t2)
+                        return {"success": False, "error": "QGate filtered"}
+                except Exception as e:
+                    logger.warning(f"QGate SHORT-OPEN check error: {e}")
+
+            balance = self._get_current_balance()
+            trade_record = create_trade_record(
+                symbol_name=self.base_symbol,
+                action='sell',  # открываем шорт продажей
+                status='pending',
+                quantity=self.trade_amount,
+                price=0,
+                model_prediction=self.last_model_prediction,
+                current_balance=balance,
+                is_successful=False
+            )
+
+            amount = self._normalize_amount(self.trade_amount)
+
+            # Плечо 1x и isolated — симметрично BUY
+            if not self._ensure_no_leverage(self.symbol):
+                return {"success": False, "error": "Невозможно открыть шорт с 1x"}
+
+            order = self.exchange.create_market_sell_order(
+                self.symbol,
+                amount,
+                {
+                    'leverage': '1',
+                    'marginMode': 'isolated',
+                    'recv_window': 20000,
+                    'recvWindow': 20000,
+                }
+            )
+
+            executed_price = self._extract_order_price(order) or self._get_current_price()
+            update_trade_status(
+                trade_record.trade_number,
+                status='executed',
+                price=executed_price,
+                exchange_order_id=order.get('id'),
+                is_successful=True
+            )
+
+            self.current_position = {
+                'type': 'short',
+                'amount': amount,
+                'entry_price': executed_price,
+                'entry_time': datetime.now(),
+                'trade_number': trade_record.trade_number
+            }
+            self.trading_history.append({
+                'action': 'sell',
+                'price': executed_price,
+                'amount': amount,
+                'time': datetime.now(),
+                'trade_number': trade_record.trade_number
+            })
+
+            try:
+                self._last_trade_side = 'sell'
+                self._last_trade_ts_ms = self._get_last_closed_ts_ms('5m')
+            except Exception:
+                pass
+
+            return {
+                "success": True,
+                "order": order,
+                "position": self.current_position,
+                "trade_number": trade_record.trade_number
+            }
+        except Exception as e:
+            logger.error(f"Ошибка открытия шорта: {e}")
+            if 'trade_record' in locals():
+                update_trade_status(
+                    trade_record.trade_number,
+                    status='failed',
+                    error_message=str(e),
+                    is_successful=False
+                )
+            return {"success": False, "error": str(e)}
+
+    def _execute_cover_short(self) -> Dict:
+        """Закрытие шорт-позиции (market BUY, reduceOnly=True)."""
+        try:
+            if not self.current_position or self.current_position.get('type') != 'short':
+                return {"success": False, "error": "Нет шорт-позиции для закрытия"}
+
+            balance = self._get_current_balance()
+            amount = self._normalize_amount(self.current_position['amount'])
+
+            trade_record = create_trade_record(
+                symbol_name=self.base_symbol,
+                action='buy',  # покрываем шорт покупкой
+                status='pending',
+                quantity=amount,
+                price=0,
+                model_prediction=self.last_model_prediction,
+                current_balance=balance,
+                is_successful=False
+            )
+
+            order = self.exchange.create_market_buy_order(
+                self.symbol,
+                amount,
+                {
+                    'reduceOnly': True,
+                    'leverage': '1',
+                    'marginMode': 'isolated',
+                    'recv_window': 20000,
+                    'recvWindow': 20000,
+                }
+            )
+
+            exit_price = self._extract_order_price(order) or self._get_current_price()
+            entry_price = self.current_position['entry_price']
+            pnl = (entry_price - exit_price) * amount
+
+            update_trade_status(
+                trade_record.trade_number,
+                status='executed',
+                price=exit_price,
+                exchange_order_id=order.get('id'),
+                position_pnl=pnl,
+                is_successful=True
+            )
+
+            self.trading_history.append({
+                'action': 'buy',
+                'price': exit_price,
+                'amount': amount,
+                'time': datetime.now(),
+                'pnl': pnl,
+                'trade_number': trade_record.trade_number
+            })
+
+            old_position = self.current_position
+            self.current_position = None
+
+            try:
+                self._last_trade_side = 'buy'
+                self._last_trade_ts_ms = self._get_last_closed_ts_ms('5m')
+            except Exception:
+                pass
+
+            return {
+                "success": True,
+                "order": order,
+                "pnl": pnl,
+                "closed_position": old_position,
+                "trade_number": trade_record.trade_number
+            }
+        except Exception as e:
+            logger.error(f"Ошибка закрытия шорта: {e}")
+            if 'trade_record' in locals():
+                update_trade_status(
+                    trade_record.trade_number,
+                    status='failed',
+                    error_message=str(e),
+                    is_successful=False
+                )
+            return {"success": False, "error": str(e)}
     def _check_auto_sell_remaining(self) -> Optional[Dict]:
         """
         Проверяет условия для автоматической продажи оставшейся части позиции

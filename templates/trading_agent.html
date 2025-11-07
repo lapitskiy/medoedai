@@ -131,6 +131,14 @@
                         <option value="limit_post_only">Лимитная (post-only, у края книги)</option>
                     </select>
                 </div>
+                <!-- Направление торговли -->
+                <div class="form-group" style="margin-top:10px;">
+                    <label style="font-weight:600;">Направление</label>
+                    <select id="directionSelect" class="form-control">
+                        <option value="long" selected>Long</option>
+                        <option value="short">Short</option>
+                    </select>
+                </div>
                 <!-- Плечо -->
                 <div class="form-group" style="margin-top:10px;">
                     <label style="font-weight:600;">Плечо (x1–x5)</label>
@@ -700,6 +708,14 @@
                             stop_loss_pct: stopLossPct,
                             risk_management_type: riskType
                         };
+                        // Направление (если в UI есть селектор #directionSelect)
+                        try {
+                            const dirSel = document.getElementById('directionSelect');
+                            const dirVal = (dirSel && dirSel.value) ? String(dirSel.value).trim().toLowerCase() : '';
+                            if (dirVal === 'long' || dirVal === 'short') {
+                                payload.direction = dirVal;
+                            }
+                        } catch (e) { /* noop */ }
                         // Стратегия исполнения
                         const modeSel = document.getElementById('executionModeSelect');
                         const mode = modeSel ? (modeSel.value||'').trim() : '';
@@ -1991,6 +2007,9 @@
                 const rows = agents.filter(a=>a.active).map(a=>{
                     const c = a.consensus||{}; const counts = c.counts||{};
                     const regime = (a.status&&a.status.market_regime) || 'flat';
+                    const s = a.settings || {};
+                    const lim = s.limit_config || {};
+                    const dbg = (s.debug_buy_env===true? 'ON' : (s.debug_buy_env===false? 'OFF' : '—'));
                     return `
                     <div class="trade-item" style="border-left:4px solid ${a.active?'#28a745':'#6c757d'};">
                         <div class="trade-header">
@@ -2004,6 +2023,15 @@
                             <div class="trade-detail"><div class="label">Консенсус</div><div class="value">flat=${counts.flat??'—'}, trend=${counts.trend??'—'}</div></div>
                             <div class="trade-detail"><div class="label">BUY/SELL/HOLD</div><div class="value">—</div></div>
                             <div class="trade-detail"><div class="label">TTL лок</div><div class="value">${a.lock_ttl??'—'}</div></div>
+                            <div class="trade-detail"><div class="label">Исполнение</div><div class="value">${s.execution_mode||'—'}</div></div>
+                            <div class="trade-detail"><div class="label">Выход</div><div class="value">${s.exit_mode||'—'}</div></div>
+                            <div class="trade-detail"><div class="label">Плечо</div><div class="value">${(s.leverage!=null?s.leverage:'—')}</div></div>
+                            <div class="trade-detail"><div class="label">Account %</div><div class="value">${(s.account_pct!=null?s.account_pct+'%':'—')}</div></div>
+                            <div class="trade-detail"><div class="label">Risk type</div><div class="value">${s.risk_management_type||'—'}</div></div>
+                            <div class="trade-detail"><div class="label">Requote</div><div class="value">${(lim.requote_interval_sec!=null?lim.requote_interval_sec+'s':'—')}</div></div>
+                            <div class="trade-detail"><div class="label">TTL лимитки</div><div class="value">${(lim.max_lifetime_sec!=null?lim.max_lifetime_sec+'s':'—')}</div></div>
+                            <div class="trade-detail"><div class="label">Offset max ticks</div><div class="value">${(lim.offset_max_ticks!=null?lim.offset_max_ticks:'—')}</div></div>
+                            <div class="trade-detail"><div class="label">DEBUG_BUY</div><div class="value">${dbg}</div></div>
                         </div>
                         <div style="text-align:right;margin-top:8px;">
                             <button class="btn btn-danger" onclick="stopAgent('${a.symbol}')">🛑 Стоп</button>

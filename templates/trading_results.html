@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Результаты торговли</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
+    h2 { margin: 0 0 12px 0; }
+    .toolbar { margin: 8px 0 12px; display: flex; gap: 12px; align-items: center; }
+    label { font-size: 13px; color: #333; }
+    input, select, button { font-size: 13px; padding: 6px 8px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 8px; font-size: 13px; }
+    th { background: #f7f7f7; text-align: left; position: sticky; top: 0; }
+    .pill { padding: 2px 6px; border-radius: 12px; background: #eef2ff; color: #223; font-weight: 600; }
+    .meta { color: #666; font-size: 12px; }
+    .wrap { white-space: nowrap; }
+  </style>
+  <script>
+    async function loadResults() {
+      const sym = document.getElementById('f-symbol').value;
+      const r = await fetch('/api/trading/latest_results' + (sym? ('?symbol='+encodeURIComponent(sym)) : ''));
+      const j = await r.json();
+      const tb = document.querySelector('#tbl tbody');
+      tb.innerHTML = '';
+      if (!j.success) {
+        tb.innerHTML = `<tr><td colspan="7">Ошибка: ${j.error||'unknown'}</td></tr>`;
+        return;
+      }
+      const rows = j.latest_results || [];
+      for (const it of rows) {
+        const ts = it.timestamp || '';
+        const sym = (Array.isArray(it.symbols) && it.symbols[0]) || (it.symbol || '');
+        const decision = it.decision || '';
+        const exit_mode = it.exit_mode || '';
+        const tr = it.trade_result || {};
+        const meta = JSON.stringify(tr);
+        const exec = (it.consensus && it.consensus.exec_mode) || (it.execution_mode || '—');
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td class="wrap">${ts}</td>
+          <td>${sym}</td>
+          <td><span class="pill">${decision}</span></td>
+          <td>${exec}</td>
+          <td>${exit_mode||'—'}</td>
+          <td class="meta">${meta}</td>
+        `;
+        tb.appendChild(row);
+      }
+    }
+    async function loadSymbols() {
+      const sel = document.getElementById('f-symbol');
+      sel.innerHTML = '';
+      const makeOpt = (v, t) => { const o=document.createElement('option'); o.value=v; o.textContent=t; return o; };
+      sel.appendChild(makeOpt('', 'Все'));
+      try {
+        const resp = await fetch('/api/trading/status_all');
+        const data = await resp.json();
+        const set = new Set();
+        const agents = Array.isArray(data.active_agents) ? data.active_agents : [];
+        agents.forEach(a=>{ if(a && a.symbol) set.add(String(a.symbol).toUpperCase()); });
+        // Фолбэк по дефолтным символам, если активных нет
+        if (set.size === 0) ['BTCUSDT','ETHUSDT','SOLUSDT','TONUSDT','ADAUSDT','BNBUSDT','XRPUSDT'].forEach(s=>set.add(s));
+        Array.from(set).sort().forEach(s=> sel.appendChild(makeOpt(s, s)));
+      } catch (_) {
+        ['BTCUSDT','ETHUSDT','SOLUSDT','TONUSDT','ADAUSDT','BNBUSDT','XRPUSDT'].forEach(s=> sel.appendChild(makeOpt(s, s)));
+      }
+    }
+    window.addEventListener('DOMContentLoaded', async ()=>{
+      await loadSymbols();
+      document.getElementById('btn-load').addEventListener('click', loadResults);
+      loadResults();
+    });
+  </script>
+</head>
+<body>
+  <h2>Результаты торговли</h2>
+  <div class="toolbar">
+    <label>Символ: 
+      <select id="f-symbol"></select>
+    </label>
+    <button id="btn-load">Загрузить</button>
+  </div>
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th>Время</th>
+        <th>Символ</th>
+        <th>Decision</th>
+        <th>Exec mode</th>
+        <th>Exit mode</th>
+        <th>Итог</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</body>
+</html>
+
+

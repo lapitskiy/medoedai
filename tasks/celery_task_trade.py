@@ -11,6 +11,7 @@ from utils.trade_utils import create_model_prediction
 import os
 from datetime import datetime
 import uuid
+import math
 from utils.config_loader import get_config_value
 import logging
 import traceback
@@ -18,6 +19,53 @@ from utils.redis_utils import get_redis_client
 from tasks import celery
 
 logger = logging.getLogger(__name__)
+
+def _get_price_tick(exchange, symbol: str) -> float:
+    """Определяет шаг цены (tickSize) для символа: сначала info.priceFilter.tickSize, затем precision.price.
+
+    Возвращает float тик; фолбэк 0.0001.
+    """
+    try:
+        mkt = exchange.market(symbol)
+        info = (mkt.get('info') or {})
+        pf = (info.get('priceFilter') or {})
+        tick = pf.get('tickSize')
+        if tick is not None:
+            return float(tick)
+        prec = (mkt.get('precision') or {}).get('price')
+        if prec is not None and int(prec) >= 0:
+            return 10 ** (-int(prec))
+    except Exception:
+        pass
+    return 0.0001
+
+def _round_to_tick(price: float, tick: float) -> float:
+    """Округляет цену к ближайшему шагу тика."""
+    try:
+        if tick and tick > 0:
+            return float(round(float(price) / tick) * tick)
+    except Exception:
+        pass
+    return float(f"{float(price):.4f}")
+
+def _apply_safety_buffer_qty(amount: float, buffer_pct: float | None = None) -> float:
+    """Возвращает уменьшенное количество с запасом под комиссию/округления.
+
+    buffer_pct можно задать через ENV ORDER_FEE_BUFFER_PCT (в процентах, например 0.5 для 0.5%).
+    По умолчанию 0.5%.
+    """
+    try:
+        if buffer_pct is None:
+            env_raw = os.getenv('ORDER_FEE_BUFFER_PCT')
+            if env_raw is not None and str(env_raw).strip() != '':
+                buffer_pct = float(env_raw)
+            else:
+                buffer_pct = 0.5
+        frac = max(0.0, min(5.0, float(buffer_pct))) / 100.0
+        safe = float(amount) * (1.0 - frac)
+        return max(0.0, float(f"{safe:.12f}"))
+    except Exception:
+        return float(amount)
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='trade')
 def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', side: str = 'buy', qty: float | None = None, limit_config: dict | None = None, leverage: int | None = None):
     """Запуск DDD-стратегии исполнения (market | limit_post_only).
@@ -44,12 +92,28 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
         if qty is None or qty <= 0:
             try:
                 from trading_agent.trading_agent import TradingAgent
-                agent = TradingAgent()
+                # Направление берём из Redis per-symbol (fallback long)
+                try:
+                    _rc = get_redis_client()
+                    _dir = _rc.get(f'trading:direction:{symbol}')
+                    if isinstance(_dir, (bytes, bytearray)):
+                        _dir = _dir.decode('utf-8')
+                    _dir = (str(_dir).strip().lower() if _dir else 'long')
+                except Exception:
+                    _dir = 'long'
+                agent = TradingAgent(direction=_dir)
                 agent.symbol = symbol
                 agent.base_symbol = symbol
                 qty = float(agent._calculate_trade_amount())
             except Exception:
                 qty = 0.001
+
+        # Применяем небольшой буфер под комиссию/округления для лимитного исполнения
+        try:
+            if str(execution_mode).strip().lower() == 'limit_post_only' and qty and qty > 0:
+                qty = _apply_safety_buffer_qty(qty)
+        except Exception:
+            pass
 
         # 2) Конфиг лимитной стратегии
         cfg = None
@@ -61,6 +125,73 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
                 cfg = LimitConfig(requote_interval_sec=max(5, min(60, rq)), max_lifetime_sec=min(300, max(10, ml)), offset_max_ticks=max(2, min(128, mx)))
             except Exception:
                 cfg = LimitConfig()
+
+        # 2.5) Очистка зависшего active_intent (если есть) ДО запуска сервиса
+        try:
+            _rc_chk = Redis(host='redis', port=6379, db=0, decode_responses=True)
+            aid = _rc_chk.get(f'exec:active_intent:{symbol}')
+            if aid:
+                raw = _rc_chk.get(f'exec:intent:{aid}')
+                stale = False
+                if not raw:
+                    stale = True
+                else:
+                    try:
+                        data = json.loads(raw)
+                        upd = float(data.get('updated_at') or 0)
+                        if upd <= 0 or (time.time() - upd) > 3600:
+                            stale = True
+                    except Exception:
+                        stale = True
+                if stale:
+                    try:
+                        _rc_chk.delete(f'exec:intent:{aid}')
+                    except Exception:
+                        pass
+                    try:
+                        _rc_chk.delete(f'exec:active_intent:{symbol}')
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # 2.6) Агрессивная очистка активного интента при DEBUG_BUY (чтобы не упираться в guard)
+        try:
+            def _truthy(v):
+                try:
+                    return str(v).strip().lower() in ('1','true','yes','on')
+                except Exception:
+                    return False
+            dbg_raw = os.getenv(f"DEBUG_BUY_{str(symbol).upper()}") or os.getenv("DEBUG_BUY")
+            if dbg_raw is not None and _truthy(dbg_raw):
+                aid2 = _rc_chk.get(f'exec:active_intent:{symbol}')
+                if aid2:
+                    raw2 = _rc_chk.get(f'exec:intent:{aid2}')
+                    try:
+                        if raw2:
+                            data2 = json.loads(raw2)
+                            exch_id2 = data2.get('exchange_order_id')
+                            if exch_id2:
+                                try:
+                                    gateway.cancel_order(symbol, exch_id2)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    try:
+                        _rc_chk.delete(f'exec:intent:{aid2}')
+                    except Exception:
+                        pass
+                    try:
+                        _rc_chk.delete(f'exec:active_intent:{symbol}')
+                    except Exception:
+                        pass
+                    try:
+                        logger.warning(f"[exec] DEBUG_BUY cleared active intent before start: symbol={symbol}, intent_id={aid2}")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
         # 3) Создаём сервис и стратегий
         store = RedisStateStore()
@@ -89,9 +220,87 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
         }
         service = ExecutionService(store, strategies)
 
+        # 3.5) Если позиция уже активна и выход по риск-ордерам — не стартуем новый intent и чистим non-reduceOnly
+        try:
+            # Читаем тип риск-менеджмента
+            risk_type_exec = None
+            try:
+                rc_rt = Redis(host='redis', port=6379, db=0, decode_responses=True)
+                _rtv = rc_rt.get(f'trading:risk_management_type:{symbol}') or rc_rt.get('trading:risk_management_type')
+                if _rtv is not None and str(_rtv).strip() != '':
+                    risk_type_exec = str(_rtv).strip()
+            except Exception:
+                risk_type_exec = None
+
+            from trading_agent.trading_agent import TradingAgent as _TA
+            ag_pos = _TA(); ag_pos.symbol = symbol; ag_pos.base_symbol = symbol
+            try:
+                ag_pos._restore_position_from_exchange()
+            except Exception:
+                pass
+            pos_now = getattr(ag_pos, 'current_position', None)
+            if pos_now and (risk_type_exec and str(risk_type_exec).lower() in ('exchange_orders','both')) and str(execution_mode).strip().lower() == 'limit_post_only':
+                try:
+                    oo2 = gateway.ex.fetch_open_orders(symbol, params={'category': 'linear'}) or []
+                    for _od in oo2:
+                        try:
+                            _inf = _od.get('info') or {}
+                            _ro = bool(_inf.get('reduceOnly') or _inf.get('reduce_only') or False)
+                            if not _ro:
+                                gateway.ex.cancel_order(_od.get('id'), symbol)
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+                return {"success": True, "skipped": True, "reason": "position_active_risk_exit"}
+        except Exception:
+            pass
+
         # 4) Запуск
         side_enum = Side.BUY if str(side).lower() == 'buy' else Side.SELL
-        intent = service.start(execution_mode=execution_mode, symbol=symbol, side=side_enum, qty=qty, cfg=cfg)
+
+        # helper: жёсткая очистка активного интента (и отмена ордера), если гард блокирует старт
+        def _clear_active_intent_for(sym: str) -> None:
+            try:
+                rc_loc = Redis(host='redis', port=6379, db=0, decode_responses=True)
+                aid_loc = rc_loc.get(f'exec:active_intent:{sym}')
+                raw_loc = rc_loc.get(f'exec:intent:{aid_loc}') if aid_loc else None
+                if aid_loc and raw_loc:
+                    try:
+                        data_loc = json.loads(raw_loc)
+                        exch_id_loc = data_loc.get('exchange_order_id')
+                        if exch_id_loc:
+                            try:
+                                gateway.cancel_order(sym, exch_id_loc)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                if aid_loc:
+                    try:
+                        rc_loc.delete(f'exec:intent:{aid_loc}')
+                    except Exception:
+                        pass
+                try:
+                    rc_loc.delete(f'exec:active_intent:{sym}')
+                except Exception:
+                    pass
+                try:
+                    logger.warning(f"[exec] guard-retry cleared active intent: symbol={sym}, intent_id={aid_loc}")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        try:
+            intent = service.start(execution_mode=execution_mode, symbol=symbol, side=side_enum, qty=qty, cfg=cfg)
+        except RuntimeError as _guard_err:
+            if 'Active intent exists for' in str(_guard_err):
+                _clear_active_intent_for(symbol)
+                time.sleep(0.25)
+                intent = service.start(execution_mode=execution_mode, symbol=symbol, side=side_enum, qty=qty, cfg=cfg)
+            else:
+                raise
 
         # Идемпотентные постановки TP/SL после запуска лимитной стратегии: накрываем момент фактического fill
         try:
@@ -99,185 +308,6 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
                 ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=2, queue='trade')
                 ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=15, queue='trade')
                 ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=60, queue='trade')
-        except Exception:
-            pass
-
-        # После успешного лимитного входа по BUY — выставляем SL/TP согласно настройкам из Redis
-        try:
-            from trading_agent.domain.models import IntentState as _IS
-            if (str(execution_mode) == 'limit_post_only') and (side_enum.name.lower() in ('buy','sell')):
-                try:
-                    logger.info(f"[DDD-Risk] intent_id={getattr(intent, 'intent_id', 'n/a')} state={getattr(intent, 'state', 'n/a')} exec_mode={execution_mode} side={side_enum.name}")
-                except Exception:
-                    pass
-                # Не прерываемся на not FILLED: сначала попробуем прочитать фактическую позицию
-                try:
-                    from redis import Redis as _Redis
-                    rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
-                except Exception:
-                    rc = None
-                tp_pct = None; sl_pct = None; risk_type = 'exchange_orders'
-                try:
-                    if rc is not None:
-                        # Сначала читаем per-symbol, затем фолбэк на глобальные ключи
-                        _tp = rc.get(f'trading:take_profit_pct:{symbol}') or rc.get('trading:take_profit_pct')
-                        _sl = rc.get(f'trading:stop_loss_pct:{symbol}') or rc.get('trading:stop_loss_pct')
-                        _rt = rc.get(f'trading:risk_management_type:{symbol}') or rc.get('trading:risk_management_type')
-                        if _tp is not None and str(_tp).strip() != '':
-                            tp_pct = float(_tp)
-                        if _sl is not None and str(_sl).strip() != '':
-                            sl_pct = float(_sl)
-                        if _rt is not None and str(_rt).strip() != '':
-                            risk_type = str(_rt)
-                    try:
-                        logger.info(f"[DDD-Risk] params: risk_type={risk_type} tp_pct={tp_pct} sl_pct={sl_pct}")
-                    except Exception:
-                        pass
-                except Exception:
-                    tp_pct = tp_pct if tp_pct is not None else 1.0
-                    sl_pct = sl_pct if sl_pct is not None else 1.0
-                    risk_type = 'exchange_orders'
-                # Брейкет-ордера ставим только если выбраны биржевые ордера
-                if risk_type in ('exchange_orders', 'both'):
-                    try:
-                        from trading_agent.trading_agent import TradingAgent as _TA
-                        agent2 = _TA()
-                        agent2.symbol = symbol
-                        agent2.base_symbol = symbol
-                        try:
-                            agent2._restore_position_from_exchange()
-                        except Exception:
-                            pass
-                        pos = getattr(agent2, 'current_position', None) or {}
-                        entry_price = None; amount = None
-                        try:
-                            entry_price = float(pos.get('entry_price')) if pos.get('entry_price') is not None else None
-                            amount = float(pos.get('amount')) if pos.get('amount') is not None else None
-                        except Exception:
-                            entry_price = None; amount = None
-                        # fallback на текущую цену/расчитанное qty, если позиция не прочиталась
-                        if entry_price is None or entry_price <= 0:
-                            try:
-                                entry_price = float(agent2._get_current_price())
-                            except Exception:
-                                entry_price = None
-                        if amount is None or amount <= 0:
-                            try:
-                                amount = float(getattr(agent2, 'trade_amount', 0.0) or qty)
-                            except Exception:
-                                amount = float(qty or 0.0)
-                        try:
-                            logger.info(f"[DDD-Risk] position: entry_price={entry_price} amount={amount}")
-                        except Exception:
-                            pass
-                        # Если интент не FILLED, но позиция уже есть (amount>0) — ставим TP/SL
-                        # Если позиции нет — логируем и выходим без ошибок
-                        if (intent.state != _IS.FILLED) and not (amount and amount > 0):
-                            try:
-                                logger.warning(f"[DDD-Risk] Skip TP/SL: intent not FILLED and no position on exchange (state={intent.state})")
-                            except Exception:
-                                pass
-                            return {"success": True, "intent_id": intent.intent_id, "state": intent.state}
-                        if (entry_price and entry_price > 0) and (amount and amount > 0):
-                            # Нормализуем цену под precision рынка
-                            try:
-                                mkt = agent2.exchange.market(symbol)
-                                p_prec = int((mkt.get('precision', {}) or {}).get('price', 2))
-                            except Exception:
-                                p_prec = 2
-                            def _roundp(x):
-                                try:
-                                    return float(f"{float(x):.{max(0,p_prec)}f}")
-                                except Exception:
-                                    return float(x)
-                        is_buy = (side_enum.name.lower() == 'buy')
-                        # Для long (BUY): TP=limit sell выше, SL=stop-market sell ниже
-                        # Для short (SELL): TP=limit buy ниже,   SL=stop-market buy выше
-                        if tp_pct is not None and float(tp_pct) > 0:
-                            try:
-                                tp_price = _roundp(entry_price * (1.0 + float(tp_pct)/100.0)) if is_buy else _roundp(entry_price * (1.0 - float(tp_pct)/100.0))
-                                try:
-                                    logger.info(f"[DDD-Risk] placing TP: symbol={symbol} side={'SELL' if is_buy else 'BUY'} price={tp_price} amount={amount}")
-                                except Exception:
-                                    pass
-                                if is_buy:
-                                    agent2.exchange.create_limit_sell_order(
-                                        symbol,
-                                        amount,
-                                        tp_price,
-                                        { 'reduceOnly': True, 'timeInForce': 'GTC' }
-                                    )
-                                else:
-                                    agent2.exchange.create_limit_buy_order(
-                                        symbol,
-                                        amount,
-                                        tp_price,
-                                        { 'reduceOnly': True, 'timeInForce': 'GTC' }
-                                    )
-                                try:
-                                    logger.info(f"[DDD-Risk] TP placed OK at {tp_price}")
-                                except Exception:
-                                    pass
-                            except Exception:
-                                try:
-                                    logger.exception("[DDD-Risk] TP place failed")
-                                except Exception:
-                                    pass
-                        if sl_pct is not None and float(sl_pct) > 0:
-                            try:
-                                sl_price = _roundp(entry_price * (1.0 - float(sl_pct)/100.0)) if is_buy else _roundp(entry_price * (1.0 + float(sl_pct)/100.0))
-                                try:
-                                    logger.info(f"[DDD-Risk] placing SL: symbol={symbol} side={'SELL' if is_buy else 'BUY'} stopPrice={sl_price} amount={amount}")
-                                except Exception:
-                                    pass
-                                try:
-                                    if is_buy:
-                                        agent2.exchange.create_stop_market_sell_order(
-                                            symbol,
-                                            amount,
-                                            sl_price,
-                                            { 'reduceOnly': True, 'stopPrice': sl_price }
-                                        )
-                                    else:
-                                        agent2.exchange.create_stop_market_buy_order(
-                                            symbol,
-                                            amount,
-                                            sl_price,
-                                            { 'reduceOnly': True, 'stopPrice': sl_price }
-                                        )
-                                except Exception:
-                                    # Фолбэк на обычный маркет с триггер‑параметрами
-                                    if is_buy:
-                                        agent2.exchange.create_market_sell_order(
-                                            symbol,
-                                            amount,
-                                            { 'reduceOnly': True, 'stopPrice': sl_price, 'triggerPrice': sl_price }
-                                        )
-                                    else:
-                                        agent2.exchange.create_market_buy_order(
-                                            symbol,
-                                            amount,
-                                            { 'reduceOnly': True, 'stopPrice': sl_price, 'triggerPrice': sl_price }
-                                        )
-                                try:
-                                    logger.info(f"[DDD-Risk] SL placed OK at {sl_price}")
-                                except Exception:
-                                    pass
-                            except Exception:
-                                try:
-                                    logger.exception("[DDD-Risk] SL place failed")
-                                except Exception:
-                                    pass
-                    except Exception:
-                        try:
-                            logger.exception("[DDD-Risk] Risk order placement block failed")
-                        except Exception:
-                            pass
-                else:
-                    try:
-                        logger.warning(f"[DDD-Risk] Skip TP/SL: risk_type={risk_type}")
-                    except Exception:
-                        pass
         except Exception:
             pass
 
@@ -319,12 +349,21 @@ def ensure_risk_orders(self, symbol: str):
                 except Exception:
                     pass
                 return {"success": True, "skipped": True, "reason": "recently_ensured"}
-            rc.setex(k, 120, "1")
+            rc.setex(k, 180, "1")
     except Exception:
         pass
 
     from trading_agent.trading_agent import TradingAgent
-    agent = TradingAgent()
+    # Направление per-symbol
+    try:
+        _rc = get_redis_client()
+        _dir = _rc.get(f'trading:direction:{symbol}')
+        if isinstance(_dir, (bytes, bytearray)):
+            _dir = _dir.decode('utf-8')
+        _dir = (str(_dir).strip().lower() if _dir else 'long')
+    except Exception:
+        _dir = 'long'
+    agent = TradingAgent(direction=_dir)
     agent.symbol = symbol
     agent.base_symbol = symbol
 
@@ -369,48 +408,218 @@ def ensure_risk_orders(self, symbol: str):
     ptype = str(pos.get('type') or '').lower()
 
     if not (entry_price and amount and amount > 0):
+        # Позиции нет – снимаем любые reduceOnly ордера (TP/SL), чтобы не мешали новому циклу
         try:
-            logger.info(f"[ensure_risk] skip {symbol}: no_position")
+            oo = agent.exchange.fetch_open_orders(symbol, params={'category': 'linear'}) or []
+        except Exception:
+            oo = []
+        cleaned = 0
+        for od in (oo or []):
+            try:
+                params = od.get('info') or {}
+                ro = bool(params.get('reduceOnly') or params.get('reduce_only') or False)
+                if ro:
+                    try:
+                        agent.exchange.cancel_order(od.get('id'), symbol)
+                        cleaned += 1
+                    except Exception:
+                        pass
+            except Exception:
+                continue
+        # Дополнительно: гасим активный DDD‑интент и биржевой ордер из него (если остались следы)
+        try:
+            from redis import Redis as _R
+            _rc2 = _R(host='redis', port=6379, db=0, decode_responses=True)
+            aid2 = _rc2.get(f'exec:active_intent:{symbol}')
+            if aid2:
+                raw2 = _rc2.get(f'exec:intent:{aid2}')
+                exch_id2 = None
+                if raw2:
+                    try:
+                        data2 = json.loads(raw2)
+                        exch_id2 = data2.get('exchange_order_id')
+                    except Exception:
+                        exch_id2 = None
+                if exch_id2:
+                    try:
+                        agent.exchange.cancel_order(symbol, exch_id2)
+                    except Exception:
+                        pass
+                try:
+                    _rc2.delete(f'exec:intent:{aid2}')
+                except Exception:
+                    pass
+                _rc2.delete(f'exec:active_intent:{symbol}')
         except Exception:
             pass
-        return {"success": True, "skipped": True, "reason": "no_position"}
+        try:
+            logger.info(f"[ensure_risk] flat cleanup {symbol}: cancelled_reduceOnly={cleaned}, cleared_active_intent=True")
+        except Exception:
+            pass
+        return {"success": True, "skipped": True, "reason": "no_position_cleanup"}
 
-    # Уже открытые reduceOnly
+    # Снимем лишние non-reduceOnly ордера (например, оставшийся входящий лимит) при наличии позиции
     try:
-        open_orders = agent.exchange.fetch_open_orders(symbol) or []
+        oo_cleanup = agent.exchange.fetch_open_orders(symbol, params={'category': 'linear'}) or []
+        for _od in oo_cleanup:
+            try:
+                _info = _od.get('info') or {}
+                _ro = bool(_info.get('reduceOnly') or _info.get('reduce_only') or False)
+                if not _ro:
+                    agent.exchange.cancel_order(_od.get('id'), symbol)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # Уже открытые reduceOnly (для антидублирования)
+    try:
+        open_orders = agent.exchange.fetch_open_orders(symbol, params={'category': 'linear'}) or []
+        try:
+            sample_orders = []
+            for od in (open_orders or [])[:3]:
+                params = od.get('info') or {}
+                sample_orders.append({
+                    'id': od.get('id'),
+                    'side': od.get('side'),
+                    'type': od.get('type'),
+                    'price': od.get('price'),
+                    'reduceOnly': bool(params.get('reduceOnly') or params.get('reduce_only') or False),
+                    'triggerPrice': params.get('triggerPrice'),
+                    'stopLoss': params.get('stopLoss'),
+                })
+            logger.info(f"[ensure_risk][orders] open_count={len(open_orders)} sample={sample_orders}")
+        except Exception:
+            pass
     except Exception:
         open_orders = []
 
-    def _has_reduce_only(side_needed: str):
-        for od in open_orders:
+    def _has_reduce_only_limit(side_needed: str) -> bool:
+        for od in open_orders or []:
             try:
                 params = od.get('info') or {}
                 ro = bool(params.get('reduceOnly') or params.get('reduce_only') or False)
                 side = str(od.get('side') or '').lower()
-                if ro and side == side_needed:
+                typ = str(od.get('type') or '').lower()
+                if ro and side == side_needed and typ == 'limit':
                     return True
             except Exception:
                 continue
         return False
 
-    # Нормализация цены
+    def _has_reduce_only_stop(side_needed: str) -> bool:
+        for od in open_orders or []:
+            try:
+                params = od.get('info') or {}
+                ro = bool(params.get('reduceOnly') or params.get('reduce_only') or False)
+                side = str(od.get('side') or '').lower()
+                typ = str(od.get('type') or '').lower()
+                has_trigger = ('triggerPrice' in params) or ('stopLoss' in params) or (typ != 'limit')
+                if ro and side == side_needed and has_trigger:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    # Нормализация цены по tickSize (точнее, чем precision)
     try:
-        mkt = agent.exchange.market(symbol)
-        p_prec = int((mkt.get('precision', {}) or {}).get('price', 2))
+        tick = _get_price_tick(agent.exchange, symbol)
     except Exception:
-        p_prec = 2
-    def _roundp(x):
+        tick = 0.0001
+    def _rp(x: float) -> float:
+        return _round_to_tick(x, tick)
+
+    # Учтём уже заданные TP/SL на уровне позиции (Bybit v5: поля takeProfit/stopLoss)
+    tp_already_set = False
+    sl_already_set = False
+    try:
+        pos_list = None
         try:
-            return float(f"{float(x):.{max(0,p_prec)}f}")
+            pos_list = agent.exchange.fetch_positions([symbol])
         except Exception:
-            return float(x)
+            try:
+                pos_list = agent.exchange.fetch_positions(symbol)
+            except Exception:
+                pos_list = []
+        for p in pos_list or []:
+            try:
+                sym_p = p.get('symbol') or (p.get('info') or {}).get('symbol')
+                if str(sym_p).upper() != str(symbol).upper():
+                    continue
+                info_p = p.get('info') or {}
+                try:
+                    # Подробный лог по позиции от биржи: какие поля есть и что в них
+                    keys_preview = list(info_p.keys())[:30]
+                    logger.info(f"[ensure_risk][pos] keys={keys_preview} takeProfit={info_p.get('takeProfit')} stopLoss={info_p.get('stopLoss')} tpSize={info_p.get('tpSize')} slSize={info_p.get('slSize')} tpslMode={info_p.get('tpslMode')} trailingStop={info_p.get('trailingStop')}")
+                except Exception:
+                    pass
+                tp_val = str(info_p.get('takeProfit') or '').strip()
+                sl_val = str(info_p.get('stopLoss') or '').strip()
+                if tp_val not in ('', '0', '0.0', '0.0000'):
+                    tp_already_set = True
+                if sl_val not in ('', '0', '0.0', '0.0000'):
+                    sl_already_set = True
+                break
+            except Exception:
+                continue
+    except Exception:
+        tp_already_set = False
+        sl_already_set = False
+    try:
+        logger.info(f"[ensure_risk] detected_flags: tp_already_set={tp_already_set} sl_already_set={sl_already_set}")
+    except Exception:
+        pass
 
     is_long = (ptype == 'long') or (ptype == '')
+
+    # Доп. детекция TP/SL по открытым reduceOnly ордерам относительно entry_price
+    try:
+        if entry_price:
+            margin = (tick or 0.0001) * 2.0
+            tp_by_orders = False
+            sl_by_orders = False
+            for od in open_orders or []:
+                try:
+                    params = od.get('info') or {}
+                    ro = bool(params.get('reduceOnly') or params.get('reduce_only') or False)
+                    if not ro:
+                        continue
+                    side_o = str(od.get('side') or '').lower()
+                    if side_o != 'sell':
+                        continue
+                    typ_o = str(od.get('type') or '').lower()
+                    trig_raw = params.get('triggerPrice') or params.get('stopLoss')
+                    trigger_price = None
+                    try:
+                        trigger_price = float(trig_raw) if trig_raw not in (None, '', '0', '0.0') else None
+                    except Exception:
+                        trigger_price = None
+                    if typ_o == 'limit':
+                        tp_by_orders = True
+                    else:
+                        if trigger_price is not None:
+                            if trigger_price >= float(entry_price) + margin:
+                                tp_by_orders = True
+                            if trigger_price <= float(entry_price) - margin:
+                                sl_by_orders = True
+                except Exception:
+                    continue
+            if tp_by_orders:
+                tp_already_set = True
+            if sl_by_orders:
+                sl_already_set = True
+            try:
+                logger.info(f"[ensure_risk] inferred_from_orders: tp_by_orders={tp_by_orders} sl_by_orders={sl_by_orders} entry={entry_price} tick={tick}")
+            except Exception:
+                pass
+    except Exception:
+        pass
     if is_long:
         # Long
-        if not _has_reduce_only('sell'):
+        # TP (limit SELL): ставим, только если нет position-level TP и нет reduceOnly limit SELL
+        if not tp_already_set and not _has_reduce_only_limit('sell'):
             if tp_pct and tp_pct > 0:
-                tp_price = _roundp(float(entry_price) * (1.0 + float(tp_pct)/100.0))
+                tp_price = _rp(float(entry_price) * (1.0 + float(tp_pct)/100.0))
                 try:
                     agent.exchange.create_limit_sell_order(symbol, float(amount), tp_price, { 'reduceOnly': True, 'timeInForce': 'GTC' })
                     try:
@@ -419,24 +628,30 @@ def ensure_risk_orders(self, symbol: str):
                         pass
                 except Exception:
                     pass
+        # SL (stop-market SELL): ставим, только если нет position-level SL и нет reduceOnly stop SELL
+        if not sl_already_set and not _has_reduce_only_stop('sell'):
             if sl_pct and sl_pct > 0:
-                sl_price = _roundp(float(entry_price) * (1.0 - float(sl_pct)/100.0))
+                sl_price = _rp(float(entry_price) * (1.0 - float(sl_pct)/100.0))
                 try:
+                    agent.exchange.create_order(
+                        symbol,
+                        'market',
+                        'sell',
+                        float(amount),
+                        None,
+                        { 'reduceOnly': True, 'triggerPrice': sl_price, 'triggerDirection': 'descending', 'triggerBy': 'LastPrice', 'timeInForce': 'GTC' }
+                    )
                     try:
-                        agent.exchange.create_stop_market_sell_order(symbol, float(amount), sl_price, { 'reduceOnly': True, 'stopPrice': sl_price })
-                    except Exception:
-                        agent.exchange.create_market_sell_order(symbol, float(amount), { 'reduceOnly': True, 'stopPrice': sl_price, 'triggerPrice': sl_price })
-                    try:
-                        logger.info(f"[ensure_risk] SL SELL placed {symbol}: stopPrice={sl_price} amount={amount}")
+                        logger.info(f"[ensure_risk] SL SELL placed {symbol}: triggerPrice={sl_price} amount={amount}")
                     except Exception:
                         pass
                 except Exception:
                     pass
     else:
         # Short
-        if not _has_reduce_only('buy'):
+        if not tp_already_set and not _has_reduce_only_limit('buy'):
             if tp_pct and tp_pct > 0:
-                tp_price = _roundp(float(entry_price) * (1.0 - float(tp_pct)/100.0))
+                tp_price = _rp(float(entry_price) * (1.0 - float(tp_pct)/100.0))
                 try:
                     agent.exchange.create_limit_buy_order(symbol, float(amount), tp_price, { 'reduceOnly': True, 'timeInForce': 'GTC' })
                     try:
@@ -445,15 +660,20 @@ def ensure_risk_orders(self, symbol: str):
                         pass
                 except Exception:
                     pass
+        if not sl_already_set and not _has_reduce_only_stop('buy'):
             if sl_pct and sl_pct > 0:
-                sl_price = _roundp(float(entry_price) * (1.0 + float(sl_pct)/100.0))
+                sl_price = _rp(float(entry_price) * (1.0 + float(sl_pct)/100.0))
                 try:
+                    agent.exchange.create_order(
+                        symbol,
+                        'market',
+                        'buy',
+                        float(amount),
+                        None,
+                        { 'reduceOnly': True, 'triggerPrice': sl_price, 'triggerDirection': 'ascending', 'triggerBy': 'LastPrice', 'timeInForce': 'GTC' }
+                    )
                     try:
-                        agent.exchange.create_stop_market_buy_order(symbol, float(amount), sl_price, { 'reduceOnly': True, 'stopPrice': sl_price })
-                    except Exception:
-                        agent.exchange.create_market_buy_order(symbol, float(amount), { 'reduceOnly': True, 'stopPrice': sl_price, 'triggerPrice': sl_price })
-                    try:
-                        logger.info(f"[ensure_risk] SL BUY placed {symbol}: stopPrice={sl_price} amount={amount}")
+                        logger.info(f"[ensure_risk] SL BUY placed {symbol}: triggerPrice={sl_price} amount={amount}")
                     except Exception:
                         pass
                 except Exception:
@@ -1065,7 +1285,16 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             pass
 
         # 4) Торговля через TradingAgent (без docker exec)
-        agent = TradingAgent(model_path=(model_paths[0] if model_paths else None))
+        # Направление из Redis per-symbol
+        try:
+            _rc = get_redis_client()
+            _dir = _rc.get(f'trading:direction:{symbol}')
+            if isinstance(_dir, (bytes, bytearray)):
+                _dir = _dir.decode('utf-8')
+            _dir = (str(_dir).strip().lower() if _dir else 'long')
+        except Exception:
+            _dir = 'long'
+        agent = TradingAgent(model_path=(model_paths[0] if model_paths else None), direction=_dir)
         agent.symbols = syms
         agent.symbol = symbol
         agent.base_symbol = symbol
@@ -1249,6 +1478,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             limit_cfg = None
             exit_mode = 'prediction'
             leverage_val = 1
+            risk_type_exec = None
             try:
                 if rc is not None:
                     _em = rc.get(f'trading:execution_mode:{symbol}')
@@ -1269,59 +1499,125 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                             leverage_val = max(1, min(5, int(str(_lev))))
                         except Exception:
                             leverage_val = 1
+                    # читаем тип риск-менеджмента, чтобы управлять выходом
+                    _rt = rc.get(f'trading:risk_management_type:{symbol}') or rc.get('trading:risk_management_type')
+                    if _rt is not None and str(_rt).strip() != '':
+                        risk_type_exec = str(_rt).strip()
             except Exception:
                 exec_mode = None
                 limit_cfg = None
                 exit_mode = 'prediction'
                 leverage_val = 1
+                risk_type_exec = None
+
+            # Если включены биржевые risk orders, по умолчанию выходим только по ним
+            try:
+                if (exit_mode is None or str(exit_mode).strip() == '' or str(exit_mode).strip().lower() == 'prediction') and (risk_type_exec and str(risk_type_exec).lower() in ('exchange_orders','both')):
+                    exit_mode = 'risk_orders'
+            except Exception:
+                pass
+
+            # Всегда обновим позицию заранее, чтобы на следующем тике не создавать входящие лимитки поверх открытой позиции
+            try:
+                agent._restore_position_from_exchange()
+            except Exception:
+                pass
+            try:
+                pos_cur = getattr(agent, 'current_position', None) or {}
+                amt_cur = float(pos_cur.get('amount') or 0.0)
+                avg_cur = float(pos_cur.get('entry_price') or 0.0)
+                if not (amt_cur > 0.0 and avg_cur > 0.0):
+                    agent.current_position = None
+            except Exception:
+                agent.current_position = None
+
+            # Если позиции нет — снимаем все открытые ордера по символу (и reduceOnly, и обычные)
+            try:
+                if not agent.current_position:
+                    try:
+                        oo_all = agent.exchange.fetch_open_orders(symbol, params={'category': 'linear'}) or []
+                    except Exception:
+                        oo_all = []
+                    cancelled_all = 0
+                    for od in (oo_all or []):
+                        try:
+                            agent.exchange.cancel_order(od.get('id'), symbol)
+                            cancelled_all += 1
+                        except Exception:
+                            continue
+                    try:
+                        logger.warning(f"[cleanup] flat state: cancelled_open_orders={cancelled_all}")
+                    except Exception:
+                        pass
+                    # Дополнительно: удаляем активный DDD‑интент и отменяем его ордер, если висит
+                    try:
+                        if rc is not None:
+                            aid_flat = rc.get(f'exec:active_intent:{symbol}')
+                            if aid_flat:
+                                raw_flat = rc.get(f'exec:intent:{aid_flat}')
+                                exch_id_flat = None
+                                if raw_flat:
+                                    try:
+                                        data_flat = json.loads(raw_flat)
+                                        exch_id_flat = data_flat.get('exchange_order_id')
+                                    except Exception:
+                                        exch_id_flat = None
+                                if exch_id_flat:
+                                    try:
+                                        agent.exchange.cancel_order(symbol, exch_id_flat)
+                                    except Exception:
+                                        pass
+                                try:
+                                    rc.delete(f'exec:intent:{aid_flat}')
+                                except Exception:
+                                    pass
+                                rc.delete(f'exec:active_intent:{symbol}')
+                                try:
+                                    logger.warning(f"[cleanup] flat state: cleared active intent {aid_flat}")
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # Жёсткая блокировка новых входящих лимиток при активной позиции и выходе через риск-ордера
+            try:
+                if agent.current_position and ((str(exit_mode).lower() == 'risk_orders') or (risk_type_exec and str(risk_type_exec).lower() in ('exchange_orders','both'))):
+                    # Удалим все non-reduceOnly ордера (входящие лимитки), TP/SL оставим
+                    try:
+                        oo = agent.exchange.fetch_open_orders(symbol, params={'category': 'linear'}) or []
+                        for od in oo:
+                            try:
+                                params = od.get('info') or {}
+                                reduce_only = bool(params.get('reduceOnly') or params.get('reduce_only') or False)
+                                if not reduce_only:
+                                    agent.exchange.cancel_order(od.get('id'), symbol)
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                    trade_result = {"success": True, "action": "hold_exit_via_risk", "reason": "position_active"}
+                    # Принудительно удерживаем hold, чтобы ниже не инициировались новые стратегии
+                    decision = 'hold'
+            except Exception:
+                pass
 
             if decision == 'buy' and not agent.current_position:
                 if exec_mode == 'limit_post_only':
                     try:
                         base_qty = float(getattr(agent, 'trade_amount', 0.0)) or 0.0
-                        # Флаг двухстороннего входа управляется через Redis
-                        two_sided = False
-                        try:
-                            if rc is not None:
-                                ts = rc.get(f'trading:limit_two_sided:{symbol}') or rc.get('trading:limit_two_sided')
-                                if ts is not None and str(ts).lower() in ('1','true','yes','on'):
-                                    two_sided = True
-                        except Exception:
-                            two_sided = False
-                        if two_sided and base_qty > 0:
-                            qty_buy = base_qty * 0.5
-                            qty_sell = base_qty * 0.5
-                            # Enqueue BUY
-                            start_execution_strategy.apply_async(kwargs={
-                                'symbol': symbol,
-                                'execution_mode': 'limit_post_only',
-                                'side': 'buy',
-                                'qty': qty_buy,
-                                'limit_config': (limit_cfg or {}),
-                                'leverage': leverage_val
-                            }, queue='trade')
-                            # Enqueue SELL (вход в short, только если явно разрешено)
-                            start_execution_strategy.apply_async(kwargs={
-                                'symbol': symbol,
-                                'execution_mode': 'limit_post_only',
-                                'side': 'sell',
-                                'qty': qty_sell,
-                                'limit_config': (limit_cfg or {}),
-                                'leverage': leverage_val
-                            }, queue='trade')
-                            trade_result = {"success": True, "action": "limit_post_only_enqueued_two_sided", "sides": ["buy", "sell"], "qty_each": qty_buy}
-                        else:
-                            # Только BUY по решению модели
-                            qty_buy = base_qty if base_qty > 0 else None
-                            start_execution_strategy.apply_async(kwargs={
-                                'symbol': symbol,
-                                'execution_mode': 'limit_post_only',
-                                'side': 'buy',
-                                'qty': qty_buy,
-                                'limit_config': (limit_cfg or {}),
-                                'leverage': leverage_val
-                            }, queue='trade')
-                            trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "buy", "qty": qty_buy}
+                        # Всегда только BUY (двухсторонний вход отключен)
+                        qty_buy = _apply_safety_buffer_qty(base_qty) if base_qty > 0 else None
+                        start_execution_strategy.apply_async(kwargs={
+                            'symbol': symbol,
+                            'execution_mode': 'limit_post_only',
+                            'side': 'buy',
+                            'qty': qty_buy,
+                            'limit_config': (limit_cfg or {}),
+                            'leverage': leverage_val
+                        }, queue='trade')
+                        trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "buy", "qty": qty_buy}
                     except Exception as _e:
                         # Фолбэк на рыночное исполнение через агента
                         trade_result = agent._execute_buy()
@@ -1393,28 +1689,21 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                                 if sl_pct is not None and sl_pct > 0:
                                     try:
                                         sl_price = _roundp(entry_price * (1.0 - float(sl_pct)/100.0))
-                                        # Пытаемся использовать stop‑market API
-                                        try:
-                                            agent.exchange.create_stop_market_sell_order(
-                                                symbol,
-                                                amount,
-                                                sl_price,
-                                                { 'reduceOnly': True, 'stopPrice': sl_price }
-                                            )
-                                        except Exception:
-                                            # Фолбэк: обычный stop/trigger, если доступно через params
-                                            agent.exchange.create_market_sell_order(
-                                                symbol,
-                                                amount,
-                                                { 'reduceOnly': True, 'stopPrice': sl_price, 'triggerPrice': sl_price }
-                                            )
+                                        agent.exchange.create_order(
+                                            symbol,
+                                            'market',
+                                            'sell',
+                                            amount,
+                                            None,
+                                            { 'reduceOnly': True, 'triggerPrice': sl_price, 'triggerDirection': 'descending', 'triggerBy': 'LastPrice', 'timeInForce': 'GTC' }
+                                        )
                                     except Exception:
                                         pass
                     except Exception:
                         pass
             elif decision == 'sell' and agent.current_position:
                 # Если выбрана стратегия выхода через биржевые SL/TP — не продаём по предсказанию
-                if str(exit_mode).lower() == 'risk_orders':
+                if (str(exit_mode).lower() == 'risk_orders') or (risk_type_exec and str(risk_type_exec).lower() in ('exchange_orders','both')):
                     trade_result = {"success": True, "action": "hold_exit_via_risk", "reason": "exit_mode=risk_orders"}
                 else:
                     sell_strategy = agent._determine_sell_amount(agent._get_current_price())

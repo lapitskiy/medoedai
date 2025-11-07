@@ -26,6 +26,20 @@ class RedisStateStore(StateStore):
     def save_intent(self, intent: Intent) -> None:
         self.r.set(self._k_intent(intent.intent_id), json.dumps(intent, default=lambda o: o.__dict__))
         self.r.set(self._k_symbol_active(intent.symbol), intent.intent_id)
+        # Устанавливаем TTL на ключи интента для автоснятия зависших записей
+        try:
+            ttl = 300
+            try:
+                cfg = getattr(intent, 'cfg', None)
+                if cfg and getattr(cfg, 'max_lifetime_sec', None):
+                    ttl = int(cfg.max_lifetime_sec)
+            except Exception:
+                ttl = 300
+            ttl = max(60, min(3600, int(ttl) + 60))  # буфер +60с; не менее 60с, не более часа
+            self.r.expire(self._k_intent(intent.intent_id), ttl)
+            self.r.expire(self._k_symbol_active(intent.symbol), ttl)
+        except Exception:
+            pass
 
     def load_intent(self, intent_id: str) -> Optional[Intent]:
         raw = self.r.get(self._k_intent(intent_id))

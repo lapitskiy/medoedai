@@ -17,6 +17,11 @@ def trading_agent_page():
     """Страница торгового агента"""
     return render_template('trading_agent.html')
 
+@trading_bp.get('/trading/results')
+def trading_results_page():
+    """Страница агрегированных результатов торговли"""
+    return render_template('trading_results.html')
+
 @trading_bp.route('/agent/<symbol>')
 def agent_symbol_page(symbol: str):
     """Страница агента, отфильтрованная по конкретному символу (BTCUSDT, TONUSDT и т.д.)"""
@@ -149,6 +154,8 @@ def start_trading():
         exit_mode = str(data.get('exit_mode') or '').strip() or None  # 'prediction' | 'risk_orders'
         leverage = data.get('leverage')  # 1..5
         account_pct = data.get('account_pct')  # Доля счёта, %
+        # Направление торговли (long | short)
+        direction = str(data.get('direction') or '').strip().lower() or None
         # Поддержка многомодельного запуска: model_paths (список) + совместимость с model_path
         model_paths = data.get('model_paths') or []
         model_path = data.get('model_path')
@@ -202,6 +209,8 @@ def start_trading():
             try:
                 if execution_mode:
                     _rc.set(f'trading:execution_mode:{symbol}', execution_mode)
+                if direction in ('long','short'):
+                    _rc.set(f'trading:direction:{symbol}', direction)
                 if isinstance(limit_config, dict):
                     _rc.set(f'trading:limit_config:{symbol}', _json.dumps(limit_config, ensure_ascii=False))
                 if exit_mode:
@@ -420,6 +429,17 @@ def stop_trading_symbol():
             rc.delete(f'trading:agent_lock:{symbol}')
         except Exception:
             pass
+        # Снимаем активный лимит‑интент (DDD) для символа
+        try:
+            aid = rc.get(f'exec:active_intent:{symbol}')
+            if aid:
+                try:
+                    rc.delete(f'exec:intent:{aid}')
+                except Exception:
+                    pass
+            rc.delete(f'exec:active_intent:{symbol}')
+        except Exception:
+            pass
         # Ставим флаг ручного отключения символа
         try:
             rc.set(f'trading:disabled:{symbol}', '1')
@@ -451,6 +471,7 @@ def list_trading_agents():
         # Базовый список символов (можно расширить)
         known = ['BTCUSDT','ETHUSDT','SOLUSDT','TONUSDT','ADAUSDT','BNBUSDT','XRPUSDT']
         agents = []
+        import os as _os
         for sym in known:
             # Активность по локам (могут отсутствовать после рестарта)
             try:
@@ -539,6 +560,47 @@ def list_trading_agents():
                 logging.info(f"[agents] {sym}: required={required} ({req_type}), req_flat={req_flat}, req_trend={req_trend}")
             except Exception:
                 pass
+            # Настройки per-symbol/global
+            try:
+                exec_mode_v = rc.get(f'trading:execution_mode:{sym}')
+                exit_mode_v = rc.get(f'trading:exit_mode:{sym}')
+                leverage_v = rc.get(f'trading:leverage:{sym}')
+                limit_cfg_raw = rc.get(f'trading:limit_config:{sym}')
+                risk_type_v = rc.get(f'trading:risk_management_type:{sym}') or rc.get('trading:risk_management_type')
+                account_pct_v = rc.get('trading:account_pct')
+                try:
+                    limit_cfg = json.loads(limit_cfg_raw) if limit_cfg_raw else None
+                except Exception:
+                    limit_cfg = None
+                # debug_buy из ENV (пер-символьно > глобально)
+                dbg_env_sym = _os.getenv(f'DEBUG_BUY_{sym}')
+                dbg_env_glob = _os.getenv('DEBUG_BUY')
+                def _truthy(v):
+                    try:
+                        return str(v).strip().lower() in ('1','true','yes','on')
+                    except Exception:
+                        return False
+                debug_buy = None
+                if dbg_env_sym is not None:
+                    debug_buy = _truthy(dbg_env_sym)
+                elif dbg_env_glob is not None:
+                    debug_buy = _truthy(dbg_env_glob)
+            except Exception:
+                exec_mode_v = exit_mode_v = leverage_v = None
+                limit_cfg = None
+                risk_type_v = None
+                account_pct_v = None
+                debug_buy = None
+
+            # Направление per-symbol
+            try:
+                dir_v = rc.get(f'trading:direction:{sym}')
+                if isinstance(dir_v, (bytes, bytearray)):
+                    dir_v = dir_v.decode('utf-8')
+                sel_direction = str(dir_v).strip().lower() if dir_v else None
+            except Exception:
+                sel_direction = None
+
             agent_obj = {
                 'symbol': sym,
                 'active': bool(is_active),
@@ -549,7 +611,17 @@ def list_trading_agents():
                 'required_trend': req_trend,
                 'required_type': req_type,
                 'required': required,
-                'lock_ttl': (int(ttl) if ttl is not None else None)
+                'lock_ttl': (int(ttl) if ttl is not None else None),
+                'settings': {
+                    'execution_mode': (str(exec_mode_v).strip() if exec_mode_v else None),
+                    'direction': sel_direction,
+                    'exit_mode': (str(exit_mode_v).strip() if exit_mode_v else None),
+                    'leverage': (int(str(leverage_v)) if leverage_v not in (None, '') else None),
+                    'limit_config': (limit_cfg or {}),
+                    'risk_management_type': (str(risk_type_v).strip() if risk_type_v else None),
+                    'account_pct': (int(str(account_pct_v)) if account_pct_v not in (None, '') else None),
+                    'debug_buy_env': debug_buy,
+                }
             }
             try:
                 logging.info(f"[agents] {sym}: agent_obj={agent_obj}")
