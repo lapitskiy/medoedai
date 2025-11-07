@@ -25,6 +25,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from agents.vdqn.dqnsolver import DQNSolver
 from agents.vdqn.cfg.vconfig import vDqnConfig
 from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized
+from envs.dqn_model.gym.crypto_trading_env_short import CryptoTradingEnvShort
 from train.infrastructure.gym.position_aware_wrapper import PositionAwareEpisodeWrapper
 from train.domain.episode.extension_policy import EpisodeExtensionPolicy
 from envs.dqn_model.gym.gconfig import GymConfig
@@ -254,6 +255,7 @@ def _save_training_results(
     eps_threshold: float | None = None,
     eval_summary: dict | None = None,
     dfs: Optional[Dict] = None,
+    direction: str = 'long',
 ):
     try:
         total_training_time = current_total_training_time
@@ -524,7 +526,9 @@ def _save_training_results(
             },
             'best_metrics': {
                 'winrate': float(best_winrate) if isinstance(best_winrate, (int, float)) else None
-            }
+            },
+            'trained_as': (direction or 'long'),
+            'direction': (direction or 'long'),
         }
         try:
             with open(os.path.join(run_dir, 'manifest.json'), 'w', encoding='utf-8') as mf:
@@ -548,6 +552,7 @@ def train_model_optimized(
     parent_run_id: Optional[str] = None,
     root_id: Optional[str] = None,
     episode_length: Optional[int] = None,
+    direction: str = 'long',
 ) -> str:
     """
     Оптимизированная функция тренировки модели без pandas в hot-path
@@ -639,13 +644,22 @@ def train_model_optimized(
 
             # Создаем GymConfig для получения значения по умолчанию
             gym_cfg = GymConfig()
-            base_env = CryptoTradingEnvOptimized(
-                dfs=dfs,
-                cfg=gym_cfg,
-                lookback_window=override.get('gym_config', {}).get('lookback_window', gym_cfg.lookback_window) if override else gym_cfg.lookback_window,
-                indicators_config=indicators_config,
-                episode_length=episode_length or gym_cfg.episode_length
-            )
+            if (direction or 'long') == 'short':
+                base_env = CryptoTradingEnvShort(
+                    dfs=dfs,
+                    cfg=gym_cfg,
+                    lookback_window=override.get('gym_config', {}).get('lookback_window', gym_cfg.lookback_window) if override else gym_cfg.lookback_window,
+                    indicators_config=indicators_config,
+                    episode_length=episode_length or gym_cfg.episode_length
+                )
+            else:
+                base_env = CryptoTradingEnvOptimized(
+                    dfs=dfs,
+                    cfg=gym_cfg,
+                    lookback_window=override.get('gym_config', {}).get('lookback_window', gym_cfg.lookback_window) if override else gym_cfg.lookback_window,
+                    indicators_config=indicators_config,
+                    episode_length=episode_length or gym_cfg.episode_length
+                )
             # Оборачиваем env продлением эпизода на +100 шагов при открытой позиции
             policy = EpisodeExtensionPolicy(max_extension=20, extension_steps=100)
             env = PositionAwareEpisodeWrapper(base_env, policy=policy)
@@ -949,9 +963,20 @@ def train_model_optimized(
                     _sh.copy2(base_encoder_path, new_encoder_path)
             except Exception:
                 pass
-            # Предварительно создаём пустой манифест (будет перезаписан атомарно после сохранения весов)
+            # Предварительно создаём манифест-заглушку (будет перезаписан атомарно после сохранения весов)
             try:
-                _atomic_write_json(os.path.join(version_dir, 'encoder_manifest.json'), {'status': 'pending'})
+                _atomic_write_json(
+                    os.path.join(version_dir, 'encoder_manifest.json'),
+                    {
+                        'status': 'pending',
+                        'symbol': symbol_dir_name,
+                        'direction': (direction or 'long'),
+                        'trained_as': (direction or 'long'),
+                        'encoder_type': encoder_type,
+                        'version': int(getattr(cfg, 'encoder_version', 0) or 0),
+                        'created_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    }
+                )
             except Exception:
                 pass
         else:
@@ -1555,6 +1580,7 @@ def train_model_optimized(
                     root_id=root_id,
                     training_start_time=training_start_time,
                     current_total_training_time=time.time() - training_start_time,
+                    direction=(direction or 'long'),
                 )
                 # Сохраняем последний снапшот last_model.pth (отдельно)
                 try:
@@ -1894,6 +1920,8 @@ def train_model_optimized(
                 'data': {
                     'frames': frames_info,
                 },
+                'direction': (direction or 'long'),
+                'trained_as': (direction or 'long'),
                 # Места для опциональных данных об обучении/датах/метриках можно заполнить позже
             }
             # Вкладываем training_indicators при наличии
@@ -1920,6 +1948,7 @@ def train_model_optimized(
                     'symbol': symbol_dir_name,
                     'sha256': enc_sha,
                     'size_bytes': enc_size,
+                    'direction': (direction or 'long'),
                 }
                 try:
                     index_entry['episodes_completed'] = int(actual_episodes) if isinstance(actual_episodes, (int, float)) else None
@@ -2049,6 +2078,7 @@ def train_model_optimized(
             root_id=root_id,
             training_start_time=training_start_time,
             current_total_training_time=total_training_time, # Используем final total_training_time
+            direction=(direction or 'long'),
         )
 
         # Добавим краткую информацию о выборе энкодера в отдельный JSON в run_dir

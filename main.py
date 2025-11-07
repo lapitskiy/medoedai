@@ -77,6 +77,8 @@ app.register_blueprint(clean_bp)
 app.register_blueprint(oos_bp)
 app.register_blueprint(sac_bp)
 app.register_blueprint(analytics_bp)
+from routes.trade_optimizer import trade_opt_bp
+app.register_blueprint(trade_opt_bp)
 
 # Функция очистки Redis вынесена в utils.redis_utils.clear_redis_on_startup
 
@@ -323,6 +325,7 @@ def get_result_model_info():
         symbol_str = None
         replay_file = None
         train_file = None
+        run_dir = None
         if p.name.startswith('dqn_model_'):
             code = p.stem.replace('dqn_model_', '')
             replay_file = results_dir / f'replay_buffer_{code}.pkl'
@@ -368,6 +371,24 @@ def get_result_model_info():
             'stats': {},
             'episodes': None
         }
+
+        # Пробуем прочитать направление (long/short) из manifest.json рядом с моделью
+        try:
+            manifest_path = None
+            if run_dir is not None:
+                manifest_path = run_dir / 'manifest.json'
+            else:
+                # Для плоских файлов dqn_model_*.pth найти manifest проблематично — пропускаем
+                manifest_path = None
+            if manifest_path and manifest_path.exists():
+                with open(manifest_path, 'r', encoding='utf-8') as mf:
+                    mf_data = json.load(mf)
+                # Пытаемся взять явное поле direction, иначе trained_as
+                direction = (mf_data.get('direction') or mf_data.get('trained_as') or '').strip().lower()
+                if direction in ('long', 'short'):
+                    info['direction'] = direction
+        except Exception:
+            pass
 
         # Загружаем статистику из train_result_*.pkl если есть
         if train_file.exists():

@@ -191,7 +191,7 @@ def train_dqn(self, seed: int | None = None):
     return {"message": result}
 
 @celery.task(bind=True, acks_late=False, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')  # добавлено acks_late=False
-def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None = None, episode_length: int = 2000, engine: str = 'optimized', encoder_id: str | None = None, train_encoder: bool = False):
+def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None = None, episode_length: int = 2000, engine: str = 'optimized', encoder_id: str | None = None, train_encoder: bool = False, direction: str = 'long'):
     """Обучение DQN для одного символа (BTCUSDT/ETHUSDT/...)
 
     Загружает данные из БД, готовит 5m/15m/1h, запускает train_model_optimized.
@@ -213,7 +213,7 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
         _train_enc = 1 if train_encoder else 0
         _eps = episodes if (episodes is not None) else 'env'
         _ep_len = episode_length if (episode_length is not None) else 'cfg'
-        _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}"
+        _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}"
         _finished_key = f"celery:train:finished:{_biz_key}"
         _queued_key = f"celery:train:queued:{_biz_key}"
         _running_key_biz = f"celery:train:running:{_biz_key}"
@@ -397,7 +397,8 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
                 seed=seed,
                 parent_run_id=parent_run_id,
                 root_id=root_run_id,
-                episode_length=episode_length
+                episode_length=episode_length,
+                direction=(direction or 'long')
             )
         return {"message": f"✅ Обучение {symbol} завершено: {result}"}
     except Exception as e:
@@ -432,7 +433,7 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
                     _train_enc = 1 if train_encoder else 0
                     _eps = episodes if (episodes is not None) else 'env'
                     _ep_len = episode_length if (episode_length is not None) else 'cfg'
-                    _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}"
+                    _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}"
                     _running_key_biz = f"celery:train:running:{_biz_key}"
                     _finished_key = f"celery:train:finished:{_biz_key}"
                     redis_client.delete(_running_key_biz)

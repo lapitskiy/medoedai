@@ -112,6 +112,13 @@
                     <input id="episodeLengthInput" class="form-control" type="number" min="1" step="1" value="2000">
                 </div>
                 <div class="form-group">
+                    <label>Направление</label>
+                    <select id="trainDirectionSelect" class="form-control">
+                        <option value="long" selected>Long</option>
+                        <option value="short">Short</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label>Seed (если пусто — сгенерируем случайный)</label>
                     <input id="trainSeedInput" class="form-control" type="number" min="1" step="1" placeholder="например, 42">
                 </div>
@@ -523,7 +530,13 @@ P/L Ratio: ${plr}
                 if(items.length === 0){
                     encSelect.innerHTML = '<option value="">Нет доступных энкодеров</option>';
                 } else {
-                    const opts = ['<option value="">Выберите энкодер</option>'].concat(items.map(it => `<option value="${it.id}">${it.name || it.id}</option>`)).join('');
+                    const opts = ['<option value="">Выберите энкодер</option>'].concat(items.map(it => {
+                        const m = it.manifest || {};
+                        const dir = (m.direction || m.trained_as || '').toString().toLowerCase();
+                        const tag = dir === 'short' ? ' [short]' : (dir === 'long' ? ' [long]' : '');
+                        const label = (it.name || it.id) + tag;
+                        return `<option value="${it.id}">${label}</option>`;
+                    })).join('');
                     encSelect.innerHTML = opts;
                 }
             } catch(e){
@@ -678,6 +691,9 @@ P/L Ratio: ${plr}
             statusDiv.innerHTML = '<div class="status info">⏳ Запуск обучения ' + symbol + (isNewEncoder ? ' (новый энкодер)' : '') + '...</div>';
             try {
                 const payload = { symbol, episodes, episode_length: episodeLength, seed: seedVal, engine };
+                const dirEl = document.getElementById('trainDirectionSelect');
+                const dirVal = (dirEl && dirEl.value) ? String(dirEl.value).trim().toLowerCase() : 'long';
+                payload.direction = dirVal;
                 if (encoderId) {
                     payload.encoder_id = encoderId;
                     payload.train_encoder = trainEncoder;

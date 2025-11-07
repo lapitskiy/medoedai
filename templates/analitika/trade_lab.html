@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Trade Lab — Оптимизация торговли</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+</head>
+<body>
+    {% include 'include/_sidebar.html' %}
+
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <div class="container">
+        <div class="main-content">
+            <div class="header">
+                <h1>🧪 Trade Lab — Оптимизация торговли</h1>
+                <p>Анализ результатов торговли и подбор оптимальных параметров</p>
+                <div class="button-group" style="margin-top: 12px;">
+                    <a href="/" class="btn btn-secondary">⬅ На главную</a>
+                </div>
+            </div>
+
+            <div class="content">
+                <div class="section">
+                    <div class="form-group">
+                        <label>Тип модели</label>
+                        <select id="modelType">
+                            <option value="dqn" selected>DQN</option>
+                            <option value="sac">SAC</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Символ</label>
+                        <select id="tlSymbol"></select>
+                    </div>
+                    <div class="form-group">
+                        <label>Run</label>
+                        <select id="tlRunId"></select>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>Диапазоны параметров (черновик)</h3>
+                    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 12px;">
+                        <div>
+                            <label>T1 (min,max,step)</label>
+                            <input id="pT1" value="0.10,0.60,0.05">
+                        </div>
+                        <div>
+                            <label>T2 (min,max,step)</label>
+                            <input id="pT2" value="0.10,0.90,0.05">
+                        </div>
+                        <div>
+                            <label>Position % (min,max,step)</label>
+                            <input id="pPos" value="0.05,0.50,0.05">
+                        </div>
+                    </div>
+                    <div class="button-group" style="margin-top: 12px;">
+                        <button class="btn btn-info" onclick="analyze()">🔍 Анализ результатов</button>
+                        <button class="btn btn-primary" onclick="optimize()">⚙ Запустить оптимизацию</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div id="status" class="status" style="display: none;"></div>
+                    <div id="output" class="results" style="display: none;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadSymbols(){
+            const mt = document.getElementById('modelType').value;
+            try{
+                const resp = await fetch(`/api/trade_lab/symbols?model_type=${encodeURIComponent(mt)}`);
+                const data = await resp.json();
+                const sel = document.getElementById('tlSymbol');
+                const list = (data && data.success && Array.isArray(data.symbols)) ? data.symbols : [];
+                sel.innerHTML = list.map(s=>`<option value=\"${s}\">${s}</option>`).join('');
+                await loadRuns();
+            }catch(_){}
+        }
+        async function loadRuns(){
+            const mt = document.getElementById('modelType').value;
+            const sym = document.getElementById('tlSymbol').value;
+            if(!sym) return;
+            try{
+                const resp = await fetch(`/api/trade_lab/runs?model_type=${encodeURIComponent(mt)}&symbol=${encodeURIComponent(sym)}`);
+                const data = await resp.json();
+                const sel = document.getElementById('tlRunId');
+                const list = (data && data.success && Array.isArray(data.runs)) ? data.runs : [];
+                sel.innerHTML = list.map(r=>`<option value=\"${r.run_id}\">${r.run_id}</option>`).join('');
+            }catch(_){}
+        }
+        function collectPayload(){
+            const mt = document.getElementById('modelType').value;
+            const sym = document.getElementById('tlSymbol').value;
+            const run = document.getElementById('tlRunId').value;
+            const parseRange = (s)=>{ const [a,b,c] = String(s||'').split(',').map(x=>parseFloat(x)); return {min:a, max:b, step:c}; };
+            return {
+                model_type: mt,
+                symbol: sym,
+                run_id: run,
+                grid: {
+                    T1: parseRange(document.getElementById('pT1').value),
+                    T2: parseRange(document.getElementById('pT2').value),
+                    position_frac: parseRange(document.getElementById('pPos').value),
+                }
+            };
+        }
+        async function analyze(){
+            const status = document.getElementById('status');
+            const output = document.getElementById('output');
+            status.style.display = 'block'; status.className = 'status running'; status.textContent = 'Выполняется анализ...';
+            output.style.display = 'none';
+            try{
+                const resp = await fetch('/api/trade_lab/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(collectPayload()) });
+                const data = await resp.json();
+                if(!data.success) throw new Error(data.error || 'Ошибка анализа');
+                status.className='status success'; status.textContent='Готово';
+                output.style.display='block'; output.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+            }catch(e){
+                status.className='status error'; status.textContent='Ошибка: '+e.message;
+            }
+        }
+        async function optimize(){
+            const status = document.getElementById('status');
+            const output = document.getElementById('output');
+            status.style.display = 'block'; status.className = 'status running'; status.textContent = 'Запуск оптимизации...';
+            output.style.display = 'none';
+            try{
+                const resp = await fetch('/api/trade_lab/optimize', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(collectPayload()) });
+                const data = await resp.json();
+                if(!data.success) throw new Error(data.error || 'Ошибка запуска');
+                status.className='status info'; status.textContent='Задача запущена: '+data.task_id;
+                pollStatus(data.task_id);
+            }catch(e){
+                status.className='status error'; status.textContent='Ошибка: '+e.message;
+            }
+        }
+        async function pollStatus(taskId){
+            const status = document.getElementById('status');
+            const output = document.getElementById('output');
+            try{
+                const r = await fetch(`/api/trade_lab/jobs/${encodeURIComponent(taskId)}/status`);
+                const s = await r.json();
+                if(s.success && s.ready){
+                    const rr = await fetch(`/api/trade_lab/jobs/${encodeURIComponent(taskId)}/result`);
+                    const jd = await rr.json();
+                    if(jd.success){
+                        status.className='status success'; status.textContent='Оптимизация завершена';
+                        output.style.display='block'; output.innerHTML = `<pre>${JSON.stringify(jd.result, null, 2)}</pre>`;
+                        return;
+                    }
+                }
+            }catch(_){}
+            setTimeout(()=>pollStatus(taskId), 1500);
+        }
+        document.addEventListener('DOMContentLoaded', function(){
+            loadSymbols();
+            document.getElementById('modelType').addEventListener('change', loadSymbols);
+            document.getElementById('tlSymbol').addEventListener('change', loadRuns);
+        });
+    </script>
+    <script src="/static/js/sidebar.js"></script>
+</body>
+</html>
+
+

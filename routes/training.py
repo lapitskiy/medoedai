@@ -118,6 +118,8 @@ def train_dqn_symbol_route():
         seed = _rnd.randint(1, 2**31 - 1)
         logger.info(f"[train_dqn_symbol] generated random seed={seed}")
 
+    # Направление обучения (long|short)
+    direction = (data.get('direction') or request.form.get('direction') or 'long').strip().lower()
     # Переключаемся на Tianshou по умолчанию (engine='ts')
     engine = (data.get('engine') or request.args.get('engine') or 'ts').lower()
     # Дедупликация на этапе постановки: не ставим, если такой же запуск уже в очереди/был недавно
@@ -127,7 +129,7 @@ def train_dqn_symbol_route():
         _train_enc = 1 if train_encoder else 0
         _eps = episodes if (episodes is not None) else 'env'
         _ep_len = episode_length if (episode_length is not None) else 'cfg'
-        _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}"
+        _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}"
         _queued_key = f"celery:train:queued:{_biz_key}"
         _running_key_biz = f"celery:train:running:{_biz_key}"
         _finished_key = f"celery:train:finished:{_biz_key}"
@@ -143,7 +145,7 @@ def train_dqn_symbol_route():
     except Exception:
         pass
 
-    task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length, 'engine': engine, 'encoder_id': encoder_id, 'train_encoder': train_encoder}, queue="train")
+    task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length, 'engine': engine, 'encoder_id': encoder_id, 'train_encoder': train_encoder, 'direction': direction}, queue="train")
     logger.info(f"/train_dqn_symbol queued symbol={symbol} queue=train task_id={task.id}")
     # Сохраняем task_id для отображения на главной и отметку per-symbol
     try:
@@ -162,7 +164,7 @@ def train_dqn_symbol_route():
             _train_enc = 1 if train_encoder else 0
             _eps = episodes if (episodes is not None) else 'env'
             _ep_len = episode_length if (episode_length is not None) else 'cfg'
-            _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}"
+            _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}"
             redis_client.setex(f"celery:train:queued:{_biz_key}", max(30, _ttl), task.id)
         except Exception:
             pass

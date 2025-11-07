@@ -218,6 +218,10 @@
                 const lines = [];
                 lines.push(`Символ: ${symbolDir.toUpperCase()}`);
                 lines.push(`Run: ${runId}`);
+                const dir = (result.direction || found?.direction || '').toString().trim().toLowerCase();
+                if (dir === 'long' || dir === 'short') {
+                    lines.push(`Направление: ${dir.toUpperCase()}`);
+                }
                 lines.push(`Seed: ${seed}`);
                 if (episodeLength !== null && episodeLength !== undefined) {
                     lines.push(`Длина эпизода (шагов): ${episodeLength}`);
