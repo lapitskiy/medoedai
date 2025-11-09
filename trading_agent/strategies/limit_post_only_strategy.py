@@ -25,7 +25,7 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
         best_bid, best_ask = self.gateway.get_best_bid_ask(symbol)
         price = self._edge_price(side, best_bid, best_ask, tick, offset_ticks=1)
 
-        # Подготовим TP/SL, если включён биржевой риск-менеджмент (берём проценты из Redis)
+        # Подготовим TP/SL, если включён биржевой риск-менеджмент (берём проценты или ATR-настройки из Redis)
         extra_params = {}
         try:
             try:
@@ -36,32 +36,75 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
             risk_type = 'exchange_orders'
             tp_pct = None
             sl_pct = None
+            risk_stop_mode = 'fixed_pct'  # 'fixed_pct' | 'atr_tp_sl'
+            atr_k = 2.5
+            atr_m = 1.8
+            atr_min_sl_mult = 1.0
             try:
                 if rc is not None:
                     _tp = rc.get(f'trading:take_profit_pct:{symbol}') or rc.get('trading:take_profit_pct')
                     _sl = rc.get(f'trading:stop_loss_pct:{symbol}') or rc.get('trading:stop_loss_pct')
                     _rt = rc.get(f'trading:risk_management_type:{symbol}') or rc.get('trading:risk_management_type')
+                    _rsm = rc.get(f'trading:risk_stop_mode:{symbol}') or rc.get('trading:risk_stop_mode')
+                    _ak = rc.get(f'trading:atr_k:{symbol}') or rc.get('trading:atr_k')
+                    _am = rc.get(f'trading:atr_m:{symbol}') or rc.get('trading:atr_m')
+                    _ams = rc.get(f'trading:atr_min_sl_mult:{symbol}') or rc.get('trading:atr_min_sl_mult')
                     if _rt is not None and str(_rt).strip() != '':
                         risk_type = str(_rt)
                     if _tp is not None and str(_tp).strip() != '':
                         tp_pct = float(_tp)
                     if _sl is not None and str(_sl).strip() != '':
                         sl_pct = float(_sl)
+                    if _rsm is not None and str(_rsm).strip() != '':
+                        risk_stop_mode = str(_rsm)
+                    try:
+                        if _ak is not None and str(_ak).strip() != '':
+                            atr_k = float(_ak)
+                        if _am is not None and str(_am).strip() != '':
+                            atr_m = float(_am)
+                        if _ams is not None and str(_ams).strip() != '':
+                            atr_min_sl_mult = float(_ams)
+                    except Exception:
+                        pass
             except Exception:
                 pass
             # Только если включены биржевые ордера
             if risk_type in ('exchange_orders', 'both'):
                 # На этапе лимит-заявки опираемся на цену лимита
-                if isinstance(tp_pct, (int, float)) and float(tp_pct) > 0:
-                    if side == Side.BUY:
-                        extra_params['takeProfit'] = float(f"{price * (1.0 + float(tp_pct)/100.0):.8f}")
-                    else:
-                        extra_params['takeProfit'] = float(f"{price * (1.0 - float(tp_pct)/100.0):.8f}")
-                if isinstance(sl_pct, (int, float)) and float(sl_pct) > 0:
-                    if side == Side.BUY:
-                        extra_params['stopLoss'] = float(f"{price * (1.0 - float(sl_pct)/100.0):.8f}")
-                    else:
-                        extra_params['stopLoss'] = float(f"{price * (1.0 + float(sl_pct)/100.0):.8f}")
+                if risk_stop_mode == 'atr_tp_sl':
+                    try:
+                        from utils.indicators import get_atr_1h
+                        atr_abs, _, _ = get_atr_1h(symbol, length=21)
+                        k_eff = max(float(atr_k), float(atr_min_sl_mult))
+                        if side == Side.BUY:
+                            extra_params['takeProfit'] = float(f"{price + float(atr_m) * atr_abs:.8f}")
+                            extra_params['stopLoss']   = float(f"{price - k_eff * atr_abs:.8f}")
+                        else:
+                            extra_params['takeProfit'] = float(f"{price - float(atr_m) * atr_abs:.8f}")
+                            extra_params['stopLoss']   = float(f"{price + k_eff * atr_abs:.8f}")
+                    except Exception:
+                        # Fallback к процентам
+                        if isinstance(tp_pct, (int, float)) and float(tp_pct) > 0:
+                            if side == Side.BUY:
+                                extra_params['takeProfit'] = float(f"{price * (1.0 + float(tp_pct)/100.0):.8f}")
+                            else:
+                                extra_params['takeProfit'] = float(f"{price * (1.0 - float(tp_pct)/100.0):.8f}")
+                        if isinstance(sl_pct, (int, float)) and float(sl_pct) > 0:
+                            if side == Side.BUY:
+                                extra_params['stopLoss'] = float(f"{price * (1.0 - float(sl_pct)/100.0):.8f}")
+                            else:
+                                extra_params['stopLoss'] = float(f"{price * (1.0 + float(sl_pct)/100.0):.8f}")
+                else:
+                    if isinstance(tp_pct, (int, float)) and float(tp_pct) > 0:
+                        if side == Side.BUY:
+                            extra_params['takeProfit'] = float(f"{price * (1.0 + float(tp_pct)/100.0):.8f}")
+                        else:
+                            extra_params['takeProfit'] = float(f"{price * (1.0 - float(tp_pct)/100.0):.8f}")
+                    if isinstance(sl_pct, (int, float)) and float(sl_pct) > 0:
+                        if side == Side.BUY:
+                            extra_params['stopLoss'] = float(f"{price * (1.0 - float(sl_pct)/100.0):.8f}")
+                        else:
+                            extra_params['stopLoss'] = float(f"{price * (1.0 + float(sl_pct)/100.0):.8f}")
                 if 'takeProfit' in extra_params or 'stopLoss' in extra_params:
                     # Триггеры по последней цене
                     extra_params['tpTriggerBy'] = 'LastPrice'
@@ -331,27 +374,69 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                 risk_type = 'exchange_orders'
                 tp_pct = None
                 sl_pct = None
+                risk_stop_mode = 'fixed_pct'
+                atr_k = 2.5
+                atr_m = 1.8
+                atr_min_sl_mult = 1.0
                 if rc is not None:
                     _tp = rc.get(f'trading:take_profit_pct:{cur.symbol}') or rc.get('trading:take_profit_pct')
                     _sl = rc.get(f'trading:stop_loss_pct:{cur.symbol}') or rc.get('trading:stop_loss_pct')
                     _rt = rc.get(f'trading:risk_management_type:{cur.symbol}') or rc.get('trading:risk_management_type')
+                    _rsm = rc.get(f'trading:risk_stop_mode:{cur.symbol}') or rc.get('trading:risk_stop_mode')
+                    _ak = rc.get(f'trading:atr_k:{cur.symbol}') or rc.get('trading:atr_k')
+                    _am = rc.get(f'trading:atr_m:{cur.symbol}') or rc.get('trading:atr_m')
+                    _ams = rc.get(f'trading:atr_min_sl_mult:{cur.symbol}') or rc.get('trading:atr_min_sl_mult')
                     if _rt is not None and str(_rt).strip() != '':
                         risk_type = str(_rt)
                     if _tp is not None and str(_tp).strip() != '':
                         tp_pct = float(_tp)
                     if _sl is not None and str(_sl).strip() != '':
                         sl_pct = float(_sl)
+                    if _rsm is not None and str(_rsm).strip() != '':
+                        risk_stop_mode = str(_rsm)
+                    try:
+                        if _ak is not None and str(_ak).strip() != '':
+                            atr_k = float(_ak)
+                        if _am is not None and str(_am).strip() != '':
+                            atr_m = float(_am)
+                        if _ams is not None and str(_ams).strip() != '':
+                            atr_min_sl_mult = float(_ams)
+                    except Exception:
+                        pass
                 if risk_type in ('exchange_orders', 'both'):
-                    if isinstance(tp_pct, (int, float)) and float(tp_pct) > 0:
-                        if cur.side == Side.BUY:
-                            extra_params['takeProfit'] = float(f"{target * (1.0 + float(tp_pct)/100.0):.8f}")
-                        else:
-                            extra_params['takeProfit'] = float(f"{target * (1.0 - float(tp_pct)/100.0):.8f}")
-                    if isinstance(sl_pct, (int, float)) and float(sl_pct) > 0:
-                        if cur.side == Side.BUY:
-                            extra_params['stopLoss'] = float(f"{target * (1.0 - float(sl_pct)/100.0):.8f}")
-                        else:
-                            extra_params['stopLoss'] = float(f"{target * (1.0 + float(sl_pct)/100.0):.8f}")
+                    if risk_stop_mode == 'atr_tp_sl':
+                        try:
+                            from utils.indicators import get_atr_1h
+                            atr_abs, _, _ = get_atr_1h(cur.symbol, length=21)
+                            k_eff = max(float(atr_k), float(atr_min_sl_mult))
+                            if cur.side == Side.BUY:
+                                extra_params['takeProfit'] = float(f"{target + float(atr_m) * atr_abs:.8f}")
+                                extra_params['stopLoss']   = float(f"{target - k_eff * atr_abs:.8f}")
+                            else:
+                                extra_params['takeProfit'] = float(f"{target - float(atr_m) * atr_abs:.8f}")
+                                extra_params['stopLoss']   = float(f"{target + k_eff * atr_abs:.8f}")
+                        except Exception:
+                            if isinstance(tp_pct, (int, float)) and float(tp_pct) > 0:
+                                if cur.side == Side.BUY:
+                                    extra_params['takeProfit'] = float(f"{target * (1.0 + float(tp_pct)/100.0):.8f}")
+                                else:
+                                    extra_params['takeProfit'] = float(f"{target * (1.0 - float(tp_pct)/100.0):.8f}")
+                            if isinstance(sl_pct, (int, float)) and float(sl_pct) > 0:
+                                if cur.side == Side.BUY:
+                                    extra_params['stopLoss'] = float(f"{target * (1.0 - float(sl_pct)/100.0):.8f}")
+                                else:
+                                    extra_params['stopLoss'] = float(f"{target * (1.0 + float(sl_pct)/100.0):.8f}")
+                    else:
+                        if isinstance(tp_pct, (int, float)) and float(tp_pct) > 0:
+                            if cur.side == Side.BUY:
+                                extra_params['takeProfit'] = float(f"{target * (1.0 + float(tp_pct)/100.0):.8f}")
+                            else:
+                                extra_params['takeProfit'] = float(f"{target * (1.0 - float(tp_pct)/100.0):.8f}")
+                        if isinstance(sl_pct, (int, float)) and float(sl_pct) > 0:
+                            if cur.side == Side.BUY:
+                                extra_params['stopLoss'] = float(f"{target * (1.0 - float(sl_pct)/100.0):.8f}")
+                            else:
+                                extra_params['stopLoss'] = float(f"{target * (1.0 + float(sl_pct)/100.0):.8f}")
                     if 'takeProfit' in extra_params or 'stopLoss' in extra_params:
                         extra_params['tpTriggerBy'] = 'LastPrice'
                         extra_params['slTriggerBy'] = 'LastPrice'

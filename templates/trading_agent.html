@@ -311,6 +311,67 @@
                             • Стоп-лосс: <span id="stopLossDisplay">-1.0%</span>
                         </div>
                     </div>
+
+                    <!-- Стратегия стопа (проценты или ATR) -->
+                    <div style="margin-top:15px;">
+                        <label style="font-weight:500; margin-bottom:5px; display:block;">Стратегия стопа</label>
+                        <select id="riskStopMode" class="form-control" onchange="autoSaveTradingConfig()">
+                            <option value="fixed_pct" selected>Фиксированные проценты (%)</option>
+                            <option value="atr_tp_sl">ATR TP/SL (1h, 21)</option>
+                            <option value="atr_trailing">ATR Trailing (1h, 21)</option>
+                        </select>
+                        <small style="color:#666; display:block; margin-top:6px;">ATR рассчитывается по 1-часовым свечам (длина 21)</small>
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:10px; margin-top:10px;">
+                        <div>
+                            <label style="font-weight:500;">ATR m (TP множитель)</label>
+                            <input id="atrMInput" type="number" min="0" step="0.1" class="form-control" value="1.8" oninput="autoSaveTradingConfig()" />
+                        </div>
+                        <div>
+                            <label style="font-weight:500;">ATR k (SL множитель)</label>
+                            <input id="atrKInput" type="number" min="0" step="0.1" class="form-control" value="2.5" oninput="autoSaveTradingConfig()" />
+                        </div>
+                        <div>
+                            <label style="font-weight:500;">min SL множитель</label>
+                            <input id="atrMinSLInput" type="number" min="0" step="0.1" class="form-control" value="1.0" oninput="autoSaveTradingConfig()" />
+                        </div>
+                    </div>
+                    <!-- Настройки ATR-трейлинга -->
+                    <div style="margin-top:10px;">
+                        <label style="font-weight:500; margin-bottom:5px; display:block;">ATR‑трейлинг</label>
+                        <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:10px;">
+                            <div>
+                                <label style="font-weight:500;">
+                                    <input id="atrTrailingEnabled" type="checkbox" oninput="autoSaveTradingConfig()"> Включить трейлинг
+                                </label>
+                            </div>
+                            <div>
+                                <label style="font-weight:500; display:block;">Способ активации</label>
+                                <select id="atrTrailActivateMode" class="form-control" onchange="updateTrailingInputs(); autoSaveTradingConfig();">
+                                    <option value="percent" selected>По % от входа</option>
+                                    <option value="atr">По ATR множителю</option>
+                                </select>
+                                <small style="color:#666; display:block; margin-top:6px;">Когда включать подтяжку стопа</small>
+                            </div>
+                            <div>
+                                <label style="font-weight:500; display:block;">Trail k (ATR)</label>
+                                <input id="atrTrailKInput" type="number" min="0" step="0.1" class="form-control" value="1.0" placeholder="trail k (ATR)" oninput="autoSaveTradingConfig()">
+                                <small style="color:#666; display:block; margin-top:6px;">SL = peak − k*ATR (long)</small>
+                            </div>
+                        </div>
+                        <div id="atrTrailActivateInputs" style="display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:10px; margin-top:10px;">
+                            <div id="atrTrailActivatePercentWrapper">
+                                <label style="font-weight:500; display:block;">Активация (% от входа)</label>
+                                <input id="atrTrailActivatePercent" type="number" min="0" step="0.1" class="form-control" value="0.5" placeholder="0.5" oninput="autoSaveTradingConfig()">
+                                <small style="color:#666; display:block; margin-top:6px;">Пример: 0.5% = в безубыток при +0.5%</small>
+                            </div>
+                            <div id="atrTrailActivateAtrWrapper" style="display:none;">
+                                <label style="font-weight:500; display:block;">Активация (ATR множитель)</label>
+                                <input id="atrTrailActivateAtr" type="number" min="0" step="0.1" class="form-control" value="0.5" placeholder="0.5" oninput="autoSaveTradingConfig()">
+                                <small style="color:#666; display:block; margin-top:6px;">Пример: 0.5 = активировать при +0.5*ATR</small>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 
                 <div id="modelInfo" class="model-info" style="display: none;">
@@ -1913,6 +1974,23 @@
             updateRiskManagementDisplay();
         }
 
+        function updateTrailingInputs(){
+            try{
+                const mode = document.getElementById('atrTrailActivateMode')?.value || 'percent';
+                const percentWrapper = document.getElementById('atrTrailActivatePercentWrapper');
+                const atrWrapper = document.getElementById('atrTrailActivateAtrWrapper');
+                if (percentWrapper && atrWrapper){
+                    if (mode === 'atr'){
+                        percentWrapper.style.display = 'none';
+                        atrWrapper.style.display = '';
+                    }else{
+                        percentWrapper.style.display = '';
+                        atrWrapper.style.display = 'none';
+                    }
+                }
+            }catch(_){ }
+        }
+
         async function autoSaveTradingConfig(){
             try{
                 const symbol = (document.getElementById('ensembleSymbolSelect')?.value) || 'BTCUSDT';
@@ -1922,9 +2000,20 @@
                 // Добавляем параметры риск-менеджмента
                 const tpEnabled = !!(document.getElementById('takeProfitEnabled')?.checked);
                 const slEnabled = !!(document.getElementById('stopLossEnabled')?.checked);
-            const takeProfitPct = parseFloat(document.getElementById('takeProfitPct')?.value || '1');
-            const stopLossPct = parseFloat(document.getElementById('stopLossPct')?.value || '1');
+                const takeProfitPct = parseFloat(document.getElementById('takeProfitPct')?.value || '1');
+                const stopLossPct = parseFloat(document.getElementById('stopLossPct')?.value || '1');
                 const riskType = document.getElementById('riskManagementType')?.value || 'exchange_orders';
+                // ATR‑режим стопа
+                const riskStopMode = (document.getElementById('riskStopMode')?.value) || 'fixed_pct';
+                const atrM = parseFloat(document.getElementById('atrMInput')?.value || '1.8');
+                const atrK = parseFloat(document.getElementById('atrKInput')?.value || '2.5');
+                const atrMinSL = parseFloat(document.getElementById('atrMinSLInput')?.value || '1.0');
+                // Трейлинг
+                const atrTrailingEnabled = !!(document.getElementById('atrTrailingEnabled')?.checked);
+                const atrTrailK = parseFloat(document.getElementById('atrTrailKInput')?.value || '1.0');
+                const atrTrailActivateMode = (document.getElementById('atrTrailActivateMode')?.value) || 'percent';
+                const atrTrailActivatePercent = parseFloat(document.getElementById('atrTrailActivatePercent')?.value || '0.5');
+                const atrTrailActivateAtr = parseFloat(document.getElementById('atrTrailActivateAtr')?.value || '0.5');
                 // Доля счёта
                 let accountPct = 100;
                 try{ accountPct = parseInt(document.getElementById('accountPct')?.value||'100',10) || 100; }catch(_){ accountPct = 100; }
@@ -1938,6 +2027,20 @@
                 const bodyObj = { symbols: [symbol], model_paths: selectedPaths, consensus: consensusSettings, risk_management_type: riskType, account_pct: accountPct };
                 if (tpEnabled) bodyObj.take_profit_pct = takeProfitPct;
                 if (slEnabled) bodyObj.stop_loss_pct = stopLossPct;
+                // Новые поля по ATR
+                bodyObj.risk_stop_mode = riskStopMode;
+                bodyObj.atr_k = atrK;
+                bodyObj.atr_m = atrM;
+                bodyObj.atr_min_sl_mult = atrMinSL;
+                // Поля трейлинга
+                bodyObj.trailing_enabled = atrTrailingEnabled;
+                bodyObj.trailing_mode = (riskStopMode === 'atr_trailing') ? 'atr_trailing' : (atrTrailingEnabled ? 'atr_trailing' : null);
+                bodyObj.atr_trail_mult = atrTrailK;
+                bodyObj.trailing_activate_mode = atrTrailActivateMode;
+                bodyObj.trailing_activate_value = (atrTrailActivateMode === 'atr') ? atrTrailActivateAtr : atrTrailActivatePercent;
+                if (atrTrailActivateMode === 'percent') {
+                    bodyObj.atr_trail_activate_pct = atrTrailActivatePercent;
+                }
                 payload.body = JSON.stringify(bodyObj);
                 await fetch('/api/trading/save_config', payload);
                 
@@ -1984,6 +2087,7 @@
             initConsensusSelects();
             initRiskManagementSliders(); // Добавить эту строку
             loadBybitAccounts();
+            updateTrailingInputs();
             
             // Загружаем настройки консенсуса для BTCUSDT по умолчанию
             loadConsensusSettingsForSymbol('BTCUSDT');
@@ -2010,6 +2114,17 @@
                     const s = a.settings || {};
                     const lim = s.limit_config || {};
                     const dbg = (s.debug_buy_env===true? 'ON' : (s.debug_buy_env===false? 'OFF' : '—'));
+                    // Trailing summary
+                    const trEnabled = (s.trailing_enabled===true) ? 'ON' : (s.trailing_enabled===false ? 'OFF' : '—');
+                    const trMode = s.trailing_mode || '—';
+                    const trK = (typeof s.atr_trail_mult === 'number') ? s.atr_trail_mult : '—';
+                    const trAct = (() => {
+                        if (s.trailing_activate_mode === 'atr' && typeof s.trailing_activate_value === 'number') return `${s.trailing_activate_value} ATR`;
+                        if (s.trailing_activate_mode === 'percent' && typeof s.trailing_activate_value === 'number') return `${s.trailing_activate_value}%`;
+                        if (typeof s.atr_trail_activate_pct === 'number') return `${s.atr_trail_activate_pct}%`;
+                        return '—';
+                    })();
+                    const stopStrategy = s.risk_stop_mode || '—';
                     return `
                     <div class="trade-item" style="border-left:4px solid ${a.active?'#28a745':'#6c757d'};">
                         <div class="trade-header">
@@ -2025,6 +2140,7 @@
                             <div class="trade-detail"><div class="label">TTL лок</div><div class="value">${a.lock_ttl??'—'}</div></div>
                             <div class="trade-detail"><div class="label">Исполнение</div><div class="value">${s.execution_mode||'—'}</div></div>
                             <div class="trade-detail"><div class="label">Выход</div><div class="value">${s.exit_mode||'—'}</div></div>
+                            <div class="trade-detail"><div class="label">Stop strategy</div><div class="value">${stopStrategy}</div></div>
                             <div class="trade-detail"><div class="label">Плечо</div><div class="value">${(s.leverage!=null?s.leverage:'—')}</div></div>
                             <div class="trade-detail"><div class="label">Account %</div><div class="value">${(s.account_pct!=null?s.account_pct+'%':'—')}</div></div>
                             <div class="trade-detail"><div class="label">Risk type</div><div class="value">${s.risk_management_type||'—'}</div></div>
@@ -2032,6 +2148,9 @@
                             <div class="trade-detail"><div class="label">TTL лимитки</div><div class="value">${(lim.max_lifetime_sec!=null?lim.max_lifetime_sec+'s':'—')}</div></div>
                             <div class="trade-detail"><div class="label">Offset max ticks</div><div class="value">${(lim.offset_max_ticks!=null?lim.offset_max_ticks:'—')}</div></div>
                             <div class="trade-detail"><div class="label">DEBUG_BUY</div><div class="value">${dbg}</div></div>
+                            <div class="trade-detail"><div class="label">Trailing</div><div class="value">${trEnabled}</div></div>
+                            <div class="trade-detail"><div class="label">Trailing mode</div><div class="value">${trMode}</div></div>
+                            <div class="trade-detail"><div class="label">Trail k / Activate</div><div class="value">${trK} / ${trAct}</div></div>
                         </div>
                         <div style="text-align:right;margin-top:8px;">
                             <button class="btn btn-danger" onclick="stopAgent('${a.symbol}')">🛑 Стоп</button>

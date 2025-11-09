@@ -2,6 +2,7 @@ from flask import Blueprint, jsonify, request, render_template
 from utils.redis_utils import get_redis_client
 from tasks.celery_task_trade import start_trading_task
 from utils.trade_utils import get_recent_trades, get_trade_statistics, get_trades_by_symbol, get_model_predictions
+from utils.indicators import get_atr_1h
 import logging
 import docker
 import json
@@ -57,6 +58,16 @@ def save_trading_config():
         take_profit_pct = data.get('take_profit_pct')  # Процент тейк-профита
         stop_loss_pct = data.get('stop_loss_pct')      # Процент стоп-лосса
         risk_management_type = data.get('risk_management_type')  # Способ управления рисками
+        # Новые параметры ATR‑режима стопов
+        atr_k = data.get('atr_k')
+        atr_m = data.get('atr_m')
+        atr_min_sl_mult = data.get('atr_min_sl_mult')
+        risk_stop_mode = data.get('risk_stop_mode')  # 'fixed_pct' | 'atr_tp_sl' | (в будущем 'atr_trailing')
+        # Параметры трейлинга
+        trailing_enabled = data.get('trailing_enabled')
+        trailing_mode = data.get('trailing_mode')
+        atr_trail_mult = data.get('atr_trail_mult')
+        atr_trail_activate_pct = data.get('atr_trail_activate_pct')
         account_pct = data.get('account_pct')  # Доля счёта для сделки, %
         exit_mode = str(data.get('exit_mode') or '').strip() or None  # 'prediction' | 'risk_orders'
         leverage = data.get('leverage')  # 1..5
@@ -107,6 +118,53 @@ def save_trading_config():
             rc.set('trading:stop_loss_pct', str(stop_loss_pct))
         if risk_management_type is not None:
             rc.set('trading:risk_management_type', str(risk_management_type))
+        # Per‑symbol сохранение для ATR‑/Trailing‑режимов (если указан символ)
+        try:
+            if symbols:
+                sym_ps = symbols[0]
+                if atr_k is not None:
+                    rc.set(f'trading:atr_k:{sym_ps}', str(atr_k))
+                if atr_m is not None:
+                    rc.set(f'trading:atr_m:{sym_ps}', str(atr_m))
+                if atr_min_sl_mult is not None:
+                    rc.set(f'trading:atr_min_sl_mult:{sym_ps}', str(atr_min_sl_mult))
+                if risk_stop_mode is not None:
+                    rc.set(f'trading:risk_stop_mode:{sym_ps}', str(risk_stop_mode))
+                # Trailing per-symbol
+                if trailing_enabled is not None:
+                    try:
+                        rc.set(f'trading:trailing_enabled:{sym_ps}', '1' if (str(trailing_enabled).strip().lower() in ('1','true','yes','on')) else '0')
+                    except Exception:
+                        rc.set(f'trading:trailing_enabled:{sym_ps}', str(trailing_enabled))
+                if trailing_mode is not None:
+                    rc.set(f'trading:trailing_mode:{sym_ps}', str(trailing_mode))
+                if atr_trail_mult is not None:
+                    rc.set(f'trading:atr_trail_mult:{sym_ps}', str(atr_trail_mult))
+                if atr_trail_activate_pct is not None:
+                    rc.set(f'trading:atr_trail_activate_pct:{sym_ps}', str(atr_trail_activate_pct))
+        except Exception:
+            pass
+        # Глобальные ключи ATR‑режима
+        if atr_k is not None:
+            rc.set('trading:atr_k', str(atr_k))
+        if atr_m is not None:
+            rc.set('trading:atr_m', str(atr_m))
+        if atr_min_sl_mult is not None:
+            rc.set('trading:atr_min_sl_mult', str(atr_min_sl_mult))
+        if risk_stop_mode is not None:
+            rc.set('trading:risk_stop_mode', str(risk_stop_mode))
+        # Глобальные ключи трейлинга
+        if trailing_enabled is not None:
+            try:
+                rc.set('trading:trailing_enabled', '1' if (str(trailing_enabled).strip().lower() in ('1','true','yes','on')) else '0')
+            except Exception:
+                rc.set('trading:trailing_enabled', str(trailing_enabled))
+        if trailing_mode is not None:
+            rc.set('trading:trailing_mode', str(trailing_mode))
+        if atr_trail_mult is not None:
+            rc.set('trading:atr_trail_mult', str(atr_trail_mult))
+        if atr_trail_activate_pct is not None:
+            rc.set('trading:atr_trail_activate_pct', str(atr_trail_activate_pct))
         if account_pct is not None:
             try:
                 ap = int(account_pct)
@@ -568,6 +626,14 @@ def list_trading_agents():
                 limit_cfg_raw = rc.get(f'trading:limit_config:{sym}')
                 risk_type_v = rc.get(f'trading:risk_management_type:{sym}') or rc.get('trading:risk_management_type')
                 account_pct_v = rc.get('trading:account_pct')
+                risk_stop_mode_v = rc.get(f'trading:risk_stop_mode:{sym}') or rc.get('trading:risk_stop_mode')
+                # Trailing (пер-символ / глобально)
+                trailing_enabled_v = rc.get(f'trading:trailing_enabled:{sym}') or rc.get('trading:trailing_enabled')
+                trailing_mode_v = rc.get(f'trading:trailing_mode:{sym}') or rc.get('trading:trailing_mode')
+                atr_trail_mult_v = rc.get(f'trading:atr_trail_mult:{sym}') or rc.get('trading:atr_trail_mult')
+                atr_trail_activate_pct_v = rc.get(f'trading:atr_trail_activate_pct:{sym}') or rc.get('trading:atr_trail_activate_pct')
+                trailing_activate_mode_v = rc.get(f'trading:trailing_activate_mode:{sym}') or rc.get('trailing_activate_mode')
+                trailing_activate_value_v = rc.get(f'trading:trailing_activate_value:{sym}') or rc.get('trailing_activate_value')
                 try:
                     limit_cfg = json.loads(limit_cfg_raw) if limit_cfg_raw else None
                 except Exception:
@@ -619,7 +685,15 @@ def list_trading_agents():
                     'leverage': (int(str(leverage_v)) if leverage_v not in (None, '') else None),
                     'limit_config': (limit_cfg or {}),
                     'risk_management_type': (str(risk_type_v).strip() if risk_type_v else None),
+                    'risk_stop_mode': (str(risk_stop_mode_v).strip() if risk_stop_mode_v else None),
                     'account_pct': (int(str(account_pct_v)) if account_pct_v not in (None, '') else None),
+                    # Trailing summary (если задано)
+                    'trailing_enabled': (str(trailing_enabled_v).strip().lower() in ('1','true','yes','on') if trailing_enabled_v not in (None, '') else None),
+                    'trailing_mode': (str(trailing_mode_v).strip() if trailing_mode_v else None),
+                    'atr_trail_mult': (float(str(atr_trail_mult_v)) if atr_trail_mult_v not in (None, '') else None),
+                    'atr_trail_activate_pct': (float(str(atr_trail_activate_pct_v)) if atr_trail_activate_pct_v not in (None, '') else None),
+                    'trailing_activate_mode': (str(trailing_activate_mode_v).strip() if trailing_activate_mode_v else None),
+                    'trailing_activate_value': (float(str(trailing_activate_value_v)) if trailing_activate_value_v not in (None, '') else None),
                     'debug_buy_env': debug_buy,
                 }
             }
@@ -947,6 +1021,17 @@ def trading_manual_buy_bypass_prediction():
         execution_mode = 'market'
         leverage_val = 1
         limit_config = None
+        # Новые параметры ATR‑режима
+        risk_stop_mode = 'fixed_pct'  # 'fixed_pct' | 'atr_tp_sl'
+        atr_k = 2.5
+        atr_m = 1.8
+        atr_min_sl_mult = 1.0
+        # Параметры трейлинга (для биржевого trailing stop)
+        trailing_enabled = False
+        trailing_mode = None
+        trailing_activate_mode = None
+        trailing_activate_value = None
+        atr_trail_mult = 1.0
         try:
             if rc is None:
                 rc = get_redis_client()
@@ -974,6 +1059,30 @@ def trading_manual_buy_bypass_prediction():
                     except Exception:
                         return default
                 return default
+            def _pick_str(val, redis_val, default):
+                if val is not None:
+                    return str(val)
+                if redis_val is not None:
+                    try:
+                        return (redis_val.decode('utf-8') if isinstance(redis_val, (bytes, bytearray)) else str(redis_val))
+                    except Exception:
+                        return default
+                return default
+            def _pick_bool(val, redis_val, default):
+                candidate = val if val is not None else redis_val
+                if candidate is None:
+                    return default
+                if isinstance(candidate, (bytes, bytearray)):
+                    try:
+                        candidate = candidate.decode('utf-8')
+                    except Exception:
+                        candidate = str(candidate)
+                if isinstance(candidate, str):
+                    return candidate.strip().lower() in ('1','true','yes','on')
+                try:
+                    return bool(candidate)
+                except Exception:
+                    return default
 
             take_profit_pct = _pick_num(override.get('take_profit_pct') or data.get('take_profit_pct'), tp_sym or tp_glob, take_profit_pct)
             stop_loss_pct = _pick_num(override.get('stop_loss_pct') or data.get('stop_loss_pct'), sl_sym or sl_glob, stop_loss_pct)
@@ -981,6 +1090,28 @@ def trading_manual_buy_bypass_prediction():
             if override.get('risk_management_type') or data.get('risk_management_type') or rt:
                 raw = override.get('risk_management_type') or data.get('risk_management_type') or rt
                 risk_type = raw.decode('utf-8') if isinstance(raw, (bytes, bytearray)) else str(raw)
+
+            # ATR режим и параметры
+            risk_stop_mode = _pick_str((override.get('risk_stop_mode') or data.get('risk_stop_mode')), (rc.get(f'trading:risk_stop_mode:{sym}') or rc.get('trading:risk_stop_mode')), risk_stop_mode)
+            atr_k = _pick_num((override.get('atr_k') or data.get('atr_k')), (rc.get(f'trading:atr_k:{sym}') or rc.get('trading:atr_k')), atr_k)
+            atr_m = _pick_num((override.get('atr_m') or data.get('atr_m')), (rc.get(f'trading:atr_m:{sym}') or rc.get('trading:atr_m')), atr_m)
+            atr_min_sl_mult = _pick_num((override.get('atr_min_sl_mult') or data.get('atr_min_sl_mult')), (rc.get(f'trading:atr_min_sl_mult:{sym}') or rc.get('trading:atr_min_sl_mult')), atr_min_sl_mult)
+            # Трейлинг
+            trailing_enabled = _pick_bool((override.get('trailing_enabled') if override.get('trailing_enabled') is not None else data.get('trailing_enabled')),
+                                          (rc.get(f'trading:trailing_enabled:{sym}') or rc.get('trading:trailing_enabled')),
+                                          trailing_enabled)
+            trailing_mode = _pick_str((override.get('trailing_mode') or data.get('trailing_mode')),
+                                      (rc.get(f'trading:trailing_mode:{sym}') or rc.get('trading:trailing_mode')),
+                                      trailing_mode)
+            atr_trail_mult = _pick_num((override.get('atr_trail_mult') or data.get('atr_trail_mult')),
+                                       (rc.get(f'trading:atr_trail_mult:{sym}') or rc.get('trading:atr_trail_mult')),
+                                       atr_trail_mult)
+            trailing_activate_mode = _pick_str((override.get('trailing_activate_mode') or data.get('trailing_activate_mode')),
+                                               (rc.get(f'trading:trailing_activate_mode:{sym}') or rc.get('trailing_activate_mode')),
+                                               trailing_activate_mode or 'percent')
+            trailing_activate_value = _pick_num((override.get('trailing_activate_value') or data.get('trailing_activate_value')),
+                                                (rc.get(f'trading:trailing_activate_value:{sym}') or rc.get('trailing_activate_value')),
+                                                trailing_activate_value if trailing_activate_value is not None else 0.5)
 
             # exit_mode / execution_mode / leverage / limit_config
             raw_exit = override.get('exit_mode') or data.get('exit_mode') or em
@@ -1008,6 +1139,96 @@ def trading_manual_buy_bypass_prediction():
                 pass
         except Exception as e:
             logging.warning(f"[manual_buy] Не удалось прочитать настройки: {e}")
+
+        # Вспомогательная функция ATR‑расчёта TP/SL
+        def _atr_tp_sl_prices(symbol: str, entry_price: float, k: float, m: float, min_sl: float, side: str):
+            try:
+                atr_abs, _, _ = get_atr_1h(symbol, length=21)
+            except Exception as _e:
+                raise RuntimeError(f"ATR not available: {_e}")
+            k_eff = max(float(k), float(min_sl))
+            if side == 'buy':  # long
+                tp = entry_price + float(m) * atr_abs
+                sl = entry_price - k_eff * atr_abs
+            else:             # short
+                tp = entry_price - float(m) * atr_abs
+                sl = entry_price + k_eff * atr_abs
+            return float(tp), float(sl)
+
+        def _setup_trailing_stop(agent_obj, symbol: str, qty: float, entry_price: float, mode: Optional[str],
+                                 activate_mode: Optional[str], activate_value: Optional[float], atr_trail_k: float):
+            """
+            Создаёт биржевой trailing-stop на Bybit, опираясь на ATR.
+            """
+            exchange = getattr(agent_obj, 'exchange', None)
+            if exchange is None:
+                raise RuntimeError("exchange object not available for trailing setup")
+            exch_id = str(getattr(exchange, 'id', '')).lower()
+            if exch_id != 'bybit':
+                raise RuntimeError(f"Trailing stop currently supported only on Bybit (got {exch_id})")
+
+            mode = (mode or '').strip().lower()
+            if mode and mode != 'atr_trailing':
+                raise RuntimeError(f"Trailing mode '{mode}' not supported for exchange trailing")
+
+            if atr_trail_k is None or atr_trail_k <= 0:
+                raise RuntimeError("atr_trail_mult must be positive")
+
+            try:
+                atr_abs, _, _ = get_atr_1h(symbol, length=21)
+            except Exception as e_atr:
+                raise RuntimeError(f"ATR not available for trailing: {e_atr}")
+            if atr_abs <= 0 or entry_price <= 0:
+                raise RuntimeError("Invalid ATR or entry price for trailing")
+
+            callback_rate_pct = (atr_trail_k * atr_abs / entry_price) * 100.0
+            callback_rate_pct = max(0.05, min(5.0, callback_rate_pct))
+
+            active_price = None
+            act_mode = (activate_mode or 'percent').strip().lower()
+            act_value = activate_value if activate_value is not None else 0.5
+            if act_mode == 'atr':
+                active_price = entry_price + float(act_value) * atr_abs
+            else:  # percent
+                active_price = entry_price * (1.0 + float(act_value) / 100.0)
+
+            # Нормализуем цену под tickSize
+            try:
+                market = exchange.market(symbol)
+                price_tick = None
+                try:
+                    info = market.get('info', {})
+                    pf = info.get('priceFilter', {})
+                    price_tick = float(pf.get('tickSize')) if pf.get('tickSize') else None
+                except Exception:
+                    price_tick = None
+                if price_tick:
+                    active_price = round(round(active_price / price_tick) * price_tick, 8)
+            except Exception:
+                pass
+
+            request = {
+                'category': 'linear',
+                'symbol': symbol,
+                'side': 'Sell',  # закрываем long позицию
+                'orderType': 'TrailingStop',
+                'qty': str(float(qty)),
+                'triggerBy': 'LastPrice',
+                'reduceOnly': True,
+                'callbackRate': f"{callback_rate_pct:.3f}",
+            }
+            if active_price and active_price > 0:
+                request['activePrice'] = f"{active_price:.8f}"
+
+            try:
+                response = exchange.privatePostV5OrderCreate(request)
+                return {
+                    'callback_rate_pct': callback_rate_pct,
+                    'active_price': active_price,
+                    'order': response
+                }
+            except Exception as e_req:
+                raise RuntimeError(f"Bybit trailingStop request failed: {e_req}")
 
         # 3) Исполнение по execution_mode
         executed_price = 0.0
@@ -1080,8 +1301,19 @@ def trading_manual_buy_bypass_prediction():
                         return round((round(p / tick)) * tick, 8)  # type: ignore
                     except Exception:
                         return float(p)
-                tp_price_pre = _norm_price(cur_price * (1.0 + take_profit_pct / 100.0))
-                sl_price_pre = _norm_price(cur_price * (1.0 - stop_loss_pct / 100.0))
+                # Выбор режима стопа
+                if risk_stop_mode == 'atr_tp_sl':
+                    try:
+                        _tp_calc, _sl_calc = _atr_tp_sl_prices(sym, cur_price, atr_k, atr_m, atr_min_sl_mult, side='buy')
+                        tp_price_pre = _norm_price(_tp_calc)
+                        sl_price_pre = _norm_price(_sl_calc)
+                    except Exception:
+                        # Fallback на проценты
+                        tp_price_pre = _norm_price(cur_price * (1.0 + take_profit_pct / 100.0))
+                        sl_price_pre = _norm_price(cur_price * (1.0 - stop_loss_pct / 100.0))
+                else:
+                    tp_price_pre = _norm_price(cur_price * (1.0 + take_profit_pct / 100.0))
+                    sl_price_pre = _norm_price(cur_price * (1.0 - stop_loss_pct / 100.0))
 
                 attach_params = {
                     'leverage': str(leverage_val),
@@ -1117,6 +1349,26 @@ def trading_manual_buy_bypass_prediction():
                     logging.info(f"[/api/trading/manual_buy] market order placed: id={order.get('id')} avg={executed_price}")
                 except Exception:
                     pass
+                if trailing_enabled and risk_stop_mode == 'atr_trailing' and executed_price > 0:
+                    try:
+                        trailing_result = _setup_trailing_stop(
+                            agent,
+                            sym,
+                            float(qty),
+                            executed_price,
+                            trailing_mode,
+                            trailing_activate_mode,
+                            trailing_activate_value,
+                            atr_trail_mult
+                        )
+                        risk_orders['trailing'] = trailing_result
+                        try:
+                            logging.info(f"[/api/trading/manual_buy] trailing stop placed: rate={trailing_result.get('callback_rate_pct'):.3f}% active={trailing_result.get('active_price')}")
+                        except Exception:
+                            pass
+                    except Exception as e_trail:
+                        risk_orders['trailing_error'] = str(e_trail)
+                        logging.error(f"[/api/trading/manual_buy] trailing setup failed: {e_trail}")
                 # Дополнительная гарантированная постановка TP/SL (на случай игнорирования attached параметров биржей)
                 try:
                     from tasks.celery_task_trade import ensure_risk_orders as _ensure
@@ -1164,8 +1416,18 @@ def trading_manual_buy_bypass_prediction():
                             return round((round(p / tick)) * tick, 8)  # type: ignore
                         except Exception:
                             return float(p)
-                    tp_price = _norm_price2(executed_price * (1.0 + take_profit_pct / 100.0))
-                    sl_price = _norm_price2(executed_price * (1.0 - stop_loss_pct / 100.0))
+                    # Выбор режима стопа
+                    if risk_stop_mode == 'atr_tp_sl':
+                        try:
+                            _tp_calc, _sl_calc = _atr_tp_sl_prices(sym, executed_price, atr_k, atr_m, atr_min_sl_mult, side='buy')
+                            tp_price = _norm_price2(_tp_calc)
+                            sl_price = _norm_price2(_sl_calc)
+                        except Exception:
+                            tp_price = _norm_price2(executed_price * (1.0 + take_profit_pct / 100.0))
+                            sl_price = _norm_price2(executed_price * (1.0 - stop_loss_pct / 100.0))
+                    else:
+                        tp_price = _norm_price2(executed_price * (1.0 + take_profit_pct / 100.0))
+                        sl_price = _norm_price2(executed_price * (1.0 - stop_loss_pct / 100.0))
                     amount = float(qty)
                     # TP
                     try:
@@ -1226,6 +1488,26 @@ def trading_manual_buy_bypass_prediction():
                         logging.error(f"[/api/trading/manual_buy] risk setup failed: {e}")
                     except Exception:
                         pass
+        if executed_price and executed_price > 0 and trailing_enabled and risk_stop_mode == 'atr_trailing' and 'trailing' not in (risk_orders or {}):
+            try:
+                trailing_result = _setup_trailing_stop(
+                    agent,
+                    sym,
+                    float(qty),
+                    executed_price,
+                    trailing_mode,
+                    trailing_activate_mode,
+                    trailing_activate_value,
+                    atr_trail_mult
+                )
+                risk_orders['trailing'] = trailing_result
+                try:
+                    logging.info(f"[/api/trading/manual_buy] trailing stop placed (post-fallback): rate={trailing_result.get('callback_rate_pct'):.3f}% active={trailing_result.get('active_price')}")
+                except Exception:
+                    pass
+            except Exception as e_trail:
+                risk_orders['trailing_error'] = str(e_trail)
+                logging.error(f"[/api/trading/manual_buy] trailing setup failed (post-fallback): {e_trail}")
 
         try:
             logging.info(f"[/api/trading/manual_buy] ✓ done: symbol={sym} mode={execution_mode} risk={risk_type} executed_price={executed_price} risk_orders_keys={list(risk_orders.keys()) if isinstance(risk_orders, dict) else 'n/a'}")

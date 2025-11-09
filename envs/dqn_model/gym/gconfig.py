@@ -63,5 +63,12 @@ class GymConfig:
     # --- Параметры разделения данных для предотвращения look-ahead bias ---
     train_split_ratio: float = 0.8  # Доля данных для обучения (80% по умолчанию)
 
+    # --- ATR-based risk management (optional) ---
+    use_atr_stop: bool = True        # Включить ATR-стопы (SL/TP/Trailing)
+    atr_sl_mult: float = 1.5         # K для SL по ATR
+    atr_tp_mult: float | None = None # K для TP по ATR (None = отключен)
+    atr_trail_mult: float = 1.0      # K для trailing по ATR (от пика/дна)
+    atr_min_sl_mult: float = 1.0     # Минимальный множитель для SL (ограничение снизу)
+
  
      

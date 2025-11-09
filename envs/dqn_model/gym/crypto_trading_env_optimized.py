@@ -150,6 +150,16 @@ class CryptoTradingEnvOptimized(gym.Env):
             df_5min_raw, df_15min_raw, df_1h_raw, self.indicators_config
         )
         
+        # Доступ к ATR1h_norm, апсемпленному до 5m (если он рассчитан в preprocess)
+        try:
+            self.atr1h_norm_5m = None
+            if isinstance(self.individual_indicators, dict):
+                self.atr1h_norm_5m = self.individual_indicators.get('ATR1H_21_NORM')
+                if self.atr1h_norm_5m is not None:
+                    self.atr1h_norm_5m = self.atr1h_norm_5m.astype(np.float32)
+        except Exception:
+            self.atr1h_norm_5m = None
+        
         # Добавляем funding-фичи как дополнительные индикаторы, если есть в DataFrame
         try:
             df5_src = dfs['df_5min'] if isinstance(dfs, dict) else None
@@ -247,6 +257,25 @@ class CryptoTradingEnvOptimized(gym.Env):
                 print("🧭 Regime per-window metrics added: for each window [drift, vol, slope, r2]")
         except Exception as e:
             print(f"⚠️ Не удалось добавить regime признаки: {e}")
+        
+        # Time-features: sin/cos(hour), sin/cos(dow) — добавляем как недорогие сезонные фичи
+        try:
+            T = self.df_5min.shape[0]
+            if hasattr(self, '_candle_datetimes') and len(self._candle_datetimes) >= T:
+                hours = np.array([dt.hour for dt in self._candle_datetimes[:T]], dtype=np.float32)
+                dows = np.array([dt.weekday() for dt in self._candle_datetimes[:T]], dtype=np.float32)
+                sin_hour = np.sin(2.0 * np.pi * hours / 24.0).astype(np.float32)
+                cos_hour = np.cos(2.0 * np.pi * hours / 24.0).astype(np.float32)
+                sin_dow = np.sin(2.0 * np.pi * dows / 7.0).astype(np.float32)
+                cos_dow = np.cos(2.0 * np.pi * dows / 7.0).astype(np.float32)
+                time_feats = np.stack([sin_hour, cos_hour, sin_dow, cos_dow], axis=1).astype(np.float32)
+                if self.indicators.size > 0:
+                    self.indicators = np.concatenate([self.indicators, time_feats], axis=1).astype(np.float32)
+                else:
+                    self.indicators = time_feats
+                print("🕒 Time features added: sin/cos hour, sin/cos dow")
+        except Exception as e:
+            print(f"⚠️ Не удалось добавить time features: {e}")
         
         # ИСПРАВЛЕНИЕ: Создаем datetime информацию для фильтра времени
         try:
@@ -848,6 +877,27 @@ class CryptoTradingEnvOptimized(gym.Env):
                     self.last_buy_price = current_price
                     self.last_buy_step = self.current_step
                     
+                    # ATR freeze на входе и уровни SL/TP по ATR (если включено в cfg и ATR доступен)
+                    try:
+                        self._entry_atr_abs = None
+                        self._sl_price_atr = None
+                        self._tp_price_atr = None
+                        if bool(getattr(self.cfg, 'use_atr_stop', True)) and getattr(self, 'atr1h_norm_5m', None) is not None:
+                            idx_atr = self.current_step - 1
+                            if 0 <= idx_atr < len(self.atr1h_norm_5m):
+                                atr_norm = float(self.atr1h_norm_5m[idx_atr])
+                                atr_abs = max(1e-8, atr_norm * current_price)
+                                self._entry_atr_abs = atr_abs
+                                k_sl = float(getattr(self.cfg, 'atr_sl_mult', 1.5))
+                                self._sl_price_atr = float(self.last_buy_price - k_sl * atr_abs)
+                                k_tp = getattr(self.cfg, 'atr_tp_mult', None)
+                                if k_tp is not None:
+                                    self._tp_price_atr = float(self.last_buy_price + float(k_tp) * atr_abs)
+                    except Exception:
+                        self._entry_atr_abs = None
+                        self._sl_price_atr = None
+                        self._tp_price_atr = None
+                    
                     # Награда зависит от уверенности входа
                     base_reward = 0.03
                     confidence_bonus = entry_confidence * 0.02  # Дополнительная награда за высокую уверенность
@@ -1039,6 +1089,13 @@ class CryptoTradingEnvOptimized(gym.Env):
                 self.last_buy_step = None
                 self.trailing_stop_counter = 0
                 self.max_price_during_hold = None
+                # сброс ATR уровней
+                try:
+                    self._sl_price_atr = None
+                    self._tp_price_atr = None
+                    self._entry_atr_abs = None
+                except Exception:
+                    pass
                 
                 #self._log(f"[{self.current_step}] 🔴 SELL: {sell_amount:.2f}, PnL: {pnl:.2%}")
             else:
@@ -1099,7 +1156,15 @@ class CryptoTradingEnvOptimized(gym.Env):
                     
                     # 2. считаем просадку от пика
                     drawdown = (self.max_price_during_hold - current_price) / self.max_price_during_hold
-                    if drawdown > 0.02:
+                    # Порог трейлинга: ATR‑базированный (freeze at entry) или фикс. 2%
+                    thr_trail = 0.02
+                    try:
+                        if bool(getattr(self.cfg, 'use_atr_stop', True)) and getattr(self, '_entry_atr_abs', None) is not None:
+                            k_tr = float(getattr(self.cfg, 'atr_trail_mult', 1.0))
+                            thr_trail = float(np.clip(k_tr * (self._entry_atr_abs / max(self.max_price_during_hold, 1e-9)), 0.002, 0.08))
+                    except Exception:
+                        thr_trail = 0.02
+                    if drawdown > thr_trail:
                         self.trailing_stop_counter += 1
                     
                     # 3. три подряд бара с drawdown > 2% → принудительный SELL
@@ -1112,6 +1177,13 @@ class CryptoTradingEnvOptimized(gym.Env):
                         reward -= 0.03
                         self._log(f"[{self.current_step}] 🔻 TRAILING STOP — SELL by drawdown: {drawdown:.2%}")
                         self._force_sell(current_price, 'TRAILING STOP')
+                        # сброс ATR‑уровней при трейлинг‑выходе
+                        try:
+                            self._sl_price_atr = None
+                            self._tp_price_atr = None
+                            self._entry_atr_abs = None
+                        except Exception:
+                            pass
                         
                         # Обновляем статистики
                         self._update_stats(current_price)
@@ -1136,13 +1208,35 @@ class CryptoTradingEnvOptimized(gym.Env):
                 # --- Take Profit / Stop Loss (как в оригинале) ---
                 unrealized_pnl_percent = (current_price - self.last_buy_price) / self.last_buy_price
                 
+                # ATR‑стопы: проверяем до процентных SL/TP
+                try:
+                    if bool(getattr(self.cfg, 'use_atr_stop', True)) and self.crypto_held > 0:
+                        if getattr(self, '_sl_price_atr', None) is not None and current_price <= self._sl_price_atr:
+                            reward -= 0.05
+                            self._force_sell(current_price, "❌ - STOP-LOSS ATR")
+                            self._sl_price_atr = None; self._tp_price_atr = None; self._entry_atr_abs = None
+                        elif getattr(self, '_tp_price_atr', None) is not None and current_price >= self._tp_price_atr:
+                            reward += 0.05
+                            self._force_sell(current_price, "🎯 - TAKE-PROFIT ATR")
+                            self._sl_price_atr = None; self._tp_price_atr = None; self._entry_atr_abs = None
+                except Exception:
+                    pass
+                
                 if unrealized_pnl_percent <= self.STOP_LOSS_PCT:
                     reward -= 0.05  # штраф за стоп-лосс
                     self._force_sell(current_price, "❌ - STOP-LOSS triggered")
+                    try:
+                        self._sl_price_atr = None; self._tp_price_atr = None; self._entry_atr_abs = None
+                    except Exception:
+                        pass
                     
                 elif unrealized_pnl_percent >= self.TAKE_PROFIT_PCT:
                     reward += 0.05  # поощрение за фиксацию профита
                     self._force_sell(current_price, "🎯 - TAKE-PROFIT hit")
+                    try:
+                        self._sl_price_atr = None; self._tp_price_atr = None; self._entry_atr_abs = None
+                    except Exception:
+                        pass
                 
                 # --- Награды за удержание позиции (УЛУЧШЕНО) ---
                 if unrealized_pnl_percent > 0:
@@ -1258,6 +1352,13 @@ class CryptoTradingEnvOptimized(gym.Env):
                     try:
                         self.sell_types['timeout'] += 1
                         self.cumulative_sell_types['timeout'] += 1
+                    except Exception:
+                        pass
+                    # сброс ATR уровней
+                    try:
+                        self._sl_price_atr = None
+                        self._tp_price_atr = None
+                        self._entry_atr_abs = None
                     except Exception:
                         pass
             

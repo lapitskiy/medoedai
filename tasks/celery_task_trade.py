@@ -376,6 +376,16 @@ def ensure_risk_orders(self, symbol: str):
     risk_type = 'exchange_orders'
     tp_pct = 1.0
     sl_pct = 1.0
+    # Новые параметры ATR‑режима
+    risk_stop_mode = 'fixed_pct'  # 'fixed_pct' | 'atr_tp_sl'
+    atr_k = 2.5
+    atr_m = 1.8
+    atr_min_sl_mult = 1.0
+    # Trailing параметры
+    trailing_enabled = False
+    trailing_mode = None
+    trailing_activate_mode = None
+    trailing_activate_value = None
     try:
         if rc is not None:
             _rt = rc.get(f'trading:risk_management_type:{symbol}') or rc.get('trading:risk_management_type')
@@ -387,6 +397,41 @@ def ensure_risk_orders(self, symbol: str):
                 tp_pct = _pick_num(_tp)
             if _pick_num(_sl) is not None:
                 sl_pct = _pick_num(_sl)
+            # ATR stop mode
+            try:
+                _rsm = rc.get(f'trading:risk_stop_mode:{symbol}') or rc.get('trading:risk_stop_mode')
+                if _rsm:
+                    risk_stop_mode = str(_rsm)
+                _ak = rc.get(f'trading:atr_k:{symbol}') or rc.get('trading:atr_k')
+                _am = rc.get(f'trading:atr_m:{symbol}') or rc.get('trading:atr_m')
+                _ams = rc.get(f'trading:atr_min_sl_mult:{symbol}') or rc.get('trading:atr_min_sl_mult')
+                if _pick_num(_ak) is not None:
+                    atr_k = _pick_num(_ak)
+                if _pick_num(_am) is not None:
+                    atr_m = _pick_num(_am)
+                if _pick_num(_ams) is not None:
+                    atr_min_sl_mult = _pick_num(_ams)
+            except Exception:
+                pass
+            # Trailing
+            try:
+                _ten = rc.get(f'trading:trailing_enabled:{symbol}') or rc.get('trading:trailing_enabled')
+                if _ten is not None:
+                    trailing_enabled = str(_ten).strip().lower() in ('1','true','yes','on')
+                _tmode = rc.get(f'trading:trailing_mode:{symbol}') or rc.get('trading:trailing_mode')
+                if _tmode is not None and str(_tmode).strip() != '':
+                    trailing_mode = str(_tmode).strip()
+                _tact_mode = rc.get(f'trading:trailing_activate_mode:{symbol}') or rc.get('trading:trailing_activate_mode')
+                if _tact_mode is not None and str(_tact_mode).strip() != '':
+                    trailing_activate_mode = str(_tact_mode).strip()
+                _tact_val = rc.get(f'trading:trailing_activate_value:{symbol}') or rc.get('trading:trailing_activate_value')
+                if _tact_val is not None:
+                    try:
+                        trailing_activate_value = float(_tact_val)
+                    except Exception:
+                        trailing_activate_value = None
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -614,11 +659,33 @@ def ensure_risk_orders(self, symbol: str):
                 pass
     except Exception:
         pass
+    # Хелпер ATR‑цен
+    def _atr_tp_sl_prices(_symbol: str, _entry: float, _k: float, _m: float, _min_k: float, _is_long: bool) -> tuple[float, float]:
+        try:
+            from utils.indicators import get_atr_1h
+            atr_abs, _, _ = get_atr_1h(_symbol, length=21)
+        except Exception:
+            return None, None
+        k_eff = max(float(_k), float(_min_k))
+        if _is_long:
+            tp = float(_entry) + float(_m) * atr_abs
+            sl = float(_entry) - k_eff * atr_abs
+        else:
+            tp = float(_entry) - float(_m) * atr_abs
+            sl = float(_entry) + k_eff * atr_abs
+        return tp, sl
+
     if is_long:
         # Long
         # TP (limit SELL): ставим, только если нет position-level TP и нет reduceOnly limit SELL
         if not tp_already_set and not _has_reduce_only_limit('sell'):
-            if tp_pct and tp_pct > 0:
+            if risk_stop_mode == 'atr_tp_sl':
+                _tp, _sl_dummy = _atr_tp_sl_prices(symbol, float(entry_price), atr_k, atr_m, atr_min_sl_mult, True)
+                if _tp:
+                    tp_price = _rp(_tp)
+                else:
+                    tp_price = _rp(float(entry_price) * (1.0 + float(tp_pct)/100.0))
+            elif tp_pct and tp_pct > 0:
                 tp_price = _rp(float(entry_price) * (1.0 + float(tp_pct)/100.0))
                 try:
                     agent.exchange.create_limit_sell_order(symbol, float(amount), tp_price, { 'reduceOnly': True, 'timeInForce': 'GTC' })
@@ -630,7 +697,13 @@ def ensure_risk_orders(self, symbol: str):
                     pass
         # SL (stop-market SELL): ставим, только если нет position-level SL и нет reduceOnly stop SELL
         if not sl_already_set and not _has_reduce_only_stop('sell'):
-            if sl_pct and sl_pct > 0:
+            if risk_stop_mode == 'atr_tp_sl':
+                _tp_dummy, _sl = _atr_tp_sl_prices(symbol, float(entry_price), atr_k, atr_m, atr_min_sl_mult, True)
+                if _sl:
+                    sl_price = _rp(_sl)
+                else:
+                    sl_price = _rp(float(entry_price) * (1.0 - float(sl_pct)/100.0))
+            elif sl_pct and sl_pct > 0:
                 sl_price = _rp(float(entry_price) * (1.0 - float(sl_pct)/100.0))
                 try:
                     agent.exchange.create_order(
@@ -650,7 +723,13 @@ def ensure_risk_orders(self, symbol: str):
     else:
         # Short
         if not tp_already_set and not _has_reduce_only_limit('buy'):
-            if tp_pct and tp_pct > 0:
+            if risk_stop_mode == 'atr_tp_sl':
+                _tp, _sl_dummy = _atr_tp_sl_prices(symbol, float(entry_price), atr_k, atr_m, atr_min_sl_mult, False)
+                if _tp:
+                    tp_price = _rp(_tp)
+                else:
+                    tp_price = _rp(float(entry_price) * (1.0 - float(tp_pct)/100.0))
+            elif tp_pct and tp_pct > 0:
                 tp_price = _rp(float(entry_price) * (1.0 - float(tp_pct)/100.0))
                 try:
                     agent.exchange.create_limit_buy_order(symbol, float(amount), tp_price, { 'reduceOnly': True, 'timeInForce': 'GTC' })
@@ -661,7 +740,13 @@ def ensure_risk_orders(self, symbol: str):
                 except Exception:
                     pass
         if not sl_already_set and not _has_reduce_only_stop('buy'):
-            if sl_pct and sl_pct > 0:
+            if risk_stop_mode == 'atr_tp_sl':
+                _tp_dummy, _sl = _atr_tp_sl_prices(symbol, float(entry_price), atr_k, atr_m, atr_min_sl_mult, False)
+                if _sl:
+                    sl_price = _rp(_sl)
+                else:
+                    sl_price = _rp(float(entry_price) * (1.0 + float(sl_pct)/100.0))
+            elif sl_pct and sl_pct > 0:
                 sl_price = _rp(float(entry_price) * (1.0 + float(sl_pct)/100.0))
                 try:
                     agent.exchange.create_order(
