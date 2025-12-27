@@ -67,6 +67,7 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         #use_amp=True,
         #use_gpu_storage=True,
         #learning_rate=0.0001,
+          
         #description="Максимальная производительность для Tesla V100 с Tensor Cores",
         #use_torch_compile=True
     ),

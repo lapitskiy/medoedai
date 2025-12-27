@@ -197,6 +197,15 @@ class TradingAgent:
                 # Если по каким-то причинам строка не JSON, пробуем как одиночный символ
                 symbols = [raw] if isinstance(raw, str) and raw else None
             if isinstance(symbols, list) and symbols:
+                # Нормализуем символы (защита от "TON USDT", "TON/USDT", лишних пробелов)
+                try:
+                    from utils.cctx_utils import normalize_to_db as _normalize_to_db
+                    symbols = [_normalize_to_db(str(s)) for s in symbols if s]
+                except Exception:
+                    try:
+                        symbols = [str(s).replace('/', '').replace(' ', '').upper().strip() for s in symbols if s]
+                    except Exception:
+                        pass
                 # Берём первый символ как основной
                 self.symbols = symbols
                 self.symbol = symbols[0]

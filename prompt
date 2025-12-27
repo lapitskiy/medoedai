@@ -1,0 +1,179 @@
+First convert my Russian text into concise technical English suitable for StackOverflow/GitHub (without adding new meaning). Then answer the question in Russian. Do not skip either part.
+
+Russian text:
+
+11111111111
+#####
+
+Create a draft technical plan for modifying the logic or structure of the code.
+
+Requirements:
+1. Write concisely, as a list.
+2. Describe only the intention (what needs to be done), without implementation details.
+3. Do not generate code.
+4. Explicitly list all files/folders that must be updated or reviewed.
+   Format:
+   files_to_update: ["path/to/file1.py", "path/to/module/file2.py", ...]
+5. Include only the necessary files, not the entire project.
+6. Do not change existing contracts or pipelines — only indicate the target areas.
+
+Goal: provide the expensive model with a minimal, precise context for analysis.
+
+respond in Russia
+
+22222222222
+#####
+
+1. Read the model’s draft reasoning above.
+2. Evaluate it based on two criteria only:
+   A) Does it preserve the existing pipeline?
+   B) Does it follow the project’s DDD structure?
+3. If everything is compatible, briefly respond: "The plan is safe" and explain why.
+4. If there are risks, describe them and propose a safer alternative.
+5. Do not write code. Only analysis and intention correction.
+
+respond in Russia
+
+333333333333
+#######
+
+1. Analysis phase:
+   Read the draft reasoning above and evaluate only one thing:
+   whether it is compatible with the existing pipeline and does not break the DDD structure.
+
+   - If the reasoning is logical and safe — briefly explain why.
+   - If there are contradictions or risks — explain what should be done differently and why.
+
+2. After I say “apply changes”, follow these rules when modifying code:
+
+   - Do not break the existing pipeline.
+     Always analyze the current data flow and the compatibility of the new logic.
+
+   - Strictly follow the DDD structure.
+     New logic must go into separate services/aggregates/modules.
+     Do not modify the domain core unless absolutely necessary.
+
+   - Encapsulate new behavior.
+     Prefer creating a new class/method/file over modifying existing logic.
+
+   - Do not change public interfaces/contracts unless unavoidable.
+     If needed, use adapters instead of modifying existing APIs.
+
+   - Minimize side effects.
+     When uncertain, write a pure function or add a wrapper layer.
+
+   - Before writing code, briefly outline your plan.
+     Confirm that it does not break existing logic.
+
+   - If you see risk of breaking something — propose an alternative or ask for confirmation.
+
+respond in Russia
+
+
+РУССКИЙ
+
+11111111111
+#####
+
+First convert my Russian text into concise technical English suitable for StackOverflow/GitHub (without adding new meaning). Then answer the question in Russian. Do not skip either part.
+
+Russian text:
+Сформируй черновой технический план изменения логики или структуры кода.
+
+Требования:
+1. Пиши кратко, списком.
+2. Опиши только намерение (что именно должно быть сделано).
+3. Не генерируй код.
+4. Обязательно укажи точный список файлов/папок, которые потребуется изменить или просмотреть.
+   Формат:
+   - files_to_update: [ "path/to/file1.py", "path/to/module/file2.py", ... ]
+5. Указывай только необходимые файлы, не весь проект.
+6. Не меняй существующие контракты и пайплайны — просто обозначь области кода.
+
+Цель: предоставить дорогой модели минимальный набор контекста для анализа.
+
+
+22222222222
+#####
+First convert my Russian text into concise technical English suitable for StackOverflow/GitHub (without adding new meaning). Then answer the question in Russian. Do not skip either part.
+
+Russian text:
+1. Прочитай рассуждение модели выше (draft).
+2. Оцени его только по двум критериям:
+   A) Сохраняет ли оно существующий пайплайн? 
+   B) Соответствует ли оно DDD-структуре проекта?
+3. Если всё совместимо — кратко скажи: "План безопасен" и объясни почему.
+4. Если есть риски — опиши проблемы и предложи безопасную альтернативу.
+5. Не вноси код. Только анализ и корректировка намерений.
+
+
+333333333333
+#######
+
+First convert my Russian text into concise technical English suitable for StackOverflow/GitHub (without adding new meaning). Then answer the question in Russian. Do not skip either part.
+
+Russian text:
+1. Сначала сделай анализ:
+Прочитай рассуждение модели выше и оцени только одно:
+совместимо ли оно с существующим пайплайном и не нарушает ли DDD-структуру.
+
+Если рассуждение логичное и безопасное — кратко объясни почему.
+
+Если есть противоречия или риски — объясни, что именно лучше сделать по-другому и почему.
+
+2. Затем, если я скажу “вноси правки”, применяй следующие правила при изменении кода:
+
+Не ломай существующий пайплайн.
+Анализируй текущий flow данных и совместимость новой логики.
+
+Строго соблюдай DDD-структуру.
+Новую логику — в отдельные сервисы/агрегаты/модули, не вмешиваться в ядро без необходимости.
+
+Инкапсулируй новое поведение.
+Лучше новый класс/метод/файл, чем правка старого.
+
+Не меняй публичные интерфейсы и контракты без крайней нужды.
+Если нужно — используй адаптеры, а не прямую модификацию.
+
+Минимизируй побочные эффекты.
+При сомнении — пиши чистую функцию или добавь слой-обёртку.
+
+Перед внесением кода коротко опиши свой план.
+Убедись, что он не нарушает существующую логику.
+
+Если видишь риск поломки — предложи альтернативу или спроси подтверждение.
+
+
+MDC
+RULES FOR ASSISTANT (FLEXIBLE MODE):
+
+1) Always follow the user's instructions exactly, unless they conflict with these rules.
+
+2) Write explanations as if answering a technical question on StackOverflow in English,
+   but translated into Russian. Technical terms (Docker, volume, pipeline, DDD, handler,
+   serializer, alembic, etc.) — do NOT translate.
+
+3) Reason freely and offer improvements, but do not rewrite existing architecture
+   unless the user requests it explicitly.
+
+4) When discussing code:
+   - provide only the relevant fragments (5–15 lines);
+   - do NOT output entire modules or files;
+   - focus on logic, architecture, and integration, not line-by-line rewriting.
+
+5) Docker specifics:
+   - I use Docker Compose v2 on Windows 10 (PowerShell).
+   - Do NOT rebuild images unless I explicitly ask.
+   - After code changes, suggest restarting only affected containers.
+   - Commands must be in PowerShell format.
+
+6) Alembic:
+   Always suggest creating migrations using docker exec:
+     docker exec -it <container> alembic -c utils_global/alembic/alembic.ini revision --autogenerate -m "<msg>"
+     docker exec -it <container> alembic -c utils_global/alembic/alembic.ini upgrade head
+
+7) If something is unclear or assumptions are required, explicitly state the assumptions
+   or ask a clarifying question instead of hallucinating.
+
+8) Be concise, structured, and solution-oriented.  
+   At the end of every answer, provide a short summary: "Что сделано: ...".

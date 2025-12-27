@@ -640,6 +640,11 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
       const qgateErrorDetails = prediction.market_conditions && prediction.market_conditions.qgate_error_details;
       const qgateBalance = prediction.market_conditions && prediction.market_conditions.qgate_available_balance;
       const qgateRequiredCost = prediction.market_conditions && prediction.market_conditions.qgate_required_cost;
+      const execError = prediction.market_conditions && prediction.market_conditions.exec_error;
+      const execErrorType = prediction.market_conditions && prediction.market_conditions.exec_error_type;
+      const execIntentId = prediction.market_conditions && prediction.market_conditions.exec_intent_id;
+      const execState = prediction.market_conditions && prediction.market_conditions.exec_state;
+      const execMode = prediction.market_conditions && prediction.market_conditions.exec_mode;
 
       // Консенсус ансамбля (если есть в market_conditions)
       const mc = prediction.market_conditions || {};
@@ -836,6 +841,12 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
             <div class="trade-detail"><div class="label">Позиция</div><div class="value">${prediction.position_status||'none'}</div></div>
           </div>
           ${ensembleBlock}
+          ${execError ? `
+          <div style="margin-top: 10px; padding: 10px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; font-size: 12px;">
+            <strong>❌ Ошибка исполнения (CEX)</strong>${execErrorType ? ` <span style="opacity:0.8">(${String(execErrorType)})</span>` : ''}:<br>
+            <div style="margin-top:6px; color:#721c24;">${String(execError)}</div>
+            ${(execMode || execState || execIntentId) ? `<div style="margin-top:6px; color:#444;">${execMode ? `mode=${execMode}` : ''}${execState ? ` state=${execState}` : ''}${execIntentId ? ` intent=${execIntentId}` : ''}</div>` : ''}
+          </div>` : ''}
           ${isQgateFiltered ? `
           <div style="margin-top: 10px; padding: 10px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; font-size: 12px;">
             <strong>🚫 Q-gate фильтрация</strong>${qgateSide ? ` <span style="opacity:0.8">(${String(qgateSide).toUpperCase()})</span>` : ''}:<br>
@@ -858,7 +869,16 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
           ${prediction.market_conditions && Object.keys(prediction.market_conditions).filter(k=>!String(k).startsWith('qgate_')).length>0 && !isQgateFiltered ? `
           <div style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px; font-size: 12px;">
             <strong>Условия рынка:</strong><br>
-            ${Object.entries(prediction.market_conditions).filter(([key]) => !String(key).startsWith('qgate_')).map(([key, value]) => `${key}: ${value}`).join(', ')}
+            ${Object.entries(prediction.market_conditions)
+              .filter(([key]) => !String(key).startsWith('qgate_'))
+              .map(([key, value]) => {
+                try{
+                  if (value && typeof value === 'object') return `${key}: ${JSON.stringify(value)}`;
+                  return `${key}: ${value}`;
+                }catch(_){
+                  return `${key}: ${String(value)}`;
+                }
+              }).join(', ')}
           </div>` : ''}
         </div>
       `

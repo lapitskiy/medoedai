@@ -70,8 +70,15 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                 pass
             # Только если включены биржевые ордера
             if risk_type in ('exchange_orders', 'both'):
+                # В режиме atr_trailing НЕ прикрепляем обычные TP/SL к лимитке:
+                # trailing-stop ставится отдельным ордером после фактического fill (ensure_risk_orders).
+                if str(risk_stop_mode).strip() == 'atr_trailing':
+                    try:
+                        self._log.info(f"[LimitPO] skip attached TP/SL: risk_stop_mode=atr_trailing symbol={symbol}")
+                    except Exception:
+                        pass
                 # На этапе лимит-заявки опираемся на цену лимита
-                if risk_stop_mode == 'atr_tp_sl':
+                elif risk_stop_mode == 'atr_tp_sl':
                     try:
                         from utils.indicators import get_atr_1h
                         atr_abs, _, _ = get_atr_1h(symbol, length=21)

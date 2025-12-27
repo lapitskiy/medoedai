@@ -17,8 +17,59 @@ import logging
 import traceback
 from utils.redis_utils import get_redis_client
 from tasks import celery
+from trading_agent.risk_trailing import setup_trailing_stop_bybit
 
 logger = logging.getLogger(__name__)
+
+def _safe_json_loads(raw: str) -> dict:
+    try:
+        if not raw:
+            return {}
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="ignore")
+        return json.loads(raw) if isinstance(raw, str) else {}
+    except Exception:
+        return {}
+
+def _attach_exec_error_to_group(symbol: str, ensemble_group_id: str, exec_error: str, exec_error_type: str | None = None, extra: dict | None = None) -> bool:
+    """Дописывает exec_error в market_conditions у предсказаний текущего тика ансамбля.
+
+    Почему так: UI дедуплицирует по ensemble_group_id, поэтому отдельную запись "error" он может не показать.
+    """
+    try:
+        from orm.models import ModelPrediction
+        from orm.database import get_db_session
+        updated = False
+        with get_db_session() as session:
+            # Берём небольшой хвост последних записей по символу и ищем нужный gid
+            rows = (
+                session.query(ModelPrediction)
+                .filter(ModelPrediction.symbol == symbol)
+                .order_by(ModelPrediction.id.desc())
+                .limit(100)
+                .all()
+            )
+            for r in rows:
+                mc = _safe_json_loads(getattr(r, "market_conditions", None))
+                if not isinstance(mc, dict):
+                    continue
+                if str(mc.get("ensemble_group_id") or "") != str(ensemble_group_id):
+                    continue
+                mc["exec_error"] = str(exec_error)
+                if exec_error_type:
+                    mc["exec_error_type"] = str(exec_error_type)
+                if isinstance(extra, dict) and extra:
+                    # Не перетираем уже существующие ключи, но добавляем новые
+                    for k, v in extra.items():
+                        if k not in mc:
+                            mc[k] = v
+                r.market_conditions = json.dumps(mc, ensure_ascii=False)
+                updated = True
+            if updated:
+                session.commit()
+        return bool(updated)
+    except Exception:
+        return False
 
 def _get_price_tick(exchange, symbol: str) -> float:
     """Определяет шаг цены (tickSize) для символа: сначала info.priceFilter.tickSize, затем precision.price.
@@ -302,12 +353,71 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
             else:
                 raise
 
+        # Если размещение/исполнение провалилось — запишем причину в market_conditions последнего ансамбля,
+        # чтобы UI показывал ошибку рядом с сигналом.
+        try:
+            exec_reason = None
+            try:
+                logs = getattr(intent, 'logs', None) or []
+                if isinstance(logs, list):
+                    for row in reversed(logs):
+                        try:
+                            r = row.get('reason')
+                            if r:
+                                exec_reason = str(r)
+                                break
+                        except Exception:
+                            continue
+            except Exception:
+                exec_reason = None
+            if not exec_reason:
+                try:
+                    le = getattr(intent, 'last_error', None)
+                    if le:
+                        exec_reason = str(le)
+                except Exception:
+                    exec_reason = None
+
+            if exec_reason:
+                exec_type = None
+                low = exec_reason.lower()
+                if 'minimum amount' in low or 'minimum amount precision' in low or 'min amount' in low:
+                    exec_type = 'min_amount'
+                elif 'insufficient funds' in low:
+                    exec_type = 'insufficient_funds'
+                elif 'error sign' in low or 'signature' in low:
+                    exec_type = 'bad_signature'
+
+                gid = None
+                try:
+                    rc_gid = get_redis_client()
+                    gid = rc_gid.get(f"trading:last_ensemble_group_id:{symbol}")
+                except Exception:
+                    gid = None
+                if gid:
+                    _attach_exec_error_to_group(
+                        symbol=str(symbol),
+                        ensemble_group_id=str(gid),
+                        exec_error=str(exec_reason),
+                        exec_error_type=exec_type,
+                        extra={
+                            "exec_intent_id": getattr(intent, "intent_id", None),
+                            "exec_state": str(getattr(intent, "state", "")),
+                            "exec_mode": str(execution_mode),
+                        },
+                    )
+        except Exception:
+            pass
+
         # Идемпотентные постановки TP/SL после запуска лимитной стратегии: накрываем момент фактического fill
         try:
             if str(execution_mode) == 'limit_post_only':
-                ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=2, queue='trade')
+                # 2s часто слишком рано: лимитка может выставляться/перекотироваться десятки секунд до первого fill.
+                ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=20, queue='trade')
                 ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=15, queue='trade')
                 ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=60, queue='trade')
+                ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=120, queue='trade')
+                ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=180, queue='trade')
         except Exception:
             pass
 
@@ -340,16 +450,18 @@ def ensure_risk_orders(self, symbol: str):
         rc = None
 
     # Антидублирование
+    # Важно: для limit_post_only fill может произойти позже, поэтому при "позиции нет" держим TTL коротким,
+    # чтобы отложенные повторы ensure_risk_orders смогли отработать.
+    ensure_key = f"risk:ensured:{symbol}"
     try:
+        if rc is not None and rc.get(ensure_key):
+            try:
+                logger.info(f"[ensure_risk] skip {symbol}: recently_ensured")
+            except Exception:
+                pass
+            return {"success": True, "skipped": True, "reason": "recently_ensured"}
         if rc is not None:
-            k = f"risk:ensured:{symbol}"
-            if rc.get(k):
-                try:
-                    logger.info(f"[ensure_risk] skip {symbol}: recently_ensured")
-                except Exception:
-                    pass
-                return {"success": True, "skipped": True, "reason": "recently_ensured"}
-            rc.setex(k, 180, "1")
+            rc.setex(ensure_key, 180, "1")
     except Exception:
         pass
 
@@ -386,6 +498,7 @@ def ensure_risk_orders(self, symbol: str):
     trailing_mode = None
     trailing_activate_mode = None
     trailing_activate_value = None
+    atr_trail_mult = 1.0
     try:
         if rc is not None:
             _rt = rc.get(f'trading:risk_management_type:{symbol}') or rc.get('trading:risk_management_type')
@@ -430,8 +543,21 @@ def ensure_risk_orders(self, symbol: str):
                         trailing_activate_value = float(_tact_val)
                     except Exception:
                         trailing_activate_value = None
+                _tatm = rc.get(f'trading:atr_trail_mult:{symbol}') or rc.get('trading:atr_trail_mult')
+                if _pick_num(_tatm) is not None:
+                    atr_trail_mult = float(_pick_num(_tatm))
             except Exception:
                 pass
+    except Exception:
+        pass
+
+    # Лог текущих настроек трейлинга/стопа (чтобы понимать, почему TrailingStop не ставится)
+    try:
+        logger.info(
+            f"[ensure_risk][cfg] symbol={symbol} risk_type={risk_type} risk_stop_mode={str(risk_stop_mode).strip()} "
+            f"trailing_enabled={trailing_enabled} trailing_mode={trailing_mode} "
+            f"atr_trail_mult={atr_trail_mult} activate_mode={trailing_activate_mode} activate_value={trailing_activate_value}"
+        )
     except Exception:
         pass
 
@@ -453,11 +579,56 @@ def ensure_risk_orders(self, symbol: str):
     ptype = str(pos.get('type') or '').lower()
 
     if not (entry_price and amount and amount > 0):
-        # Позиции нет – снимаем любые reduceOnly ордера (TP/SL), чтобы не мешали новому циклу
+        # Позиции нет.
+        # ВАЖНО: при limit_post_only позиция может появиться позже. Если есть pending входящий ордер (non-reduceOnly),
+        # то НЕ трогаем ни active_intent, ни открытые ордера — иначе сами же отменим вход до fill.
+        # Также, если в Redis есть активный DDD-intent по symbol, значит стратегия исполнения уже в процессе:
+        # не чистим intent и ордера, просто ждём.
+        try:
+            from redis import Redis as _Rai
+            _rc_ai = _Rai(host='redis', port=6379, db=0, decode_responses=True)
+            _aid_ai = _rc_ai.get(f'exec:active_intent:{symbol}')
+        except Exception:
+            _aid_ai = None
+        if _aid_ai:
+            try:
+                logger.info(f"[ensure_risk] no_position: active_intent present ({_aid_ai}) -> skip cleanup, wait fill ({symbol})")
+            except Exception:
+                pass
+            try:
+                if rc is not None:
+                    rc.setex(ensure_key, 10, "1")
+            except Exception:
+                pass
+            return {"success": True, "skipped": True, "reason": "no_position_active_intent"}
         try:
             oo = agent.exchange.fetch_open_orders(symbol, params={'category': 'linear'}) or []
         except Exception:
             oo = []
+        pending_entry = False
+        try:
+            for od in (oo or []):
+                info_o = od.get('info') or {}
+                ro = bool(info_o.get('reduceOnly') or info_o.get('reduce_only') or False)
+                if not ro:
+                    pending_entry = True
+                    break
+        except Exception:
+            pending_entry = False
+        if pending_entry:
+            try:
+                logger.info(f"[ensure_risk] no_position: pending entry order detected -> skip cleanup, wait fill ({symbol})")
+            except Exception:
+                pass
+            # Даем шанс отложенным ensure_risk_orders отработать после фактического fill лимитки
+            try:
+                if rc is not None:
+                    rc.setex(ensure_key, 10, "1")
+            except Exception:
+                pass
+            return {"success": True, "skipped": True, "reason": "no_position_pending_entry"}
+
+        # Позиции нет и pending entry нет – можно чистить reduceOnly ордера, чтобы не мешали новому циклу
         cleaned = 0
         for od in (oo or []):
             try:
@@ -472,6 +643,7 @@ def ensure_risk_orders(self, symbol: str):
             except Exception:
                 continue
         # Дополнительно: гасим активный DDD‑интент и биржевой ордер из него (если остались следы)
+        cleared_intent = False
         try:
             from redis import Redis as _R
             _rc2 = _R(host='redis', port=6379, db=0, decode_responses=True)
@@ -487,7 +659,8 @@ def ensure_risk_orders(self, symbol: str):
                         exch_id2 = None
                 if exch_id2:
                     try:
-                        agent.exchange.cancel_order(symbol, exch_id2)
+                        # ccxt: cancel_order(id, symbol)
+                        agent.exchange.cancel_order(exch_id2, symbol)
                     except Exception:
                         pass
                 try:
@@ -495,10 +668,17 @@ def ensure_risk_orders(self, symbol: str):
                 except Exception:
                     pass
                 _rc2.delete(f'exec:active_intent:{symbol}')
+                cleared_intent = True
         except Exception:
             pass
         try:
-            logger.info(f"[ensure_risk] flat cleanup {symbol}: cancelled_reduceOnly={cleaned}, cleared_active_intent=True")
+            logger.info(f"[ensure_risk] flat cleanup {symbol}: cancelled_reduceOnly={cleaned}, cleared_active_intent={cleared_intent}")
+        except Exception:
+            pass
+        # Даем шанс отложенным ensure_risk_orders отработать после фактического fill лимитки
+        try:
+            if rc is not None:
+                rc.setex(ensure_key, 10, "1")
         except Exception:
             pass
         return {"success": True, "skipped": True, "reason": "no_position_cleanup"}
@@ -577,6 +757,7 @@ def ensure_risk_orders(self, symbol: str):
     # Учтём уже заданные TP/SL на уровне позиции (Bybit v5: поля takeProfit/stopLoss)
     tp_already_set = False
     sl_already_set = False
+    trailing_already_set = False
     try:
         pos_list = None
         try:
@@ -600,18 +781,22 @@ def ensure_risk_orders(self, symbol: str):
                     pass
                 tp_val = str(info_p.get('takeProfit') or '').strip()
                 sl_val = str(info_p.get('stopLoss') or '').strip()
+                tr_val = str(info_p.get('trailingStop') or '').strip()
                 if tp_val not in ('', '0', '0.0', '0.0000'):
                     tp_already_set = True
                 if sl_val not in ('', '0', '0.0', '0.0000'):
                     sl_already_set = True
+                if tr_val not in ('', '0', '0.0', '0.0000'):
+                    trailing_already_set = True
                 break
             except Exception:
                 continue
     except Exception:
         tp_already_set = False
         sl_already_set = False
+        trailing_already_set = False
     try:
-        logger.info(f"[ensure_risk] detected_flags: tp_already_set={tp_already_set} sl_already_set={sl_already_set}")
+        logger.info(f"[ensure_risk] detected_flags: tp_already_set={tp_already_set} sl_already_set={sl_already_set} trailing_already_set={trailing_already_set}")
     except Exception:
         pass
 
@@ -674,6 +859,52 @@ def ensure_risk_orders(self, symbol: str):
             tp = float(_entry) - float(_m) * atr_abs
             sl = float(_entry) + k_eff * atr_abs
         return tp, sl
+
+    # Биржевой trailing stop (Bybit) для уже открытой позиции (включая limit_post_only), если включён режим atr_trailing
+    try:
+        if trailing_enabled and str(risk_stop_mode).strip() == 'atr_trailing':
+            # Проверяем, что ещё нет TrailingStop-ордера
+            has_trailing = bool(trailing_already_set)
+            for od in open_orders or []:
+                try:
+                    info_o = od.get('info') or {}
+                    if str(info_o.get('orderType') or '').lower() == 'trailingstop':
+                        has_trailing = True
+                        break
+                except Exception:
+                    continue
+            try:
+                logger.info(f"[ensure_risk][trailing] precheck has_trailing={has_trailing}")
+            except Exception:
+                pass
+            if not has_trailing:
+                try:
+                    trailing_result = setup_trailing_stop_bybit(
+                        agent.exchange,
+                        symbol,
+                        float(amount),
+                        float(entry_price),
+                        trailing_mode,
+                        trailing_activate_mode,
+                        trailing_activate_value,
+                        float(atr_trail_mult) if atr_trail_mult is not None else 1.0,
+                    )
+                    try:
+                        logger.info(f"[ensure_risk][trailing] placed: rate={trailing_result.get('callback_rate_pct'):.3f}% active={trailing_result.get('active_price')}")
+                    except Exception:
+                        pass
+                except Exception as e_trail:
+                    try:
+                        logger.error(f"[ensure_risk][trailing] setup failed: {e_trail}")
+                    except Exception:
+                        pass
+        else:
+            try:
+                logger.info(f"[ensure_risk][trailing] skipped by cfg: enabled={trailing_enabled} risk_stop_mode={risk_stop_mode}")
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     if is_long:
         # Long
@@ -826,6 +1057,22 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         except Exception:
             pass
 
+        # Нормализуем символы (защита от "TON USDT", "TON/USDT", лишних пробелов и т.п.)
+        try:
+            from utils.cctx_utils import normalize_to_db as _normalize_to_db
+            if isinstance(symbols, (list, tuple)):
+                symbols = [_normalize_to_db(str(s)) for s in symbols if s]
+            elif isinstance(symbols, str) and symbols:
+                symbols = [_normalize_to_db(symbols)]
+        except Exception:
+            try:
+                if isinstance(symbols, (list, tuple)):
+                    symbols = [str(s).replace('/', '').replace(' ', '').upper().strip() for s in symbols if s]
+                elif isinstance(symbols, str) and symbols:
+                    symbols = [str(symbols).replace('/', '').replace(' ', '').upper().strip()]
+            except Exception:
+                pass
+
         syms = symbols
 
         symbol = syms[0]
@@ -936,6 +1183,92 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     human_error = f"Bybit API недоступно ({exchange_part}): {detail}" if exchange_part.lower() == 'bybit' else f"API {exchange_part} недоступно: {detail}"
             except Exception:
                 human_error = error_msg
+
+            # Подсказка: какие API key реально видит контейнер (маска, НЕ полный ключ)
+            bybit_account_id = None
+            bybit_key_hint = None
+            bybit_keys_hints = {}
+            bybit_keys_present = []
+            bybit_api_key_public_selected = None
+            bybit_api_key_public_1 = None
+            bybit_api_key_public_2 = None
+            try:
+                bybit_account_id = (rc.get('trading:account_id') if rc is not None else None)
+            except Exception:
+                bybit_account_id = None
+            try:
+                def _mask_key(k: str) -> str:
+                    ks = str(k or '').strip()
+                    if not ks:
+                        return None
+                    if len(ks) <= 8:
+                        return f"{ks[0:2]}…{ks[-2:]}"
+                    return f"{ks[0:4]}…{ks[-4:]}"
+
+                # Явно фиксируем аккаунты 1/2, чтобы в ошибке было видно, что именно "видит" ENV
+                try:
+                    # ВНИМАНИЕ: это публичный ключ (не secret), выводим по запросу пользователя
+                    bybit_api_key_public_1 = os.getenv("BYBIT_1_API_KEY")
+                    bybit_api_key_public_2 = os.getenv("BYBIT_2_API_KEY")
+                    bybit_keys_hints["1"] = _mask_key(os.getenv("BYBIT_1_API_KEY"))
+                    bybit_keys_hints["2"] = _mask_key(os.getenv("BYBIT_2_API_KEY"))
+                    bybit_keys_hints["1_has_secret"] = bool(os.getenv("BYBIT_1_SECRET_KEY"))
+                    bybit_keys_hints["2_has_secret"] = bool(os.getenv("BYBIT_2_SECRET_KEY"))
+                except Exception:
+                    pass
+
+                # Список доступных BYBIT_<ID>_API_KEY в окружении (имена + маска)
+                try:
+                    candidates = []
+                    for k, v in os.environ.items():
+                        if not (k.startswith("BYBIT_") and k.endswith("_API_KEY")):
+                            continue
+                        idx = k[len("BYBIT_"):-len("_API_KEY")]
+                        if v:
+                            candidates.append((str(idx), str(v)))
+                    candidates.sort(key=lambda x: x[0])
+                    bybit_keys_present = [c[0] for c in candidates]
+                    # Добавим маски по найденным индексам (не только 1/2)
+                    for idx, v in candidates:
+                        bybit_keys_hints[str(idx)] = _mask_key(v)
+                        try:
+                            bybit_keys_hints[f"{idx}_has_secret"] = bool(os.getenv(f"BYBIT_{idx}_SECRET_KEY"))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # 1) Выбранный аккаунт из Redis
+                api_key_val = None
+                try:
+                    if bybit_account_id:
+                        api_key_val = os.getenv(f'BYBIT_{bybit_account_id}_API_KEY') or None
+                except Exception:
+                    api_key_val = None
+                try:
+                    if bybit_account_id:
+                        bybit_api_key_public_selected = os.getenv(f'BYBIT_{bybit_account_id}_API_KEY') or None
+                except Exception:
+                    bybit_api_key_public_selected = None
+
+                # 2) Фолбэк: стандартные имена
+                if not api_key_val:
+                    api_key_val = os.getenv('BYBIT_1_API_KEY') or os.getenv('BYBIT_API_KEY') or None
+
+                # 3) Автоскан: первый BYBIT_<ID>_API_KEY
+                if not api_key_val:
+                    try:
+                        if bybit_keys_present:
+                            # Возьмём самый маленький индекс по строковому сравнению (уже отсортировано)
+                            first_idx = bybit_keys_present[0]
+                            api_key_val = os.getenv(f"BYBIT_{first_idx}_API_KEY") or None
+                    except Exception:
+                        pass
+
+                bybit_key_hint = _mask_key(api_key_val)
+            except Exception:
+                bybit_key_hint = None
+
             # Сохраняем в предсказания, что проблема с обменом/сетевым уровнем
             try:
                 from orm.models import ModelPrediction
@@ -949,7 +1282,16 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         current_price=0.0,
                         position_status='none',
                         model_path='error',
-                        market_conditions='{"error": "' + str(human_error) + '"}',
+                        market_conditions=json.dumps({
+                            "error": str(human_error),
+                            "bybit_account_id": bybit_account_id,
+                            "bybit_api_key_hint": bybit_key_hint,
+                            "bybit_api_key_hints": bybit_keys_hints,
+                            "bybit_api_keys_present": bybit_keys_present,
+                            "bybit_api_key_public_selected": bybit_api_key_public_selected,
+                            "bybit_api_key_public_1": bybit_api_key_public_1,
+                            "bybit_api_key_public_2": bybit_api_key_public_2,
+                        }, ensure_ascii=False),
                         created_at=datetime.utcnow()
                     )
                     session.add(prediction)
@@ -973,7 +1315,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         current_price=0.0,
                         position_status='none',
                         model_path='error',
-                        market_conditions='{"error": "' + str(error_msg) + '"}',
+                        market_conditions=json.dumps({"error": str(error_msg)}, ensure_ascii=False),
                         created_at=datetime.utcnow()
                     )
                     session.add(prediction)
@@ -998,7 +1340,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         current_price=0.0,
                         position_status='none',
                         model_path='error',
-                        market_conditions='{"error": "' + str(error_msg) + '"}',
+                        market_conditions=json.dumps({"error": str(error_msg)}, ensure_ascii=False),
                         created_at=datetime.utcnow()
                     )
                     session.add(prediction)
@@ -1024,7 +1366,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         current_price=0.0,
                         position_status='none',
                         model_path='error',
-                        market_conditions='{"error": "' + str(error_msg) + '"}',
+                        market_conditions=json.dumps({"error": str(error_msg)}, ensure_ascii=False),
                         created_at=datetime.utcnow()
                     )
                     session.add(prediction)
@@ -1220,7 +1562,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         current_price=0.0,
                         position_status='none',
                         model_path='error',
-                        market_conditions='{"error": "' + str(error_msg) + '"}',
+                        market_conditions=json.dumps({"error": str(error_msg)}, ensure_ascii=False),
                         created_at=datetime.utcnow()
                     )
                     session.add(prediction)
@@ -1449,6 +1791,12 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             preds_list = pred_json.get('predictions') or []
             # Общий ID группы ансамбля для этого тика, чтобы фронт мог объединять карточки
             ensemble_group_id = str(uuid.uuid4()) if preds_list else None
+            # Сохраним текущую группу в Redis, чтобы DDD-исполнение могло дописать exec_error в эти же карточки
+            try:
+                if rc is not None and ensemble_group_id:
+                    rc.setex(f"trading:last_ensemble_group_id:{symbol}", 900, str(ensemble_group_id))
+            except Exception:
+                pass
             for p in preds_list:
                 try:
                     mp = p.get('model_path')
@@ -1814,6 +2162,24 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             else:
                 trade_result = {"success": True, "action": "hold"}
 
+        # Пост-обеспечение биржевых risk-orders (TP/SL/TrailingStop).
+        # Нужно для ручного "execute_now" и случаев, когда позиция активна, но трейлинг ещё не выставлен.
+        try:
+            if risk_type_exec and str(risk_type_exec).lower() in ('exchange_orders', 'both'):
+                need_ensure = bool(getattr(agent, 'current_position', None))
+                if not need_ensure and isinstance(trade_result, dict):
+                    need_ensure = str(trade_result.get('action') or '').startswith('limit_post_only_enqueued')
+                if need_ensure:
+                    # Для limit_post_only первый ensure лучше делать позже, чтобы попасть ближе к фактическому fill.
+                    # Для market/прочих режимов 2s норм.
+                    _first = 20 if str(exec_mode or '').strip() == 'limit_post_only' else 2
+                    ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=_first, queue='trade')
+                    if str(exec_mode or '').strip() == 'limit_post_only':
+                        ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=15, queue='trade')
+                        ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=60, queue='trade')
+        except Exception:
+            pass
+
         status_after = agent.get_trading_status()
 
         # 5) Сохранение результата в Redis (как раньше)
@@ -1989,6 +2355,22 @@ def start_trading_task(self, symbols, model_path=None):
         
         logger.warning(f"DEBUG: Using symbols from Redis: {final_symbols}")
 
+    # Нормализация: приводим итоговые символы к формату БД (TONUSDT) вне зависимости от источника
+    try:
+        from utils.cctx_utils import normalize_to_db as _normalize_to_db
+        if isinstance(final_symbols, (list, tuple)):
+            final_symbols = [_normalize_to_db(str(s)) for s in final_symbols if s]
+        elif isinstance(final_symbols, str) and final_symbols:
+            final_symbols = [_normalize_to_db(final_symbols)]
+    except Exception:
+        try:
+            if isinstance(final_symbols, (list, tuple)):
+                final_symbols = [str(s).replace('/', '').replace(' ', '').upper().strip() for s in final_symbols if s]
+            elif isinstance(final_symbols, str) and final_symbols:
+                final_symbols = [str(final_symbols).replace('/', '').replace(' ', '').upper().strip()]
+        except Exception:
+            pass
+
     # Фильтр: исключаем символы, вручную отключённые пользователем
     try:
         from redis import Redis as _Redis
@@ -2159,6 +2541,15 @@ def start_trading_task(self, symbols, model_path=None):
                             merged.append(s)
                 except Exception:
                     merged = (symbols or [])
+                # Перед сохранением нормализуем merged (могли попасть кривые значения из старого Redis)
+                try:
+                    from utils.cctx_utils import normalize_to_db as _normalize_to_db3
+                    merged = [_normalize_to_db3(str(s)) for s in merged if s]
+                except Exception:
+                    try:
+                        merged = [str(s).replace('/', '').replace(' ', '').upper().strip() for s in merged if s]
+                    except Exception:
+                        pass
                 _rc.set('trading:symbols', _json.dumps(merged, ensure_ascii=False))
             except Exception:
                 pass
@@ -2212,6 +2603,17 @@ def refresh_trading_status(self):
             symbols_raw = rc.get('trading:symbols')
             
             symbols = _json.loads(symbols_raw) if symbols_raw else []
+            # Нормализация символов (защита от "TON USDT", "TON/USDT", лишних пробелов)
+            try:
+                from utils.cctx_utils import normalize_to_db as _normalize_to_db
+                if isinstance(symbols, list):
+                    symbols = [_normalize_to_db(str(s)) for s in symbols if s]
+            except Exception:
+                try:
+                    if isinstance(symbols, list):
+                        symbols = [str(s).replace('/', '').replace(' ', '').upper().strip() for s in symbols if s]
+                except Exception:
+                    pass
             logger.warning(f"DEBUG: symbols in refresh_trading_status = {symbols}") # Добавлен лог
             
             if not symbols:

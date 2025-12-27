@@ -3,6 +3,7 @@ from utils.redis_utils import get_redis_client
 from tasks.celery_task_trade import start_trading_task
 from utils.trade_utils import get_recent_trades, get_trade_statistics, get_trades_by_symbol, get_model_predictions
 from utils.indicators import get_atr_1h
+from trading_agent.risk_trailing import setup_trailing_stop_bybit
 import logging
 import docker
 import json
@@ -74,13 +75,39 @@ def save_trading_config():
         import json as _json
         rc = get_redis_client()
 
+        # Нормализация символов (защита от "TON USDT", "TON/USDT", лишних пробелов и т.п.)
+        try:
+            from utils.cctx_utils import normalize_to_db as _normalize_to_db
+            if isinstance(symbols, (list, tuple)):
+                symbols = [_normalize_to_db(str(s)) for s in symbols if s]
+            elif isinstance(symbols, str) and symbols:
+                symbols = [_normalize_to_db(symbols)]
+        except Exception:
+            try:
+                if isinstance(symbols, (list, tuple)):
+                    symbols = [str(s).replace('/', '').replace(' ', '').upper().strip() for s in symbols if s]
+                elif isinstance(symbols, str) and symbols:
+                    symbols = [str(symbols).replace('/', '').replace(' ', '').upper().strip()]
+            except Exception:
+                pass
+
         # Изменяем логику: вместо перезаписи, объединяем символы
         if symbols:
             existing_raw = rc.get('trading:symbols')
             existing_symbols = _json.loads(existing_raw) if existing_raw else []
             if not isinstance(existing_symbols, list):
                 existing_symbols = []
-            
+
+            # Нормализуем и существующие значения (могли остаться старые "TON USDT")
+            try:
+                from utils.cctx_utils import normalize_to_db as _normalize_to_db2
+                existing_symbols = [_normalize_to_db2(str(s)) for s in existing_symbols if s]
+            except Exception:
+                try:
+                    existing_symbols = [str(s).replace('/', '').replace(' ', '').upper().strip() for s in existing_symbols if s]
+                except Exception:
+                    pass
+
             merged_symbols = list(set(existing_symbols + symbols))
             rc.set('trading:symbols', _json.dumps(merged_symbols, ensure_ascii=False))
 
@@ -1137,6 +1164,12 @@ def trading_manual_buy_bypass_prediction():
                 )
             except Exception:
                 pass
+            try:
+                logging.info(
+                    f"[/api/trading/manual_buy] trailing settings: enabled={trailing_enabled} risk_stop_mode={risk_stop_mode} trailing_mode={trailing_mode} atr_trail_mult={atr_trail_mult} activate_mode={trailing_activate_mode} activate_value={trailing_activate_value}"
+                )
+            except Exception:
+                pass
         except Exception as e:
             logging.warning(f"[manual_buy] Не удалось прочитать настройки: {e}")
 
@@ -1155,80 +1188,7 @@ def trading_manual_buy_bypass_prediction():
                 sl = entry_price + k_eff * atr_abs
             return float(tp), float(sl)
 
-        def _setup_trailing_stop(agent_obj, symbol: str, qty: float, entry_price: float, mode: Optional[str],
-                                 activate_mode: Optional[str], activate_value: Optional[float], atr_trail_k: float):
-            """
-            Создаёт биржевой trailing-stop на Bybit, опираясь на ATR.
-            """
-            exchange = getattr(agent_obj, 'exchange', None)
-            if exchange is None:
-                raise RuntimeError("exchange object not available for trailing setup")
-            exch_id = str(getattr(exchange, 'id', '')).lower()
-            if exch_id != 'bybit':
-                raise RuntimeError(f"Trailing stop currently supported only on Bybit (got {exch_id})")
-
-            mode = (mode or '').strip().lower()
-            if mode and mode != 'atr_trailing':
-                raise RuntimeError(f"Trailing mode '{mode}' not supported for exchange trailing")
-
-            if atr_trail_k is None or atr_trail_k <= 0:
-                raise RuntimeError("atr_trail_mult must be positive")
-
-            try:
-                atr_abs, _, _ = get_atr_1h(symbol, length=21)
-            except Exception as e_atr:
-                raise RuntimeError(f"ATR not available for trailing: {e_atr}")
-            if atr_abs <= 0 or entry_price <= 0:
-                raise RuntimeError("Invalid ATR or entry price for trailing")
-
-            callback_rate_pct = (atr_trail_k * atr_abs / entry_price) * 100.0
-            callback_rate_pct = max(0.05, min(5.0, callback_rate_pct))
-
-            active_price = None
-            act_mode = (activate_mode or 'percent').strip().lower()
-            act_value = activate_value if activate_value is not None else 0.5
-            if act_mode == 'atr':
-                active_price = entry_price + float(act_value) * atr_abs
-            else:  # percent
-                active_price = entry_price * (1.0 + float(act_value) / 100.0)
-
-            # Нормализуем цену под tickSize
-            try:
-                market = exchange.market(symbol)
-                price_tick = None
-                try:
-                    info = market.get('info', {})
-                    pf = info.get('priceFilter', {})
-                    price_tick = float(pf.get('tickSize')) if pf.get('tickSize') else None
-                except Exception:
-                    price_tick = None
-                if price_tick:
-                    active_price = round(round(active_price / price_tick) * price_tick, 8)
-            except Exception:
-                pass
-
-            request = {
-                'category': 'linear',
-                'symbol': symbol,
-                'side': 'Sell',  # закрываем long позицию
-                'orderType': 'TrailingStop',
-                'qty': str(float(qty)),
-                'triggerBy': 'LastPrice',
-                'reduceOnly': True,
-                'callbackRate': f"{callback_rate_pct:.3f}",
-            }
-            if active_price and active_price > 0:
-                request['activePrice'] = f"{active_price:.8f}"
-
-            try:
-                response = exchange.privatePostV5OrderCreate(request)
-                return {
-                    'callback_rate_pct': callback_rate_pct,
-                    'active_price': active_price,
-                    'order': response
-                }
-            except Exception as e_req:
-                raise RuntimeError(f"Bybit trailingStop request failed: {e_req}")
+        # Локальный helper ATR TP/SL остаётся здесь; trailing вынесен в доменный модуль
 
         # 3) Исполнение по execution_mode
         executed_price = 0.0
@@ -1351,15 +1311,15 @@ def trading_manual_buy_bypass_prediction():
                     pass
                 if trailing_enabled and risk_stop_mode == 'atr_trailing' and executed_price > 0:
                     try:
-                        trailing_result = _setup_trailing_stop(
-                            agent,
+                        trailing_result = setup_trailing_stop_bybit(
+                            agent.exchange,
                             sym,
                             float(qty),
                             executed_price,
                             trailing_mode,
                             trailing_activate_mode,
                             trailing_activate_value,
-                            atr_trail_mult
+                            atr_trail_mult,
                         )
                         risk_orders['trailing'] = trailing_result
                         try:
@@ -1369,6 +1329,14 @@ def trading_manual_buy_bypass_prediction():
                     except Exception as e_trail:
                         risk_orders['trailing_error'] = str(e_trail)
                         logging.error(f"[/api/trading/manual_buy] trailing setup failed: {e_trail}")
+                else:
+                    # Явный лог, почему трейлинг не пытались выставить
+                    try:
+                        logging.info(
+                            f"[/api/trading/manual_buy] trailing skipped: enabled={trailing_enabled} risk_stop_mode={risk_stop_mode} executed_price={executed_price}"
+                        )
+                    except Exception:
+                        pass
                 # Дополнительная гарантированная постановка TP/SL (на случай игнорирования attached параметров биржей)
                 try:
                     from tasks.celery_task_trade import ensure_risk_orders as _ensure
@@ -1490,15 +1458,15 @@ def trading_manual_buy_bypass_prediction():
                         pass
         if executed_price and executed_price > 0 and trailing_enabled and risk_stop_mode == 'atr_trailing' and 'trailing' not in (risk_orders or {}):
             try:
-                trailing_result = _setup_trailing_stop(
-                    agent,
+                trailing_result = setup_trailing_stop_bybit(
+                    agent.exchange,
                     sym,
                     float(qty),
                     executed_price,
                     trailing_mode,
                     trailing_activate_mode,
                     trailing_activate_value,
-                    atr_trail_mult
+                    atr_trail_mult,
                 )
                 risk_orders['trailing'] = trailing_result
                 try:
@@ -1594,8 +1562,9 @@ def ensure_risk():
             return jsonify({'success': False, 'error': 'symbol is required'}), 400
         try:
             from tasks.celery_task_trade import ensure_risk_orders as _ensure
-            _ensure.apply_async(kwargs={'symbol': sym}, countdown=0, queue='trade')
-            _ensure.apply_async(kwargs={'symbol': sym}, countdown=10, queue='trade')
+            # Для limit_post_only позиция появляется не мгновенно; ранний ensure часто только шумит "no_position_cleanup".
+            _ensure.apply_async(kwargs={'symbol': sym}, countdown=20, queue='trade')
+            _ensure.apply_async(kwargs={'symbol': sym}, countdown=60, queue='trade')
         except Exception as e:
             return jsonify({'success': False, 'error': f'ensure enqueue failed: {e}'}), 500
         return jsonify({'success': True}), 200
