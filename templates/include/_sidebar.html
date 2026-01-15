@@ -22,14 +22,14 @@
   <ul class="sidebar-nav">
     <li><a href="/">🏠 Главная</a></li>
     <li>
-      <details>
+      <details open>
         <summary>💰 Торговый агент</summary>
         <ul class="submenu">
           <li><a href="/trading_agent">Запустить</a></li>
           <li><a href="/trading_agent">Мониторинг</a></li>
           <li><a href="/trading/results">Результаты торговли</a></li>
           <li>
-            <details>
+            <details open>
               <summary>Символы</summary>
               <ul class="submenu" id="sidebarSymbols"></ul>
             </details>
@@ -70,6 +70,15 @@
       <details>
         <summary>🔧 Система</summary>
         <ul class="submenu">
+          <li>
+            <details>
+              <summary>⚙️ Настройки</summary>
+              <ul class="submenu">
+                <li><a href="/settings">⚙️ Настройки</a></li>
+                <li><a href="/settings/api">🔑 API</a></li>
+              </ul>
+            </details>
+          </li>
           <li><a href="/clean_data">Очистить данные</a></li>
           <li><a href="/clear_redis">Очистить Redis</a></li>
           <li><a href="/task-status/">Статус задач</a></li>

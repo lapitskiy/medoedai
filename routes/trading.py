@@ -70,6 +70,9 @@ def save_trading_config():
         atr_trail_mult = data.get('atr_trail_mult')
         atr_trail_activate_pct = data.get('atr_trail_activate_pct')
         account_pct = data.get('account_pct')  # Доля счёта для сделки, %
+        # Q-gate thresholds (per-symbol)
+        qgate_maxq = data.get('qgate_maxq')
+        qgate_gapq = data.get('qgate_gapq')
         exit_mode = str(data.get('exit_mode') or '').strip() or None  # 'prediction' | 'risk_orders'
         leverage = data.get('leverage')  # 1..5
         import json as _json
@@ -149,6 +152,14 @@ def save_trading_config():
         try:
             if symbols:
                 sym_ps = symbols[0]
+                # Q-gate per-symbol
+                try:
+                    if qgate_maxq is not None:
+                        rc.set(f'trading:qgate_maxq:{sym_ps}', str(float(qgate_maxq)))
+                    if qgate_gapq is not None:
+                        rc.set(f'trading:qgate_gapq:{sym_ps}', str(float(qgate_gapq)))
+                except Exception:
+                    pass
                 if atr_k is not None:
                     rc.set(f'trading:atr_k:{sym_ps}', str(atr_k))
                 if atr_m is not None:
@@ -199,6 +210,14 @@ def save_trading_config():
                     rc.set('trading:account_pct', str(ap))
             except Exception:
                 pass
+        # Глобальные Q-gate значения (fallback)
+        try:
+            if qgate_maxq is not None:
+                rc.set('trading:qgate_maxq', str(float(qgate_maxq)))
+            if qgate_gapq is not None:
+                rc.set('trading:qgate_gapq', str(float(qgate_gapq)))
+        except Exception:
+            pass
         # debug_buy более не сохраняем в Redis: управляется только через ENV
         try:
             if exit_mode and symbols:
@@ -231,6 +250,9 @@ def start_trading():
         data = request.get_json() or {}
         symbols = data.get('symbols', ['BTCUSDT'])
         account_id = str(data.get('account_id') or '').strip()
+        # Q-gate thresholds (per-agent/per-symbol)
+        qgate_maxq = data.get('qgate_maxq')
+        qgate_gapq = data.get('qgate_gapq')
         # Новые параметры стратегии исполнения
         execution_mode = str(data.get('execution_mode') or '').strip() or None  # 'market' | 'limit_post_only'
         limit_config = data.get('limit_config') if isinstance(data.get('limit_config'), dict) else None
@@ -248,6 +270,24 @@ def start_trading():
             model_path = model_paths[0]
         if not model_path:
             model_path = '/workspace/models/btc/ensemble-a/current/dqn_model.pth'
+
+        # Строгий режим: если пользователь явно выбрал аккаунт при старте — НИКАКИХ фолбэков.
+        # Проверяем ключи в Postgres (app_settings), scope=api, group=bybit.
+        if account_id:
+            try:
+                from utils.settings_store import ensure_settings_table, get_setting_value
+                ensure_settings_table()
+                api_key = (get_setting_value('api', 'bybit', f'BYBIT_{account_id}_API_KEY') or '').strip()
+                secret_key = (get_setting_value('api', 'bybit', f'BYBIT_{account_id}_SECRET_KEY') or '').strip()
+                label = (get_setting_value('api', 'bybit', f'BYBIT_{account_id}_LABEL') or f'Account {account_id}').strip()
+                if (not api_key) or (not secret_key):
+                    return jsonify({
+                        'success': False,
+                        'error': f'Bybit API не настроено для выбранного аккаунта "{label}" (id={account_id}). '
+                                 f'Нужны настройки BYBIT_{account_id}_API_KEY и BYBIT_{account_id}_SECRET_KEY в Postgres.'
+                    }), 400
+            except Exception:
+                return jsonify({'success': False, 'error': f'Не удалось проверить Bybit API в Postgres для account_id={account_id}'}), 400
         
         # Сохраняем выбранные параметры в Redis для последующих вызовов (status/stop/balance/history)
         try:
@@ -290,6 +330,14 @@ def start_trading():
             # Сохраняем настройки для конкретного символа
             symbol = symbols[0] if symbols else 'ALL'
             _rc.set(f'trading:symbols:{symbol}', _json.dumps(symbols, ensure_ascii=False))
+            # Q-gate thresholds per-symbol
+            try:
+                if qgate_maxq is not None:
+                    _rc.set(f'trading:qgate_maxq:{symbol}', str(float(qgate_maxq)))
+                if qgate_gapq is not None:
+                    _rc.set(f'trading:qgate_gapq:{symbol}', str(float(qgate_gapq)))
+            except Exception:
+                pass
             # Сохраняем выбранный режим исполнения и конфиг (per-symbol)
             try:
                 if execution_mode:
@@ -319,31 +367,17 @@ def start_trading():
             _rc.set(f'trading:model_path:{symbol}', model_path)
             if isinstance(model_paths, list):
                 _rc.set(f'trading:model_paths:{symbol}', _json.dumps(model_paths, ensure_ascii=False))
+            # Глобальный fallback для Q-gate (если задано)
+            try:
+                if qgate_maxq is not None:
+                    _rc.set('trading:qgate_maxq', str(float(qgate_maxq)))
+                if qgate_gapq is not None:
+                    _rc.set('trading:qgate_gapq', str(float(qgate_gapq)))
+            except Exception:
+                pass
             
-            # Пишем мгновенный «активный» статус для конкретного символа
-            initial_status = {
-                'success': True,
-                'is_trading': True,
-                'trading_status': 'Активна',
-                'trading_status_emoji': '🟢',
-                'trading_status_full': '🟢 Активна',
-                'symbol': symbol,
-                'symbol_display': symbol,
-                'amount': None,
-                'amount_display': 'Не указано',
-                'amount_usdt': 0.0,
-                'position': None,
-                'trades_count': 0,
-                'balance': {},
-                'current_price': 0.0,
-                'last_model_prediction': None,
-            }
-            # Сохраняем статус для конкретного символа
-            _rc.set(f'trading:status:{symbol}', _json.dumps(initial_status, ensure_ascii=False))
-            # НЕ перезаписываем общий статус, чтобы не убить другие агенты
-            # _rc.set('trading:current_status', _json.dumps(initial_status, ensure_ascii=False))
-            from datetime import datetime as _dt
-            _rc.set('trading:current_status_ts', _dt.utcnow().isoformat())
+            # Статус "Активна" пишем ПОСЛЕ успешной постановки задачи в очередь (ниже),
+            # чтобы при ошибке/валидации не показывать ложный запуск.
         except Exception as _e:
             logging.error(f"Не удалось сохранить параметры торговли в Redis: {_e}")
 
@@ -363,6 +397,34 @@ def start_trading():
 
         # Запускаем Celery задачу для старта торговли (старый поток предсказаний/торгового шага)
         task = start_trading_task.apply_async(args=[symbols, model_path], countdown=0, expires=300, queue='trade')
+
+        # Пишем мгновенный «активный» статус для конкретного символа (только после enqueue)
+        try:
+            import json as _json
+            _rc = get_redis_client()
+            symbol = symbols[0] if symbols else 'ALL'
+            initial_status = {
+                'success': True,
+                'is_trading': True,
+                'trading_status': 'Активна',
+                'trading_status_emoji': '🟢',
+                'trading_status_full': '🟢 Активна',
+                'symbol': symbol,
+                'symbol_display': symbol,
+                'amount': None,
+                'amount_display': 'Не указано',
+                'amount_usdt': 0.0,
+                'position': None,
+                'trades_count': 0,
+                'balance': {},
+                'current_price': 0.0,
+                'last_model_prediction': None,
+            }
+            _rc.set(f'trading:status:{symbol}', _json.dumps(initial_status, ensure_ascii=False))
+            from datetime import datetime as _dt
+            _rc.set('trading:current_status_ts', _dt.utcnow().isoformat())
+        except Exception:
+            pass
 
         # Опционально: немедленно запустить стратегию исполнения (DDD) для текущего символа
         try:
@@ -553,6 +615,21 @@ def stop_trading_symbol():
 def list_trading_agents():
     try:
         rc = get_redis_client()
+        # Текущий выбранный Bybit аккаунт (глобально для всех агентов)
+        sel_account_id = None
+        sel_account = None
+        try:
+            sel_account_id = rc.get('trading:account_id') if rc else None
+            if isinstance(sel_account_id, (bytes, bytearray)):
+                sel_account_id = sel_account_id.decode('utf-8', errors='ignore')
+            sel_account_id = str(sel_account_id).strip() if sel_account_id else None
+        except Exception:
+            sel_account_id = None
+        try:
+            from utils.accounts import get_bybit_account
+            sel_account = get_bybit_account(sel_account_id) if sel_account_id else None
+        except Exception:
+            sel_account = None
         # Базовый список символов (можно расширить)
         known = ['BTCUSDT','ETHUSDT','SOLUSDT','TONUSDT','ADAUSDT','BNBUSDT','XRPUSDT']
         agents = []
@@ -685,6 +762,20 @@ def list_trading_agents():
                 account_pct_v = None
                 debug_buy = None
 
+            # Q-gate per-symbol thresholds (MAXQ/GAPQ)
+            try:
+                qmax_v = rc.get(f'trading:qgate_maxq:{sym}') or rc.get('trading:qgate_maxq')
+                qgap_v = rc.get(f'trading:qgate_gapq:{sym}') or rc.get('trading:qgate_gapq')
+                if isinstance(qmax_v, (bytes, bytearray)):
+                    qmax_v = qmax_v.decode('utf-8', errors='ignore')
+                if isinstance(qgap_v, (bytes, bytearray)):
+                    qgap_v = qgap_v.decode('utf-8', errors='ignore')
+                qmax_f = float(str(qmax_v)) if qmax_v not in (None, '') else None
+                qgap_f = float(str(qgap_v)) if qgap_v not in (None, '') else None
+            except Exception:
+                qmax_f = None
+                qgap_f = None
+
             # Направление per-symbol
             try:
                 dir_v = rc.get(f'trading:direction:{sym}')
@@ -697,6 +788,11 @@ def list_trading_agents():
             agent_obj = {
                 'symbol': sym,
                 'active': bool(is_active),
+                # Биржа/API (то, что выбираем при старте "Аккаунт Bybit")
+                'exchange': 'Bybit',
+                'account_id': sel_account_id,
+                'account_label': (sel_account or {}).get('label') if isinstance(sel_account, dict) else None,
+                'account_api_key_masked': (sel_account or {}).get('api_key_masked') if isinstance(sel_account, dict) else None,
                 'status': status or {},
                 'consensus': consensus or {},
                 'total_models': total_models,
@@ -722,6 +818,8 @@ def list_trading_agents():
                     'trailing_activate_mode': (str(trailing_activate_mode_v).strip() if trailing_activate_mode_v else None),
                     'trailing_activate_value': (float(str(trailing_activate_value_v)) if trailing_activate_value_v not in (None, '') else None),
                     'debug_buy_env': debug_buy,
+                    'qgate_maxq': qmax_f,
+                    'qgate_gapq': qgap_f,
                 }
             }
             try:

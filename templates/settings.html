@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Настройки</title>
+    <style>
+        .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+        .grid3 { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:12px; }
+        .hint { color:#6c757d; font-size: 12px; }
+        .table { width:100%; border-collapse: collapse; }
+        .table th, .table td { border:1px solid #e1e1e1; padding:8px; text-align:left; vertical-align: top; }
+        .table th { background:#f7f7f7; }
+        @media (max-width: 1000px){ .grid3 { grid-template-columns: 1fr; } .grid2 { grid-template-columns: 1fr; } }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    </style>
+</head>
+<body>
+    {% include 'include/_sidebar.html' %}
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <div class="container">
+        <div class="main-content">
+            <div class="header">
+                <h1>⚙️ Настройки</h1>
+                <p class="hint">Хранение в Postgres (таблица <code>app_settings</code>).</p>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h5>➕ Добавить настройку</h5>
+                </div>
+                <div class="grid3">
+                    <div class="form-group">
+                        <label>Scope</label>
+                        <input id="scope" class="form-control" placeholder="например: analyzer" />
+                    </div>
+                    <div class="form-group">
+                        <label>Group (optional)</label>
+                        <input id="group" class="form-control" placeholder="например: stage1" />
+                    </div>
+                    <div class="form-group">
+                        <label>KEY</label>
+                        <input id="key" class="form-control mono" placeholder="ANALYZER_MAX_POOLS_PER_SYMBOL" />
+                    </div>
+                </div>
+                <div class="grid3" style="margin-top:10px;">
+                    <div class="form-group">
+                        <label>Type</label>
+                        <select id="type" class="form-control">
+                            <option value="string">string</option>
+                            <option value="number">number</option>
+                            <option value="bool">bool</option>
+                            <option value="json">json</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Label (optional)</label>
+                        <input id="label" class="form-control" placeholder="Max Pools Per Symbol" />
+                    </div>
+                    <div class="form-group">
+                        <label>Secret</label>
+                        <select id="secret" class="form-control">
+                            <option value="0">no</option>
+                            <option value="1">yes</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group" style="margin-top:10px;">
+                    <label>Описание (optional)</label>
+                    <textarea id="description" class="form-control" rows="3" placeholder="Текст описания..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Value</label>
+                    <textarea id="value" class="form-control mono" rows="2" placeholder="50"></textarea>
+                </div>
+                <div style="margin-top:10px; display:flex; gap:10px;">
+                    <button class="btn btn-primary" onclick="saveSetting()">Добавить</button>
+                    <div id="saveStatus" class="status info" style="display:none;"></div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                    <h5>📋 Текущие настройки</h5>
+                    <button class="btn btn-secondary" onclick="loadSettings()">🔄 Обновить</button>
+                </div>
+                <div id="listStatus" class="status info">Загрузка...</div>
+                <div style="overflow:auto;">
+                    <table class="table" id="tbl" style="display:none;">
+                        <thead>
+                            <tr>
+                                <th>Scope</th>
+                                <th>Group</th>
+                                <th>Key</th>
+                                <th>Type</th>
+                                <th>Label</th>
+                                <th>Description</th>
+                                <th>Value</th>
+                                <th>Updated</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/sidebar.js"></script>
+    <script>
+        function showStatus(elementId, type, message) {
+            const el = document.getElementById(elementId);
+            if(!el) return;
+            el.textContent = message;
+            el.className = `status ${type}`;
+            el.style.display = 'block';
+            setTimeout(() => { try{ el.style.display = 'none'; }catch(_){ } }, 6000);
+        }
+
+        async function loadSettings(){
+            const status = document.getElementById('listStatus');
+            const tbl = document.getElementById('tbl');
+            const body = document.getElementById('tbody');
+            if(status){ status.style.display='block'; status.className='status info'; status.textContent='Загрузка...'; }
+            if(tbl) tbl.style.display='none';
+            try{
+                const r = await fetch('/api/settings/list');
+                const j = await r.json();
+                if(!j.success) throw new Error(j.error || 'load failed');
+                const items = Array.isArray(j.items) ? j.items : [];
+                if(items.length === 0){
+                    if(status){ status.className='status info'; status.textContent='Нет настроек'; }
+                    return;
+                }
+                body.innerHTML = items.map(it=>{
+                    const desc = it.description ? String(it.description) : '';
+                    const val = (it.value!=null) ? String(it.value) : '';
+                    const upd = it.updated_at ? String(it.updated_at).replace('T',' ').split('.')[0] : '—';
+                    return `<tr>
+                        <td>${it.scope||''}</td>
+                        <td>${it.group||''}</td>
+                        <td class="mono">${it.key||''}</td>
+                        <td>${it.type||''}</td>
+                        <td>${it.label||''}</td>
+                        <td style="min-width:280px;">${desc}</td>
+                        <td class="mono">${val}</td>
+                        <td>${upd}</td>
+                        <td><button class="btn btn-danger" onclick="delSetting(${it.id})">✖</button></td>
+                    </tr>`;
+                }).join('');
+                if(status) status.style.display='none';
+                if(tbl) tbl.style.display='table';
+            }catch(e){
+                if(status){ status.className='status error'; status.textContent='Ошибка: '+e.message; }
+            }
+        }
+
+        async function saveSetting(){
+            try{
+                const payload = {
+                    scope: (document.getElementById('scope')?.value || '').trim(),
+                    group: (document.getElementById('group')?.value || '').trim(),
+                    key: (document.getElementById('key')?.value || '').trim(),
+                    type: (document.getElementById('type')?.value || 'string'),
+                    label: (document.getElementById('label')?.value || '').trim(),
+                    description: (document.getElementById('description')?.value || '').trim(),
+                    secret: (document.getElementById('secret')?.value || '0') === '1',
+                    value: (document.getElementById('value')?.value || '')
+                };
+                const r = await fetch('/api/settings/upsert', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+                const j = await r.json();
+                if(!j.success) throw new Error(j.error || 'save failed');
+                showStatus('saveStatus','success','Сохранено');
+                await loadSettings();
+            }catch(e){
+                showStatus('saveStatus','error', e.message);
+            }
+        }
+
+        async function delSetting(id){
+            try{
+                if(!confirm('Удалить настройку id='+id+'?')) return;
+                const r = await fetch('/api/settings/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
+                const j = await r.json();
+                if(!j.success) throw new Error(j.error || 'delete failed');
+                await loadSettings();
+            }catch(e){
+                showStatus('saveStatus','error', e.message);
+            }
+        }
+
+        window.addEventListener('load', () => { loadSettings(); });
+    </script>
+</body>
+</html>
+
+

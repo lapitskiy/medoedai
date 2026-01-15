@@ -18,6 +18,7 @@ import redis # type: ignore
 from tasks.celery_tasks import celery
 from routes.bybit import bybit_bp
 from routes.trading import trading_bp, get_matched_full_trades
+from routes.settings import settings_bp
 from routes.models_admin import models_admin_bp
 from routes.oos import oos_bp
 from routes.training import training_bp
@@ -70,6 +71,7 @@ from routes.analysis import analysis_api_bp
 app.register_blueprint(analysis_api_bp)
 app.register_blueprint(bybit_bp)
 app.register_blueprint(trading_bp)
+app.register_blueprint(settings_bp)
 app.register_blueprint(models_admin_bp)
 app.register_blueprint(training_bp, url_prefix='/training')
 from routes.clean import clean_bp

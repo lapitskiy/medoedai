@@ -6,9 +6,11 @@ import time
 from typing import Tuple, Dict, Any, Optional, Callable
 
 import ccxt
+import redis
 
 from trading_agent.domain.interfaces import ExchangeGateway
 from trading_agent.domain.models import Side
+from utils.settings_store import ensure_settings_table, get_setting_value
 
 
 class BybitExchangeGateway(ExchangeGateway):
@@ -20,9 +22,37 @@ class BybitExchangeGateway(ExchangeGateway):
     """
 
     def __init__(self, symbol_for_markets: Optional[str] = None):
-        api_key = os.getenv('BYBIT_1_API_KEY') or os.getenv('BYBIT_API_KEY')
-        secret = os.getenv('BYBIT_1_SECRET_KEY') or os.getenv('BYBIT_SECRET_KEY')
+        # Строгий режим: если выбран account_id в Redis — НИКАКИХ фолбэков.
+        selected = None
+        try:
+            r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
+            selected = r.get('trading:account_id')
+            selected = str(selected).strip() if selected else None
+        except Exception:
+            selected = None
+
+        if selected:
+            try:
+                ensure_settings_table()
+                api_key = get_setting_value('api', 'bybit', f'BYBIT_{selected}_API_KEY')
+                secret = get_setting_value('api', 'bybit', f'BYBIT_{selected}_SECRET_KEY')
+            except Exception:
+                api_key = None
+                secret = None
+        else:
+            try:
+                ensure_settings_table()
+                api_key = get_setting_value('api', 'bybit', 'BYBIT_1_API_KEY') or os.getenv('BYBIT_API_KEY')
+                secret = get_setting_value('api', 'bybit', 'BYBIT_1_SECRET_KEY') or os.getenv('BYBIT_SECRET_KEY')
+            except Exception:
+                api_key = os.getenv('BYBIT_1_API_KEY') or os.getenv('BYBIT_API_KEY')
+                secret = os.getenv('BYBIT_1_SECRET_KEY') or os.getenv('BYBIT_SECRET_KEY')
         if not api_key or not secret:
+            if selected:
+                raise RuntimeError(
+                    f'Bybit API keys not set for selected account id={selected} '
+                    f'(need BYBIT_{selected}_API_KEY and BYBIT_{selected}_SECRET_KEY)'
+                )
             raise RuntimeError('Bybit API keys not set in environment')
         self.ex = ccxt.bybit({
             'apiKey': api_key,
@@ -70,7 +100,44 @@ class BybitExchangeGateway(ExchangeGateway):
         ask = float(ob['asks'][0][0]) if ob.get('asks') else 0.0
         return bid, ask
 
+    def _normalize_qty(self, symbol: str, qty: float) -> float:
+        """
+        Нормализует количество под требования биржи:
+        - не меньше min amount
+        - не больше max amount (если задан)
+        - округление/квантование по правилам ccxt (amount_to_precision)
+        """
+        try:
+            q = float(qty or 0.0)
+        except Exception:
+            q = 0.0
+        try:
+            m = self.ex.market(symbol) or {}
+            limits = (m.get('limits', {}) or {}).get('amount', {}) or {}
+            min_q = float(limits.get('min') or 0.0)
+            max_raw = limits.get('max')
+            max_q = float(max_raw) if max_raw not in (None, '', 0) else None
+
+            if min_q > 0:
+                q = max(q, min_q)
+            if max_q is not None:
+                q = min(q, max_q)
+
+            # ccxt обычно возвращает строку, уже квантованную по шагу/precision
+            q = float(self.ex.amount_to_precision(symbol, q))
+
+            # На всякий случай: если округление "вниз" уронило ниже минимума
+            if min_q > 0 and q < min_q:
+                q = float(self.ex.amount_to_precision(symbol, min_q))
+            if max_q is not None and q > max_q:
+                q = float(self.ex.amount_to_precision(symbol, max_q))
+
+            return float(q)
+        except Exception:
+            return float(q)
+
     def place_limit_post_only(self, symbol: str, side: Side, qty: float, price: float, extra_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        qty = self._normalize_qty(symbol, qty)
         params = {
             'postOnly': True,
             'timeInForce': 'GTC',
@@ -102,6 +169,10 @@ class BybitExchangeGateway(ExchangeGateway):
                     self.cancel_order(symbol, order_id)
                 except Exception:
                     pass
+                try:
+                    amt = self._normalize_qty(symbol, float(amt or 0.0))
+                except Exception:
+                    amt = amt
                 if side == 'buy':
                     return self.ex.create_limit_buy_order(symbol, amt, price, {'postOnly': True, 'timeInForce': 'GTC'})
                 else:

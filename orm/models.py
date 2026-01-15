@@ -103,3 +103,31 @@ class FundingRate(Base):
     __table_args__ = (
         UniqueConstraint('symbol', 'timestamp', name='uix_funding_symbol_timestamp'),
     )
+
+
+class AppSetting(Base):
+    """
+    Универсальные настройки приложения (в т.ч. secret).
+
+    Ключ уникален в рамках (scope, group, key).
+    """
+    __tablename__ = 'app_settings'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    scope = Column(String, nullable=False)                 # например: analyzer / api / trading
+    group = Column(String, nullable=True)                  # опционально: bybit / stage1 / etc
+    key = Column(String, nullable=False)                   # например: ANALYZER_MAX_POOLS_PER_SYMBOL
+
+    value_type = Column(String, nullable=False, default='string')  # string/number/bool/json
+    label = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    is_secret = Column(Boolean, nullable=False, default=False)
+
+    value = Column(Text, nullable=True)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('scope', 'group', 'key', name='uix_app_settings_scope_group_key'),
+    )

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Настройки API</title>
+    <style>
+        .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+        .hint { color:#6c757d; font-size: 12px; }
+        .table { width:100%; border-collapse: collapse; }
+        .table th, .table td { border:1px solid #e1e1e1; padding:8px; text-align:left; }
+        .table th { background:#f7f7f7; }
+        @media (max-width: 900px){ .grid2 { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    {% include 'include/_sidebar.html' %}
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <div class="container">
+        <div class="main-content">
+            <div class="header">
+                <h1>⚙️ Настройки → 🔑 API</h1>
+                <p class="hint">Ключи сохраняются в Postgres (таблица <code>app_settings</code>) и применяются сразу.</p>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h5>➕ Добавить / обновить API</h5>
+                </div>
+                <div class="grid2">
+                    <div class="form-group">
+                        <label>Биржа</label>
+                        <select id="exSel" class="form-control">
+                            <option value="bybit">Bybit</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Account ID (опционально)</label>
+                        <input id="accId" class="form-control" placeholder="например: 2 (если пусто — будет следующий)" />
+                    </div>
+                    <div class="form-group">
+                        <label>Label</label>
+                        <input id="accLabel" class="form-control" placeholder="например: aiBNB" />
+                    </div>
+                    <div class="form-group">
+                        <label>API KEY</label>
+                        <input id="apiKey" class="form-control" placeholder="BYBIT_<id>_API_KEY" />
+                    </div>
+                    <div class="form-group">
+                        <label>SECRET KEY</label>
+                        <input id="secretKey" class="form-control" placeholder="BYBIT_<id>_SECRET_KEY" />
+                    </div>
+                </div>
+                <div style="margin-top:10px; display:flex; gap:10px;">
+                    <button class="btn btn-primary" onclick="saveAccount()">💾 Сохранить</button>
+                    <div id="saveStatus" class="status info" style="display:none;"></div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                    <h5>📋 Текущие аккаунты</h5>
+                    <button class="btn btn-secondary" onclick="loadAccounts()">🔄 Обновить</button>
+                </div>
+                <div id="listStatus" class="status info">Загрузка...</div>
+                <div style="overflow:auto;">
+                    <table class="table" id="accTable" style="display:none;">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Label</th>
+                                <th>API key</th>
+                                <th>Secret</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="accTbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/sidebar.js"></script>
+    <script>
+        function showStatus(elementId, type, message) {
+            const el = document.getElementById(elementId);
+            if(!el) return;
+            el.textContent = message;
+            el.className = `status ${type}`;
+            el.style.display = 'block';
+            setTimeout(() => { try{ el.style.display = 'none'; }catch(_){ } }, 6000);
+        }
+
+        async function loadAccounts(){
+            const status = document.getElementById('listStatus');
+            const tbl = document.getElementById('accTable');
+            const body = document.getElementById('accTbody');
+            if(status){ status.style.display = 'block'; status.className='status info'; status.textContent='Загрузка...'; }
+            if(tbl) tbl.style.display = 'none';
+            try{
+                const ex = document.getElementById('exSel')?.value || 'bybit';
+                const r = await fetch(`/api/settings/api/accounts?exchange=${encodeURIComponent(ex)}`);
+                const j = await r.json();
+                if(!j.success) throw new Error(j.error || 'load failed');
+                const items = Array.isArray(j.accounts) ? j.accounts : [];
+                if(items.length === 0){
+                    if(status){ status.className='status info'; status.textContent='Нет аккаунтов в .env'; }
+                    return;
+                }
+                body.innerHTML = items.map(a=>{
+                    const hasSecret = a.has_secret ? 'yes' : 'no';
+                    const api = a.api_key_masked || '—';
+                    const label = a.label || '—';
+                    return `<tr>
+                        <td>${a.id}</td>
+                        <td>${label}</td>
+                        <td>${api}</td>
+                        <td>${hasSecret}</td>
+                        <td><button class="btn btn-danger" onclick="deleteAccount('${a.id}')">🗑️</button></td>
+                    </tr>`;
+                }).join('');
+                if(status) status.style.display='none';
+                if(tbl) tbl.style.display='table';
+            }catch(e){
+                if(status){ status.className='status error'; status.textContent='Ошибка: '+e.message; }
+            }
+        }
+
+        async function saveAccount(){
+            try{
+                const ex = document.getElementById('exSel')?.value || 'bybit';
+                const id = (document.getElementById('accId')?.value || '').trim();
+                const label = (document.getElementById('accLabel')?.value || '').trim();
+                const api_key = (document.getElementById('apiKey')?.value || '').trim();
+                const secret_key = (document.getElementById('secretKey')?.value || '').trim();
+                const payload = { exchange: ex, id, label, api_key, secret_key };
+                const r = await fetch('/api/settings/api/accounts/save', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const j = await r.json();
+                if(!j.success) throw new Error(j.error || 'save failed');
+                showStatus('saveStatus','success', 'Сохранено в Postgres');
+                // очистим секрет
+                try{ document.getElementById('secretKey').value=''; }catch(_){}
+                await loadAccounts();
+            }catch(e){
+                showStatus('saveStatus','error', e.message);
+            }
+        }
+
+        async function deleteAccount(id){
+            try{
+                if(!confirm('Удалить аккаунт id='+id+' из .env?')) return;
+                const ex = document.getElementById('exSel')?.value || 'bybit';
+                const r = await fetch('/api/settings/api/accounts/delete', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({exchange: ex, id})
+                });
+                const j = await r.json();
+                if(!j.success) throw new Error(j.error || 'delete failed');
+                showStatus('saveStatus','success', 'Удалено из Postgres');
+                await loadAccounts();
+            }catch(e){
+                showStatus('saveStatus','error', e.message);
+            }
+        }
+
+        window.addEventListener('load', () => { loadAccounts(); });
+    </script>
+</body>
+</html>
+
+

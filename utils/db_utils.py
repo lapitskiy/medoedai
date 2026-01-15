@@ -23,31 +23,77 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 import math # Для isclose
 import time
 import json # Для логирования сырых данных
-# --- Helpers: Bybit API keys discovery (supports BYBIT_<N>_API_KEY only) ---
-def _discover_bybit_api_keys() -> tuple[str | None, str | None]:
+# --- Helpers: Bybit API keys discovery from Postgres (app_settings via utils.settings_store) ---
+def _key_prefix_4(key: str | None) -> str:
+    """Safe prefix for logs: first 4 chars only (never full key)."""
     try:
-        # 1) По умолчанию берём аккаунт 1, если задан
-        api_key = os.getenv('BYBIT_1_API_KEY')
-        secret_key = os.getenv('BYBIT_1_SECRET_KEY')
-        if api_key and secret_key:
-            return api_key, secret_key
-        # 2) Автоскан: BYBIT_<ID>_API_KEY / BYBIT_<ID>_SECRET_KEY
-        candidates = []
-        for k, v in os.environ.items():
-            if not k.startswith('BYBIT_') or not k.endswith('_API_KEY'):
-                continue
-            idx = k[len('BYBIT_'):-len('_API_KEY')]
-            sec_name = f'BYBIT_{idx}_SECRET_KEY'
-            sec_val = os.getenv(sec_name)
-            if v and sec_val:
-                candidates.append((k, v, sec_name, sec_val))
-        # Стабильный порядок: сортируем по имени переменной (BYBIT_1_*, BYBIT_2_* ...)
-        if candidates:
-            candidates.sort(key=lambda x: x[0])
-            return candidates[0][1], candidates[0][3]
-        return None, None
+        s = (key or "").strip()
+        return s[:4] if len(s) >= 4 else "***"
     except Exception:
-        return None, None
+        return "***"
+
+
+def _discover_bybit_api_keys() -> tuple[str | None, str | None, str | None]:
+    try:
+        from utils.settings_store import ensure_settings_table, get_setting_value, list_settings
+
+        ensure_settings_table()
+
+        def _norm(v: str | None) -> str | None:
+            try:
+                s = (v or "").strip()
+                return s if s else None
+            except Exception:
+                return None
+
+        def _get_pair(idx: str) -> tuple[str | None, str | None]:
+            ak = _norm(get_setting_value('api', 'bybit', f'BYBIT_{idx}_API_KEY'))
+            sk = _norm(get_setting_value('api', 'bybit', f'BYBIT_{idx}_SECRET_KEY'))
+            return ak, sk
+
+        # 0) Если выбран account_id в Redis — используем его (без фолбэков на другие аккаунты).
+        selected: str | None = None
+        try:
+            import redis  # type: ignore
+            r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
+            sel = r.get('trading:account_id')
+            selected = str(sel).strip() if sel else None
+        except Exception:
+            selected = None
+
+        if selected:
+            api_key, secret_key = _get_pair(selected)
+            src = f'BYBIT_{selected}_API_KEY'
+            if api_key and secret_key:
+                return api_key, secret_key, src
+            return None, None, src
+
+        # 1) По умолчанию берём аккаунт 1 из БД
+        api_key, secret_key = _get_pair('1')
+        if api_key and secret_key:
+            return api_key, secret_key, 'BYBIT_1_API_KEY'
+
+        # 2) Автоскан в БД: BYBIT_<ID>_API_KEY / BYBIT_<ID>_SECRET_KEY
+        ids: list[int] = []
+        try:
+            rows = list_settings(scope='api', group='bybit')
+            for r in rows:
+                k = str(r.get('key') or '').strip()
+                if k.startswith('BYBIT_') and k.endswith('_API_KEY'):
+                    mid = k[len('BYBIT_'):-len('_API_KEY')]
+                    if str(mid).isdigit():
+                        ids.append(int(mid))
+        except Exception:
+            ids = []
+
+        for idx in sorted(set(ids)):
+            api_key, secret_key = _get_pair(str(idx))
+            if api_key and secret_key:
+                return api_key, secret_key, f'BYBIT_{idx}_API_KEY'
+
+        return None, None, None
+    except Exception:
+        return None, None, None
 
 
 # --- Database Engine and Session setup ---
@@ -185,10 +231,13 @@ def db_get_or_fetch_ohlcv(
             exchange_class = getattr(ccxt, exchange_id)
             
             bybit_auth_used = None
+            bybit_api_key_var = None
+            bybit_api_key_prefix4 = None
             # Для Bybit: используем API ключи, если заданы, иначе публичные эндпоинты (они достаточны для OHLCV)
             if exchange_id == 'bybit':
                 # Поддержка BYBIT_API_KEY/BYBIT_SECRET_KEY и множественных BYBIT_<N>_*
-                api_key, secret_key = _discover_bybit_api_keys()
+                api_key, secret_key, bybit_api_key_var = _discover_bybit_api_keys()
+                bybit_api_key_prefix4 = _key_prefix_4(api_key)
                 bybit_auth_used = bool(api_key and secret_key)
                 if api_key and secret_key:
                     exchange = exchange_class({
@@ -270,7 +319,13 @@ def db_get_or_fetch_ohlcv(
             if detailed_logs:
                 logging.info(f"[OHLCV] EXCHANGE_INIT done in {(time.monotonic()-init_t0)*1000:.0f} ms; symbol_fetch={symbol_fetch}")
         except Exception as e:
-            logging.error(f"Не удалось инициализировать биржу {exchange_id}: {e}")
+            if exchange_id == 'bybit':
+                logging.error(
+                    f"Не удалось инициализировать биржу {exchange_id}: {e} "
+                    f"(api_key_var={bybit_api_key_var}, api_key_prefix4={bybit_api_key_prefix4}, auth={bybit_auth_used})"
+                )
+            else:
+                logging.error(f"Не удалось инициализировать биржу {exchange_id}: {e}")
             error_reason = f"exchange_init_failed: {exchange_id}: {e}"
             if include_error:
                 return _wrap_result(pd.DataFrame())

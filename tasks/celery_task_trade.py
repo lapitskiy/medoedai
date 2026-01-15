@@ -1571,10 +1571,20 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 print(f"Failed to save error prediction: {e}")
             return {"success": False, "error": error_msg}
 
-        # Подготовим пороги Q-gate: приоритет ENV > JSON > дефолт
+        # Подготовим пороги Q-gate: per-symbol Redis > ENV/Config > JSON > дефолт
         qgate_cfg = pred_json.get('qgate') or {}
 
-        def _pick_threshold(config_key: str, default_val: float) -> float:
+        sym0 = (symbols[0] if isinstance(symbols, list) and symbols else None)
+
+        def _pick_threshold(config_key: str, default_val: float, redis_key: str | None = None) -> float:
+            # 0) per-symbol в Redis
+            try:
+                if redis_key and sym0 and rc is not None:
+                    v = rc.get(f'{redis_key}:{sym0}') or rc.get(redis_key)
+                    if v is not None and str(v).strip() != '':
+                        return float(v)
+            except Exception:
+                pass
             try:
                 config_val = get_config_value(config_key)
                 print(f"DEBUG: {config_key} = {config_val}")
@@ -1588,8 +1598,8 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             print(f"DEBUG: Using default {config_key} = {default_val}")
             return float(default_val)
 
-        T1 = _pick_threshold('QGATE_MAXQ', 1.11)
-        T2 = _pick_threshold('QGATE_GAPQ', 1.11)
+        T1 = _pick_threshold('QGATE_MAXQ', 0.500, 'trading:qgate_maxq')
+        T2 = _pick_threshold('QGATE_GAPQ', 0.440, 'trading:qgate_gapq')
         print(f"QGate thresholds chosen: T1={T1:.3f}, T2={T2:.3f}")
 
         try:

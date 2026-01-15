@@ -372,6 +372,22 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Q-gate пороги (per-agent/per-symbol) -->
+                    <div style="margin-top:15px; padding-top:10px; border-top:1px dashed #e0c97a;">
+                        <label style="font-weight:600; margin-bottom:8px; display:block;">🧠 Q-gate (пороги на старт агента)</label>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                            <div>
+                                <label style="font-weight:500;">MAXQ ≥</label>
+                                <input id="qgateMaxQInput" type="number" min="-10" max="10" step="0.001" class="form-control" value="0.500" oninput="autoSaveTradingConfig()" />
+                            </div>
+                            <div>
+                                <label style="font-weight:500;">GAPQ ≥</label>
+                                <input id="qgateGapQInput" type="number" min="-10" max="10" step="0.001" class="form-control" value="0.440" oninput="autoSaveTradingConfig()" />
+                            </div>
+                        </div>
+                        <small style="color:#666; display:block; margin-top:6px;">Эти пороги применяются только для выбранного символа/агента (не общие для всех).</small>
+                    </div>
                 </div>
                 
                 <div id="modelInfo" class="model-info" style="display: none;">
@@ -419,6 +435,7 @@
                         <button class="btn btn-primary" onclick="goToAgent()">Открыть страницу символа</button>
                     </div>
                 </div>
+
             </div>
             
             <!-- Тестовая панель -->
@@ -752,6 +769,9 @@
             const takeProfitPct = parseFloat(document.getElementById('takeProfitPct')?.value || '1');
             const stopLossPct = parseFloat(document.getElementById('stopLossPct')?.value || '1');
             const riskType = document.getElementById('riskManagementType')?.value || 'exchange_orders';
+            // Q-gate пороги (per-agent/per-symbol)
+            const qgateMaxQ = parseFloat(document.getElementById('qgateMaxQInput')?.value || '0.500');
+            const qgateGapQ = parseFloat(document.getElementById('qgateGapQInput')?.value || '0.440');
             
             try {
                 const response = await fetch('/api/trading/start', {
@@ -767,7 +787,9 @@
                             account_id: accountId,
                             take_profit_pct: takeProfitPct,
                             stop_loss_pct: stopLossPct,
-                            risk_management_type: riskType
+                            risk_management_type: riskType,
+                            qgate_maxq: (isNaN(qgateMaxQ) ? 0.500 : qgateMaxQ),
+                            qgate_gapq: (isNaN(qgateGapQ) ? 0.440 : qgateGapQ)
                         };
                         // Направление (если в UI есть селектор #directionSelect)
                         try {
@@ -2014,6 +2036,9 @@
                 const atrTrailActivateMode = (document.getElementById('atrTrailActivateMode')?.value) || 'percent';
                 const atrTrailActivatePercent = parseFloat(document.getElementById('atrTrailActivatePercent')?.value || '0.5');
                 const atrTrailActivateAtr = parseFloat(document.getElementById('atrTrailActivateAtr')?.value || '0.5');
+                // Q-gate пороги (per-agent/per-symbol)
+                const qgateMaxQ = parseFloat(document.getElementById('qgateMaxQInput')?.value || '0.500');
+                const qgateGapQ = parseFloat(document.getElementById('qgateGapQInput')?.value || '0.440');
                 // Доля счёта
                 let accountPct = 100;
                 try{ accountPct = parseInt(document.getElementById('accountPct')?.value||'100',10) || 100; }catch(_){ accountPct = 100; }
@@ -2041,6 +2066,9 @@
                 if (atrTrailActivateMode === 'percent') {
                     bodyObj.atr_trail_activate_pct = atrTrailActivatePercent;
                 }
+                // Q-gate thresholds
+                bodyObj.qgate_maxq = (isNaN(qgateMaxQ) ? 0.500 : qgateMaxQ);
+                bodyObj.qgate_gapq = (isNaN(qgateGapQ) ? 0.440 : qgateGapQ);
                 payload.body = JSON.stringify(bodyObj);
                 await fetch('/api/trading/save_config', payload);
                 
@@ -2114,6 +2142,15 @@
                     const s = a.settings || {};
                     const lim = s.limit_config || {};
                     const dbg = (s.debug_buy_env===true? 'ON' : (s.debug_buy_env===false? 'OFF' : '—'));
+                    const qMax = (typeof s.qgate_maxq === 'number') ? s.qgate_maxq : null;
+                    const qGap = (typeof s.qgate_gapq === 'number') ? s.qgate_gapq : null;
+                    const qGateDisp = (qMax!=null || qGap!=null) ? `MAXQ≥${(qMax!=null?qMax.toFixed(3):'—')}, GAPQ≥${(qGap!=null?qGap.toFixed(3):'—')}` : '—';
+                    const apiDisplay = (() => {
+                        const ex = a.exchange || '—';
+                        const label = a.account_label || a.account_id || '—';
+                        const mk = a.account_api_key_masked ? ` (${a.account_api_key_masked})` : '';
+                        return `${ex} / ${label}${mk}`;
+                    })();
                     // Trailing summary
                     const trEnabled = (s.trailing_enabled===true) ? 'ON' : (s.trailing_enabled===false ? 'OFF' : '—');
                     const trMode = s.trailing_mode || '—';
@@ -2138,6 +2175,7 @@
                             <div class="trade-detail"><div class="label">Консенсус</div><div class="value">flat=${counts.flat??'—'}, trend=${counts.trend??'—'}</div></div>
                             <div class="trade-detail"><div class="label">BUY/SELL/HOLD</div><div class="value">—</div></div>
                             <div class="trade-detail"><div class="label">TTL лок</div><div class="value">${a.lock_ttl??'—'}</div></div>
+                            <div class="trade-detail"><div class="label">API / Биржа</div><div class="value">${apiDisplay}</div></div>
                             <div class="trade-detail"><div class="label">Исполнение</div><div class="value">${s.execution_mode||'—'}</div></div>
                             <div class="trade-detail"><div class="label">Выход</div><div class="value">${s.exit_mode||'—'}</div></div>
                             <div class="trade-detail"><div class="label">Stop strategy</div><div class="value">${stopStrategy}</div></div>
@@ -2148,6 +2186,7 @@
                             <div class="trade-detail"><div class="label">TTL лимитки</div><div class="value">${(lim.max_lifetime_sec!=null?lim.max_lifetime_sec+'s':'—')}</div></div>
                             <div class="trade-detail"><div class="label">Offset max ticks</div><div class="value">${(lim.offset_max_ticks!=null?lim.offset_max_ticks:'—')}</div></div>
                             <div class="trade-detail"><div class="label">DEBUG_BUY</div><div class="value">${dbg}</div></div>
+                            <div class="trade-detail"><div class="label">Q-gate</div><div class="value">${qGateDisp}</div></div>
                             <div class="trade-detail"><div class="label">Trailing</div><div class="value">${trEnabled}</div></div>
                             <div class="trade-detail"><div class="label">Trailing mode</div><div class="value">${trMode}</div></div>
                             <div class="trade-detail"><div class="label">Trail k / Activate</div><div class="value">${trK} / ${trAct}</div></div>

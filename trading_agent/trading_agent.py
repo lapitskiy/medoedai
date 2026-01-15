@@ -9,6 +9,7 @@ import ccxt
 import math
 import numpy as np
 import torch
+import re
 from datetime import datetime, timedelta
 from utils.trade_utils import create_trade_record, update_trade_status, create_model_prediction
 from utils.db_utils import db_get_or_fetch_ohlcv
@@ -116,30 +117,53 @@ class TradingAgent:
             # API ключи: приоритет — выбранный аккаунт из Redis (trading:account_id)
             api_key = None
             secret_key = None
+            selected_account_id = None
             try:
                 r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
                 sel = r.get('trading:account_id')
                 if sel:
-                    api_key = os.getenv(f'BYBIT_{sel}_API_KEY') or None
-                    secret_key = os.getenv(f'BYBIT_{sel}_SECRET_KEY') or None
+                    selected_account_id = str(sel).strip()
+                    try:
+                        from utils.settings_store import ensure_settings_table, get_setting_value
+                        ensure_settings_table()
+                        api_key = get_setting_value('api', 'bybit', f'BYBIT_{selected_account_id}_API_KEY') or None
+                        secret_key = get_setting_value('api', 'bybit', f'BYBIT_{selected_account_id}_SECRET_KEY') or None
+                    except Exception:
+                        api_key = None
+                        secret_key = None
             except Exception:
                 api_key = None
                 secret_key = None
+            # Строгий режим: если аккаунт выбран — НИКАКИХ фолбэков.
+            # Если ключей нет — считаем это ошибкой конфигурации и не запускаем торговлю.
+            if selected_account_id and (not api_key or not secret_key):
+                raise RuntimeError(
+                    f"Bybit API keys missing for selected account id={selected_account_id} "
+                    f"(need BYBIT_{selected_account_id}_API_KEY and BYBIT_{selected_account_id}_SECRET_KEY)"
+                )
             # Фолбэк: автоскан BYBIT_<ID>_API_KEY, если аккаунт в Redis не выбран
-            if not api_key or not secret_key:
+            if (not selected_account_id) and (not api_key or not secret_key):
                 try:
+                    from utils.settings_store import ensure_settings_table, list_settings, get_setting_value
+                    ensure_settings_table()
                     # Сначала BYBIT_1_*
-                    api_key = api_key or os.getenv('BYBIT_1_API_KEY')
-                    secret_key = secret_key or os.getenv('BYBIT_1_SECRET_KEY')
+                    api_key = api_key or get_setting_value('api', 'bybit', 'BYBIT_1_API_KEY')
+                    secret_key = secret_key or get_setting_value('api', 'bybit', 'BYBIT_1_SECRET_KEY')
                     if not api_key or not secret_key:
-                        # Автоскан по первому доступному индексу
-                        for k, v in os.environ.items():
-                            if not k.startswith('BYBIT_') or not k.endswith('_API_KEY'):
-                                continue
-                            idx = k[len('BYBIT_'):-len('_API_KEY')]
-                            sk = os.getenv(f'BYBIT_{idx}_SECRET_KEY')
-                            if v and sk:
-                                api_key = v
+                        # Автоскан по первому доступному индексу из настроек
+                        rows = list_settings(scope='api', group='bybit')
+                        ids = []
+                        for r in rows:
+                            k = str(r.get('key') or '')
+                            m = re.match(r'^BYBIT_(\d+)_API_KEY$', k)
+                            if m:
+                                ids.append(int(m.group(1)))
+                        ids = sorted(set(ids))
+                        for idx in ids:
+                            ak = get_setting_value('api', 'bybit', f'BYBIT_{idx}_API_KEY')
+                            sk = get_setting_value('api', 'bybit', f'BYBIT_{idx}_SECRET_KEY')
+                            if ak and sk:
+                                api_key = ak
                                 secret_key = sk
                                 break
                 except Exception:
@@ -1693,12 +1717,38 @@ class TradingAgent:
                         in_cd = (now_bucket_ts - self._last_trade_ts_ms) < required_delta
                 except Exception:
                     in_cd = False
-            # Q-gate по порогам из окружения (опционально)
+            # Q-gate thresholds: per-symbol Redis > global config/env > default
+            t1 = float('nan')
+            t2 = float('nan')
             try:
-                t1 = float(get_config_value('QGATE_MAXQ', 'nan'))
-                t2 = float(get_config_value('QGATE_GAPQ', 'nan'))
+                sym = (self.symbol or self.base_symbol or '').strip() or None
             except Exception:
-                t1 = float('nan'); t2 = float('nan')
+                sym = None
+            try:
+                r2 = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
+                if sym:
+                    v1 = r2.get(f'trading:qgate_maxq:{sym}') or r2.get('trading:qgate_maxq')
+                    v2 = r2.get(f'trading:qgate_gapq:{sym}') or r2.get('trading:qgate_gapq')
+                    if v1 is not None and str(v1).strip() != '':
+                        t1 = float(v1)
+                    if v2 is not None and str(v2).strip() != '':
+                        t2 = float(v2)
+            except Exception:
+                pass
+            if t1 != t1:
+                try:
+                    t1 = float(get_config_value('QGATE_MAXQ', 'nan'))
+                except Exception:
+                    t1 = float('nan')
+            if t2 != t2:
+                try:
+                    t2 = float(get_config_value('QGATE_GAPQ', 'nan'))
+                except Exception:
+                    t2 = float('nan')
+            if t1 != t1:
+                t1 = 0.500
+            if t2 != t2:
+                t2 = 0.440
 
             if in_cd:
                 # Множитель порогов: FLIP_COOLDOWN_Q_MULT (по умолчанию 1.2)
