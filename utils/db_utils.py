@@ -33,7 +33,7 @@ def _key_prefix_4(key: str | None) -> str:
         return "***"
 
 
-def _discover_bybit_api_keys() -> tuple[str | None, str | None, str | None]:
+def _discover_bybit_api_keys(symbol: str | None = None) -> tuple[str | None, str | None, str | None]:
     try:
         from utils.settings_store import ensure_settings_table, get_setting_value, list_settings
 
@@ -52,11 +52,21 @@ def _discover_bybit_api_keys() -> tuple[str | None, str | None, str | None]:
             return ak, sk
 
         # 0) Если выбран account_id в Redis — используем его (без фолбэков на другие аккаунты).
+        # Приоритет: per-symbol ключ -> глобальный ключ (backward-compatible).
         selected: str | None = None
         try:
             import redis  # type: ignore
             r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
-            sel = r.get('trading:account_id')
+            sel = None
+            try:
+                if symbol:
+                    sym = str(symbol).strip()
+                    if sym:
+                        sel = r.get(f'trading:account_id:{sym}')
+            except Exception:
+                sel = None
+            if sel is None:
+                sel = r.get('trading:account_id')
             selected = str(sel).strip() if sel else None
         except Exception:
             selected = None
@@ -236,7 +246,7 @@ def db_get_or_fetch_ohlcv(
             # Для Bybit: используем API ключи, если заданы, иначе публичные эндпоинты (они достаточны для OHLCV)
             if exchange_id == 'bybit':
                 # Поддержка BYBIT_API_KEY/BYBIT_SECRET_KEY и множественных BYBIT_<N>_*
-                api_key, secret_key, bybit_api_key_var = _discover_bybit_api_keys()
+                api_key, secret_key, bybit_api_key_var = _discover_bybit_api_keys(symbol_name)
                 bybit_api_key_prefix4 = _key_prefix_4(api_key)
                 bybit_auth_used = bool(api_key and secret_key)
                 if api_key and secret_key:
@@ -801,6 +811,53 @@ def db_get_or_fetch_ohlcv(
         return pd.DataFrame()
     finally:
         session.close()
+
+
+def db_get_ohlcv_only(symbol_name: str, timeframe: str, limit_candles: int = 1000) -> pd.DataFrame:
+    """
+    Возвращает OHLCV строго из Postgres (без докачки с биржи).
+
+    symbol_name может быть 'BTCUSDT' или 'BTC/USDT' — внутри нормализуем к формату БД.
+    """
+    session = next(get_db_session())
+    try:
+        try:
+            symbol_db = normalize_to_db(symbol_name)
+        except Exception:
+            symbol_db = str(symbol_name).replace("/", "").upper()
+        symbol_obj = session.query(Symbol).filter_by(name=symbol_db).first()
+        if not symbol_obj:
+            return pd.DataFrame()
+
+        rows = (
+            session.query(OHLCV)
+            .filter_by(symbol_id=symbol_obj.id, timeframe=timeframe)
+            .order_by(OHLCV.timestamp.desc())
+            .limit(int(limit_candles))
+            .all()
+        )
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(
+            [
+                {
+                    "timestamp": c.timestamp,
+                    "open": c.open,
+                    "high": c.high,
+                    "low": c.low,
+                    "close": c.close,
+                    "volume": c.volume,
+                }
+                for c in reversed(rows)
+            ]
+        )
+        return df
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
 
 
 def _get_or_create_symbol(session, symbol_name: str) -> Symbol:

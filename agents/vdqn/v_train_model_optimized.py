@@ -30,6 +30,7 @@ from train.infrastructure.gym.position_aware_wrapper import PositionAwareEpisode
 from train.domain.episode.extension_policy import EpisodeExtensionPolicy
 from envs.dqn_model.gym.gconfig import GymConfig
 from agents.vdqn.hyperparameter.symbol_overrides import get_symbol_override
+from utils.settings_store import get_setting_value as _get_setting_value
 
 
 # Настройка логирования
@@ -314,6 +315,9 @@ def _save_training_results(
              # BUY/HOLD агрегаты
              'buy_stats_total': (get_env_attr_safe(env, 'buy_stats_total', {})),
              'hold_stats_total': (get_env_attr_safe(env, 'hold_stats_total', {})),
+             # Market STATE counters (decision-time distribution)
+             'market_state_counts_total': (get_env_attr_safe(env, 'market_state_counts_total', {})),
+             'market_state_counts_episode': (get_env_attr_safe(env, 'market_state_counts_episode', {})),
         }
         
         # Печать BUY/HOLD статистики (если есть)
@@ -327,6 +331,15 @@ def _save_training_results(
             if isinstance(hold_total, dict) and hold_total:
                 print("\n📊 Детализация HOLD:")
                 for k, v in hold_total.items():
+                    print(f"  • {k}: {int(v)}")
+        except Exception:
+            pass
+        # Печать Market STATE счётчиков (если есть)
+        try:
+            ms_total = get_env_attr_safe(env, 'market_state_counts_total', {})
+            if isinstance(ms_total, dict) and ms_total:
+                print("\n🧭 Market STATE counts (total):")
+                for k, v in ms_total.items():
                     print(f"  • {k}: {int(v)}")
         except Exception:
             pass
@@ -626,9 +639,26 @@ def train_model_optimized(
             override = get_symbol_override(crypto_symbol) if crypto_symbol else None
             # применяем training_params к cfg
             if override and 'training_params' in override:
+                # GPU-owned параметры НЕ должны быть per-symbol.
+                # Иначе сравнения между машинами/прогонами становятся непрозрачными,
+                # а "ИИ-правки" могут случайно сломать hardware-профиль.
+                GPU_OWNED_KEYS = {
+                    'batch_size',
+                    'memory_size',
+                    'train_repeats',
+                    'use_amp',
+                    'use_gpu_storage',
+                    'use_torch_compile',
+                }
                 for k, v in override['training_params'].items():
                     if hasattr(cfg, k):
                         try:
+                            if k in GPU_OWNED_KEYS:
+                                try:
+                                    print(f"⚠️ SYMBOL OVERRIDE[{crypto_symbol}] игнорирует GPU-owned параметр: {k}={v}")
+                                except Exception:
+                                    pass
+                                continue
                             setattr(cfg, k, v)
                         except Exception:
                             pass
@@ -644,6 +674,33 @@ def train_model_optimized(
 
             # Создаем GymConfig для получения значения по умолчанию
             gym_cfg = GymConfig()
+            # Feature flag: state-based action masking (default OFF).
+            # Allow enabling via symbol override gym_config.use_state_action_mask
+            try:
+                if override and isinstance(override.get('gym_config', None), dict) and ('use_state_action_mask' in override.get('gym_config', {})):
+                    gym_cfg.use_state_action_mask = bool(override.get('gym_config', {}).get('use_state_action_mask'))
+            except Exception:
+                pass
+            # Feature flag from Postgres (app_settings) via /settings.
+            # Priority: per-symbol (group=<SYMBOL>) -> global (group=None) -> overrides/defaults.
+            try:
+                def _to_bool(v):
+                    if v is None:
+                        return None
+                    s = str(v).strip().lower()
+                    if s in ('1', 'true', 'yes', 'on'):
+                        return True
+                    if s in ('0', 'false', 'no', 'off'):
+                        return False
+                    return None
+                v_sym = _to_bool(_get_setting_value('rl', (crypto_symbol or None), 'USE_STATE_ACTION_MASK'))
+                v_glob = _to_bool(_get_setting_value('rl', None, 'USE_STATE_ACTION_MASK'))
+                if v_sym is not None:
+                    gym_cfg.use_state_action_mask = bool(v_sym)
+                elif v_glob is not None:
+                    gym_cfg.use_state_action_mask = bool(v_glob)
+            except Exception:
+                pass
             if (direction or 'long') == 'short':
                 base_env = CryptoTradingEnvShort(
                     dfs=dfs,
@@ -1176,6 +1233,24 @@ def train_model_optimized(
         except Exception:
             resource_log_every = 100
 
+        # Feature flag from Postgres (app_settings) via /settings for multi-crypto runs too.
+        # MultiCryptoTradingEnv receives vDqnConfig (cfg) as env.cfg, env reads getattr(cfg,'use_state_action_mask', False).
+        try:
+            def _to_bool(v):
+                if v is None:
+                    return None
+                s = str(v).strip().lower()
+                if s in ('1', 'true', 'yes', 'on'):
+                    return True
+                if s in ('0', 'false', 'no', 'off'):
+                    return False
+                return None
+            v_glob = _to_bool(_get_setting_value('rl', None, 'USE_STATE_ACTION_MASK'))
+            if v_glob is not None:
+                setattr(cfg, 'use_state_action_mask', bool(v_glob))
+        except Exception:
+            pass
+
         # Основной цикл тренировки
         for episode in range(episodes):
             # Логируем загрузку ресурсов по частоте
@@ -1217,7 +1292,17 @@ def train_model_optimized(
                 
                 env.epsilon = dqn_solver.epsilon
                 
-                action = dqn_solver.act(state)
+                # Gymnasium: prefer wrapper-safe access to avoid deprecation warnings
+                action_mask = None
+                try:
+                    if hasattr(env, 'get_wrapper_attr'):
+                        fn = env.get_wrapper_attr('get_action_mask')
+                        action_mask = fn() if callable(fn) else fn
+                    elif hasattr(env, 'get_action_mask'):
+                        action_mask = env.get_action_mask()
+                except Exception:
+                    action_mask = None
+                action = dqn_solver.act(state, action_mask=action_mask)
                 state_next, reward, terminal, info = env.step(action)
                 
                 # Проверяем next_state на NaN

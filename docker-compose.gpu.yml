@@ -8,5 +8,4 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       CUDA_VISIBLE_DEVICES: all
       GPU_COUNT: "1"
-      DISABLE_TORCH_COMPILE: "${DISABLE_TORCH_COMPILE:-false}"
 

@@ -26,7 +26,16 @@ class BybitExchangeGateway(ExchangeGateway):
         selected = None
         try:
             r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
-            selected = r.get('trading:account_id')
+            selected = None
+            try:
+                if symbol_for_markets:
+                    sym = str(symbol_for_markets).strip()
+                    if sym:
+                        selected = r.get(f'trading:account_id:{sym}')
+            except Exception:
+                selected = None
+            if selected is None:
+                selected = r.get('trading:account_id')
             selected = str(selected).strip() if selected else None
         except Exception:
             selected = None

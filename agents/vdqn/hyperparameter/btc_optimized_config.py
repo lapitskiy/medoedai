@@ -33,6 +33,8 @@ BTC_OPTIMIZED_CONFIG = {
     },
 
     # Параметры обучения
+    # NOTE: GPU-owned параметры (batch_size/memory_size/train_repeats/use_amp/use_gpu_storage/use_torch_compile)
+    # НЕ должны задаваться per-symbol. Это делает прогоны непрозрачными и ломает hardware-профиль.
     'training_params': {
         'eps_start': 0.6,
         'eps_final': 0.05,
@@ -40,11 +42,8 @@ BTC_OPTIMIZED_CONFIG = {
 
         'lr': 1e-4,
         'gamma': 0.99,
-        'batch_size': 256,
-        'memory_size': 600_000,
         'hidden_sizes': (1024, 512, 256),
         'dropout_rate': 0.2,
-        'train_repeats': 2,
         'soft_update_every': 20,
         'target_update_freq': 1000,
 

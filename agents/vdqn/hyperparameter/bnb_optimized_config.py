@@ -31,15 +31,13 @@ BNB_OPTIMIZED_CONFIG = {
     },
 
     # Параметры обучения
+    # NOTE: GPU-owned параметры (batch_size/memory_size/train_repeats/use_amp/use_gpu_storage/use_torch_compile)
+    # НЕ должны задаваться per-symbol. Это делает прогоны непрозрачными и ломает hardware-профиль.
     'training_params': {
         'use_noisy_networks': True,
         'eps_start': 0.10,            # меньше случайности при NoisyNet
         'eps_final': 0.02,
         'eps_decay_steps': 2_000_000,
-
-        'memory_size': 1_000_000,     # больше разнообразие опыта
-        'batch_size': 256,
-        'train_repeats': 2,           # больше шагов обучения на шаг среды
 
         'lr': 1e-4,                   # AdamW предпочтительнее, но поле lr здесь
         'gamma': 0.99,

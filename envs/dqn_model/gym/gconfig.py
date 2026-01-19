@@ -63,6 +63,10 @@ class GymConfig:
     # --- Параметры разделения данных для предотвращения look-ahead bias ---
     train_split_ratio: float = 0.8  # Доля данных для обучения (80% по умолчанию)
 
+    # --- STATE-based action masking (feature flag) ---
+    # Если False — get_action_mask() возвращает "все действия разрешены"
+    use_state_action_mask: bool = False
+
     # --- ATR-based risk management (optional) ---
     use_atr_stop: bool = True        # Включить ATR-стопы (SL/TP/Trailing)
     atr_sl_mult: float = 1.5         # K для SL по ATR

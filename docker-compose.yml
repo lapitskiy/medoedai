@@ -40,8 +40,6 @@ services:
       - "5050:5050"
     environment:
       TORCHSERVE_URL: http://serving:8000/predict_ensemble
-      DISABLE_TORCH_COMPILE: "true"   # Принудительно отключить torch.compile для Tesla P100
-      FORCE_DISABLE_TORCH_COMPILE: "true"  # Дополнительная защита от torch.compile
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       PYTHONDONTWRITEBYTECODE: "1"
@@ -79,8 +77,6 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       PYTHONDONTWRITEBYTECODE: "1"
-      DISABLE_TORCH_COMPILE: "true"   # Отключить torch.compile для Tesla P100
-      FORCE_DISABLE_TORCH_COMPILE: "true"  # Дополнительная защита
       PYTHONWARNINGS: "ignore::DeprecationWarning"
       # Параллелизм Celery (обычные очереди)
       CELERY_POOL: prefork
@@ -161,8 +157,6 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       PYTHONDONTWRITEBYTECODE: "1"
-      DISABLE_TORCH_COMPILE: "true"
-      FORCE_DISABLE_TORCH_COMPILE: "true"
       PYTHONWARNINGS: "ignore::DeprecationWarning"
       NVIDIA_VISIBLE_DEVICES: ${USE_GPU:-all}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility

@@ -15,6 +15,10 @@
         .table th { background:#f7f7f7; }
         @media (max-width: 1000px){ .grid3 { grid-template-columns: 1fr; } .grid2 { grid-template-columns: 1fr; } }
         .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+        tr.dirty { outline: 2px solid #f0ad4e; outline-offset: -2px; background: #fffaf2; }
+        .small { font-size: 12px; }
+        .w180 { min-width: 180px; }
+        .w320 { min-width: 320px; }
     </style>
 </head>
 <body>
@@ -85,7 +89,10 @@
             <div class="card" style="margin-top:16px;">
                 <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
                     <h5>📋 Текущие настройки</h5>
-                    <button class="btn btn-secondary" onclick="loadSettings()">🔄 Обновить</button>
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <button class="btn btn-primary" id="btnSaveDirty" onclick="saveDirty()" disabled>💾 Сохранить</button>
+                        <button class="btn btn-secondary" onclick="loadSettings()">🔄 Обновить</button>
+                    </div>
                 </div>
                 <div id="listStatus" class="status info">Загрузка...</div>
                 <div style="overflow:auto;">
@@ -112,6 +119,8 @@
 
     <script src="/static/js/sidebar.js"></script>
     <script>
+        const dirtyIds = new Set();
+
         function showStatus(elementId, type, message) {
             const el = document.getElementById(elementId);
             if(!el) return;
@@ -136,26 +145,126 @@
                     if(status){ status.className='status info'; status.textContent='Нет настроек'; }
                     return;
                 }
+                dirtyIds.clear();
+                const btnSave = document.getElementById('btnSaveDirty');
+                if(btnSave) btnSave.disabled = true;
+
                 body.innerHTML = items.map(it=>{
                     const desc = it.description ? String(it.description) : '';
                     const val = (it.value!=null) ? String(it.value) : '';
                     const upd = it.updated_at ? String(it.updated_at).replace('T',' ').split('.')[0] : '—';
-                    return `<tr>
+                    const isSecret = !!it.secret;
+                    const type = it.type || 'string';
+                    const group = it.group || '';
+                    const label = it.label || '';
+                    const rowId = it.id;
+                    return `<tr data-id="${rowId}">
                         <td>${it.scope||''}</td>
-                        <td>${it.group||''}</td>
+                        <td>${group}</td>
                         <td class="mono">${it.key||''}</td>
-                        <td>${it.type||''}</td>
-                        <td>${it.label||''}</td>
-                        <td style="min-width:280px;">${desc}</td>
-                        <td class="mono">${val}</td>
+                        <td class="w180">
+                            <select class="form-control js-type">
+                                <option value="string" ${type==='string'?'selected':''}>string</option>
+                                <option value="number" ${type==='number'?'selected':''}>number</option>
+                                <option value="bool" ${type==='bool'?'selected':''}>bool</option>
+                                <option value="json" ${type==='json'?'selected':''}>json</option>
+                            </select>
+                            <div class="small hint">secret: <input type="checkbox" class="js-secret" ${isSecret?'checked':''}></div>
+                        </td>
+                        <td class="w180">
+                            <input class="form-control js-label" value="${label.replaceAll('"','&quot;')}" />
+                        </td>
+                        <td class="w320">
+                            <textarea class="form-control js-desc" rows="2">${desc}</textarea>
+                        </td>
+                        <td class="mono w320">
+                            ${isSecret
+                                ? `<input class="form-control js-value" type="password" placeholder="(secret) введите новое значение чтобы заменить" value="" />`
+                                : `<textarea class="form-control js-value mono" rows="2">${val}</textarea>`
+                            }
+                            ${isSecret ? `<div class="hint small">Текущее значение скрыто.</div>` : ``}
+                        </td>
                         <td>${upd}</td>
-                        <td><button class="btn btn-danger" onclick="delSetting(${it.id})">✖</button></td>
+                        <td style="white-space:nowrap;">
+                            <button class="btn btn-primary" onclick="saveRow(${rowId})">💾</button>
+                            <button class="btn btn-danger" onclick="delSetting(${rowId})">✖</button>
+                        </td>
                     </tr>`;
                 }).join('');
+                // bind change listeners to mark dirty
+                [...body.querySelectorAll('tr[data-id]')].forEach(tr => {
+                    tr.querySelectorAll('input,textarea,select').forEach(el => {
+                        el.addEventListener('input', () => markDirty(tr));
+                        el.addEventListener('change', () => markDirty(tr));
+                    });
+                });
                 if(status) status.style.display='none';
                 if(tbl) tbl.style.display='table';
             }catch(e){
                 if(status){ status.className='status error'; status.textContent='Ошибка: '+e.message; }
+            }
+        }
+
+        function markDirty(tr){
+            try{
+                const id = Number(tr.getAttribute('data-id'));
+                if(!Number.isFinite(id)) return;
+                dirtyIds.add(id);
+                tr.classList.add('dirty');
+                const btnSave = document.getElementById('btnSaveDirty');
+                if(btnSave) btnSave.disabled = (dirtyIds.size === 0);
+            }catch(_){}
+        }
+
+        function rowToPayload(tr){
+            const tds = tr.querySelectorAll('td');
+            const scope = (tds[0]?.textContent || '').trim();
+            const group = (tds[1]?.textContent || '').trim();
+            const key = (tds[2]?.textContent || '').trim();
+            const type = (tr.querySelector('.js-type')?.value || 'string').trim();
+            const label = (tr.querySelector('.js-label')?.value || '').trim();
+            const description = (tr.querySelector('.js-desc')?.value || '').trim();
+            const secret = !!tr.querySelector('.js-secret')?.checked;
+            const valueEl = tr.querySelector('.js-value');
+            const valueRaw = valueEl ? String(valueEl.value || '') : '';
+            const payload = { scope, group, key, type, label, description, secret };
+            // Для secret: не отправляем value, если пользователь его не менял
+            if(!secret || valueRaw.trim() !== ''){
+                payload.value = valueRaw;
+            }
+            return payload;
+        }
+
+        async function saveRow(id){
+            const tr = document.querySelector(`tr[data-id="${id}"]`);
+            if(!tr) return;
+            await savePayloads([rowToPayload(tr)]);
+        }
+
+        async function saveDirty(){
+            const rows = [...document.querySelectorAll('tr.dirty[data-id]')];
+            if(rows.length === 0) return;
+            const payloads = rows.map(rowToPayload);
+            await savePayloads(payloads);
+        }
+
+        async function savePayloads(payloads){
+            const btnSave = document.getElementById('btnSaveDirty');
+            try{
+                if(btnSave) btnSave.disabled = true;
+                showStatus('saveStatus','info', `Сохраняю: ${payloads.length}...`);
+                for(let i=0;i<payloads.length;i++){
+                    const p = payloads[i];
+                    const r = await fetch('/api/settings/upsert', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(p)});
+                    const j = await r.json();
+                    if(!j.success) throw new Error(j.error || 'save failed');
+                }
+                showStatus('saveStatus','success','Сохранено');
+                await loadSettings();
+            }catch(e){
+                showStatus('saveStatus','error', e.message);
+            }finally{
+                if(btnSave) btnSave.disabled = (dirtyIds.size === 0);
             }
         }
 

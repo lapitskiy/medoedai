@@ -131,7 +131,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
         # Реальный Bybit gateway (fallback на stub при ошибке инициализации ключей)
         try:
             from trading_agent.infrastructure.exchange_gateway_bybit import BybitExchangeGateway
-            _gateway = BybitExchangeGateway()
+            _gateway = BybitExchangeGateway(symbol_for_markets=symbol)
         except Exception:
             from trading_agent.infrastructure.exchange_gateway_stub import ExchangeGatewayStub
             _gateway = ExchangeGatewayStub()
@@ -152,7 +152,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
                     _dir = (str(_dir).strip().lower() if _dir else 'long')
                 except Exception:
                     _dir = 'long'
-                agent = TradingAgent(direction=_dir)
+                agent = TradingAgent(direction=_dir, symbol=symbol)
                 agent.symbol = symbol
                 agent.base_symbol = symbol
                 qty = float(agent._calculate_trade_amount())
@@ -475,7 +475,7 @@ def ensure_risk_orders(self, symbol: str):
         _dir = (str(_dir).strip().lower() if _dir else 'long')
     except Exception:
         _dir = 'long'
-    agent = TradingAgent(direction=_dir)
+    agent = TradingAgent(direction=_dir, symbol=symbol)
     agent.symbol = symbol
     agent.base_symbol = symbol
 
@@ -890,12 +890,56 @@ def ensure_risk_orders(self, symbol: str):
                         float(atr_trail_mult) if atr_trail_mult is not None else 1.0,
                     )
                     try:
-                        logger.info(f"[ensure_risk][trailing] placed: rate={trailing_result.get('callback_rate_pct'):.3f}% active={trailing_result.get('active_price')}")
+                        resp = trailing_result.get('response') if isinstance(trailing_result, dict) else None
+                        rc = resp.get('retCode') if isinstance(resp, dict) else None
+                        rm = resp.get('retMsg') if isinstance(resp, dict) else None
+                        logger.info(
+                            f"[ensure_risk][trailing] placed: dist={trailing_result.get('trailing_dist')} active={trailing_result.get('active_price')} retCode={rc} retMsg={rm}"
+                        )
+                    except Exception:
+                        pass
+                    # Сохраняем последнюю попытку установки трейлинга в Redis (для диагностики)
+                    try:
+                        import time as _t
+                        import json as _json
+                        rc0 = get_redis_client()
+                        rc0.set(
+                            f"trading:trailing:last_setup:{symbol}",
+                            _json.dumps(
+                                {
+                                    "ts": _t.time(),
+                                    "ok": True,
+                                    "symbol": symbol,
+                                    "source": "ensure_risk_orders",
+                                    "result": trailing_result,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
                     except Exception:
                         pass
                 except Exception as e_trail:
                     try:
                         logger.error(f"[ensure_risk][trailing] setup failed: {e_trail}")
+                    except Exception:
+                        pass
+                    try:
+                        import time as _t
+                        import json as _json
+                        rc0 = get_redis_client()
+                        rc0.set(
+                            f"trading:trailing:last_setup:{symbol}",
+                            _json.dumps(
+                                {
+                                    "ts": _t.time(),
+                                    "ok": False,
+                                    "symbol": symbol,
+                                    "source": "ensure_risk_orders",
+                                    "error": str(e_trail),
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
                     except Exception:
                         pass
         else:
@@ -1193,7 +1237,9 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             bybit_api_key_public_1 = None
             bybit_api_key_public_2 = None
             try:
-                bybit_account_id = (rc.get('trading:account_id') if rc is not None else None)
+                bybit_account_id = None
+                if rc is not None:
+                    bybit_account_id = rc.get(f'trading:account_id:{symbol}') or rc.get('trading:account_id')
             except Exception:
                 bybit_account_id = None
             try:
@@ -1731,7 +1777,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             _dir = (str(_dir).strip().lower() if _dir else 'long')
         except Exception:
             _dir = 'long'
-        agent = TradingAgent(model_path=(model_paths[0] if model_paths else None), direction=_dir)
+        agent = TradingAgent(model_path=(model_paths[0] if model_paths else None), direction=_dir, symbol=symbol)
         agent.symbols = syms
         agent.symbol = symbol
         agent.base_symbol = symbol

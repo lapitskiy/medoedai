@@ -4,8 +4,8 @@
 TON_OPTIMIZED_CONFIG = {
     # Более консервативные параметры риска
     'risk_management': {
-        'STOP_LOSS_PCT': -0.025,  # Ужесточаем стоп-лосс с -4% до -2.5%
-        'TAKE_PROFIT_PCT': 0.04,  # Снижаем тейк-профит с 6% до 4%
+        'STOP_LOSS_PCT': -0.02,  
+        'TAKE_PROFIT_PCT': 0.03,  # Снижаем тейк-профит с 6% до 4%
         'min_hold_steps': 20,     # Уменьшаем минимальное время удержания с 30 до 20 (1.7 часа)
         'volume_threshold': 0.003, # Смягчаем порог объема для большего числа входов
     },
@@ -32,17 +32,16 @@ TON_OPTIMIZED_CONFIG = {
     },
     
     # Более консервативные параметры обучения
+    # NOTE: GPU-owned параметры (batch_size/memory_size/train_repeats/use_amp/use_gpu_storage/use_torch_compile)
+    # НЕ должны задаваться per-symbol. Это делает прогоны непрозрачными и ломает hardware-профиль.
     'training_params': {
         'eps_start': 0.995,  # Снижаем начальную эксплорацию с 1.0 до 0.8
         'eps_final': 0.02,  # Снижаем финальную эксплорацию с 0.05 до 0.02
         'eps_decay_steps': 1500000,  # Увеличиваем время затухания эксплорации
         'lr': 0.0005,  # Снижаем learning rate с 0.001 до 0.0005
         'gamma': 0.995,  # Увеличиваем gamma с 0.99 до 0.995 для долгосрочного планирования
-        'batch_size': 256,  # Уменьшаем batch size, чтобы раньше стартовал тренинг
-        'memory_size': 500000,  # Увеличиваем размер памяти с 200000 до 500000
         'hidden_sizes': (1024, 512, 256),  # Увеличиваем размер сети
         'dropout_rate': 0.3,  # Увеличиваем dropout с 0.2 до 0.3 для регуляризации
-        'train_repeats': 4,
         'soft_update_every': 40,
         'target_update_freq': 800,
         'early_stopping_patience': 2000,  # Уменьшаем терпение с 3000 до 2000

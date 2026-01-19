@@ -38,6 +38,26 @@ def agent_symbol_page(symbol: str):
     except Exception:
         return render_template('agent_symbol.html', symbol='BTCUSDT')
 
+
+@trading_bp.get('/api/trading/trailing_last_setup')
+def trailing_last_setup():
+    """Диагностика: последняя попытка установки трейлинга (из Redis)."""
+    try:
+        sym = (request.args.get('symbol') or '').upper().strip()
+        if not sym:
+            return jsonify({'success': False, 'error': 'symbol is required'}), 400
+        rc = get_redis_client()
+        raw = rc.get(f'trading:trailing:last_setup:{sym}') if rc else None
+        payload = None
+        if raw:
+            try:
+                payload = json.loads(raw if isinstance(raw, str) else raw.decode('utf-8'))
+            except Exception:
+                payload = None
+        return jsonify({'success': True, 'symbol': sym, 'data': payload}), 200
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @trading_bp.post('/api/trading/save_config')
 def save_trading_config():
     """Автосохранение выбора моделей и консенсуса без запуска торговли."""
@@ -310,7 +330,14 @@ def start_trading():
             # НЕ перезаписываем общие символы, чтобы не убить другие агенты
             # _rc.set('trading:symbols', _json.dumps(symbols, ensure_ascii=False))
             if account_id:
+                # Глобальный ключ оставляем как "последний выбранный" (backward-compatible),
+                # но для реальной работы агентов используем per-symbol, чтобы запуски не перетирали друг друга.
                 _rc.set('trading:account_id', account_id)
+                try:
+                    symbol = symbols[0] if symbols else 'ALL'
+                    _rc.set(f'trading:account_id:{symbol}', account_id)
+                except Exception:
+                    pass
             # Консенсус (counts/percents) — запоминаем выбор пользователя для конкретного символа
             try:
                 consensus = data.get('consensus')
@@ -615,21 +642,11 @@ def stop_trading_symbol():
 def list_trading_agents():
     try:
         rc = get_redis_client()
-        # Текущий выбранный Bybit аккаунт (глобально для всех агентов)
-        sel_account_id = None
-        sel_account = None
-        try:
-            sel_account_id = rc.get('trading:account_id') if rc else None
-            if isinstance(sel_account_id, (bytes, bytearray)):
-                sel_account_id = sel_account_id.decode('utf-8', errors='ignore')
-            sel_account_id = str(sel_account_id).strip() if sel_account_id else None
-        except Exception:
-            sel_account_id = None
+        # Bybit аккаунт теперь выбираем per-symbol (trading:account_id:<SYMBOL>), с fallback на глобальный ключ.
         try:
             from utils.accounts import get_bybit_account
-            sel_account = get_bybit_account(sel_account_id) if sel_account_id else None
         except Exception:
-            sel_account = None
+            get_bybit_account = None
         # Базовый список символов (можно расширить)
         known = ['BTCUSDT','ETHUSDT','SOLUSDT','TONUSDT','ADAUSDT','BNBUSDT','XRPUSDT']
         agents = []
@@ -729,6 +746,8 @@ def list_trading_agents():
                 leverage_v = rc.get(f'trading:leverage:{sym}')
                 limit_cfg_raw = rc.get(f'trading:limit_config:{sym}')
                 risk_type_v = rc.get(f'trading:risk_management_type:{sym}') or rc.get('trading:risk_management_type')
+                tp_pct_v = rc.get(f'trading:take_profit_pct:{sym}') or rc.get('trading:take_profit_pct')
+                sl_pct_v = rc.get(f'trading:stop_loss_pct:{sym}') or rc.get('trading:stop_loss_pct')
                 account_pct_v = rc.get('trading:account_pct')
                 risk_stop_mode_v = rc.get(f'trading:risk_stop_mode:{sym}') or rc.get('trading:risk_stop_mode')
                 # Trailing (пер-символ / глобально)
@@ -759,6 +778,8 @@ def list_trading_agents():
                 exec_mode_v = exit_mode_v = leverage_v = None
                 limit_cfg = None
                 risk_type_v = None
+                tp_pct_v = None
+                sl_pct_v = None
                 account_pct_v = None
                 debug_buy = None
 
@@ -790,9 +811,10 @@ def list_trading_agents():
                 'active': bool(is_active),
                 # Биржа/API (то, что выбираем при старте "Аккаунт Bybit")
                 'exchange': 'Bybit',
-                'account_id': sel_account_id,
-                'account_label': (sel_account or {}).get('label') if isinstance(sel_account, dict) else None,
-                'account_api_key_masked': (sel_account or {}).get('api_key_masked') if isinstance(sel_account, dict) else None,
+                'account_id': None,
+                'account_id_source': None,  # 'per_symbol' | 'global' | None
+                'account_label': None,
+                'account_api_key_masked': None,
                 'status': status or {},
                 'consensus': consensus or {},
                 'total_models': total_models,
@@ -808,6 +830,8 @@ def list_trading_agents():
                     'leverage': (int(str(leverage_v)) if leverage_v not in (None, '') else None),
                     'limit_config': (limit_cfg or {}),
                     'risk_management_type': (str(risk_type_v).strip() if risk_type_v else None),
+                    'take_profit_pct': (float(str(tp_pct_v)) if tp_pct_v not in (None, '') else None),
+                    'stop_loss_pct': (float(str(sl_pct_v)) if sl_pct_v not in (None, '') else None),
                     'risk_stop_mode': (str(risk_stop_mode_v).strip() if risk_stop_mode_v else None),
                     'account_pct': (int(str(account_pct_v)) if account_pct_v not in (None, '') else None),
                     # Trailing summary (если задано)
@@ -822,6 +846,33 @@ def list_trading_agents():
                     'qgate_gapq': qgap_f,
                 }
             }
+            # Bybit account per-symbol (fallback to global)
+            try:
+                acc_id = None
+                acc_src = None
+                if rc:
+                    acc_id = rc.get(f'trading:account_id:{sym}')
+                    if isinstance(acc_id, (bytes, bytearray)):
+                        acc_id = acc_id.decode('utf-8', errors='ignore')
+                    acc_id = str(acc_id).strip() if acc_id else None
+                    if acc_id:
+                        acc_src = 'per_symbol'
+                    else:
+                        acc_id = rc.get('trading:account_id')
+                        if isinstance(acc_id, (bytes, bytearray)):
+                            acc_id = acc_id.decode('utf-8', errors='ignore')
+                        acc_id = str(acc_id).strip() if acc_id else None
+                        if acc_id:
+                            acc_src = 'global'
+                agent_obj['account_id'] = acc_id
+                agent_obj['account_id_source'] = acc_src
+                if acc_id and callable(get_bybit_account):
+                    acc = get_bybit_account(acc_id)
+                    if isinstance(acc, dict):
+                        agent_obj['account_label'] = acc.get('label')
+                        agent_obj['account_api_key_masked'] = acc.get('api_key_masked')
+            except Exception:
+                pass
             try:
                 logging.info(f"[agents] {sym}: agent_obj={agent_obj}")
             except Exception:
@@ -1421,12 +1472,56 @@ def trading_manual_buy_bypass_prediction():
                         )
                         risk_orders['trailing'] = trailing_result
                         try:
-                            logging.info(f"[/api/trading/manual_buy] trailing stop placed: rate={trailing_result.get('callback_rate_pct'):.3f}% active={trailing_result.get('active_price')}")
+                            resp = trailing_result.get('response') if isinstance(trailing_result, dict) else None
+                            rc = resp.get('retCode') if isinstance(resp, dict) else None
+                            rm = resp.get('retMsg') if isinstance(resp, dict) else None
+                            logging.info(
+                                f"[/api/trading/manual_buy] trailing placed: dist={trailing_result.get('trailing_dist')} active={trailing_result.get('active_price')} retCode={rc} retMsg={rm}"
+                            )
+                        except Exception:
+                            pass
+                        # Сохраняем последнюю попытку установки трейлинга в Redis (для диагностики)
+                        try:
+                            import time as _t
+                            import json as _json
+                            rc0 = get_redis_client()
+                            rc0.set(
+                                f"trading:trailing:last_setup:{sym}",
+                                _json.dumps(
+                                    {
+                                        "ts": _t.time(),
+                                        "ok": True,
+                                        "symbol": sym,
+                                        "source": "manual_buy",
+                                        "result": trailing_result,
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            )
                         except Exception:
                             pass
                     except Exception as e_trail:
                         risk_orders['trailing_error'] = str(e_trail)
                         logging.error(f"[/api/trading/manual_buy] trailing setup failed: {e_trail}")
+                        try:
+                            import time as _t
+                            import json as _json
+                            rc0 = get_redis_client()
+                            rc0.set(
+                                f"trading:trailing:last_setup:{sym}",
+                                _json.dumps(
+                                    {
+                                        "ts": _t.time(),
+                                        "ok": False,
+                                        "symbol": sym,
+                                        "source": "manual_buy",
+                                        "error": str(e_trail),
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            )
+                        except Exception:
+                            pass
                 else:
                     # Явный лог, почему трейлинг не пытались выставить
                     try:
@@ -1568,12 +1663,55 @@ def trading_manual_buy_bypass_prediction():
                 )
                 risk_orders['trailing'] = trailing_result
                 try:
-                    logging.info(f"[/api/trading/manual_buy] trailing stop placed (post-fallback): rate={trailing_result.get('callback_rate_pct'):.3f}% active={trailing_result.get('active_price')}")
+                    resp = trailing_result.get('response') if isinstance(trailing_result, dict) else None
+                    rc = resp.get('retCode') if isinstance(resp, dict) else None
+                    rm = resp.get('retMsg') if isinstance(resp, dict) else None
+                    logging.info(
+                        f"[/api/trading/manual_buy] trailing placed (post-fallback): dist={trailing_result.get('trailing_dist')} active={trailing_result.get('active_price')} retCode={rc} retMsg={rm}"
+                    )
+                except Exception:
+                    pass
+                try:
+                    import time as _t
+                    import json as _json
+                    rc0 = get_redis_client()
+                    rc0.set(
+                        f"trading:trailing:last_setup:{sym}",
+                        _json.dumps(
+                            {
+                                "ts": _t.time(),
+                                "ok": True,
+                                "symbol": sym,
+                                "source": "manual_buy_post_fallback",
+                                "result": trailing_result,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
                 except Exception:
                     pass
             except Exception as e_trail:
                 risk_orders['trailing_error'] = str(e_trail)
                 logging.error(f"[/api/trading/manual_buy] trailing setup failed (post-fallback): {e_trail}")
+                try:
+                    import time as _t
+                    import json as _json
+                    rc0 = get_redis_client()
+                    rc0.set(
+                        f"trading:trailing:last_setup:{sym}",
+                        _json.dumps(
+                            {
+                                "ts": _t.time(),
+                                "ok": False,
+                                "symbol": sym,
+                                "source": "manual_buy_post_fallback",
+                                "error": str(e_trail),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                except Exception:
+                    pass
 
         try:
             logging.info(f"[/api/trading/manual_buy] ✓ done: symbol={sym} mode={execution_mode} risk={risk_type} executed_price={executed_price} risk_orders_keys={list(risk_orders.keys()) if isinstance(risk_orders, dict) else 'n/a'}")

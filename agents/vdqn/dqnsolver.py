@@ -490,9 +490,34 @@ class DQNSolver:
             if done:
                 self.n_queue.clear()
                 
-    def act(self, state):
+    def act(self, state, action_mask=None):
+        """Select action with optional action_mask (list/array of 0/1 or bool).
+
+        Mask is applied both in exploration and exploitation.
+        """
+        try:
+            n_actions = int(self.action_space)
+        except Exception:
+            n_actions = self.action_space
+
+        allowed = None
+        if action_mask is not None:
+            try:
+                m = list(action_mask)
+            except Exception:
+                m = None
+            if m:
+                # pad/truncate to n_actions
+                if len(m) < n_actions:
+                    m = m + [1] * (n_actions - len(m))
+                else:
+                    m = m[:n_actions]
+                allowed = [i for i, v in enumerate(m) if bool(v)]
+        if not allowed:
+            allowed = list(range(n_actions))
+
         if np.random.rand() < self.epsilon:
-            return random.randrange(self.action_space)
+            return random.choice(allowed)
         
         # Проверяем на NaN и заменяем на нули
         if torch.isnan(torch.tensor(state)).any():
@@ -506,7 +531,17 @@ class DQNSolver:
             # Проверяем на NaN в выходе
             if torch.isnan(q_values).any():
                 print("Warning: NaN detected in Q-values, using random action")
-                return random.randrange(self.action_space)
+                return random.choice(allowed)
+
+            # Apply mask for exploitation: forbid actions by pushing Q to very negative
+            if action_mask is not None and allowed is not None:
+                try:
+                    forbid = [i for i in range(n_actions) if i not in allowed]
+                    if forbid:
+                        q_values = q_values.clone()
+                        q_values[0, forbid] = -1e9
+                except Exception:
+                    pass
             
             return q_values.argmax().item()
 

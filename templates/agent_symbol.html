@@ -295,9 +295,24 @@ async function getTradingStatus(symbol){
     const reasonLine = st.reason ? `<p><strong>Причина:</strong> ${st.reason}</p>` : '';
     const amountLine = (st.amount_display || (st.amount!=null)) ? `<p><strong>Объём:</strong> ${st.amount_display || st.amount}</p>` : '';
 
+    // Trailing status (1) факт с биржи, если поле попало в status (2) последняя попытка из Redis
+    const trailingNowRaw = (pos && (pos.trailingStop ?? pos.trailing_stop ?? pos.trailing_stop_price)) ?? (st.trailingStop ?? st.trailing_stop);
+    const trailingNow = (trailingNowRaw != null && String(trailingNowRaw).trim() !== '') ? String(trailingNowRaw) : null;
+    let trailingLastLine = `<p><strong>Trailing last setup:</strong> —</p>`;
+    try{
+      const trResp = await fetch('/api/trading/trailing_last_setup?symbol=' + encodeURIComponent(displaySymbol));
+      const tr = await trResp.json();
+      const d = tr && tr.data;
+      if (d && typeof d.ok === 'boolean'){
+        const src = d.source ? ` (${String(d.source)})` : '';
+        trailingLastLine = `<p><strong>Trailing last setup:</strong> ${d.ok ? '✅' : '❌'}${src}</p>`;
+      }
+    }catch(_){ }
+    const trailingNowLine = trailingNow ? `<p><strong>Trailing сейчас (позиция):</strong> ${trailingNow}</p>` : '';
+
     el.innerHTML = `<p><strong>Символ:</strong> ${displaySymbol}</p>` +
       `<p><strong>Статус:</strong> ${tradingText}</p>` +
-      posLine + entryLine + priceLine + pnlLine + amountLine + lm + tradesCnt + freshLine + reasonLine;
+      posLine + entryLine + priceLine + pnlLine + amountLine + trailingNowLine + trailingLastLine + lm + tradesCnt + freshLine + reasonLine;
     box.style.display='block';
   }catch(e){
     console.error(e);

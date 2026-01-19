@@ -24,6 +24,7 @@ from routes.oos import oos_bp
 from routes.training import training_bp
 from routes.analysis_page import analytics_bp
 from routes.sac import sac_bp
+from routes.atr import atr_bp
 from utils.redis_utils import get_redis_client, clear_redis_on_startup
 
 """get_redis_client берём из utils.redis_utils"""
@@ -79,6 +80,7 @@ app.register_blueprint(clean_bp)
 app.register_blueprint(oos_bp)
 app.register_blueprint(sac_bp)
 app.register_blueprint(analytics_bp)
+app.register_blueprint(atr_bp)
 from routes.trade_optimizer import trade_opt_bp
 app.register_blueprint(trade_opt_bp)
 

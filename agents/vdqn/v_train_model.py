@@ -301,7 +301,17 @@ def train_model(dfs: dict, load_previous: bool = False, episodes: int = 200, mul
             while True:                                                
                 env.epsilon = dqn_solver.epsilon
                                   
-                action = dqn_solver.act(state)
+                # Gymnasium: prefer wrapper-safe access to avoid deprecation warnings
+                action_mask = None
+                try:
+                    if hasattr(env, 'get_wrapper_attr'):
+                        fn = env.get_wrapper_attr('get_action_mask')
+                        action_mask = fn() if callable(fn) else fn
+                    elif hasattr(env, 'get_action_mask'):
+                        action_mask = env.get_action_mask()
+                except Exception:
+                    action_mask = None
+                action = dqn_solver.act(state, action_mask=action_mask)
                 state_next, reward, terminal, info = env.step(action)
                 
                 # Проверяем next_state на NaN

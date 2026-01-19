@@ -16,7 +16,7 @@ import signal
 import io
 
 from tianshou.env import SubprocVectorEnv
-from tianshou.data import Collector, VectorReplayBuffer
+from tianshou.data import Batch, Collector, VectorReplayBuffer
 from tianshou.policy import DQNPolicy
 try:
     from tianshou.trainer import offpolicy_trainer
@@ -42,6 +42,73 @@ from utils.adaptive_normalization import adaptive_normalizer
 from threading import Thread
 from gymnasium.wrappers import TimeLimit
 from agents.vdqn.tianshou.env_wrappers import PositionAwareEpisodeWrapper
+
+
+class MaskedDQNPolicy(DQNPolicy):
+    """DQNPolicy with action_mask support (mask only, no market logic).
+
+    Mask is expected in batch.info as scalar keys: mask_0/mask_1/mask_2 (0/1).
+    """
+
+    def _extract_mask(self, batch: Batch):
+        try:
+            info = getattr(batch, 'info', None)
+            if info is None:
+                return None
+            m0 = info.get('mask_0', None)
+            m1 = info.get('mask_1', None)
+            m2 = info.get('mask_2', None)
+            if m0 is None or m1 is None or m2 is None:
+                return None
+            # convert to tensor shape [B, 3]
+            m = np.stack([np.asarray(m0), np.asarray(m1), np.asarray(m2)], axis=-1).astype(np.int64)
+            return torch.as_tensor(m, device=self.model_device)
+        except Exception:
+            return None
+
+    @property
+    def model_device(self):
+        try:
+            return next(self.model.parameters()).device
+        except Exception:
+            return torch.device('cpu')
+
+    def forward(self, batch: Batch, state=None, **kwargs):
+        obs = batch.obs
+        if not torch.is_tensor(obs):
+            obs = torch.as_tensor(np.array(obs, dtype=np.float32), device=self.model_device)
+        else:
+            obs = obs.to(self.model_device)
+        out = self.model(obs)
+        q = out[0] if isinstance(out, tuple) else out
+
+        mask = self._extract_mask(batch)
+        if mask is not None:
+            try:
+                q = q.clone()
+                q[mask == 0] = -1e9
+            except Exception:
+                pass
+
+        act = torch.argmax(q, dim=1)
+
+        # epsilon-greedy exploration with mask-aware random choice
+        eps = float(getattr(self, 'eps', 0.0) or 0.0)
+        if eps > 0:
+            rnd = torch.rand(act.shape[0], device=act.device)
+            do_rand = rnd < eps
+            if bool(do_rand.any()):
+                for i in range(int(act.shape[0])):
+                    if not bool(do_rand[i]):
+                        continue
+                    if mask is None:
+                        act[i] = int(np.random.randint(0, int(q.shape[1])))
+                    else:
+                        allowed = torch.where(mask[i] > 0)[0]
+                        if allowed.numel() > 0:
+                            j = int(torch.randint(0, int(allowed.numel()), (1,), device=act.device).item())
+                            act[i] = int(allowed[j].item())
+        return Batch(logits=q, act=act, state=state)
 from agents.vdqn.cfg.extension_config import SYMBOL_EXTENSION_CONFIG, DEFAULT_EXTENSION_CONFIG
 
 
@@ -817,10 +884,18 @@ def train_tianshou_dqn(
         pass
     if override and 'training_params' in override:
         tp = override['training_params']
+        # GPU-owned параметры НЕ должны быть per-symbol.
+        GPU_OWNED_KEYS = {'batch_size', 'memory_size', 'train_repeats'}
         try:
             lr = tp.get('lr', lr)
-            batch_size = tp.get('batch_size', batch_size)
             gamma = tp.get('gamma', gamma)
+        except Exception:
+            pass
+        try:
+            if 'batch_size' in tp and 'batch_size' in GPU_OWNED_KEYS:
+                print(f"⚠️ SYMBOL OVERRIDE игнорирует GPU-owned параметр: batch_size={tp.get('batch_size')}")
+            else:
+                batch_size = tp.get('batch_size', batch_size)
         except Exception:
             pass
         try:
@@ -832,8 +907,21 @@ def train_tianshou_dqn(
             eps_start_override = None; eps_final_override = None; eps_decay_steps_override = None
         try:
             target_update_freq = tp.get('target_update_freq', target_update_freq)
-            memory_size = tp.get('memory_size', memory_size)
-            train_repeats = tp.get('train_repeats', 1)
+            try:
+                if 'memory_size' in tp and 'memory_size' in GPU_OWNED_KEYS:
+                    print(f"⚠️ SYMBOL OVERRIDE игнорирует GPU-owned параметр: memory_size={tp.get('memory_size')}")
+                else:
+                    memory_size = tp.get('memory_size', memory_size)
+            except Exception:
+                pass
+            try:
+                if 'train_repeats' in tp and 'train_repeats' in GPU_OWNED_KEYS:
+                    print(f"⚠️ SYMBOL OVERRIDE игнорирует GPU-owned параметр: train_repeats={tp.get('train_repeats')}")
+                    train_repeats = train_repeats
+                else:
+                    train_repeats = tp.get('train_repeats', 1)
+            except Exception:
+                train_repeats = 1
         except Exception:
             train_repeats = 1
     else:
@@ -886,15 +974,7 @@ def train_tianshou_dqn(
                 source = 'gpu_config'
         except Exception:
             pass
-        # 2) Переменная окружения/конфиг env.json имеет приоритет, если задана
-        try:
-            v = str(get_config_value('TS_TORCH_COMPILE', ''))
-            if v != '':
-                should_compile = v.lower() in ('1','true','yes','y')
-                source = 'env'
-        except Exception:
-            pass
-        # 3) Проверим наличие компилятора (gcc/clang); если нет — отключим compile
+        # 2) Проверим наличие компилятора (gcc/clang); если нет — отключим compile
         try:
             import shutil
             has_cc = bool(shutil.which('cc') or shutil.which('gcc') or shutil.which('clang'))
@@ -916,13 +996,6 @@ def train_tianshou_dqn(
                     backend = 'aot_eager'
             except Exception:
                 backend = 'aot_eager'
-            # Override через конфиг, если задан
-            try:
-                be = str(get_config_value('TS_TORCH_COMPILE_BACKEND', '')).strip()
-                if be:
-                    backend = be
-            except Exception:
-                pass
             print(f"⚙️ torch.compile: enabled ({source}), backend={backend}, TORCHINDUCTOR_COMPILE_THREADS={os.environ.get('TORCHINDUCTOR_COMPILE_THREADS')}")
             compiled_net = torch.compile(net, backend=backend)
             # Тёплый прогон для раннего выявления проблем и безопасного фолбэка
@@ -941,7 +1014,7 @@ def train_tianshou_dqn(
 
     # Оптимизатор как в legacy DQN: AdamW
     optim = torch.optim.AdamW(net.parameters(), lr=lr)
-    policy = DQNPolicy(
+    policy = MaskedDQNPolicy(
         model=net,
         optim=optim,
         action_space=action_space_gym,
@@ -2068,6 +2141,10 @@ def _sanitize_info_for_tianshou(info: dict) -> dict:
         'action_counts_1': 0,
         'action_counts_2': 0,
         'trades_count': 0,
+        'market_state': 0,
+        'mask_0': 1,
+        'mask_1': 1,
+        'mask_2': 1,
     }
     if not isinstance(info, dict):
         return sanitized
@@ -2115,5 +2192,20 @@ def _sanitize_info_for_tianshou(info: dict) -> dict:
             sanitized['trades_count'] = int(len(te))
     except Exception:
         pass
+
+    # market_state and mask fields (must be scalars)
+    try:
+        v = info.get('market_state')
+        if isinstance(v, (int, float)):
+            sanitized['market_state'] = int(v)
+    except Exception:
+        pass
+    for k in ('mask_0', 'mask_1', 'mask_2'):
+        try:
+            v = info.get(k)
+            if isinstance(v, (int, float)):
+                sanitized[k] = int(v)
+        except Exception:
+            pass
 
     return sanitized

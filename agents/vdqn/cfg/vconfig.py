@@ -53,18 +53,16 @@ class vDqnConfig:
     use_torch_compile: bool = True        # PyTorch 2.x compile для максимального ускорения
     torch_compile_fallback: bool = True   # Автоматический fallback для старых GPU
     torch_compile_force_disable: bool = False  # Принудительно отключить torch.compile
+
+    # --- STATE-based action masking (feature flag for env) ---
+    # Legacy train passes vDqnConfig into MultiCryptoTradingEnv; env reads getattr(cfg,'use_state_action_mask', False)
+    use_state_action_mask: bool = False
     
     def __post_init__(self):
         """Проверяем переменные окружения после инициализации"""
-        import os
-        
-        # Проверяем переменную окружения для отключения torch.compile
-        if os.environ.get('DISABLE_TORCH_COMPILE', 'false').lower() == 'true':
-            self.use_torch_compile = False
-            self.torch_compile_force_disable = True
-            print("⚠️ torch.compile отключен через переменную окружения DISABLE_TORCH_COMPILE=true")
-        
         # Автоматическое определение GPU и применение оптимальных настроек
+        # torch.compile включается/выключается через GPU профиль и /settings (app_settings),
+        # а не через env-переменные.
         self._apply_gpu_optimization()
     
     def _apply_gpu_optimization(self):

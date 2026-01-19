@@ -1,7 +1,95 @@
 import numpy as np
 import torch
-from typing import Dict, Deque
+from typing import Dict, Deque, Iterable, Optional
 from collections import deque
+from enum import IntEnum
+
+
+class MarketState(IntEnum):
+    NORMAL = 0
+    HIGH_VOL = 1
+    PANIC = 2
+    DRAWDOWN = 3
+
+
+def compute_market_state(
+    current_step: int,
+    df_5min: np.ndarray,
+    roi_buf: Optional[Iterable[float]] = None,
+    vol_buf: Optional[Iterable[float]] = None,
+    trend_regime: int = 0,
+    atr_rel: float | None = None,
+) -> MarketState:
+    """Pure market-regime detector.
+
+    - No logging, no side-effects, no access to env/self.
+    - Uses only inputs available inside env.
+    """
+    # Safety: not enough data
+    try:
+        step = int(current_step)
+    except Exception:
+        step = 0
+    if df_5min is None or not hasattr(df_5min, "shape") or df_5min.shape[0] < 3:
+        return MarketState.NORMAL
+
+    # --- price returns volatility ---
+    end = max(0, min(step, int(df_5min.shape[0])))
+    if end <= 2:
+        end = int(df_5min.shape[0])
+    start = max(0, end - 40)  # short window for regime
+    closes = df_5min[start:end, 3].astype(np.float32, copy=False)
+    if closes.shape[0] >= 3:
+        rets = np.diff(closes) / (closes[:-1] + 1e-8)
+        vol_ret = float(np.std(rets[-20:])) if rets.shape[0] >= 2 else 0.0
+        last_ret = float(rets[-1]) if rets.shape[0] >= 1 else 0.0
+    else:
+        vol_ret = 0.0
+        last_ret = 0.0
+
+    # --- ATR proxy (relative) ---
+    if atr_rel is None:
+        try:
+            idx = max(1, min(end - 1, int(df_5min.shape[0] - 1)))
+            atr_rel = float(calc_relative_vol_numpy(df_5min, idx, lookback=12))
+        except Exception:
+            atr_rel = 0.0
+    else:
+        try:
+            atr_rel = float(atr_rel)
+        except Exception:
+            atr_rel = 0.0
+
+    # --- drawdown proxy from recent ROI buffer (unrealized ROI series) ---
+    dd_flag = False
+    try:
+        rb = list(roi_buf) if roi_buf is not None else []
+        if rb:
+            tail = rb[-10:]
+            # "drawdown" proxy: sustained negative ROI or deep local minimum
+            if (float(np.mean(tail)) <= -0.03) or (float(np.min(tail)) <= -0.06):
+                dd_flag = True
+    except Exception:
+        dd_flag = False
+
+    # Thresholds are intentionally conservative and stable.
+    HIGH_VOL_ATR = 0.006
+    HIGH_VOL_RET = 0.008
+    PANIC_ATR = 0.010
+    PANIC_DROP = -0.020
+
+    try:
+        tr = int(trend_regime)
+    except Exception:
+        tr = 0
+
+    if dd_flag and tr <= 0:
+        return MarketState.DRAWDOWN
+    if (atr_rel >= PANIC_ATR) and (last_ret <= PANIC_DROP):
+        return MarketState.PANIC
+    if (atr_rel >= HIGH_VOL_ATR) or (vol_ret >= HIGH_VOL_RET):
+        return MarketState.HIGH_VOL
+    return MarketState.NORMAL
 
 def calc_relative_vol_numpy(df_5min: np.ndarray, idx: int, lookback: int = 12) -> float:
     """

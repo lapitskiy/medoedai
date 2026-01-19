@@ -1,4 +1,11 @@
-from envs.dqn_model.gym.gutils_optimized import calc_relative_vol_numpy, commission_penalty, update_roi_stats, update_vol_stats
+from envs.dqn_model.gym.gutils_optimized import (
+    MarketState,
+    calc_relative_vol_numpy,
+    commission_penalty,
+    compute_market_state,
+    update_roi_stats,
+    update_vol_stats,
+)
 from envs.dqn_model.gym.indicators_optimized import preprocess_dataframes
 import gymnasium as gym
 from gymnasium import spaces
@@ -38,6 +45,13 @@ class CryptoTradingEnvOptimized(gym.Env):
         
         self.vol_scaled = 0
         self.epsilon = 1.0
+
+        # --- Market STATE (single source of truth; updated inside env only) ---
+        self.market_state: MarketState = MarketState.NORMAL
+        self._market_state_last_step: int | None = None
+        # Counters: how often each market_state was active at decision time (reset + each step update)
+        self.market_state_counts_total = {'NORMAL': 0, 'HIGH_VOL': 0, 'PANIC': 0, 'DRAWDOWN': 0}
+        self.market_state_counts_episode = {'NORMAL': 0, 'HIGH_VOL': 0, 'PANIC': 0, 'DRAWDOWN': 0}
         
         # PRINT LOG DOCKER
         self._episode_idx = -1
@@ -789,6 +803,11 @@ class CryptoTradingEnvOptimized(gym.Env):
         # Шейпинг по объёму (сбрасываем на новый эпизод)
         self._vol_shaping_reward = 0.0
         self._vol_size_multiplier = 1.0
+        # Reset per-episode market_state counters
+        try:
+            self.market_state_counts_episode = {'NORMAL': 0, 'HIGH_VOL': 0, 'PANIC': 0, 'DRAWDOWN': 0}
+        except Exception:
+            pass
         
         # Выбор случайной начальной точки с учетом длины эпизода
         if self._can_log:
@@ -803,6 +822,30 @@ class CryptoTradingEnvOptimized(gym.Env):
             self.start_step = min_start
         
         self.current_step = self.start_step
+
+        # Инициализируем market_state на reset (не "лениво" через mask)
+        try:
+            self.market_state = compute_market_state(
+                current_step=int(self.current_step),
+                df_5min=self.df_5min,
+                roi_buf=self.roi_buf,
+                vol_buf=self.vol_buf,
+                trend_regime=int(getattr(self, '_trend_regime', 0)),
+                atr_rel=None,
+            )
+            self._market_state_last_step = int(self.current_step)
+        except Exception:
+            self.market_state = MarketState.NORMAL
+            self._market_state_last_step = int(self.current_step) if self.current_step is not None else None
+        # Count initial state for first action decision after reset
+        try:
+            name = str(getattr(self.market_state, 'name', 'NORMAL'))
+            if name in self.market_state_counts_total:
+                self.market_state_counts_total[name] = int(self.market_state_counts_total.get(name, 0)) + 1
+            if name in self.market_state_counts_episode:
+                self.market_state_counts_episode[name] = int(self.market_state_counts_episode.get(name, 0)) + 1
+        except Exception:
+            pass
         
         try:
             print(f"ℹ️ CryptoTradingEnv reset: episode_length={self.episode_length}, min_start={min_start}, start_step={self.start_step}")
@@ -815,6 +858,65 @@ class CryptoTradingEnvOptimized(gym.Env):
         
         # Используем быстрый доступ к предвычисленному состоянию
         return self._get_state()
+
+    def _update_market_state_once(self) -> None:
+        """Обновляет self.market_state ровно один раз на шаг.
+
+        ВАЖНО: вызывается только из env.step() после _update_stats().
+        """
+        try:
+            step = int(self.current_step) if self.current_step is not None else 0
+        except Exception:
+            step = 0
+        if self._market_state_last_step == step:
+            return
+
+        # ATR rel (если доступен в preprocess) — иначе compute_market_state возьмёт proxy-ATR из df_5min
+        atr_rel = None
+        try:
+            atr_arr = getattr(self, 'atr1h_norm_5m', None)
+            if atr_arr is not None:
+                idx = max(0, min(step - 1, len(atr_arr) - 1))
+                atr_rel = float(atr_arr[idx])
+        except Exception:
+            atr_rel = None
+
+        try:
+            self.market_state = compute_market_state(
+                current_step=step,
+                df_5min=self.df_5min,
+                roi_buf=self.roi_buf,
+                vol_buf=self.vol_buf,
+                trend_regime=int(getattr(self, '_trend_regime', 0)),
+                atr_rel=atr_rel,
+            )
+        except Exception:
+            self.market_state = MarketState.NORMAL
+        self._market_state_last_step = step
+        # Count market_state once per step (decision state for next action)
+        try:
+            name = str(getattr(self.market_state, 'name', 'NORMAL'))
+            if name in self.market_state_counts_total:
+                self.market_state_counts_total[name] = int(self.market_state_counts_total.get(name, 0)) + 1
+            if name in self.market_state_counts_episode:
+                self.market_state_counts_episode[name] = int(self.market_state_counts_episode.get(name, 0)) + 1
+        except Exception:
+            pass
+
+    def get_action_mask(self):
+        """Action mask as part of env rules.
+
+        Rule: if market_state != NORMAL -> BUY is forbidden. HOLD/SELL always allowed.
+        """
+        if not bool(getattr(self.cfg, 'use_state_action_mask', False)):
+            return [1, 1, 1]
+        try:
+            ms = int(getattr(self, 'market_state', MarketState.NORMAL))
+        except Exception:
+            ms = int(MarketState.NORMAL)
+        if ms != int(MarketState.NORMAL):
+            return [1, 0, 1]
+        return [1, 1, 1]
 
     def step(self, action):
         """
@@ -1188,6 +1290,8 @@ class CryptoTradingEnvOptimized(gym.Env):
                         # Обновляем статистики
                         self._update_stats(current_price)
                         self.current_step += 1
+                        # Обновляем market_state (ровно 1 раз на шаг) перед возвратом
+                        self._update_market_state_once()
                         
                         # Проверяем завершение эпизода
                         done = (
@@ -1400,6 +1504,9 @@ class CryptoTradingEnvOptimized(gym.Env):
         for transition in self.n_step_buffer:
             if transition['next_state'] is None:
                 transition['next_state'] = self._get_state()
+
+        # Обновляем market_state (ровно 1 раз на шаг) перед возвратом
+        self._update_market_state_once()
         
         # Отладочная информация        
         # Масштабируем награду перед возвратом

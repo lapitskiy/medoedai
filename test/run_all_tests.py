@@ -22,6 +22,7 @@ def run_all_tests():
         ("Конфигурация", "test_configuration", "test_configuration"),
         ("Нейронная сеть", "test_neural_network", "test_neural_network"),
         ("DQN Solver", "test_dqn_solver", "test_dqn_solver"),
+        ("Market STATE + Mask", "test_market_state_mask", "test_market_state_masking"),
         ("Обработка NaN", "test_nan_handling", "test_nan_handling"),
         ("GPU Replay Buffer", "test_gpu_replay", "test_replay_buffer_performance"),
         ("Предвычисление состояний", "test_precomputed_states", "test_precomputed_states"),

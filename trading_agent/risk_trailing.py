@@ -109,6 +109,8 @@ def setup_trailing_stop_bybit(
     except Exception:
         pass
     return {
+        "exchange_id": exch_id,
+        "request": request,
         "trailing_dist": trailing_dist,
         "active_price": active_price,
         "response": response,

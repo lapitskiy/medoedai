@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class TradingAgent:
-    def __init__(self, model_path: str = "/workspace/models/btc/ensemble-a/current/dqn_model.pth", direction: str = None):
+    def __init__(self, model_path: str = "/workspace/models/btc/ensemble-a/current/dqn_model.pth", direction: str = None, symbol: str | None = None):
         """
         Инициализация торгового агента
         
@@ -42,8 +42,13 @@ class TradingAgent:
         self.last_model_prediction = None
         # Значения по умолчанию для символов (чтобы статус и цена работали до start_trading)
         self.symbols = []
-        self.symbol = 'BTCUSDT'
-        self.base_symbol = 'BTCUSDT'
+        _sym = None
+        try:
+            _sym = (str(symbol).strip().upper() if symbol else None)
+        except Exception:
+            _sym = None
+        self.symbol = _sym or 'BTCUSDT'
+        self.base_symbol = self.symbol
         
         # Для отслеживания Q-Values
         self._last_q_values = None
@@ -114,13 +119,21 @@ class TradingAgent:
     def _init_exchange(self):
         """Инициализация подключения к бирже Bybit для деривативов"""
         try:
-            # API ключи: приоритет — выбранный аккаунт из Redis (trading:account_id)
+            # API ключи: приоритет — выбранный аккаунт из Redis (per-symbol -> global)
             api_key = None
             secret_key = None
             selected_account_id = None
             try:
                 r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
-                sel = r.get('trading:account_id')
+                sel = None
+                try:
+                    sym = str(getattr(self, 'symbol', '') or '').strip().upper()
+                    if sym:
+                        sel = r.get(f'trading:account_id:{sym}')
+                except Exception:
+                    sel = None
+                if sel is None:
+                    sel = r.get('trading:account_id')
                 if sel:
                     selected_account_id = str(sel).strip()
                     try:

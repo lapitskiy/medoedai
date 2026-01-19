@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MedoedAI - ATR</title>
+  <link rel="stylesheet" href="/static/css/styles.css">
+  <link rel="stylesheet" href="/static/css/sidebar.css">
+  <link rel="stylesheet" href="/static/css/tabs.css">
+</head>
+<body>
+  {% include 'include/_sidebar.html' %}
+
+  <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+  <div class="container">
+    <div class="main-content">
+      <div class="header">
+        <h1>ATR (1h)</h1>
+        <p>Расчёт ATR по 1h свечам. По умолчанию берём данные строго из Postgres (без докачки).</p>
+        <div class="button-group" style="margin-top: 12px;">
+          <a href="/analitika" class="btn btn-secondary">⬅ Назад</a>
+        </div>
+      </div>
+
+      <div class="content">
+        <div class="section">
+          <div class="form-group">
+            <label>Символы (через запятую)</label>
+            <input id="symbolsInput" class="form-control" value="BTCUSDT,ETHUSDT,SOLUSDT,TONUSDT" />
+            <small style="color:#666; display:block; margin-top:6px;">Можно оставить пустым — будут дефолты как в сайдбаре.</small>
+          </div>
+          <div class="form-group">
+            <label>ATR length</label>
+            <input id="lengthInput" type="number" min="2" step="1" class="form-control" value="21" />
+          </div>
+          <div class="form-group">
+            <label><input id="dbOnlyCheckbox" type="checkbox" checked /> только из БД (db_only=1)</label>
+          </div>
+          <div class="button-group">
+            <button class="btn btn-info" onclick="loadSymbolsFromAgents()">📥 Взять символы из активных агентов</button>
+            <button class="btn btn-primary" onclick="loadAtr()">🔄 Посчитать ATR</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <div id="atrStatus" class="status" style="display:none;"></div>
+          <div id="atrTableWrap" class="results" style="display:none;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function loadSymbolsFromAgents(){
+      const status = document.getElementById('atrStatus');
+      status.style.display='block';
+      status.className='status running';
+      status.textContent='⏳ Получаю список символов...';
+      try{
+        const r = await fetch('/api/trading/status_all');
+        const data = await r.json();
+        const agents = Array.isArray(data.active_agents)? data.active_agents: [];
+        const set = new Set();
+        agents.forEach(a=>{ if(a && a.symbol) set.add(String(a.symbol).toUpperCase().replace('/','')); });
+        const list = Array.from(set);
+        document.getElementById('symbolsInput').value = list.join(',');
+        status.className='status success';
+        status.textContent = list.length ? `✅ Загружено ${list.length} символов` : '⚠️ Активных агентов нет';
+      }catch(e){
+        status.className='status error';
+        status.textContent='❌ Ошибка: ' + e.message;
+      }
+    }
+
+    function escapeHtml(s){
+      return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    async function loadAtr(){
+      const status = document.getElementById('atrStatus');
+      const wrap = document.getElementById('atrTableWrap');
+      status.style.display='block';
+      status.className='status running';
+      status.textContent='⏳ Считаю ATR...';
+      wrap.style.display='none';
+      wrap.innerHTML='';
+      try{
+        const symbols = (document.getElementById('symbolsInput').value || '').trim();
+        const length = parseInt(document.getElementById('lengthInput').value || '21', 10);
+        const dbOnly = document.getElementById('dbOnlyCheckbox').checked ? 1 : 0;
+        const url = `/api/atr/1h?symbols=${encodeURIComponent(symbols)}&length=${encodeURIComponent(length)}&db_only=${dbOnly}`;
+        const r = await fetch(url);
+        const data = await r.json();
+        if(!data || data.success !== true) throw new Error((data && data.error) ? data.error : 'bad response');
+        const rows = Array.isArray(data.rows)? data.rows: [];
+        const html = [
+          '<table class="table" style="width:100%; border-collapse: collapse;">',
+          '<thead><tr><th>symbol</th><th>ATR</th><th>ATR%</th><th>close</th><th>status</th></tr></thead>',
+          '<tbody>',
+          ...rows.map(r=>{
+            if(r.ok){
+              const atr = Number(r.atr_abs);
+              const atrp = Number(r.atr_norm) * 100.0;
+              const close = Number(r.last_close);
+              return `<tr>
+                <td>${escapeHtml(r.symbol)}</td>
+                <td>${isFinite(atr)? atr.toFixed(6): ''}</td>
+                <td>${isFinite(atrp)? atrp.toFixed(3)+'%': ''}</td>
+                <td>${isFinite(close)? close.toFixed(6): ''}</td>
+                <td>✅</td>
+              </tr>`;
+            }
+            return `<tr>
+              <td>${escapeHtml(r.symbol)}</td>
+              <td colspan="3"></td>
+              <td title="${escapeHtml(r.error)}">❌ ${escapeHtml((r.error||'err').slice(0,60))}</td>
+            </tr>`;
+          }),
+          '</tbody></table>'
+        ].join('');
+        wrap.innerHTML = html;
+        wrap.style.display='block';
+        status.className='status success';
+        status.textContent=`✅ Готово: ${rows.length} символов`;
+      }catch(e){
+        status.className='status error';
+        status.textContent='❌ Ошибка: ' + e.message;
+      }
+    }
+  </script>
+  <script src="/static/js/sidebar.js"></script>
+</body>
+</html>
+

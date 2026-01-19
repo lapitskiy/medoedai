@@ -79,9 +79,14 @@ def api_settings_upsert():
         if isinstance(description, str):
             description = description.strip() or None
         secret = bool(data.get('secret') is True or str(data.get('secret') or '').strip().lower() in ('1', 'true', 'yes', 'on'))
-        value = data.get('value')
-        if value is not None:
-            value = str(value)
+        # ВАЖНО: если `value` отсутствует в payload — НЕ затираем текущее значение.
+        # Это нужно для редактирования label/description без потери value (особенно secret).
+        if 'value' in data:
+            value = data.get('value')
+            if value is not None:
+                value = str(value)
+        else:
+            value = _get_setting_value(scope, group, key)
 
         saved = _upsert_setting(
             scope=scope,

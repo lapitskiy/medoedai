@@ -79,6 +79,9 @@ class MultiCryptoTradingEnv:
         
         # Добавляем атрибут symbol для совместимости с логированием
         self.symbol = "МУЛЬТИВАЛЮТА"
+        # Market state counters aggregated across symbol switches
+        self.market_state_counts_total = {'NORMAL': 0, 'HIGH_VOL': 0, 'PANIC': 0, 'DRAWDOWN': 0}
+        self.market_state_counts_episode = {'NORMAL': 0, 'HIGH_VOL': 0, 'PANIC': 0, 'DRAWDOWN': 0}
     
     def reset(self):
         """Сбрасывает окружение и случайно выбирает криптовалюту для эпизода"""
@@ -117,11 +120,37 @@ class MultiCryptoTradingEnv:
         
         # Очищаем n-step buffer при смене криптовалюты
         self.n_step_buffer.clear()
+
+        # Reset per-episode market_state counters on each new episode (wrapper-level)
+        try:
+            self.market_state_counts_episode = {'NORMAL': 0, 'HIGH_VOL': 0, 'PANIC': 0, 'DRAWDOWN': 0}
+        except Exception:
+            pass
         
         print(f"🔄 Эпизод: выбрана {self.current_symbol} ({current_data['candle_count']} свечей)")
         
         # Сбрасываем окружение
-        return self.current_env.reset()
+        obs = self.current_env.reset()
+        # Count initial state for first action decision after reset
+        try:
+            ms = getattr(self.current_env, 'market_state', None)
+            name = str(getattr(ms, 'name', None) or ms or 'NORMAL')
+            if name in self.market_state_counts_total:
+                self.market_state_counts_total[name] = int(self.market_state_counts_total.get(name, 0)) + 1
+            if name in self.market_state_counts_episode:
+                self.market_state_counts_episode[name] = int(self.market_state_counts_episode.get(name, 0)) + 1
+        except Exception:
+            pass
+        return obs
+
+    def get_action_mask(self):
+        """Delegates action mask to the current underlying env (single source of truth)."""
+        try:
+            if self.current_env is not None and hasattr(self.current_env, 'get_action_mask'):
+                return self.current_env.get_action_mask()
+        except Exception:
+            pass
+        return [1, 1, 1]
     
     def get_current_symbol(self):
         """Возвращает текущую выбранную криптовалюту"""
@@ -182,6 +211,16 @@ class MultiCryptoTradingEnv:
         trades_before = len(getattr(self.current_env, 'all_trades', []))
         
         result = self.current_env.step(action)
+        # Count market_state once per step (decision state for next action)
+        try:
+            ms = getattr(self.current_env, 'market_state', None)
+            name = str(getattr(ms, 'name', None) or ms or 'NORMAL')
+            if name in self.market_state_counts_total:
+                self.market_state_counts_total[name] = int(self.market_state_counts_total.get(name, 0)) + 1
+            if name in self.market_state_counts_episode:
+                self.market_state_counts_episode[name] = int(self.market_state_counts_episode.get(name, 0)) + 1
+        except Exception:
+            pass
         
         # Проверяем, появились ли новые сделки
         trades_after = len(getattr(self.current_env, 'all_trades', []))

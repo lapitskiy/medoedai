@@ -5,11 +5,16 @@ import time
 
 import pandas as pd
 
-from utils.db_utils import db_get_or_fetch_ohlcv
+from utils.db_utils import db_get_or_fetch_ohlcv, db_get_ohlcv_only
 from utils.redis_utils import get_redis_client
 
 
-def get_atr_1h(symbol: str, length: int = 21, cache_ttl_sec: int = 90) -> Tuple[float, float, float]:
+def get_atr_1h(
+    symbol: str,
+    length: int = 21,
+    cache_ttl_sec: int = 90,
+    db_only: bool = False,
+) -> Tuple[float, float, float]:
     """
     Возвращает кортеж (atr_abs, atr_norm, last_close) по 1h свечам.
     ATR считается по классической формуле Wilder (EMA с alpha=1/length).
@@ -19,7 +24,7 @@ def get_atr_1h(symbol: str, length: int = 21, cache_ttl_sec: int = 90) -> Tuple[
     rc = None
     try:
         rc = get_redis_client()
-        cache_key = f"atr:1h:{symbol}:{length}"
+        cache_key = f"atr:1h:{symbol}:{length}:{'db' if db_only else 'auto'}"
         raw = rc.get(cache_key) if rc else None
         if raw:
             import json as _json
@@ -30,12 +35,19 @@ def get_atr_1h(symbol: str, length: int = 21, cache_ttl_sec: int = 90) -> Tuple[
         pass
 
     # Берём нужный объём свечей
-    df_1h = db_get_or_fetch_ohlcv(
-        symbol_name=symbol,
-        timeframe="1h",
-        limit_candles=max(60, int(length) + 5),
-        exchange_id="bybit",
-    )
+    if db_only:
+        df_1h = db_get_ohlcv_only(
+            symbol_name=symbol,
+            timeframe="1h",
+            limit_candles=max(60, int(length) + 5),
+        )
+    else:
+        df_1h = db_get_or_fetch_ohlcv(
+            symbol_name=symbol,
+            timeframe="1h",
+            limit_candles=max(60, int(length) + 5),
+            exchange_id="bybit",
+        )
     if not isinstance(df_1h, pd.DataFrame) or df_1h.empty or len(df_1h) < (length + 1):
         raise RuntimeError("Not enough 1h candles for ATR calculation")
 
@@ -70,7 +82,7 @@ def get_atr_1h(symbol: str, length: int = 21, cache_ttl_sec: int = 90) -> Tuple[
         if rc:
             import json as _json
             rc.set(
-                f"atr:1h:{symbol}:{length}",
+                f"atr:1h:{symbol}:{length}:{'db' if db_only else 'auto'}",
                 _json.dumps(
                     {
                         "atr_abs": atr_abs,

@@ -82,6 +82,36 @@ class PositionAwareEpisodeWrapper(gym.Wrapper):
                 # Лимит продлений исчерпан — завершаем эпизод без добавления нестабильных ключей в info
                 pass
 
+        # Проксируем market_state и action_mask в info как СКАЛЯРЫ (для совместимости с sanitize)
+        try:
+            if not isinstance(info, dict):
+                info = {}
+            base_env = self.env
+            for _ in range(10):
+                if hasattr(base_env, 'env'):
+                    base_env = getattr(base_env, 'env')
+                else:
+                    break
+            ms = getattr(base_env, 'market_state', None)
+            if ms is not None:
+                try:
+                    info['market_state'] = int(ms)
+                except Exception:
+                    pass
+            if hasattr(base_env, 'get_action_mask'):
+                m = base_env.get_action_mask()
+                try:
+                    m = list(m) if m is not None else [1, 1, 1]
+                except Exception:
+                    m = [1, 1, 1]
+                if len(m) < 3:
+                    m = m + [1] * (3 - len(m))
+                info['mask_0'] = int(bool(m[0]))
+                info['mask_1'] = int(bool(m[1]))
+                info['mask_2'] = int(bool(m[2]))
+        except Exception:
+            pass
+
         return obs, float(reward), bool(terminated), bool(truncated), (info if isinstance(info, dict) else {})
 
 

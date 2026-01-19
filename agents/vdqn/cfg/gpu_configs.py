@@ -144,6 +144,67 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
 # Флаги для подавления дублирующегося вывода
 _gpu_detect_printed = False
 _gpu_info_printed = False
+_gpu_forced_source_printed = False
+_gpu_forced_invalid_printed = False
+_gpu_compile_settings_printed = False
+
+def _get_forced_gpu_from_settings() -> str:
+    """
+    Пробует получить FORCE_GPU_CONFIG из таблицы app_settings (UI /settings).
+    Возвращает '' если не задано/ошибка/невалидно.
+    """
+    try:
+        # Lazy import: чтобы не тянуть DB/SQLAlchemy на раннем импорте модулей
+        from utils.settings_store import get_setting_value as _get_setting_value  # type: ignore
+
+        # Сначала читаем из scope=rl, group=gpu, key=FORCE_GPU_CONFIG
+        v = _get_setting_value('rl', 'gpu', 'FORCE_GPU_CONFIG')
+        if v is None:
+            # fallback: scope=rl, group=None
+            v = _get_setting_value('rl', None, 'FORCE_GPU_CONFIG')
+        s = str(v or '').strip().lower()
+        if s in ('', 'auto', 'none', 'null'):
+            return ''
+        return s
+    except Exception:
+        return ''
+
+def _get_bool_setting(scope: str, group: str | None, key: str) -> bool | None:
+    """Читает bool из app_settings. Возвращает True/False или None если не задано/не распознано."""
+    try:
+        from utils.settings_store import get_setting_value as _get_setting_value  # type: ignore
+        v = _get_setting_value(scope, group, key)
+        if v is None:
+            return None
+        s = str(v).strip().lower()
+        if s in ('1', 'true', 'yes', 'y', 'on'):
+            return True
+        if s in ('0', 'false', 'no', 'n', 'off'):
+            return False
+        return None
+    except Exception:
+        return None
+
+def _apply_compile_override_from_settings(cfg: GPUConfig) -> GPUConfig:
+    """
+    Применяет override torch.compile из /settings (app_settings).
+    Ключ: scope=rl, group=gpu, key=DISABLE_TORCH_COMPILE (bool).
+    """
+    try:
+        disable = _get_bool_setting('rl', 'gpu', 'DISABLE_TORCH_COMPILE')
+        if disable is None:
+            # fallback: group=None
+            disable = _get_bool_setting('rl', None, 'DISABLE_TORCH_COMPILE')
+        if disable is None:
+            return cfg
+        if disable is True:
+            if cfg.use_torch_compile:
+                return GPUConfig(**{**cfg.__dict__, 'use_torch_compile': False})
+            return cfg
+        # disable == False -> явно разрешаем, оставляя значение из GPU профиля
+        return cfg
+    except Exception:
+        return cfg
 
 def detect_gpu() -> str:
     """
@@ -201,13 +262,23 @@ def get_gpu_config(gpu_key: str = None) -> GPUConfig:
     Получает конфигурацию для указанной GPU или автоматически определяет
     """
     if gpu_key is None:
-        # Проверяем переменную окружения для принудительного выбора GPU
-        forced_gpu = os.environ.get('FORCE_GPU_CONFIG', '').strip().lower()
-        if forced_gpu and forced_gpu in GPU_CONFIGS:
-            if not _gpu_info_printed:
-                print(f"🔧 Принудительно выбрана GPU конфигурация: {forced_gpu}")
-            gpu_key = forced_gpu
+        # 0) Пробуем принудительный выбор из /settings (app_settings)
+        forced_gpu = _get_forced_gpu_from_settings()
+        if forced_gpu:
+            global _gpu_forced_source_printed
+            if forced_gpu in GPU_CONFIGS:
+                if not _gpu_forced_source_printed:
+                    print(f"🔧 Принудительно выбрана GPU конфигурация (settings): {forced_gpu}")
+                    _gpu_forced_source_printed = True
+                gpu_key = forced_gpu
+            else:
+                global _gpu_forced_invalid_printed
+                if not _gpu_forced_invalid_printed:
+                    print(f"⚠️ settings FORCE_GPU_CONFIG='{forced_gpu}' не распознана; доступно: {sorted(GPU_CONFIGS.keys())}")
+                    _gpu_forced_invalid_printed = True
+                gpu_key = detect_gpu()
         else:
+            # Никаких env-фолбэков: единственный источник forced — app_settings (/settings).
             gpu_key = detect_gpu()
     
     if gpu_key not in GPU_CONFIGS:
@@ -215,6 +286,8 @@ def get_gpu_config(gpu_key: str = None) -> GPUConfig:
         gpu_key = "cpu"
     
     config = GPU_CONFIGS[gpu_key]
+    # Применяем override torch.compile только из /settings (никаких env-фолбеков)
+    config = _apply_compile_override_from_settings(config)
     if not _gpu_info_printed:
         print(f"✅ Выбрана конфигурация: {config.name}")
         print(f"📊 Batch size: {config.batch_size}")
@@ -225,6 +298,21 @@ def get_gpu_config(gpu_key: str = None) -> GPUConfig:
         print(f"💾 GPU storage: {config.use_gpu_storage}")
         print(f"🧩 torch.compile: {config.use_torch_compile}")
         _gpu_info_printed = True
+
+    # Отдельный лог про настройки compile из settings (один раз)
+    global _gpu_compile_settings_printed
+    if not _gpu_compile_settings_printed:
+        try:
+            disable = _get_bool_setting('rl', 'gpu', 'DISABLE_TORCH_COMPILE')
+            if disable is None:
+                disable = _get_bool_setting('rl', None, 'DISABLE_TORCH_COMPILE')
+            if disable is True:
+                print("⚠️ torch.compile отключен через настройки (/settings): DISABLE_TORCH_COMPILE=true")
+            elif disable is False:
+                print("✅ torch.compile разрешен через настройки (/settings): DISABLE_TORCH_COMPILE=false")
+        except Exception:
+            pass
+        _gpu_compile_settings_printed = True
     
     return config
 
