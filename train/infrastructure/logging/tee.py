@@ -57,6 +57,21 @@ class TailTruncatingTee:
         except Exception:
             pass
 
+    def isatty(self) -> bool:
+        """
+        Совместимость с библиотеками, которые проверяют TTY (например, torch._dynamo/torch.fx).
+        Делегируем в оригинальный stdout; если недоступно — считаем, что это не TTY.
+        """
+        try:
+            fn = getattr(self._orig_stdout, "isatty", None)
+            return bool(fn()) if callable(fn) else False
+        except Exception:
+            return False
+
+    def __getattr__(self, name: str):
+        # Делегируем "file-like" атрибуты (encoding, fileno, errors, etc.) в оригинальный stdout.
+        return getattr(self._orig_stdout, name)
+
     def close(self) -> None:
         try:
             self._fh.flush()
