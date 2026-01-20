@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import numpy as np
 import random
 import os
+import platform
 import pickle
 from pickle import HIGHEST_PROTOCOL
 import math
@@ -284,6 +285,9 @@ class DQNSolver:
             hasattr(torch, 'compile')):
             try:
                 print("🚀 Компилирую модель с torch.compile для максимального ускорения...")
+
+                # Снизим вероятность крэшей Inductor в subprocess pool (особенно на Windows)
+                os.environ.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
                 
                 # Проверяем CUDA capability для выбора совместимого режима
                 if self.cfg.device.type == 'cuda':
@@ -315,9 +319,21 @@ class DQNSolver:
                 else:
                     compile_mode = 'default'
                     print("ℹ️ CPU режим, используем 'default'")
-                
-                self.model = torch.compile(self.model, mode=compile_mode)
-                self.target_model = torch.compile(self.target_model, mode=compile_mode)
+
+                # Выбор backend: на cc<8.0 и/или Windows безопаснее aot_eager (избегаем Inductor subprocess crash)
+                backend = "inductor"
+                try:
+                    if self.cfg.device.type == "cuda":
+                        cc_major, _cc_minor = torch.cuda.get_device_capability()
+                        if int(cc_major) < 8:
+                            backend = "aot_eager"
+                except Exception:
+                    backend = "aot_eager"
+                if platform.system().lower() == "windows":
+                    backend = "aot_eager"
+
+                self.model = torch.compile(self.model, backend=backend, mode=compile_mode)
+                self.target_model = torch.compile(self.target_model, backend=backend, mode=compile_mode)
                 print(f"✅ Модели скомпилированы успешно с режимом '{compile_mode}'!")
                 
             except Exception as e:
