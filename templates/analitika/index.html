@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/static/css/styles.css">
     <link rel="stylesheet" href="/static/css/sidebar.css">
     <link rel="stylesheet" href="/static/css/tabs.css">
+    <script src="/static/js/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
     {% include 'include/_sidebar.html' %}
@@ -53,6 +54,12 @@
 
                 <div class="section">
                     <div id="indexRunInfo" class="status info" style="display:none; white-space: pre-line;"></div>
+                    <div id="winrateChartContainer" class="results" style="display:none;"></div>
+                    <div id="epsChartContainer" class="results" style="display:none;"></div>
+                    <div id="marketStateChartContainer" class="results" style="display:none;"></div>
+                    <div id="equityChartContainer" class="results" style="display:none;"></div>
+                    <div id="roiHistContainer" class="results" style="display:none;"></div>
+                    <div id="actionsStatsContainer" class="results" style="display:none;"></div>
                     <div id="analysisStatus" class="status" style="display: none;"></div>
                     <div id="analysisResults" class="results" style="display: none;"></div>
                     <div id="filesList" class="results" style="display: none;"></div>
@@ -171,10 +178,25 @@
         async function showIndexRunInfo(){
             const infoDiv = document.getElementById('indexRunInfo');
             if(!infoDiv) return;
+            const chartWrap = document.getElementById('winrateChartContainer');
+            const epsWrap = document.getElementById('epsChartContainer');
+            const msWrap = document.getElementById('marketStateChartContainer');
+            const eqWrap = document.getElementById('equityChartContainer');
+            const histWrap = document.getElementById('roiHistContainer');
+            const actionsWrap = document.getElementById('actionsStatsContainer');
             const symRaw = document.getElementById('indexSymbolSelect')?.value || '';
             const sym = symRaw.trim();
             const runId = (document.getElementById('indexRunSelect')?.value||'').trim();
-            if(!sym || !runId){ infoDiv.style.display='none'; return; }
+            if(!sym || !runId){
+                infoDiv.style.display='none';
+                if(chartWrap) chartWrap.style.display='none';
+                if(epsWrap) epsWrap.style.display='none';
+                if(msWrap) msWrap.style.display='none';
+                if(eqWrap) eqWrap.style.display='none';
+                if(histWrap) histWrap.style.display='none';
+                if(actionsWrap) actionsWrap.style.display='none';
+                return;
+            }
             const entry = indexRunsBySymbol[symRaw] || indexRunsBySymbol[sym.replace(/^SAC:/i, '')] || null;
             const modelType = getSelectedModelType();
             const symbolDir = entry?.symbolDir || sym.replace(/^SAC:/i, '');
@@ -189,6 +211,12 @@
                     infoDiv.className = 'status error';
                     infoDiv.textContent = '❌ ' + (result.error || 'Ошибка получения информации');
                     infoDiv.style.display = 'block';
+                    if(chartWrap) chartWrap.style.display='none';
+                    if(epsWrap) epsWrap.style.display='none';
+                    if(msWrap) msWrap.style.display='none';
+                    if(eqWrap) eqWrap.style.display='none';
+                    if(histWrap) histWrap.style.display='none';
+                    if(actionsWrap) actionsWrap.style.display='none';
                     return;
                 }
                 const stats = result.stats || {};
@@ -253,10 +281,210 @@
                 infoDiv.className = 'status info';
                 infoDiv.innerText = lines.join('\n');
                 infoDiv.style.display = 'block';
+
+                // --- Winrate по эпизодам (график) ---
+                try{
+                    if(chartWrap){ chartWrap.innerHTML = ''; chartWrap.style.display='none'; }
+                    const series = Array.isArray(result.episode_winrates) ? result.episode_winrates : [];
+                    const offset = Number.isFinite(result.episode_winrates_offset) ? Number(result.episode_winrates_offset) : 0;
+                    // Фоллбек: если нет полного ряда, но есть winrate_trend.snapshots — рисуем по ним
+                    const wt = (result.winrate_trend && typeof result.winrate_trend === 'object') ? result.winrate_trend : null;
+                    const snaps = (wt && Array.isArray(wt.snapshots)) ? wt.snapshots : [];
+
+                    if(chartWrap && (series.length || snaps.length)){
+                        chartWrap.style.display = 'block';
+                        const title = series.length
+                            ? `Winrate по эпизодам (последние ${series.length}${offset?`, offset=${offset}`:''})`
+                            : `Winrate trend (snapshots every ${wt?.snapshot_every ?? 'N/A'}, window=${wt?.window_size ?? 'N/A'})`;
+                        chartWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">${title}</div><div id="winrateChart" style="width:100%;height:280px;"></div>`;
+                        const el = document.getElementById('winrateChart');
+                        if(el && typeof LightweightCharts !== 'undefined'){
+                            const chart = LightweightCharts.createChart(el, {
+                                width: el.clientWidth,
+                                height: 280,
+                                layout: { backgroundColor: '#ffffff', textColor: '#333' },
+                                grid: { vertLines: { color: '#e1e2e4' }, horzLines: { color: '#e1e2e4' } },
+                                timeScale: { visible: false },
+                                rightPriceScale: { visible: true },
+                            });
+                            const addLineSeriesCompat = (ch, opts) => {
+                                if (ch && typeof ch.addLineSeries === 'function') return ch.addLineSeries(opts);
+                                if (ch && typeof ch.addSeries === 'function' && LightweightCharts && LightweightCharts.LineSeries) {
+                                    return ch.addSeries(LightweightCharts.LineSeries, opts);
+                                }
+                                throw new Error('Line series API is not available');
+                            };
+                            const line = addLineSeriesCompat(chart, { color:'#2563eb', lineWidth:2 });
+                            if (series.length) {
+                                const data = series.map((wr, i)=>({ time: i+1, value: Math.max(0, Math.min(100, Number(wr)*100.0)) }));
+                                line.setData(data);
+                            } else if (snaps.length) {
+                                const data = snaps.map((s)=>{
+                                    const ep = Number(s.episode ?? s.epoch ?? 0);
+                                    const wr = Number(s.winrate ?? 0);
+                                    return { time: ep + 1, value: Math.max(0, Math.min(100, wr*100.0)) };
+                                });
+                                line.setData(data);
+                                // EMA как отдельная линия (если есть)
+                                if (snaps.some(s => s.ema != null)) {
+                                    const emaLine = addLineSeriesCompat(chart, { color:'#16a34a', lineWidth:2 });
+                                    const emaData = snaps
+                                        .filter(s => s.ema != null)
+                                        .map(s => ({ time: Number(s.episode ?? s.epoch ?? 0) + 1, value: Math.max(0, Math.min(100, Number(s.ema)*100.0)) }));
+                                    emaLine.setData(emaData);
+                                }
+                            }
+                            chart.timeScale().fitContent();
+                            new ResizeObserver(()=>{ chart.applyOptions({ width: el.clientWidth }); }).observe(el);
+                        } else if (el) {
+                            // Fallback: если график не загрузился, покажем текстом
+                            if (series.length) {
+                                el.innerHTML = `<pre>Winrate points: ${series.length}\nfirst=${(series[0]*100).toFixed(1)}% last=${(series[series.length-1]*100).toFixed(1)}%</pre>`;
+                            } else if (snaps.length) {
+                                const first = snaps[0], last = snaps[snaps.length-1];
+                                el.innerHTML = `<pre>Winrate trend snapshots: ${snaps.length}\nfirst=${((first.winrate||0)*100).toFixed(1)}% last=${((last.winrate||0)*100).toFixed(1)}%</pre>`;
+                            }
+                        }
+                    }
+                }catch(e){ /* ignore chart errors */ }
+
+                // --- Epsilon по эпизодам (график ниже) ---
+                try{
+                    if(epsWrap){ epsWrap.innerHTML=''; epsWrap.style.display='none'; }
+                    const eps = Array.isArray(result.episode_epsilons) ? result.episode_epsilons : [];
+                    const epsOff = Number.isFinite(result.episode_epsilons_offset) ? Number(result.episode_epsilons_offset) : 0;
+                    if(epsWrap && eps.length){
+                        epsWrap.style.display = 'block';
+                        epsWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">Epsilon по эпизодам (последние ${eps.length}${epsOff?`, offset=${epsOff}`:''})</div><div id="epsChart" style="width:100%;height:220px;"></div>`;
+                        const el = document.getElementById('epsChart');
+                        if(el && typeof LightweightCharts !== 'undefined'){
+                            const chart = LightweightCharts.createChart(el, {
+                                width: el.clientWidth,
+                                height: 220,
+                                layout: { backgroundColor: '#ffffff', textColor: '#333' },
+                                grid: { vertLines: { color: '#e1e2e4' }, horzLines: { color: '#e1e2e4' } },
+                                timeScale: { visible: false },
+                                rightPriceScale: { visible: true },
+                            });
+                            const addLineSeriesCompat = (ch, opts) => {
+                                if (ch && typeof ch.addLineSeries === 'function') return ch.addLineSeries(opts);
+                                if (ch && typeof ch.addSeries === 'function' && LightweightCharts && LightweightCharts.LineSeries) {
+                                    return ch.addSeries(LightweightCharts.LineSeries, opts);
+                                }
+                                throw new Error('Line series API is not available');
+                            };
+                            const line = addLineSeriesCompat(chart, { color:'#7c3aed', lineWidth:2 });
+                            const data = eps.map((v, i)=>({ time: i+1, value: Number(v) }));
+                            line.setData(data);
+                            chart.timeScale().fitContent();
+                            new ResizeObserver(()=>{ chart.applyOptions({ width: el.clientWidth }); }).observe(el);
+                        }
+                    }
+                }catch(e){ /* ignore */ }
+
+                // --- Market state distribution (bar) ---
+                try{
+                    if(msWrap){ msWrap.innerHTML=''; msWrap.style.display='none'; }
+                    const msTotal = (result.market_state_counts_total && typeof result.market_state_counts_total === 'object') ? result.market_state_counts_total : null;
+                    const msEp = (result.market_state_counts_episode && typeof result.market_state_counts_episode === 'object') ? result.market_state_counts_episode : null;
+                    const keys = ['NORMAL','HIGH_VOL','PANIC','DRAWDOWN'];
+                    const sum = (obj)=> keys.reduce((s,k)=>s + Number(obj?.[k]||0), 0);
+                    const totalN = msTotal ? sum(msTotal) : 0;
+                    if(msWrap && msTotal && totalN>0){
+                        msWrap.style.display='block';
+                        const lines = keys.map(k=>{
+                            const v = Number(msTotal[k]||0);
+                            const pct = ((v/totalN)*100).toFixed(1);
+                            const epv = msEp ? Number(msEp[k]||0) : null;
+                            return `${k}: ${v} (${pct}%)${epv!=null?` | episode: ${epv}`:''}`;
+                        }).join('\n');
+                        msWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">MARKET_STATE распределение (total + last episode)</div><pre>${lines}</pre>`;
+                    }
+                }catch(e){ /* ignore */ }
+
+                // --- Equity curve (cumulative ROI, %) ---
+                try{
+                    if(eqWrap){ eqWrap.innerHTML=''; eqWrap.style.display='none'; }
+                    const eq = Array.isArray(result.equity_curve) ? result.equity_curve : [];
+                    if(eqWrap && eq.length){
+                        eqWrap.style.display='block';
+                        eqWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">Equity curve (cum ROI, %), points=${eq.length}</div><div id="equityChart" style="width:100%;height:260px;"></div>`;
+                        const el = document.getElementById('equityChart');
+                        if(el && typeof LightweightCharts !== 'undefined'){
+                            const chart = LightweightCharts.createChart(el, {
+                                width: el.clientWidth,
+                                height: 260,
+                                layout: { backgroundColor: '#ffffff', textColor: '#333' },
+                                grid: { vertLines: { color: '#e1e2e4' }, horzLines: { color: '#e1e2e4' } },
+                                timeScale: { visible: false },
+                                rightPriceScale: { visible: true },
+                            });
+                            const addLineSeriesCompat = (ch, opts) => {
+                                if (ch && typeof ch.addLineSeries === 'function') return ch.addLineSeries(opts);
+                                if (ch && typeof ch.addSeries === 'function' && LightweightCharts && LightweightCharts.LineSeries) {
+                                    return ch.addSeries(LightweightCharts.LineSeries, opts);
+                                }
+                                throw new Error('Line series API is not available');
+                            };
+                            const line = addLineSeriesCompat(chart, { color:'#0ea5e9', lineWidth:2 });
+                            const data = eq.map((p)=>({ time: Number(p.i||0), value: Number(p.v||0) }));
+                            line.setData(data);
+                            chart.timeScale().fitContent();
+                            new ResizeObserver(()=>{ chart.applyOptions({ width: el.clientWidth }); }).observe(el);
+                        }
+                    }
+                }catch(e){ /* ignore */ }
+
+                // --- ROI histogram (counts by ROI%, rendered as text bars) ---
+                try{
+                    if(histWrap){ histWrap.innerHTML=''; histWrap.style.display='none'; }
+                    const h = (result.roi_histogram && typeof result.roi_histogram === 'object') ? result.roi_histogram : null;
+                    if(histWrap && h && Array.isArray(h.centers) && Array.isArray(h.counts) && h.centers.length){
+                        histWrap.style.display='block';
+                        // Render compact histogram as ascii bars (fast, no extra libs)
+                        const centers = h.centers;
+                        const counts = h.counts;
+                        const maxC = Math.max(...counts.map(x=>Number(x)||0), 1);
+                        const lines = [];
+                        const step = Math.max(1, Math.floor(centers.length / 30)); // compress to ~30 lines
+                        for(let i=0;i<centers.length;i+=step){
+                            const c = Number(centers[i]||0);
+                            const v = Number(counts[i]||0);
+                            const barLen = Math.round((v/maxC)*20);
+                            lines.push(`${c.toFixed(2)}% | ${'#'.repeat(barLen)} ${v}`);
+                        }
+                        histWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">ROI histogram (≈${h.lo?.toFixed?.(2)??h.lo}%..${h.hi?.toFixed?.(2)??h.hi}%, bins=${h.bins})</div><pre>${lines.join('\n')}</pre>`;
+                    }
+                }catch(e){ /* ignore */ }
+
+                // --- Action counts (BUY/HOLD/SELL) ---
+                try{
+                    if(actionsWrap){ actionsWrap.innerHTML=''; actionsWrap.style.display='none'; }
+                    const ac = (result.action_counts_total && typeof result.action_counts_total === 'object') ? result.action_counts_total : null;
+                    if(actionsWrap && ac){
+                        const hold = Number(ac['0'] ?? 0);
+                        const buy  = Number(ac['1'] ?? 0);
+                        const sell = Number(ac['2'] ?? 0);
+                        const total = (Number.isFinite(hold)?hold:0) + (Number.isFinite(buy)?buy:0) + (Number.isFinite(sell)?sell:0);
+                        actionsWrap.style.display = 'block';
+                        const ms = (result.market_state_counts_total && typeof result.market_state_counts_total === 'object') ? result.market_state_counts_total : null;
+                        const msKeys = ['NORMAL','HIGH_VOL','PANIC','DRAWDOWN'];
+                        const msTotal = ms ? msKeys.reduce((s,k)=>s + Number(ms[k]||0), 0) : 0;
+                        const msText = ms ? msKeys.map(k=>{
+                            const v = Number(ms[k]||0);
+                            const pct = msTotal ? ` (${((v/msTotal)*100).toFixed(1)}%)` : '';
+                            return `${k}: ${v}${pct}`;
+                        }).join('\n') : 'N/A';
+                        actionsWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">Action counts + MARKET_STATE</div>
+ <pre>HOLD(0): ${hold}\nBUY(1):  ${buy}\nSELL(2): ${sell}\nTOTAL:   ${total}\n\nMARKET_STATE:\n${msText}</pre>`;
+                    }
+                }catch(e){ /* ignore */ }
             }catch(e){
                 infoDiv.className = 'status error';
                 infoDiv.textContent = '❌ Ошибка сети: ' + e.message;
                 infoDiv.style.display = 'block';
+                if(chartWrap) chartWrap.style.display='none';
+                if(actionsWrap) actionsWrap.style.display='none';
             }
         }
 

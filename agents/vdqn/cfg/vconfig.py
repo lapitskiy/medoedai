@@ -15,6 +15,17 @@ class vDqnConfig:
     winrate_eps_threshold: float = 0.2
     # Количество greedy-эпизодов для финальной оценки (ε=0)
     eval_episodes: int = 5
+    # === winrate trend storage (compact history) ===
+    # Снэпшот каждые N эпизодов в train_result.pkl (без хранения всех значений)
+    winrate_snapshot_every: int = 50
+    # Окно для rolling median/квантилей (хранится только последние N значений)
+    winrate_trend_window: int = 200
+    # EMA сглаживание winrate для тренда
+    winrate_ema_alpha: float = 0.05
+    # Хранить ли полный список episode_winrates (может быть большой). Если False — сохраняем только tail + агрегаты.
+    store_episode_winrates_full: bool = True
+    # Сколько последних winrate хранить в episode_winrates_tail (когда full выключен)
+    store_episode_winrates_tail: int = 200
 
     # === replay‑buffer ===
     memory_size: int       = 200_000  # будет переопределено GPU-конфигом

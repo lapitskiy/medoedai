@@ -4,6 +4,7 @@ import sys
 import tempfile
 import logging
 import numpy as np
+from collections import deque
 import torch
 import wandb
 import time
@@ -257,6 +258,7 @@ def _save_training_results(
     eval_summary: dict | None = None,
     dfs: Optional[Dict] = None,
     direction: str = 'long',
+    winrate_trend: dict | None = None,
 ):
     try:
         total_training_time = current_total_training_time
@@ -276,11 +278,33 @@ def _save_training_results(
         # Получаем статистику, если есть сделки, иначе пустой словарь
         stats_all = dqn_solver.print_trade_stats(all_trades) if all_trades and dqn_solver is not None else {}
 
+        # Компактная поддержка winrate без необходимости хранить весь список
+        try:
+            ew_count = int(len(episode_winrates) if episode_winrates else 0)
+            ew_last = episode_winrates[-1] if (episode_winrates and len(episode_winrates) > 0) else None
+            ew_best = max(episode_winrates) if (episode_winrates and len(episode_winrates) > 0) else None
+            ew_avg = (sum(episode_winrates) / float(len(episode_winrates))) if (episode_winrates and len(episode_winrates) > 0) else None
+        except Exception:
+            ew_count, ew_last, ew_best, ew_avg = 0, None, None, None
+        store_full = bool(getattr(cfg, 'store_episode_winrates_full', True)) if cfg is not None else True
+        tail_n = int(getattr(cfg, 'store_episode_winrates_tail', getattr(cfg, 'winrate_trend_window', 200))) if cfg is not None else 200
+        ew_tail = []
+        try:
+            if episode_winrates and tail_n > 0:
+                ew_tail = list(episode_winrates[-tail_n:])
+        except Exception:
+            ew_tail = []
+
         training_results = {
             'episodes': total_episodes_planned,  # Планируемое количество эпизодов
             'actual_episodes': current_episode,  # Реальное количество завершенных эпизодов (текущий эпизод)
             'total_training_time': total_training_time,
-            'episode_winrates': episode_winrates,
+            'episode_winrates': (episode_winrates if store_full else None),
+            'episode_winrates_tail': ew_tail,
+            'episode_winrates_count': ew_count,
+            'episode_winrates_last': ew_last,
+            'episode_winrates_best': ew_best,
+            'episode_winrates_avg': ew_avg,
             'episode_epsilons': episode_epsilons or [],
             'all_trades': all_trades,
             'bad_trades': bad_trades_list,
@@ -318,6 +342,8 @@ def _save_training_results(
              # Market STATE counters (decision-time distribution)
              'market_state_counts_total': (get_env_attr_safe(env, 'market_state_counts_total', {})),
              'market_state_counts_episode': (get_env_attr_safe(env, 'market_state_counts_episode', {})),
+            # Компактная история тренда winrate (снэпшоты + rolling median/EMA)
+            'winrate_trend': winrate_trend or None,
         }
         
         # Печать BUY/HOLD статистики (если есть)
@@ -1160,6 +1186,50 @@ def train_model_optimized(
         episode_epsilons = []
         best_winrate = 0.0
         best_episode_idx = -1
+        # Компактная история winrate (bounded memory)
+        try:
+            _wr_snapshot_every = int(getattr(cfg, 'winrate_snapshot_every', 50)) if cfg is not None else 50
+        except Exception:
+            _wr_snapshot_every = 50
+        try:
+            _wr_window_n = int(getattr(cfg, 'winrate_trend_window', 200)) if cfg is not None else 200
+        except Exception:
+            _wr_window_n = 200
+        try:
+            _wr_ema_alpha = float(getattr(cfg, 'winrate_ema_alpha', 0.05)) if cfg is not None else 0.05
+        except Exception:
+            _wr_ema_alpha = 0.05
+        winrate_window = deque(maxlen=max(1, _wr_window_n))
+        winrate_snapshots: list[dict] = []
+        winrate_ema: float | None = None
+
+        def _update_winrate_trend(ep: int, wr: float):
+            nonlocal winrate_ema
+            try:
+                w = float(wr)
+            except Exception:
+                return
+            winrate_window.append(w)
+            if winrate_ema is None:
+                winrate_ema = w
+            else:
+                a = float(_wr_ema_alpha)
+                winrate_ema = (a * w) + ((1.0 - a) * float(winrate_ema))
+            if _wr_snapshot_every > 0 and (ep % _wr_snapshot_every == 0):
+                try:
+                    arr = np.asarray(list(winrate_window), dtype=np.float32)
+                    snap = {
+                        'episode': int(ep),
+                        'winrate': float(w),
+                        'ema': float(winrate_ema) if winrate_ema is not None else None,
+                        'median_window': float(np.median(arr)) if arr.size else None,
+                        'p25_window': float(np.quantile(arr, 0.25)) if arr.size else None,
+                        'p75_window': float(np.quantile(arr, 0.75)) if arr.size else None,
+                        'window_n': int(arr.size),
+                    }
+                    winrate_snapshots.append(snap)
+                except Exception:
+                    pass
          # Reduce-on-plateau и warmup для best
         lr_plateau_patience = int(getattr(cfg, 'lr_plateau_patience', 1000))
         lr_min = float(getattr(cfg, 'lr_min', 1e-5))
@@ -1410,6 +1480,7 @@ def train_model_optimized(
                 all_profitable = [t for t in _all_trades if t.get('roi', 0) > 0]
                 episode_winrate = len(all_profitable) / len(_all_trades) if _all_trades else 0
                 episode_winrates.append(episode_winrate)
+                _update_winrate_trend(episode, episode_winrate)
                 
                 # Детальная статистика эпизода
                 episode_stats = dqn_solver.print_trade_stats(_all_trades, failed_attempts=failed_train_attempts)
@@ -1426,6 +1497,7 @@ def train_model_optimized(
                 profitable_trades = [t for t in episode_trades if t.get('roi', 0) > 0]
                 episode_winrate = len(profitable_trades) / len(episode_trades) if episode_trades else 0
                 episode_winrates.append(episode_winrate)
+                _update_winrate_trend(episode, episode_winrate)
                 
                 # Детальная статистика эпизода
                 episode_stats = dqn_solver.print_trade_stats(episode_trades, failed_attempts=failed_train_attempts)
@@ -1437,11 +1509,13 @@ def train_model_optimized(
                     profitable_trades = [t for t in recent_trades if t.get('roi', 0) > 0]
                     episode_winrate = len(profitable_trades) / len(recent_trades) if recent_trades else 0
                     episode_winrates.append(episode_winrate)
+                    _update_winrate_trend(episode, episode_winrate)
                     episode_stats = dqn_solver.print_trade_stats(recent_trades, failed_attempts=failed_train_attempts)
                 else:
                     # Нет сделок вовсе — выводим агрегатную строку статистики с Failed train
                     episode_winrate = 0.0
                     episode_winrates.append(episode_winrate)
+                    _update_winrate_trend(episode, episode_winrate)
                     episode_stats = dqn_solver.print_trade_stats([], failed_attempts=failed_train_attempts)
                 
                 # Объединяем всю статистику эпизода в одну строку
@@ -1666,6 +1740,12 @@ def train_model_optimized(
                     training_start_time=training_start_time,
                     current_total_training_time=time.time() - training_start_time,
                     direction=(direction or 'long'),
+                    winrate_trend={
+                        'snapshot_every': int(_wr_snapshot_every),
+                        'window_size': int(_wr_window_n),
+                        'ema_alpha': float(_wr_ema_alpha),
+                        'snapshots': winrate_snapshots,
+                    },
                 )
                 # Сохраняем последний снапшот last_model.pth (отдельно)
                 try:
@@ -2164,6 +2244,12 @@ def train_model_optimized(
             training_start_time=training_start_time,
             current_total_training_time=total_training_time, # Используем final total_training_time
             direction=(direction or 'long'),
+            winrate_trend={
+                'snapshot_every': int(_wr_snapshot_every),
+                'window_size': int(_wr_window_n),
+                'ema_alpha': float(_wr_ema_alpha),
+                'snapshots': winrate_snapshots,
+            },
         )
 
         # Добавим краткую информацию о выборе энкодера в отдельный JSON в run_dir

@@ -237,6 +237,8 @@ def api_runs_list():
                         return cleaned
 
                     episode_winrates = _sanitize(_res.get('episode_winrates'))
+                    if not episode_winrates:
+                        episode_winrates = _sanitize(_res.get('episode_winrates_tail'))
                     if episode_winrates:
                         episode_winrate_last = episode_winrates[-1]
                         episode_winrate_avg = sum(episode_winrates) / len(episode_winrates)
@@ -245,9 +247,16 @@ def api_runs_list():
                         else:
                             best_winrate = _res.get('best_winrate')
                     else:
+                        # Fallback на агрегаты (если полный список не сохранялся)
+                        if isinstance(_res.get('episode_winrates_last'), (int, float)):
+                            episode_winrate_last = float(_res.get('episode_winrates_last'))
+                        if isinstance(_res.get('episode_winrates_avg'), (int, float)):
+                            episode_winrate_avg = float(_res.get('episode_winrates_avg'))
                         val = _res.get('best_winrate')
                         if isinstance(val, (int, float)):
                             best_winrate = float(val)
+                        elif isinstance(_res.get('episode_winrates_best'), (int, float)):
+                            best_winrate = float(_res.get('episode_winrates_best'))
 
                     validation_rewards = _sanitize(_res.get('validation_rewards'))
                     if validation_rewards:
@@ -300,7 +309,10 @@ def api_runs_oos_results():
         run_id = (request.args.get('run_id') or '').strip()
         if not symbol or not run_id:
             return jsonify({'success': False, 'error': 'symbol and run_id required'}), 400
-        oos_file = Path('result') / symbol / 'runs' / run_id / 'oos_results.json'
+        run_dir = resolve_run_dir('dqn', run_id, symbol_hint=symbol, create=False)
+        if run_dir is None or not run_dir.exists() or not run_dir.is_dir():
+            return jsonify({'success': False, 'error': 'run directory not found'}), 404
+        oos_file = run_dir / 'oos_results.json'
         if not oos_file.exists():
             return jsonify({'success': False, 'error': 'oos_results.json not found'}), 404
         try:
@@ -315,12 +327,13 @@ def api_runs_oos_results():
 def api_runs_delete():
     try:
         data = request.get_json(silent=True) or {}
+        model_type = (data.get('model_type') or data.get('agent_type') or 'dqn').strip().lower()
         symbol = (data.get('symbol') or '').strip().upper()
         run_id = (data.get('run_id') or '').strip()
         if not symbol or not run_id:
             return jsonify({'success': False, 'error': 'symbol and run_id required'}), 400
-        run_dir = Path('result') / symbol / 'runs' / run_id
-        if not run_dir.exists() or not run_dir.is_dir():
+        run_dir = resolve_run_dir(model_type, run_id, symbol_hint=symbol, create=False)
+        if run_dir is None or not run_dir.exists() or not run_dir.is_dir():
             return jsonify({'success': False, 'error': 'run directory not found'}), 404
         deleted = []
         errors = []

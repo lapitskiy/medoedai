@@ -1859,11 +1859,59 @@ def train_tianshou_dqn(
         except Exception:
             sell_types_agg = {}
 
+        # Компактный тренд winrate (без необходимости хранить весь ряд)
+        winrate_trend = None
+        try:
+            snap_every = int(get_config_value('TS_WINRATE_SNAPSHOT_EVERY', '10'))
+        except Exception:
+            snap_every = 10
+        try:
+            window_n = int(get_config_value('TS_WINRATE_TREND_WINDOW', '60'))
+        except Exception:
+            window_n = 60
+        try:
+            ema_alpha = float(get_config_value('TS_WINRATE_EMA_ALPHA', '0.05'))
+        except Exception:
+            ema_alpha = 0.05
+        try:
+            if epoch_test_rewards and isinstance(epoch_test_rewards, list):
+                from collections import deque as _dq
+                _w = _dq(maxlen=max(1, int(window_n)))
+                _ema = None
+                snaps = []
+                for i, v in enumerate(epoch_test_rewards):
+                    try:
+                        fv = float(v)
+                    except Exception:
+                        continue
+                    _w.append(fv)
+                    _ema = fv if _ema is None else (ema_alpha * fv + (1.0 - ema_alpha) * float(_ema))
+                    if snap_every > 0 and (i % snap_every == 0):
+                        arr = np.asarray(list(_w), dtype=np.float32)
+                        snaps.append({
+                            'epoch': int(i),
+                            'winrate': float(fv),
+                            'ema': float(_ema) if _ema is not None else None,
+                            'median_window': float(np.median(arr)) if arr.size else None,
+                            'p25_window': float(np.quantile(arr, 0.25)) if arr.size else None,
+                            'p75_window': float(np.quantile(arr, 0.75)) if arr.size else None,
+                            'window_n': int(arr.size),
+                        })
+                winrate_trend = {
+                    'snapshot_every': int(snap_every),
+                    'window_size': int(window_n),
+                    'ema_alpha': float(ema_alpha),
+                    'snapshots': snaps,
+                }
+        except Exception:
+            winrate_trend = None
+
         training_results = {
             'episodes': episodes,
             'actual_episodes': approx_actual_episodes,
             'total_training_time': total_training_time,
             'episode_winrates': epoch_test_rewards,  # прокси по тест-наградам
+            'winrate_trend': winrate_trend,
             'all_trades': all_trades,
             'bad_trades': [],
             'bad_trades_count': 0,

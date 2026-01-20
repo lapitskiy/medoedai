@@ -578,6 +578,206 @@ def ensure_risk_orders(self, symbol: str):
     amount = pos.get('amount')
     ptype = str(pos.get('type') or '').lower()
 
+    # --- Exit detection (TP/SL) for post-exit cooldown/Q-gate boost ---
+    # Мы храним "позиция была/нет" в Redis, чтобы поймать событие закрытия позиции,
+    # даже если закрытие произошло биржей по reduceOnly TP/SL/Trailing.
+    def _last_closed_5m_ts_ms() -> int:
+        try:
+            now_utc = datetime.utcnow()
+            epoch_sec = int(now_utc.timestamp())
+            step = 300
+            last_closed = (epoch_sec // step) * step - step
+            return int(last_closed * 1000)
+        except Exception:
+            return 0
+
+    def _detect_exit_event(_exchange, _symbol: str) -> dict:
+        """Best-effort exit detector from closed reduceOnly order.
+        Returns: {reason, side, qty, price, order_id, ts_ms}."""
+        try:
+            if _exchange is None:
+                return {'reason': 'unknown'}
+            orders = []
+            try:
+                if hasattr(_exchange, 'fetch_closed_orders'):
+                    orders = _exchange.fetch_closed_orders(_symbol, params={'category': 'linear'}) or []
+            except Exception:
+                orders = []
+            if not orders:
+                return {'reason': 'unknown'}
+
+            def _ts_ms(od):
+                try:
+                    if od.get('timestamp'):
+                        return int(od.get('timestamp'))
+                except Exception:
+                    pass
+                try:
+                    info = od.get('info') or {}
+                    for k in ('updatedTime', 'updatedTimeMs', 'createdTime', 'createdTimeMs', 'time'):
+                        v = info.get(k)
+                        if v is not None and str(v).strip() != '':
+                            return int(float(v))
+                except Exception:
+                    pass
+                return 0
+
+            # Sort most recent first
+            orders_sorted = sorted(list(orders), key=_ts_ms, reverse=True)
+            for od in orders_sorted[:50]:
+                try:
+                    info = od.get('info') or {}
+                    ro = bool(info.get('reduceOnly') or info.get('reduce_only') or False)
+                    if not ro:
+                        continue
+                    side = str(od.get('side') or info.get('side') or '').lower()
+                    typ = str(od.get('type') or info.get('orderType') or '').lower()
+                    stop_kind = str(info.get('stopOrderType') or info.get('tpslMode') or '').lower()
+                    trig = info.get('triggerPrice') or info.get('stopLoss') or info.get('takeProfit')
+
+                    # qty/price
+                    qty = None
+                    try:
+                        qty = float(od.get('filled') or info.get('cumExecQty') or info.get('qty') or od.get('amount') or 0.0)
+                    except Exception:
+                        qty = None
+                    price = None
+                    try:
+                        price = float(od.get('average') or info.get('avgPrice') or info.get('avgPriceE8') or 0.0)
+                        if price and price > 1e6:
+                            price = price / 1e8
+                    except Exception:
+                        price = None
+                    if (price is None or price <= 0) and od.get('price'):
+                        try:
+                            price = float(od.get('price'))
+                        except Exception:
+                            pass
+                    if (qty is None or qty <= 0) or (price is None or price <= 0):
+                        continue
+
+                    reason = 'unknown'
+                    if 'trailing' in typ or 'trailing' in stop_kind:
+                        reason = 'trailing'
+                    elif trig not in (None, '', '0', '0.0') or ('stop' in typ) or ('stop' in stop_kind):
+                        reason = 'stop_loss'
+                    elif typ == 'limit':
+                        reason = 'take_profit'
+
+                    return {
+                        'reason': reason,
+                        'side': side or None,
+                        'qty': float(qty),
+                        'price': float(price),
+                        'order_id': od.get('id') or info.get('orderId') or info.get('orderID'),
+                        'ts_ms': _ts_ms(od) or None,
+                    }
+                except Exception:
+                    continue
+            return {'reason': 'unknown'}
+        except Exception:
+            return {'reason': 'unknown'}
+
+    try:
+        if rc is not None:
+            pos_key = f"trading:pos_open:{symbol}"
+            was_open = str(rc.get(pos_key) or '0').strip() == '1'
+            if entry_price and amount and amount > 0:
+                # Mark open and remember entry for later heuristics/debug
+                try:
+                    rc.set(pos_key, "1")
+                    rc.set(f"trading:pos_entry_price:{symbol}", str(entry_price))
+                    rc.set(f"trading:pos_type:{symbol}", str(ptype or ''))
+                except Exception:
+                    pass
+            else:
+                # No position now
+                try:
+                    rc.set(pos_key, "0")
+                except Exception:
+                    pass
+                if was_open:
+                    # Exit event (open -> none)
+                    now_bucket_ts = _last_closed_5m_ts_ms()
+                    prev_exit = None
+                    try:
+                        prev_exit = rc.get(f"trading:last_exit_ts_ms:{symbol}")
+                        prev_exit = int(prev_exit) if prev_exit is not None and str(prev_exit).strip() != '' else None
+                    except Exception:
+                        prev_exit = None
+                    if now_bucket_ts and (prev_exit is None or int(now_bucket_ts) > int(prev_exit)):
+                        evt = _detect_exit_event(getattr(agent, 'exchange', None), symbol) or {}
+                        reason = str(evt.get('reason') or 'unknown')
+                        # anti-dup by exchange order id (best-effort)
+                        try:
+                            last_oid = rc.get(f"trading:last_exit_order_id:{symbol}")
+                        except Exception:
+                            last_oid = None
+                        oid = evt.get('order_id')
+                        if oid and last_oid and str(oid) == str(last_oid):
+                            return {"success": True, "skipped": True, "reason": "exit_duplicate_order"}
+                        try:
+                            rc.setex(f"trading:last_exit_ts_ms:{symbol}", 86400, str(int(now_bucket_ts)))
+                            rc.setex(f"trading:last_exit_reason:{symbol}", 86400, str(reason))
+                            if oid:
+                                rc.setex(f"trading:last_exit_order_id:{symbol}", 86400, str(oid))
+                        except Exception:
+                            pass
+                        # Persist to DB trades so /agent/<symbol> -> "История торговли" shows this exit.
+                        try:
+                            from utils.trade_utils import create_trade_record
+                            ep = None
+                            ptype_prev = None
+                            try:
+                                ep_raw = rc.get(f"trading:pos_entry_price:{symbol}")
+                                ep = float(ep_raw) if ep_raw is not None and str(ep_raw).strip() != '' else None
+                            except Exception:
+                                ep = None
+                            try:
+                                ptype_prev = str(rc.get(f"trading:pos_type:{symbol}") or '').strip().lower()
+                            except Exception:
+                                ptype_prev = None
+
+                            side = str(evt.get('side') or '').lower()
+                            action = side if side in ('buy', 'sell') else 'sell'
+                            qty = float(evt.get('qty') or 0.0)
+                            px = float(evt.get('price') or 0.0)
+                            pnl = None
+                            try:
+                                if ep and qty and px:
+                                    if action == 'sell':  # long close
+                                        pnl = (px - ep) * qty
+                                    elif action == 'buy': # short close
+                                        pnl = (ep - px) * qty
+                            except Exception:
+                                pnl = None
+                            create_trade_record(
+                                symbol_name=symbol,
+                                action=action,
+                                status='executed',
+                                quantity=max(0.0, qty),
+                                price=max(0.0, px),
+                                model_prediction=f"exit:{reason}",
+                                position_pnl=pnl,
+                                exchange_order_id=str(oid) if oid else None,
+                                error_message=json.dumps({
+                                    'exit_reason': reason,
+                                    'exit_ts_ms': int(now_bucket_ts),
+                                    'exit_side': action,
+                                    'entry_price': ep,
+                                    'pos_type_prev': ptype_prev,
+                                }, ensure_ascii=False),
+                                is_successful=True
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            logger.warning("[exit_detect] symbol=%s exit_ts=%s reason=%s", symbol, now_bucket_ts, reason)
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+
     if not (entry_price and amount and amount > 0):
         # Позиции нет.
         # ВАЖНО: при limit_post_only позиция может появиться позже. Если есть pending входящий ордер (non-reduceOnly),
@@ -1648,6 +1848,112 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         T2 = _pick_threshold('QGATE_GAPQ', 0.440, 'trading:qgate_gapq')
         print(f"QGate thresholds chosen: T1={T1:.3f}, T2={T2:.3f}")
 
+        # --- Post-exit policy (after TP/SL): cooldown + boosted Q-gate ---
+        # Требование:
+        # - после выхода по stop_loss/take_profit: 5 свечей не входить
+        # - затем ещё 10 свечей: повышенные MAXQ/GAPQ (из DB/Redis), чтобы избегать "re-entry"
+        postexit = None
+        try:
+            if rc is not None and sym0:
+                # time bucket: last closed 5m candle
+                try:
+                    now_utc = datetime.utcnow()
+                    epoch_sec = int(now_utc.timestamp())
+                    last_closed = (epoch_sec // 300) * 300 - 300
+                    now_bucket_ts = int(last_closed * 1000)
+                except Exception:
+                    now_bucket_ts = 0
+
+                ex_ts_raw = rc.get(f"trading:last_exit_ts_ms:{sym0}")
+                ex_reason = rc.get(f"trading:last_exit_reason:{sym0}")
+                try:
+                    ex_ts = int(ex_ts_raw) if ex_ts_raw is not None and str(ex_ts_raw).strip() != '' else None
+                except Exception:
+                    ex_ts = None
+                ex_reason = str(ex_reason or '').strip().lower()
+                allowed_reasons = ('stop_loss', 'take_profit', 'trailing')
+                if ex_ts and now_bucket_ts and ex_reason in allowed_reasons and now_bucket_ts >= ex_ts:
+                    candles_since = int((now_bucket_ts - ex_ts) // 300000)
+
+                    def _pick_int(key: str, default_val: int) -> int:
+                        try:
+                            v = rc.get(f'{key}:{sym0}') or rc.get(key)
+                            if v is not None and str(v).strip() != '':
+                                return int(float(v))
+                        except Exception:
+                            pass
+                        return int(default_val)
+
+                    cooldown_candles = _pick_int('trading:postexit_cooldown_candles', 5)
+                    boost_candles = _pick_int('trading:postexit_boost_candles', 10)
+
+                    # boosted thresholds (absolute) from DB/Redis; fallback: multipliers
+                    post_T1 = None
+                    post_T2 = None
+                    try:
+                        v = rc.get(f'trading:postexit_qgate_maxq:{sym0}') or rc.get('trading:postexit_qgate_maxq')
+                        if v is not None and str(v).strip() != '':
+                            post_T1 = float(v)
+                    except Exception:
+                        post_T1 = None
+                    try:
+                        v = rc.get(f'trading:postexit_qgate_gapq:{sym0}') or rc.get('trading:postexit_qgate_gapq')
+                        if v is not None and str(v).strip() != '':
+                            post_T2 = float(v)
+                    except Exception:
+                        post_T2 = None
+                    if post_T1 is None:
+                        try:
+                            m = rc.get(f'trading:postexit_qgate_maxq_mult:{sym0}') or rc.get('trading:postexit_qgate_maxq_mult')
+                            post_T1 = float(T1) * float(m) if m is not None and str(m).strip() != '' else None
+                        except Exception:
+                            post_T1 = None
+                    if post_T2 is None:
+                        try:
+                            m = rc.get(f'trading:postexit_qgate_gapq_mult:{sym0}') or rc.get('trading:postexit_qgate_gapq_mult')
+                            post_T2 = float(T2) * float(m) if m is not None and str(m).strip() != '' else None
+                        except Exception:
+                            post_T2 = None
+
+                    postexit = {
+                        'exit_ts_ms': int(ex_ts),
+                        'exit_reason': ex_reason,
+                        'now_bucket_ts_ms': int(now_bucket_ts),
+                        'candles_since_exit': int(candles_since),
+                        'cooldown_candles': int(cooldown_candles),
+                        'boost_candles': int(boost_candles),
+                        'boost_T1': post_T1,
+                        'boost_T2': post_T2,
+                    }
+                    pred_json['postexit'] = postexit
+
+                    # apply boosted thresholds during boost window (after cooldown)
+                    if candles_since >= cooldown_candles and candles_since < (cooldown_candles + boost_candles):
+                        try:
+                            if isinstance(post_T1, (int, float)) and post_T1 > float(T1):
+                                T1 = float(post_T1)
+                            if isinstance(post_T2, (int, float)) and post_T2 > float(T2):
+                                T2 = float(post_T2)
+                        except Exception:
+                            pass
+                    # Явная фаза и применённые пороги (чтобы UI показывал "прошло 5 свечей / пороги подняты")
+                    try:
+                        if candles_since < cooldown_candles:
+                            postexit['phase'] = 'cooldown'
+                        elif candles_since < (cooldown_candles + boost_candles):
+                            postexit['phase'] = 'boost'
+                        else:
+                            postexit['phase'] = 'expired'
+                    except Exception:
+                        postexit['phase'] = 'unknown'
+                    try:
+                        postexit['applied_T1'] = float(T1)
+                        postexit['applied_T2'] = float(T2)
+                    except Exception:
+                        pass
+        except Exception:
+            postexit = None
+
         try:
             flat_factor = float(get_config_value('QGATE_FLAT', '1.0'))
         except Exception:
@@ -1762,6 +2068,69 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         decision = 'hold'
                     try:
                         print(f"Q‑gate: {'PASS' if passed else 'BLOCK'} (maxQ={maxQ:.3f}, gapQ={gapQ:.3f}, T1={eff_T1:.3f}, T2={eff_T2:.3f})")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # --- MarketState gate (OOD-safety) ---
+        # Если рынок не NORMAL (HIGH_VOL/PANIC/DRAWDOWN) — блокируем BUY (override -> HOLD).
+        # ВАЖНО: делаем это здесь (в оркестраторе), т.к. только тут есть OHLCV df_5m.
+        try:
+            if decision == 'buy' and df_5m is not None and (not getattr(df_5m, 'empty', False)):
+                try:
+                    from envs.dqn_model.gym.gutils_optimized import compute_market_state, MarketState
+                except Exception:
+                    compute_market_state = None
+                    MarketState = None
+
+                if compute_market_state is not None and MarketState is not None:
+                    df_np = None
+                    try:
+                        df_np = df_5m[['open', 'high', 'low', 'close', 'volume']].astype('float32').to_numpy()
+                    except Exception:
+                        df_np = None
+
+                    if df_np is not None and hasattr(df_np, 'shape') and int(df_np.shape[0]) >= 3:
+                        st = compute_market_state(int(df_np.shape[0]) - 1, df_np, roi_buf=None, vol_buf=None, trend_regime=0, atr_rel=None)
+                        st_name = str(getattr(st, 'name', st))
+                        # Запишем для UI/БД в market_conditions
+                        try:
+                            pred_json['market_state'] = st_name
+                        except Exception:
+                            pass
+                        # Явно пишем статус гейта: blocked True/False (чтобы UI показывал и "разрешено")
+                        try:
+                            pred_json['market_state_gate'] = {'blocked': (st != MarketState.NORMAL), 'state': st_name}
+                        except Exception:
+                            pass
+                        if st != MarketState.NORMAL:
+                            try:
+                                pred_json['decision_before_market_state_gate'] = str(decision)
+                            except Exception:
+                                pass
+                            decision = 'hold'
+                            try:
+                                logger.warning("[market_state_gate] symbol=%s blocked BUY due to state=%s", symbol, st_name)
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+
+        # --- Post-exit cooldown gate (after TP/SL) ---
+        # Если недавно был выход по TP/SL (см. pred_json['postexit']) — блокируем BUY на N свечей.
+        try:
+            pe = pred_json.get('postexit') if isinstance(pred_json, dict) else None
+            if decision == 'buy' and isinstance(pe, dict):
+                candles_since = int(pe.get('candles_since_exit')) if pe.get('candles_since_exit') is not None else None
+                cooldown = int(pe.get('cooldown_candles')) if pe.get('cooldown_candles') is not None else None
+                reason = str(pe.get('exit_reason') or '').strip().lower()
+                if candles_since is not None and cooldown is not None and candles_since < cooldown and reason in ('stop_loss', 'take_profit', 'trailing'):
+                    pred_json['decision_before_postexit_cooldown'] = str(decision)
+                    pred_json['postexit_cooldown_gate'] = {'blocked': True, 'candles_left': int(cooldown - candles_since), 'reason': reason}
+                    decision = 'hold'
+                    try:
+                        logger.warning("[postexit_cooldown] symbol=%s blocked BUY reason=%s candles_since=%s cooldown=%s", symbol, reason, candles_since, cooldown)
                     except Exception:
                         pass
         except Exception:
@@ -1900,6 +2269,22 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         'qgate_gapQ': float(q_gap) if q_gap is not None else None,
                         'qgate_filtered': (False if q_pass is None else (not q_pass)),
                     }
+                    # Прокинем причины runtime-гейтов в market_conditions, чтобы UI (/agent/<symbol>) их показывал.
+                    # ВАЖНО: UI читает именно ModelPrediction.market_conditions, а не pred_json напрямую.
+                    try:
+                        if isinstance(pred_json, dict):
+                            for k in (
+                                'market_state',
+                                'decision_before_market_state_gate',
+                                'market_state_gate',
+                                'postexit',
+                                'decision_before_postexit_cooldown',
+                                'postexit_cooldown_gate',
+                            ):
+                                if k in pred_json:
+                                    mc[k] = pred_json.get(k)
+                    except Exception:
+                        pass
                     create_model_prediction(
                         symbol=symbol,
                         action=str(act or 'hold'),

@@ -48,12 +48,12 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
     "tesla_v100": GPUConfig(
         name="Tesla V100",
         vram_gb=16.0, # 
-        batch_size=196,
-        memory_size=100_000,  # Уменьшено для снижения пиков памяти (реплей-буфер)
-        hidden_sizes=(256, 128, 64),
-        train_repeats=3,
+        batch_size=256,
+        memory_size=500_000,  # Уменьшено для снижения пиков памяти (реплей-буфер)
+        hidden_sizes= (1024, 512, 256),
+        train_repeats=4,
         use_amp=True,
-        use_gpu_storage=True,  # Включаем GPU storage для синхронизации устройств
+        use_gpu_storage=False,  # Включаем GPU storage для синхронизации устройств
         learning_rate=0.00015,
         description="Оптимальная конфигурация для Tesla V100 с Tensor Cores",
         use_torch_compile=True,

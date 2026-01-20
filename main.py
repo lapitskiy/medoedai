@@ -467,19 +467,122 @@ def get_result_model_info():
                     return clean
 
                 episode_winrates = _sanitize_sequence(results.get('episode_winrates'))
+                # Fallback: если полный список winrate не сохранён, используем агрегаты из train_result.pkl
+                if not episode_winrates:
+                    tail = _sanitize_sequence(results.get('episode_winrates_tail'))
+                    if tail:
+                        episode_winrates = tail
                 best_winrate = results.get('best_winrate')
-                if best_winrate is None and episode_winrates:
-                    best_winrate = max(episode_winrates)
+                if best_winrate is None:
+                    bw = results.get('episode_winrates_best')
+                    if isinstance(bw, (int, float)) and bw == bw:
+                        best_winrate = float(bw)
+                    elif episode_winrates:
+                        best_winrate = max(episode_winrates)
                 info['best_winrate'] = best_winrate
-                if episode_winrates:
+                count_val = results.get('episode_winrates_count')
+                if episode_winrates or isinstance(count_val, int):
                     info['episode_winrate_summary'] = {
-                        'count': len(episode_winrates),
-                        'last': episode_winrates[-1],
-                        'best': max(episode_winrates),
-                        'avg': sum(episode_winrates) / len(episode_winrates),
+                        'count': int(count_val) if isinstance(count_val, int) else len(episode_winrates),
+                        'last': (results.get('episode_winrates_last') if not episode_winrates else episode_winrates[-1]),
+                        'best': (results.get('episode_winrates_best') if results.get('episode_winrates_best') is not None else (max(episode_winrates) if episode_winrates else None)),
+                        'avg': (results.get('episode_winrates_avg') if results.get('episode_winrates_avg') is not None else ((sum(episode_winrates) / len(episode_winrates)) if episode_winrates else None)),
                     }
+                # Полный/частичный ряд winrate по эпизодам для графика на /analitika
+                try:
+                    MAX_POINTS = 2000
+                    if episode_winrates:
+                        if len(episode_winrates) > MAX_POINTS:
+                            info['episode_winrates_offset'] = int(len(episode_winrates) - MAX_POINTS)
+                            info['episode_winrates'] = episode_winrates[-MAX_POINTS:]
+                        else:
+                            info['episode_winrates_offset'] = 0
+                            info['episode_winrates'] = episode_winrates
+                except Exception:
+                    pass
 
-                validation_rewards = _sanitize_sequence(results.get('validation_rewards'))
+                # Компактный тренд winrate (снэпшоты/EMA/квантили), если он есть в train_result.pkl
+                try:
+                    wt = results.get('winrate_trend')
+                    if isinstance(wt, dict) and wt:
+                        info['winrate_trend'] = wt
+                except Exception:
+                    pass
+
+                # Epsilon по эпизодам (для графика exploration→exploitation)
+                try:
+                    eps_seq = _sanitize_sequence(results.get('episode_epsilons'))
+                    if eps_seq:
+                        MAX_EPS = 5000
+                        if len(eps_seq) > MAX_EPS:
+                            info['episode_epsilons_offset'] = int(len(eps_seq) - MAX_EPS)
+                            info['episode_epsilons'] = eps_seq[-MAX_EPS:]
+                        else:
+                            info['episode_epsilons_offset'] = 0
+                            info['episode_epsilons'] = eps_seq
+                except Exception:
+                    pass
+
+                # Статистика действий (сколько было HOLD/BUY/SELL) — как "state counts"
+                try:
+                    raw_actions = results.get('action_counts_total') or {}
+                    actions_norm = {}
+                    if isinstance(raw_actions, dict):
+                        for k, v in raw_actions.items():
+                            try:
+                                kk = str(k)
+                                actions_norm[kk] = int(v)
+                            except Exception:
+                                continue
+                    if actions_norm:
+                        info['action_counts_total'] = actions_norm
+                except Exception:
+                    pass
+
+                # Market state (NORMAL/HIGH_VOL/PANIC/DRAWDOWN) — распределение состояний в обучении
+                try:
+                    raw_ms = results.get('market_state_counts_total') or {}
+                    ms_norm = {}
+                    if isinstance(raw_ms, dict):
+                        for k, v in raw_ms.items():
+                            try:
+                                ms_norm[str(k)] = int(v)
+                            except Exception:
+                                continue
+                    if ms_norm:
+                        info['market_state_counts_total'] = ms_norm
+                except Exception:
+                    pass
+
+                # Market state за последний эпизод (если есть)
+                try:
+                    raw_ms_ep = results.get('market_state_counts_episode') or {}
+                    ms_ep_norm = {}
+                    if isinstance(raw_ms_ep, dict):
+                        for k, v in raw_ms_ep.items():
+                            try:
+                                ms_ep_norm[str(k)] = int(v)
+                            except Exception:
+                                continue
+                    if ms_ep_norm:
+                        info['market_state_counts_episode'] = ms_ep_norm
+                except Exception:
+                    pass
+
+                # Validation rewards (если сохранялись) — ряд для графика
+                try:
+                    validation_rewards = _sanitize_sequence(results.get('validation_rewards'))
+                    if validation_rewards:
+                        MAX_VAL = 5000
+                        if len(validation_rewards) > MAX_VAL:
+                            info['validation_rewards_offset'] = int(len(validation_rewards) - MAX_VAL)
+                            info['validation_rewards'] = validation_rewards[-MAX_VAL:]
+                        else:
+                            info['validation_rewards_offset'] = 0
+                            info['validation_rewards'] = validation_rewards
+                except Exception:
+                    validation_rewards = []
+
                 if validation_rewards:
                     info['validation_summary'] = {
                         'count': len(validation_rewards),
@@ -487,6 +590,64 @@ def get_result_model_info():
                         'best': max(validation_rewards),
                         'avg': sum(validation_rewards) / len(validation_rewards),
                     }
+
+                # --- Equity curve + histogram по сделкам (all_trades) ---
+                try:
+                    trades = results.get('all_trades') or []
+                    rois = []
+                    if isinstance(trades, list) and trades:
+                        for t in trades:
+                            if not isinstance(t, dict):
+                                continue
+                            v = t.get('roi', None)
+                            try:
+                                fv = float(v)
+                                if fv == fv:  # not NaN
+                                    rois.append(fv)
+                            except Exception:
+                                continue
+                    if rois:
+                        # equity as cumulative ROI (percent)
+                        eq = []
+                        c = 0.0
+                        for i, r in enumerate(rois):
+                            c += float(r)
+                            eq.append((i + 1, c * 100.0))
+                        # downsample equity to max points
+                        MAX_EQ = 2000
+                        if len(eq) > MAX_EQ:
+                            step = max(1, int(len(eq) / MAX_EQ))
+                            sampled = [eq[i] for i in range(0, len(eq), step)]
+                            if sampled and sampled[-1][0] != eq[-1][0]:
+                                sampled.append(eq[-1])
+                            eq = sampled[: MAX_EQ + 1]
+                        info['equity_curve'] = [{'i': int(i), 'v': float(v)} for (i, v) in eq]
+
+                        # histogram of ROI (percent) with fixed bins
+                        import numpy as _np  # type: ignore
+                        arr = _np.asarray([float(x) * 100.0 for x in rois], dtype=_np.float32)
+                        # robust range (clip extreme tails)
+                        lo = float(_np.quantile(arr, 0.01))
+                        hi = float(_np.quantile(arr, 0.99))
+                        if hi <= lo:
+                            lo = float(arr.min())
+                            hi = float(arr.max())
+                        # ensure some width
+                        if hi - lo < 1e-6:
+                            lo -= 0.1
+                            hi += 0.1
+                        bins = 60
+                        counts, edges = _np.histogram(arr, bins=bins, range=(lo, hi))
+                        centers = (edges[:-1] + edges[1:]) / 2.0
+                        info['roi_histogram'] = {
+                            'lo': float(lo),
+                            'hi': float(hi),
+                            'bins': int(bins),
+                            'centers': [float(x) for x in centers.tolist()],
+                            'counts': [int(x) for x in counts.tolist()],
+                        }
+                except Exception:
+                    pass
 
             except Exception as e:
                 app.logger.warning(f"get_result_model_info: не удалось загрузить train_file {train_file}: {e}")

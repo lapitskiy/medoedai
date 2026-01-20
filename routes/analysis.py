@@ -554,9 +554,12 @@ def analyze_training_results():
         # Добавляем информацию об эпизодах если доступна
         try:
             # Добавляем episode_winrates_count для правильного определения early stopping
-            if 'episode_winrates' in results:
+            if isinstance(results.get('episode_winrates'), (list, tuple)):
                 response_data['episode_winrates_count'] = len(results['episode_winrates'])
                 print(f"🔍 episode_winrates_count: {response_data['episode_winrates_count']}")
+            elif isinstance(results.get('episode_winrates_count'), int):
+                response_data['episode_winrates_count'] = int(results.get('episode_winrates_count'))
+                print(f"🔍 episode_winrates_count (fallback): {response_data['episode_winrates_count']}")
             
             if 'actual_episodes' in results:
                 response_data['actual_episodes'] = results['actual_episodes']

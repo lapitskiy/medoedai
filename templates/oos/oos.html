@@ -188,7 +188,8 @@
                     let resultNotFoundMsg = resultExists ? '' : '<span class="muted">(нет train_result.pkl)</span>';
 
                     if (agentType === 'dqn') {
-                        symbolOrRunId = run.symbol; // Теперь это поле будет корректным символом
+                        // Для DQN в unified API всегда работаем по run_id, а символ берём из селекта
+                        symbolOrRunId = run.run_id; // ID запуска (папка в .../runs/<run_id>)
                         if (resultExists && typeof run.winrate === 'number') {
                             win = (run.winrate * 100).toFixed(1) + '%';
                             if (run.winrate < 0.5) isBad = true;
@@ -220,16 +221,16 @@
 
                     if (resultExists && run.episodes != null) episodes = run.episodes; else episodes = resultNotFoundMsg;
 
-                    const oosBtn = run.model_path ? `<button class="btn btn-info" onclick="runOOSTest('${agentType}', '${symbolOrRunId}', '${run.model_path}')">Test</button>` : '';
                     const symbolHint = agentType === 'sac'
                         ? (document.getElementById('sacRunNameSelect')?.value || '') // Для SAC символ может быть указан в селекте
                         : (document.getElementById('dqnSymbolSelect')?.value || ''); // Для DQN символ берется из селекта
+                    const oosBtn = run.model_path ? `<button class="btn btn-info" onclick="runOOSTest('${agentType}', '${symbolOrRunId}', '${run.model_path}', '${symbolHint}')">Test</button>` : '';
                     const showResultsBtn = `<button class="btn btn-secondary" onclick="showOOSResults('${agentType}', '${symbolOrRunId}', '${symbolHint}')">Result</button>`;
                     const graphBtn = `<a class="btn btn-secondary" target="_blank" href="/oos_graph?agent_type=${agentType}&id=${encodeURIComponent(symbolOrRunId)}">Graph</a>`;
                     // Для удаления DQN используем символ, для SAC - run_id, ensemble, version
                     const delBtn = agentType === 'dqn'
-                        ? `<button class="btn btn-danger" onclick="deleteAgentRun('${agentType}', '${symbolOrRunId}', '', '')">✖</button>`
-                        : `<button class="btn btn-danger" onclick="deleteAgentRun('${agentType}', '${symbolOrRunId}', '${run.ensemble || 'ensemble-a'}', '${run.version || 'v1'}')">✖</button>`;
+                        ? `<button class="btn btn-danger" onclick="deleteAgentRun('${agentType}', '${symbolOrRunId}', '${symbolHint}', '', '')">✖</button>`
+                        : `<button class="btn btn-danger" onclick="deleteAgentRun('${agentType}', '${symbolOrRunId}', '', '${run.ensemble || 'ensemble-a'}', '${run.version || 'v1'}')">✖</button>`;
                     const buttonsHtml = `<div class="btn-group">${oosBtn}${showResultsBtn}${graphBtn}${delBtn}</div>`;
                     const rowStyle = isBad ? 'style="background-color: #fef2f2; border-left: 3px solid #ef4444;"' : '';
 
@@ -270,15 +271,15 @@
             }
         }
 
-        function deleteAgentRun(agentType, id, ensembleName, version) {
+        function deleteAgentRun(agentType, id, symbolHint = '', ensembleName, version) {
             let confirmMsg = `Удалить ${agentType.toUpperCase()} модель ${id}?`;
             let apiUrl = '';
             let payload = {};
 
             if (agentType === 'dqn') {
-                confirmMsg = `Удалить DQN модель ${id} (символ ${id})?`;
+                confirmMsg = `Удалить DQN запуск ${id} (символ ${symbolHint || 'N/A'})?`;
                 apiUrl = '/api/runs/delete'; // Существующий эндпоинт для DQN
-                payload = { symbol: id, run_id: id }; // id здесь это символ для DQN
+                payload = { model_type: 'dqn', symbol: symbolHint, run_id: id };
             } else if (agentType === 'sac') {
                 confirmMsg = `Удалить SAC модель ${id}/${ensembleName}/${version}?`;
                 apiUrl = '/api/sac_models/delete'; // Эндпоинт для SAC
@@ -310,7 +311,7 @@
             try {
                 let url = '';
                 if (agentType === 'dqn') {
-                    url = `/api/runs/oos_results?symbol=${encodeURIComponent(id)}&run_id=${encodeURIComponent(id)}`;
+                    url = `/api/runs/oos_results?symbol=${encodeURIComponent(symbolHint)}&run_id=${encodeURIComponent(id)}`;
                 } else if (agentType === 'sac') {
                     const symbol = symbolHint || document.getElementById('sacRunNameSelect')?.value || '';
                     url = `/api/sac_runs/oos_results?symbol=${encodeURIComponent(symbol)}&run_id=${encodeURIComponent(id)}`;
@@ -438,7 +439,7 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
 
         function ensureOOSPanel(){}
 
-        async function runOOSTest(agentType, code, filename){
+        async function runOOSTest(agentType, code, filename, symbolHint = ''){
             const file = filename || '';
             const name = code || (file.split('/').pop().split('\\').pop());
             try{
@@ -454,11 +455,13 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
                 
                 let payloadBase = { filename:file, code:code, gate_disable: gateDisable, gate_scale: gateScale, start_capital: startCapital, exchange, agent_type: agentType };
                 
-                // Если это DQN, нужно передать символ, если это SAC - run_id
+                // Для корректной резолюции run_dir на бэкенде передаём symbol + run_id
                 if (agentType === 'dqn') {
-                    payloadBase.symbol = code; // `code` в этом случае будет символом
+                    payloadBase.symbol = symbolHint;
+                    payloadBase.run_id = code; // `code` здесь run_id
                 } else if (agentType === 'sac') {
-                    payloadBase.run_id = code; // `code` в этом случае будет run_id
+                    payloadBase.symbol = symbolHint;
+                    payloadBase.run_id = code; // `code` здесь run_id
                 }
 
                 const windows = [30,60,90,180];

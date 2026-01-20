@@ -227,6 +227,8 @@ def sac_analyze_training_results():
                 episode_winrates = results_snapshot.get('episode_winrates')
                 if isinstance(episode_winrates, (list, tuple)):
                     response_data['episode_winrates_count'] = len(episode_winrates)
+                elif isinstance(results_snapshot.get('episode_winrates_count'), int):
+                    response_data['episode_winrates_count'] = int(results_snapshot.get('episode_winrates_count'))
                 if 'actual_episodes' in results_snapshot:
                     response_data['actual_episodes'] = results_snapshot.get('actual_episodes')
                 if 'episodes' in results_snapshot:

@@ -69,7 +69,10 @@ def analyze_training_results(results_file):
     if planned_episodes is None:
         planned_episodes = results.get('planned_episodes')
     if planned_episodes is None:
-        planned_episodes = len(results.get('episode_winrates') or [])
+        _ew = results.get('episode_winrates')
+        if not isinstance(_ew, (list, tuple)):
+            _ew = results.get('episode_winrates_tail')
+        planned_episodes = len(_ew or [])
     
     # Ищем реальное количество эпизодов в разных местах
     actual_episodes = None
@@ -94,7 +97,10 @@ def analyze_training_results(results_file):
         print(f"🔍 2. real_episodes НЕ найден")
     
     # 3. Проверяем episode_winrates (но это может быть неточно)
-    episode_winrates = results.get('episode_winrates') or []
+    episode_winrates = results.get('episode_winrates')
+    if not isinstance(episode_winrates, (list, tuple)):
+        episode_winrates = results.get('episode_winrates_tail')
+    episode_winrates = episode_winrates or []
     if actual_episodes is None and episode_winrates:
         # ВНИМАНИЕ: episode_winrates может содержать winrate для каждого эпизода, а не только завершенных
         # Поэтому используем это только как fallback
