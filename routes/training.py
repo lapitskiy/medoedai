@@ -16,6 +16,33 @@ training_bp = Blueprint('training', __name__)
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
+@training_bp.route('/clear_train_lock', methods=['POST'])
+def clear_train_lock_route():
+    """Сбрасывает per-symbol блокировку обучения в Redis (НЕ останавливает реально running Celery task)."""
+    try:
+        data = request.get_json(silent=True) or {}
+        symbol = (data.get('symbol') or request.form.get('symbol') or '').strip().upper()
+        task_id = (data.get('task_id') or request.form.get('task_id') or '').strip()
+        if not symbol:
+            return jsonify({"success": False, "error": "symbol required"}), 400
+
+        running_key = f"celery:train:task:{symbol}"
+        try:
+            redis_client.delete(running_key)
+        except Exception:
+            pass
+
+        # Опционально: убрать task_id из UI списка, если передали
+        if task_id:
+            try:
+                redis_client.lrem("ui:tasks", 0, task_id)
+            except Exception:
+                pass
+
+        return jsonify({"success": True, "symbol": symbol, "cleared": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @training_bp.route('/train_dqn_multi_crypto', methods=['POST'])
 def train_multi_crypto():
     """Запускает мультивалютное обучение DQN"""

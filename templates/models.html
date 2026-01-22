@@ -706,6 +706,15 @@ P/L Ratio: ${plr}
             }
         }
 
+        async function clearTrainingLock(symbol, taskId){
+            const resp = await fetch('/training/clear_train_lock', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ symbol: symbol, task_id: taskId || '' })
+            });
+            return await resp.json().catch(() => null);
+        }
+
         // Запуск обучения с выбранным количеством эпизодов
         async function startTrainingForSymbol(symbol, engine='optimized') {
             const episodes = document.getElementById('episodesInput').value || 1000;
@@ -737,7 +746,34 @@ P/L Ratio: ${plr}
                 if (data && data.success) {
                     statusDiv.innerHTML = '<div class="status success">✅ Обучение запущено (task: ' + data.task_id + ')</div>';
                 } else if (data && data.error) {
-                    statusDiv.innerHTML = '<div class="status error">❌ ' + data.error + '</div>';
+                    const err = String(data.error || 'unknown');
+                    const taskId = data.task_id ? String(data.task_id) : '';
+                    const isAlreadyRunning = err.toLowerCase().includes('already running');
+                    if (isAlreadyRunning) {
+                        statusDiv.innerHTML =
+                            '<div class="status error">❌ ' + err +
+                            ' <button class="btn btn-warning" id="clearTrainLockBtn" style="margin-left:8px;">Сбросить блокировку</button></div>';
+                        const btn = document.getElementById('clearTrainLockBtn');
+                        if (btn) {
+                            btn.onclick = async () => {
+                                btn.disabled = true;
+                                try {
+                                    const res = await clearTrainingLock(symbol, taskId);
+                                    if (res && res.success) {
+                                        statusDiv.innerHTML = '<div class="status success">✅ Блокировка сброшена для ' + symbol + ' — попробуйте запустить обучение ещё раз</div>';
+                                    } else {
+                                        statusDiv.innerHTML = '<div class="status error">❌ Не удалось сбросить блокировку: ' + ((res && res.error) ? res.error : 'unknown') + '</div>';
+                                    }
+                                } catch (e) {
+                                    statusDiv.innerHTML = '<div class="status error">❌ Ошибка сброса блокировки: ' + (e && e.message ? e.message : e) + '</div>';
+                                } finally {
+                                    btn.disabled = false;
+                                }
+                            };
+                        }
+                    } else {
+                        statusDiv.innerHTML = '<div class="status error">❌ ' + err + '</div>';
+                    }
                 } else if (resp.redirected) {
                     // Фоллбек на случай старого поведения
                     window.location.href = resp.url;
