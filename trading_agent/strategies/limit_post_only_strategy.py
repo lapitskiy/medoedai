@@ -504,6 +504,27 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
             self.store.append_log(cur.intent_id, cur.price, event='poll_failed', reason=str(e))
 
     def _expire_and_cleanup(self, cur: Intent) -> None:
+        # Важно: возможен race condition — ордер мог успеть исполниться между последней проверкой
+        # и достижением deadline. Перед тем как помечать EXPIRED, перепроверим статус на бирже.
+        try:
+            if getattr(cur, 'exchange_order_id', None):
+                st = self.gateway.get_order_status(cur.symbol, cur.exchange_order_id) or {}
+                status = str(st.get('status') or '').lower()
+                if status in ('closed', 'filled', 'done'):
+                    try:
+                        self._cancel_all_non_reduce_only(cur.symbol)
+                    except Exception:
+                        pass
+                    self.store.set_state(cur.intent_id, IntentState.FILLED)
+                    self.store.remove_pending(cur.symbol, cur.intent_id)
+                    try:
+                        self._log.info(f"[LimitPO] filled (expired check): id={cur.intent_id} symbol={cur.symbol}")
+                    except Exception:
+                        pass
+                    return
+        except Exception:
+            # Если не смогли проверить статус — продолжаем обычную зачистку/expire.
+            pass
         try:
             if cur.exchange_order_id:
                 try:

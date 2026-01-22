@@ -392,15 +392,28 @@ def analyze_bad_trades():
             with open(selected_file, 'rb') as f:
                 results = pickle.load(f)
             
-            # Проверяем наличие сделок
-            if 'all_trades' not in results:
+            # Проверяем наличие сделок (поддерживаем all_trades, all_trades_path и sibling all_trades.json)
+            trades = results.get('all_trades') if isinstance(results, dict) else None
+            if not trades and isinstance(results, dict) and isinstance(results.get('all_trades_path'), str):
+                try:
+                    p = results.get('all_trades_path')
+                    if p and os.path.exists(p):
+                        trades = json.loads(open(p, 'r', encoding='utf-8').read()) or []
+                except Exception:
+                    trades = None
+            if not trades:
+                try:
+                    sib = os.path.join(os.path.dirname(selected_file), 'all_trades.json')
+                    if os.path.exists(sib):
+                        trades = json.loads(open(sib, 'r', encoding='utf-8').read()) or []
+                except Exception:
+                    trades = None
+            if not trades:
                 return jsonify({
                     'status': 'error',
-                    'message': 'В файле нет данных о сделках',
+                    'message': 'В файле нет данных о сделках (all_trades / all_trades_path / all_trades.json)',
                     'success': False
                 }), 404
-            
-            trades = results['all_trades']
             
             # Анализируем плохие сделки
             bad_trades_analysis = analyze_bad_trades_detailed(trades)

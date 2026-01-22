@@ -26,6 +26,7 @@ from routes.analysis_page import analytics_bp
 from routes.sac import sac_bp
 from routes.atr import atr_bp
 from utils.redis_utils import get_redis_client, clear_redis_on_startup
+from routes.system_models import system_models_bp
 
 """get_redis_client берём из utils.redis_utils"""
 
@@ -77,6 +78,7 @@ app.register_blueprint(models_admin_bp)
 app.register_blueprint(training_bp, url_prefix='/training')
 from routes.clean import clean_bp
 app.register_blueprint(clean_bp)
+app.register_blueprint(system_models_bp)
 app.register_blueprint(oos_bp)
 app.register_blueprint(sac_bp)
 app.register_blueprint(analytics_bp)
@@ -594,6 +596,18 @@ def get_result_model_info():
                 # --- Equity curve + histogram по сделкам (all_trades) ---
                 try:
                     trades = results.get('all_trades') or []
+                    if (not trades) and isinstance(results.get('all_trades_path'), str):
+                        p = results.get('all_trades_path')
+                        if p and os.path.exists(p):
+                            trades = json.loads(open(p, 'r', encoding='utf-8').read()) or []
+                    # fallback: all_trades.json рядом с train_result.pkl (для старых/битых версий)
+                    if (not trades):
+                        try:
+                            sib = train_file.parent / 'all_trades.json'
+                            if sib.exists():
+                                trades = json.loads(sib.read_text(encoding='utf-8')) or []
+                        except Exception:
+                            pass
                     rois = []
                     if isinstance(trades, list) and trades:
                         for t in trades:

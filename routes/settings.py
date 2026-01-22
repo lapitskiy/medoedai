@@ -46,6 +46,11 @@ def settings_page():
     return render_template('settings.html')
 
 
+@settings_bp.get('/settings/encoders')
+def settings_encoders_page():
+    return render_template('settings_encoders.html')
+
+
 @settings_bp.get('/api/settings/list')
 def api_settings_list():
     """

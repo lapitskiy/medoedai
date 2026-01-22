@@ -100,6 +100,8 @@ def api_sac_runs_list():
                 'parent_run_id': manifest.get('parent_run_id'),
                 'root_id': manifest.get('root_id'),
                 'seed': manifest.get('seed'),
+                'direction': (str(manifest.get('direction') or manifest.get('trained_as')).strip().lower()
+                              if (manifest.get('direction') or manifest.get('trained_as')) is not None else None),
                 'episodes_end': manifest.get('episodes_end'),
                 'created_at': manifest.get('created_at'),
                 'model_path': model_path,

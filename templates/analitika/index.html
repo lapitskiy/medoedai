@@ -151,7 +151,11 @@
                 const runs = (data && data.success && Array.isArray(data.runs))? data.runs: [];
                 const symbolDir = runs.length ? (runs[0].symbol_dir || sym) : sym;
                 indexRunsBySymbol[rawSymbol] = { list: runs, modelType, symbolDir };
-                runSel.innerHTML = runs.length? runs.map(r=>`<option value="${r.run_id}">${r.run_id}</option>`).join(''): '<option value="">Нет runов</option>';
+                runSel.innerHTML = runs.length ? runs.map(r=>{
+                    const dir = (r && r.direction ? String(r.direction).trim().toLowerCase() : '');
+                    const suffix = (dir === 'long' || dir === 'short') ? ` (${dir})` : '';
+                    return `<option value="${r.run_id}">${r.run_id}${suffix}</option>`;
+                }).join('') : '<option value="">Нет runов</option>';
                 try{ await showIndexRunInfo(); }catch(_){ }
             }catch(e){ runSel.innerHTML = '<option value="">Ошибка</option>'; }
         }

@@ -1906,13 +1906,49 @@ def train_tianshou_dqn(
         except Exception:
             winrate_trend = None
 
+        # Сохраняем полный список сделок отдельно, чтобы не раздувать train_result.pkl
+        all_trades_path = None
+        all_trades_count = 0
+        try:
+            if isinstance(all_trades, list):
+                all_trades_count = len(all_trades)
+        except Exception:
+            all_trades_count = 0
+        try:
+            if isinstance(all_trades, list) and len(all_trades) > 0:
+                trades_json_path = run_dir / 'all_trades.json'
+                def _norm_trade(t):
+                    if isinstance(t, dict):
+                        return {
+                            k: v for k, v in t.items()
+                            if isinstance(k, str) and isinstance(v, (int, float, str, bool, type(None)))
+                        }
+                    return t
+                safe_trades = [_norm_trade(t) for t in all_trades]
+                with open(trades_json_path, 'w', encoding='utf-8') as tf:
+                    _json.dump(safe_trades, tf, ensure_ascii=False)
+                all_trades_path = str(trades_json_path)
+        except Exception:
+            all_trades_path = None
+
+        # По умолчанию НЕ кладём all_trades в pkl (слишком тяжёлый).
+        # Можно включить обратно через TS_STORE_ALL_TRADES_IN_PKL=1
+        store_trades_inline = False
+        try:
+            v = str(get_config_value('TS_STORE_ALL_TRADES_IN_PKL', '0'))
+            store_trades_inline = v.lower() in ('1', 'true', 'yes', 'y')
+        except Exception:
+            store_trades_inline = False
+
         training_results = {
             'episodes': episodes,
             'actual_episodes': approx_actual_episodes,
             'total_training_time': total_training_time,
             'episode_winrates': epoch_test_rewards,  # прокси по тест-наградам
             'winrate_trend': winrate_trend,
-            'all_trades': all_trades,
+            'all_trades': (all_trades if store_trades_inline else []),
+            'all_trades_path': all_trades_path,
+            'all_trades_count': all_trades_count,
             'bad_trades': [],
             'bad_trades_count': 0,
             'bad_trades_percentage': 0.0,
@@ -1991,27 +2027,7 @@ def train_tianshou_dqn(
             traceback.print_exc()
             print(f"⚠️ Не удалось сохранить train_result.pkl ({pe})")
 
-        # Сохраняем полный список сделок за ран в all_trades.json (если есть)
-        try:
-            if isinstance(all_trades, list) and len(all_trades) > 0:
-                trades_json_path = run_dir / 'all_trades.json'
-                try:
-                    # Нормализуем сделки к сериализуемому виду
-                    def _norm_trade(t):
-                        if isinstance(t, dict):
-                            return {
-                                k: v for k, v in t.items()
-                                if isinstance(k, str) and isinstance(v, (int, float, str, bool, type(None)))
-                            }
-                        return t
-                    safe_trades = [_norm_trade(t) for t in all_trades]
-                    with open(trades_json_path, 'w', encoding='utf-8') as tf:
-                        _json.dump(safe_trades, tf, ensure_ascii=False)
-                    print(f"💾 all_trades.json сохранён: {trades_json_path} (count={len(safe_trades)})")
-                except Exception as te:
-                    print(f"⚠️ Не удалось сохранить all_trades.json: {te}")
-        except Exception:
-            pass
+        # all_trades.json уже сохранён выше (если было что сохранять)
 
         # Подробный финальный вывод (как в старом тренере)
         try:

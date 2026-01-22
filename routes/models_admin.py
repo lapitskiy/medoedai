@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 from utils.config_loader import get_config_value
 import json
+import time
 from envs.dqn_model.gym.crypto_trading_env_optimized import CryptoTradingEnvOptimized # type: ignore
 from envs.dqn_model.gym.indicators_optimized import preprocess_dataframes # type: ignore
 from agents.vdqn.cfg.vconfig import vDqnConfig # type: ignore
@@ -15,6 +16,7 @@ import requests # type: ignore
 from redis import Redis # type: ignore
 from datetime import datetime
 import torch # type: ignore
+import shutil
 
 from utils.path import (
     resolve_run_dir,
@@ -23,6 +25,10 @@ from utils.path import (
 )
 
 models_admin_bp = Blueprint('models_admin', __name__)
+
+# Cache for /api/runs/list to avoid repeated filesystem reads and any accidental heavy loads
+# Key: (model_type, resolved_symbol_dir_path)
+_RUNS_LIST_CACHE: dict[tuple[str, str], dict] = {}
 
 @models_admin_bp.route('/models')
 def models_page():
@@ -193,6 +199,39 @@ def api_runs_list():
         if not runs_root.exists():
             return jsonify({'success': True, 'runs': []})
 
+        # Build a cheap signature from mtimes/sizes to decide cache hit.
+        # This keeps the endpoint fast even when the UI refreshes frequently.
+        cache_key = (model_type, symbol_dir.as_posix())
+        sig_parts = []
+        try:
+            for rd in runs_root.iterdir():
+                if not rd.is_dir():
+                    continue
+                mf = rd / 'manifest.json'
+                metrics = rd / 'metrics.json'
+                tr = rd / 'train_result.pkl'
+                mp = rd / 'model.pth'
+                # We only care about files that influence list output
+                def _stat_key(p: Path):
+                    try:
+                        st = p.stat()
+                        return (int(st.st_mtime), int(st.st_size))
+                    except Exception:
+                        return None
+                sig_parts.append((
+                    rd.name,
+                    bool(mp.exists()),
+                    _stat_key(tr) if tr.exists() else None,
+                    _stat_key(mf) if mf.exists() else None,
+                    _stat_key(metrics) if metrics.exists() else None,
+                ))
+        except Exception:
+            sig_parts = []
+        signature = tuple(sorted(sig_parts))
+        cached = _RUNS_LIST_CACHE.get(cache_key)
+        if cached and cached.get('signature') == signature:
+            return jsonify({'success': True, 'runs': cached.get('runs', [])})
+
         for rd in runs_root.iterdir():
             if not rd.is_dir():
                 continue
@@ -208,7 +247,7 @@ def api_runs_list():
             replay_path = (rd / 'replay.pkl') if (rd / 'replay.pkl').exists() else None
             result_path = (rd / 'train_result.pkl') if (rd / 'train_result.pkl').exists() else None
             # Попытаемся извлечь краткую статистику
-            winrate = None; pl_ratio = None; episodes = None
+            winrate = None; pl_ratio = None; roi = None; max_dd = None; episodes = None
             episodes_planned = None
             best_winrate = None
             episode_winrate_avg = None
@@ -216,57 +255,113 @@ def api_runs_list():
             validation_avg = None
             validation_last = None
             seed_value = manifest.get('seed')
-            if result_path:
+            # Направление сделки/режим обучения (long/short) — сохраняется в manifest.json как direction/trained_as
+            direction_value = manifest.get('direction') or manifest.get('trained_as')
+            # IMPORTANT: do NOT unpickle train_result.pkl here — it can be huge and makes /oos slow.
+            # Use lightweight manifest.json for DQN, and metrics.json for SAC.
+            try:
+                if isinstance(manifest, dict):
+                    bm = manifest.get('best_metrics') or {}
+                    if isinstance(bm, dict):
+                        if isinstance(bm.get('winrate'), (int, float)):
+                            winrate = float(bm.get('winrate'))
+                            # best_winrate historically ожидается как "лучший winrate"
+                            best_winrate = float(bm.get('winrate'))
+                    if isinstance(manifest.get('episodes_end'), int):
+                        episodes = int(manifest.get('episodes_end'))
+                    if isinstance(manifest.get('episodes_last'), int) and episodes is None:
+                        episodes = int(manifest.get('episodes_last'))
+            except Exception:
+                pass
+
+            if model_type == 'sac':
+                metrics_file = rd / 'metrics.json'
+                if metrics_file.exists():
+                    try:
+                        metrics_data = json.loads(metrics_file.read_text(encoding='utf-8'))
+                        if isinstance(metrics_data, dict):
+                            if isinstance(metrics_data.get('winrate'), (int, float)):
+                                winrate = float(metrics_data.get('winrate'))
+                            # SAC: metrics.json использует avg_roi и max_drawdown
+                            if isinstance(metrics_data.get('avg_roi'), (int, float)):
+                                roi = float(metrics_data.get('avg_roi'))
+                            elif isinstance(metrics_data.get('roi'), (int, float)):
+                                roi = float(metrics_data.get('roi'))
+                            if isinstance(metrics_data.get('max_drawdown'), (int, float)):
+                                max_dd = float(metrics_data.get('max_drawdown'))
+                    except Exception:
+                        pass
+            else:
+                # DQN: если метрики не попали в manifest.json, попробуем прочитать train_result.pkl (после миграции он обычно лёгкий).
+                # Ограничим размер, чтобы не вернуть старые 100MB+ тормоза.
+                allow_pkl_fallback = True
+                max_mb = 32
                 try:
-                    import pickle as _pkl
-                    with open(result_path,'rb') as _f:
-                        _res = _pkl.load(_f)
-                    _fs = _res.get('final_stats') or {}
-                    winrate = _fs.get('winrate')
-                    pl_ratio = _fs.get('pl_ratio')
-                    episodes_planned = _res.get('episodes')
-                    episodes = _res.get('actual_episodes', episodes_planned)
+                    v = str(get_config_value('UI_RUNS_LIST_PKL_FALLBACK_MAX_MB', str(max_mb)))
+                    max_mb = int(float(v))
+                except Exception:
+                    max_mb = 32
+                try:
+                    # NOTE: winrate может быть записан в manifest.json как 0.0 (дефолт),
+                    # но реальная метрика есть в train_result.pkl. Поэтому разрешаем override.
+                    needs = (
+                        (winrate is None) or (pl_ratio is None) or (max_dd is None) or (direction_value is None)
+                        or (isinstance(winrate, (int, float)) and float(winrate) == 0.0)
+                    )
+                    if result_path and needs:
+                        st = result_path.stat()
+                        if st.st_size <= max_mb * 1024 * 1024 and allow_pkl_fallback:
+                            try:
+                                with open(result_path, 'rb') as _f:
+                                    _res = pickle.load(_f)
+                                if isinstance(_res, dict):
+                                    _fs = _res.get('final_stats') or {}
+                                    if isinstance(_fs, dict):
+                                        # winrate: legacy key or tianshou key
+                                        if winrate is None or (isinstance(winrate, (int, float)) and float(winrate) == 0.0):
+                                            w = _fs.get('winrate')
+                                            if isinstance(w, (int, float)):
+                                                winrate = float(w)
+                                            else:
+                                                w2 = _fs.get('winrate_from_trades')
+                                                if isinstance(w2, (int, float)):
+                                                    winrate = float(w2)
 
-                    def _sanitize(seq):
-                        if not isinstance(seq, (list, tuple)):
-                            return []
-                        cleaned = []
-                        for value in seq:
-                            if isinstance(value, (int, float)) and value == value:
-                                cleaned.append(float(value))
-                        return cleaned
+                                        # pl_ratio: legacy key or compute from total_profit/total_loss (tianshou)
+                                        if pl_ratio is None:
+                                            pr = _fs.get('pl_ratio')
+                                            if isinstance(pr, (int, float)):
+                                                pl_ratio = float(pr)
+                                            else:
+                                                # alternate keys
+                                                pf = _fs.get('profit_factor')
+                                                if isinstance(pf, (int, float)):
+                                                    pl_ratio = float(pf)
+                                                else:
+                                                    ap = _fs.get('avg_profit')
+                                                    al = _fs.get('avg_loss')
+                                                    if isinstance(ap, (int, float)) and isinstance(al, (int, float)) and float(al) < 0:
+                                                        denom = abs(float(al))
+                                                        if denom > 0:
+                                                            pl_ratio = float(ap) / denom
+                                                tp = _fs.get('total_profit')
+                                                tl = _fs.get('total_loss')
+                                                if isinstance(tp, (int, float)) and isinstance(tl, (int, float)) and float(tl) > 0:
+                                                    pl_ratio = float(tp) / float(tl)
 
-                    episode_winrates = _sanitize(_res.get('episode_winrates'))
-                    if not episode_winrates:
-                        episode_winrates = _sanitize(_res.get('episode_winrates_tail'))
-                    if episode_winrates:
-                        episode_winrate_last = episode_winrates[-1]
-                        episode_winrate_avg = sum(episode_winrates) / len(episode_winrates)
-                        if not isinstance(_res.get('best_winrate'), (int, float)):
-                            best_winrate = max(episode_winrates)
-                        else:
-                            best_winrate = _res.get('best_winrate')
-                    else:
-                        # Fallback на агрегаты (если полный список не сохранялся)
-                        if isinstance(_res.get('episode_winrates_last'), (int, float)):
-                            episode_winrate_last = float(_res.get('episode_winrates_last'))
-                        if isinstance(_res.get('episode_winrates_avg'), (int, float)):
-                            episode_winrate_avg = float(_res.get('episode_winrates_avg'))
-                        val = _res.get('best_winrate')
-                        if isinstance(val, (int, float)):
-                            best_winrate = float(val)
-                        elif isinstance(_res.get('episode_winrates_best'), (int, float)):
-                            best_winrate = float(_res.get('episode_winrates_best'))
-
-                    validation_rewards = _sanitize(_res.get('validation_rewards'))
-                    if validation_rewards:
-                        validation_last = validation_rewards[-1]
-                        validation_avg = sum(validation_rewards) / len(validation_rewards)
-
-                    if seed_value is None:
-                        train_meta_seed = (_res.get('train_metadata') or {}).get('seed')
-                        cfg_seed = (_res.get('cfg_snapshot') or {}).get('seed')
-                        seed_value = train_meta_seed if train_meta_seed is not None else cfg_seed
+                                        if max_dd is None:
+                                            dd = _fs.get('max_drawdown')
+                                            if isinstance(dd, (int, float)):
+                                                max_dd = float(dd)
+                                    # best_winrate: синхронизируем с winrate, если он появился
+                                    if best_winrate is None and isinstance(winrate, (int, float)):
+                                        best_winrate = float(winrate)
+                                    if direction_value is None:
+                                        dv = _res.get('direction') or _res.get('trained_as')
+                                        if isinstance(dv, str) and dv.strip():
+                                            direction_value = dv.strip()
+                            except Exception:
+                                pass
                 except Exception:
                     pass
             runs.append({
@@ -274,6 +369,7 @@ def api_runs_list():
                 'parent_run_id': manifest.get('parent_run_id'),
                 'root_id': manifest.get('root_id'),
                 'seed': seed_value,
+                'direction': (str(direction_value).strip().lower() if direction_value is not None else None),
                 'episodes_end': manifest.get('episodes_end'),
                 'created_at': manifest.get('created_at'),
                 'model_path': model_path.as_posix() if model_path else None,
@@ -281,6 +377,8 @@ def api_runs_list():
                 'result_path': result_path.as_posix() if result_path else None,
                 'winrate': winrate,
                 'pl_ratio': pl_ratio,
+                'roi': roi,
+                'max_dd': max_dd,
                 'episodes': episodes,
                 'episodes_planned': episodes_planned,
                 'best_winrate': best_winrate,
@@ -298,6 +396,7 @@ def api_runs_list():
             runs.sort(key=lambda r: (r.get('created_at') or '', r['run_id']))
         except Exception:
             runs.sort(key=lambda r: r['run_id'])
+        _RUNS_LIST_CACHE[cache_key] = {'signature': signature, 'runs': runs, 'ts': time.time()}
         return jsonify({'success': True, 'runs': runs})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -429,6 +528,95 @@ def api_encoders_list():
                 return None
             return None
 
+        def _as_float(v):
+            try:
+                if isinstance(v, bool) or v is None:
+                    return None
+                return float(v)
+            except Exception:
+                return None
+
+        def _as_int(v):
+            try:
+                if isinstance(v, bool) or v is None:
+                    return None
+                return int(v)
+            except Exception:
+                return None
+
+        def extract_encoder_stats(manifest: dict, base_upper_symbol: str) -> dict:
+            """
+            Пытаемся вытащить метрики для UI:
+            - winrate: обычно в encoder_manifest.json -> performance.avg_winrate (0..1)
+            - episodes: training.cumulative_episodes_completed (или episodes_completed)
+            - pnl: best-effort (если доступно из manifest/perf или train_result.pkl по training_run_dir/run_id)
+            """
+            stats = {'winrate': None, 'pnl': None, 'episodes': None}
+            try:
+                if not isinstance(manifest, dict):
+                    return stats
+                if 'yaml' in manifest:
+                    return stats
+
+                tr = manifest.get('training') or {}
+                if isinstance(tr, dict):
+                    stats['episodes'] = (
+                        _as_int(tr.get('cumulative_episodes_completed'))
+                        or _as_int(tr.get('episodes_completed'))
+                        or _as_int(tr.get('episodes_end'))
+                    )
+
+                perf = manifest.get('performance') or {}
+                if isinstance(perf, dict):
+                    stats['winrate'] = _as_float(perf.get('avg_winrate')) or _as_float(perf.get('best_winrate'))
+                    stats['pnl'] = (
+                        _as_float(perf.get('total_profit'))
+                        or _as_float(perf.get('pnl'))
+                        or _as_float(perf.get('pnl_sum'))
+                    )
+
+                # Fallback для pnl: попробуем прочитать train_result.pkl по training_run_dir/run_id
+                if stats.get('pnl') is None:
+                    run_dir = None
+                    trd = manifest.get('training_run_dir')
+                    if isinstance(trd, str) and trd.strip():
+                        p = Path(trd.strip())
+                        if p.exists() and p.is_dir():
+                            run_dir = p
+                    if run_dir is None:
+                        rid = manifest.get('run_id')
+                        if isinstance(rid, str) and rid.strip():
+                            rid = rid.strip()
+                            candidates = [
+                                Path('result') / 'dqn' / base_upper_symbol / 'runs' / rid,
+                                Path('result') / base_upper_symbol / 'runs' / rid,
+                            ]
+                            for c in candidates:
+                                if c.exists() and c.is_dir():
+                                    run_dir = c
+                                    break
+                    if run_dir is not None:
+                        pkl = run_dir / 'train_result.pkl'
+                        if pkl.exists():
+                            try:
+                                st = pkl.stat()
+                                if st.st_size <= 32 * 1024 * 1024:
+                                    with open(pkl, 'rb') as f:
+                                        doc = pickle.load(f)
+                                    if isinstance(doc, dict):
+                                        fs = doc.get('final_stats') or {}
+                                        if isinstance(fs, dict):
+                                            stats['pnl'] = (
+                                                _as_float(fs.get('total_profit'))
+                                                or _as_float(fs.get('pnl_sum'))
+                                                or _as_float(fs.get('avg_roi'))
+                                            )
+                            except Exception:
+                                pass
+            except Exception:
+                return stats
+            return stats
+
         for root in roots:
             if not (root.exists() and root.is_dir()):
                 continue
@@ -443,8 +631,9 @@ def api_encoders_list():
                 # Показываем только версии, у которых есть читаемый манифест
                 if manifest is None:
                     continue
+                stats = extract_encoder_stats(manifest, base_upper)
                 seen_ids.add(enc_id)
-                items.append({'id': enc_id, 'name': enc_id, 'manifest': manifest})
+                items.append({'id': enc_id, 'name': enc_id, 'manifest': manifest, 'stats': stats})
 
         # Стабильная сортировка по id (v1<v2<...)
         try:
@@ -456,3 +645,112 @@ def api_encoders_list():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+@models_admin_bp.post('/api/encoders/delete')
+def api_encoders_delete():
+    """
+    Удаление энкодеров (папки vN) из result/dqn/<SYMBOL>/encoder/<encoder_type>/.
+    Payload: { symbol: "TON" | "TONUSDT", ids: ["v37","v38"], encoder_type?: "unfrozen" }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        symbol = (data.get('symbol') or '').strip().upper()
+        ids = data.get('ids') or []
+        encoder_type = (data.get('encoder_type') or 'unfrozen').strip() or 'unfrozen'
+
+        if not symbol:
+            return jsonify({'success': False, 'error': 'symbol required'}), 400
+        if not isinstance(ids, list) or not ids:
+            return jsonify({'success': False, 'error': 'ids list required'}), 400
+
+        base_upper = symbol.split('USDT')[0].upper()
+        root = Path('result') / 'dqn' / base_upper / 'encoder' / encoder_type
+        if not (root.exists() and root.is_dir()):
+            return jsonify({'success': False, 'error': f'encoder dir not found: {root.as_posix()}'}), 404
+
+        # normalize ids: only v<digits>
+        remove_set = set()
+        bad = []
+        for raw in ids:
+            s = str(raw or '').strip()
+            if s.startswith('v') and s[1:].isdigit():
+                remove_set.add(s)
+            else:
+                bad.append(s)
+        if not remove_set:
+            return jsonify({'success': False, 'error': 'no valid ids (expected v<digits>)', 'bad': bad}), 400
+
+        deleted = []
+        errors = []
+        for enc_id in sorted(remove_set, key=lambda x: int(x[1:])):
+            target = (root / enc_id)
+            try:
+                # safety: only inside root and must be dir
+                try:
+                    target_res = target.resolve()
+                    root_res = root.resolve()
+                    if not str(target_res).startswith(str(root_res)):
+                        raise RuntimeError('path outside root')
+                except Exception:
+                    pass
+                if not (target.exists() and target.is_dir()):
+                    continue
+                shutil.rmtree(target, ignore_errors=False)
+                deleted.append(enc_id)
+            except Exception as e:
+                errors.append({'id': enc_id, 'error': str(e)})
+
+        # Try to update encoder_index.json and current.json (best-effort)
+        try:
+            index_path = root / 'encoder_index.json'
+            if index_path.exists():
+                try:
+                    doc = json.loads(index_path.read_text(encoding='utf-8'))
+                except Exception:
+                    doc = None
+                if isinstance(doc, list):
+                    keep = []
+                    for it in doc:
+                        try:
+                            v = it.get('version')
+                            vid = f"v{int(v)}"
+                            if vid in remove_set:
+                                continue
+                            keep.append(it)
+                        except Exception:
+                            keep.append(it)
+                    tmp = index_path.with_suffix('.json.tmp')
+                    tmp.write_text(json.dumps(keep, ensure_ascii=False, indent=2), encoding='utf-8')
+                    os.replace(tmp, index_path)
+
+                    # update current.json if needed
+                    cur_path = root / 'current.json'
+                    if cur_path.exists():
+                        try:
+                            cur = json.loads(cur_path.read_text(encoding='utf-8'))
+                        except Exception:
+                            cur = {}
+                        if isinstance(cur, dict):
+                            cur_ver = str(cur.get('version') or '').strip()
+                            if cur_ver in remove_set:
+                                # pick latest from keep
+                                latest = None
+                                for it in keep:
+                                    try:
+                                        v = int(it.get('version'))
+                                        latest = it if (latest is None or v > int(latest.get('version'))) else latest
+                                    except Exception:
+                                        continue
+                                if latest is None:
+                                    cur = {'version': None, 'sha256': None}
+                                else:
+                                    cur = {'version': f"v{int(latest.get('version'))}", 'sha256': latest.get('sha256')}
+                                tmpc = cur_path.with_suffix('.json.tmp')
+                                tmpc.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding='utf-8')
+                                os.replace(tmpc, cur_path)
+        except Exception:
+            pass
+
+        return jsonify({'success': True, 'deleted': deleted, 'errors': errors, 'bad': bad})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500

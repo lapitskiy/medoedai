@@ -158,6 +158,13 @@
                     <label>Seed для дообучения (если пусто — случайный)</label>
                     <input id="continueSeedInput" class="form-control" type="number" min="1" step="1" placeholder="например, 2024">
                 </div>
+                <div class="form-group">
+                    <label>Направление (для do-обучения)</label>
+                    <select id="continueDirectionSelect" class="form-control">
+                        <option value="long" selected>Long</option>
+                        <option value="short">Short</option>
+                    </select>
+                </div>
 
                 <div class="button-group">
                     <button class="btn btn-success" onclick="continueTraining()">🔁 Запустить дообучение</button>
@@ -285,6 +292,17 @@
                 if(!select) return;
                 const runs = Array.isArray(data.runs)? data.runs: [];
                 if(runs.length===0){ select.innerHTML = '<option value="">Нет запусков</option>'; return; }
+                function dirTag(r){
+                    const d = (r && typeof r.direction === 'string') ? r.direction.trim().toLowerCase() : '';
+                    if(d === 'long') return ' (лонг)';
+                    if(d === 'short') return ' (шорт)';
+                    return '';
+                }
+                function dirVal(r){
+                    const d = (r && typeof r.direction === 'string') ? r.direction.trim().toLowerCase() : '';
+                    if(d === 'long' || d === 'short') return d;
+                    return '';
+                }
                 // отобразим древовидно: parent → child (упростим: префикс ▸)
                 const idToChildren = {};
                 const idToNode = {};
@@ -292,9 +310,9 @@
                 runs.forEach(r=>{ if(r.parent_run_id && idToChildren[r.parent_run_id]) idToChildren[r.parent_run_id].push(r.run_id); });
                 function renderRun(runId, depth){
                     const r = idToNode[runId]; if(!r) return '';
-                    const label = `${'▸'.repeat(depth)} ${r.run_id}`;
+                    const label = `${'▸'.repeat(depth)} ${r.run_id}${dirTag(r)}`;
                     const file = r.model_path || '';
-                    const opt = `<option value="${file}">${label}</option>`;
+                    const opt = `<option value="${file}" data-direction="${dirVal(r)}">${label}</option>`;
                     const children = (idToChildren[runId]||[]).map(cid=>renderRun(cid, depth+1)).join('');
                     return opt+children;
                 }
@@ -379,6 +397,13 @@
             if (!select || !infoDiv) return;
             const filename = select.value;
             if (!filename) { infoDiv.style.display = 'none'; return; }
+            // Автоподставим направление из выбранного run (если доступно)
+            try{
+                const dirSel = document.getElementById('continueDirectionSelect');
+                const opt = select.options && (select.selectedIndex >= 0) ? select.options[select.selectedIndex] : null;
+                const d = (opt && opt.dataset) ? String(opt.dataset.direction || '').trim().toLowerCase() : '';
+                if(dirSel && (d === 'short' || d === 'long')) dirSel.value = d;
+            }catch(_){}
             try {
                 const resp = await fetch('/get_result_model_info', {
                     method: 'POST',
@@ -487,13 +512,15 @@ P/L Ratio: ${plr}
                 return;
             }
             const episodeLength = document.getElementById('continueEpisodeLengthInput').value;
+            const dirEl = document.getElementById('continueDirectionSelect');
+            const dirVal = (dirEl && dirEl.value) ? String(dirEl.value).trim().toLowerCase() : 'long';
 
             statusDiv.innerHTML = '<div class="status info">⏳ Запуск дообучения...</div>';
             try {
                 const resp = await fetch('/continue_training', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ model: selectedFile, episodes, episode_length: episodeLength, seed: seedVal })
+                    body: JSON.stringify({ model: selectedFile, episodes, episode_length: episodeLength, seed: seedVal, direction: dirVal })
                 });
                 const result = await resp.json();
                 if (result.success) {

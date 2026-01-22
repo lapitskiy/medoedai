@@ -25,12 +25,14 @@ class CryptoTradingEnvShort(CryptoTradingEnvOptimized):
         self.short_held: float = 0.0
         self.short_entry_price: Optional[float] = None
         self.fee_entry_short: float = 0.0
+        self._short_entry_step: Optional[int] = None
 
     def reset(self):
         state = super().reset()
         self.short_held = 0.0
         self.short_entry_price = None
         self.fee_entry_short = 0.0
+        self._short_entry_step = None
         return state
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict]:
@@ -49,7 +51,104 @@ class CryptoTradingEnvShort(CryptoTradingEnvOptimized):
             pass
         self.episode_step_count += 1
 
+        def _append_trade(exit_price: float, fee_exit: float, reason: str) -> None:
+            """Записать сделку SHORT в trades/all_trades + обновить причины закрытия."""
+            try:
+                qty = float(self.short_held or 0.0)
+                entry_price = float(self.short_entry_price or 0.0)
+                if qty <= 0.0 or entry_price <= 0.0:
+                    return
+
+                fees = float((self.fee_entry_short or 0.0) + (fee_exit or 0.0))
+                gross_pnl = float((entry_price - float(exit_price)) * qty)
+                net_pnl = float(gross_pnl - fees)
+                roi = float(((entry_price - float(exit_price)) / max(entry_price, 1e-9)) - (fees / max(entry_price * qty, 1e-9)))
+
+                # timestamps (best-effort)
+                exit_dt = None
+                entry_dt = None
+                try:
+                    if hasattr(self, '_candle_datetimes') and (self.current_step - 1) < len(self._candle_datetimes):
+                        exit_dt = self._candle_datetimes[self.current_step - 1]
+                    es = getattr(self, '_short_entry_step', None)
+                    if hasattr(self, '_candle_datetimes') and es is not None and (es - 1) < len(self._candle_datetimes):
+                        entry_dt = self._candle_datetimes[es - 1]
+                except Exception:
+                    exit_dt = None
+                    entry_dt = None
+
+                trade_data = {
+                    "symbol": getattr(self, 'symbol', None),
+                    "side": "SHORT",
+                    "entry_price": float(entry_price),
+                    "exit_price": float(exit_price),
+                    "qty": float(qty),
+                    "fees": float(fees),
+                    "entry_step": int(getattr(self, '_short_entry_step', self.current_step) or self.current_step),
+                    "exit_step": int(self.current_step),
+                    "entry_time": (entry_dt.isoformat() if entry_dt is not None else None),
+                    "exit_time": (exit_dt.isoformat() if exit_dt is not None else None),
+                    "roi": float(roi),
+                    "pnl": float(gross_pnl),
+                    "net": float(net_pnl),
+                    "reward": float(reward),
+                    "duration": float((self.current_step - (getattr(self, '_short_entry_step', self.current_step) or self.current_step)) * 5),
+                    "close_reason": str(reason or "other"),
+                }
+                try:
+                    self.trades.append(trade_data)
+                except Exception:
+                    self.trades = [trade_data]
+                try:
+                    if not hasattr(self, 'all_trades'):
+                        self.all_trades = []
+                    self.all_trades.append(trade_data)
+                except Exception:
+                    pass
+
+                # Причины закрытия (эпизодные и кумулятивные)
+                key = str(reason or "other")
+                if key not in getattr(self, 'sell_types', {}):
+                    key = "other"
+                try:
+                    self.sell_types[key] += 1
+                    self.cumulative_sell_types[key] += 1
+                except Exception:
+                    pass
+            except Exception:
+                # статистика не должна ломать env
+                return
+
+        def _close_short(exit_price: float, reason: str, *, apply_balance: bool = True) -> None:
+            """Закрыть шорт по цене exit_price, записать сделку, обновить баланс/состояние."""
+            if self.short_held <= 0.0 or self.short_entry_price is None:
+                return
+            fee_exit = 0.0
+            try:
+                if apply_balance:
+                    cover_cost = float(self.short_held) * float(exit_price)
+                    fee_exit = float(cover_cost) * float(self.trade_fee_percent)
+                    self.balance -= (cover_cost + fee_exit)
+            except Exception:
+                fee_exit = 0.0
+            _append_trade(float(exit_price), float(fee_exit), str(reason or "other"))
+            # сбрасываем позицию + уровни
+            self.short_held = 0.0
+            self.short_entry_price = None
+            self.fee_entry_short = 0.0
+            self._short_entry_step = None
+            try:
+                self._short_sl_price_atr = None
+                self._short_tp_price_atr = None
+                self._short_entry_atr_abs = None
+            except Exception:
+                pass
+
         if action == 1:  # ENTER_SHORT
+            try:
+                self.buy_attempts += 1
+            except Exception:
+                pass
             if self.short_held == 0.0:
                 # Используем ту же динамику размера позиции, что и BUY, но для шорта
                 entry_confidence = 0.5
@@ -73,10 +172,16 @@ class CryptoTradingEnvShort(CryptoTradingEnvOptimized):
 
                 self.short_held = qty
                 self.short_entry_price = current_price
+                self._short_entry_step = int(self.current_step)
                 self.balance += (short_notional - self.fee_entry_short)
 
                 # небольшой базовый бонус + бонус уверенности
                 reward = 0.03 + entry_confidence * 0.02
+                # Статистика ENTER_SHORT (используем buy_stats_total как "входы")
+                try:
+                    self.buy_stats_total['executed'] += 1
+                except Exception:
+                    pass
 
                 # ATR freeze на входе и уровни SL/TP по ATR (если включено и ATR доступен)
                 try:
@@ -101,32 +206,21 @@ class CryptoTradingEnvShort(CryptoTradingEnvOptimized):
             else:
                 # уже в шорте — интерпретируем как HOLD с лёгким штрафом за избыточную активность
                 reward = -0.001
+                try:
+                    self.buy_stats_total['already_holding'] += 1
+                except Exception:
+                    pass
 
         elif action == 2:  # COVER
             if self.short_held > 0.0 and self.short_entry_price is not None:
-                cover_cost = self.short_held * current_price
-                fee_exit = cover_cost * self.trade_fee_percent
-
-                # закрываем шорт: баланс уменьшается на стоимость выкупа + комиссия
-                self.balance -= (cover_cost + fee_exit)
-
-                # PnL (инвертированный): прибыль, если текущая цена ниже цены открытия
-                pnl = ((self.short_entry_price - current_price) / self.short_entry_price) \
-                      - ((self.fee_entry_short + fee_exit) / max(self.short_entry_price * self.short_held, 1e-9))
-
-                reward += float(np.tanh(pnl * 25.0) * 2.0)
-
-                # сбрасываем позицию
-                self.short_held = 0.0
-                self.short_entry_price = None
-                self.fee_entry_short = 0.0
-                # сброс ATR‑уровней
+                # Закрытие по агенту
                 try:
-                    self._short_sl_price_atr = None
-                    self._short_tp_price_atr = None
-                    self._short_entry_atr_abs = None
+                    pnl = ((self.short_entry_price - current_price) / self.short_entry_price) \
+                          - ((self.fee_entry_short + (self.short_held * current_price * self.trade_fee_percent)) / max(self.short_entry_price * self.short_held, 1e-9))
+                    reward += float(np.tanh(pnl * 25.0) * 2.0)
                 except Exception:
                     pass
+                _close_short(current_price, reason="agent", apply_balance=True)
             else:
                 # нет шорт позиции — трактуем как HOLD с лёгким штрафом
                 reward = -0.001
@@ -139,13 +233,22 @@ class CryptoTradingEnvShort(CryptoTradingEnvOptimized):
                     reward += unrealized * 3.0
                 else:
                     reward += unrealized * 2.0
+                try:
+                    self.hold_stats_total['with_position'] += 1
+                except Exception:
+                    pass
             else:
                 reward += 0.001
+                try:
+                    self.hold_stats_total['no_position'] += 1
+                except Exception:
+                    pass
 
         # --- Зеркальные SL/TP/Trailing для шорта + ATR-нормировка награды (опц.) ---
         try:
             if self.short_held > 0.0 and self.short_entry_price is not None:
                 unrealized = (self.short_entry_price - current_price) / max(self.short_entry_price, 1e-9)  # pnl%
+                closed = False
                 # ATR-нормировка (опционально, мягко)
                 try:
                     if getattr(self, 'atr1h_norm_5m', None) is not None and (self.current_step - 1) < len(self.atr1h_norm_5m):
@@ -159,51 +262,55 @@ class CryptoTradingEnvShort(CryptoTradingEnvOptimized):
                 try:
                     if bool(getattr(self.cfg, 'use_atr_stop', True)):
                         if getattr(self, '_short_sl_price_atr', None) is not None and current_price >= self._short_sl_price_atr:
-                            self.short_held = 0.0
-                            self.short_entry_price = None
                             reward += -0.05
-                            self._short_sl_price_atr = None; self._short_tp_price_atr = None; self._short_entry_atr_abs = None
+                            _close_short(current_price, reason="stop_loss", apply_balance=True)
+                            closed = True
                         elif getattr(self, '_short_tp_price_atr', None) is not None and current_price <= self._short_tp_price_atr:
-                            self.short_held = 0.0
-                            self.short_entry_price = None
                             reward += 0.05
-                            self._short_sl_price_atr = None; self._short_tp_price_atr = None; self._short_entry_atr_abs = None
+                            _close_short(current_price, reason="take_profit", apply_balance=True)
+                            closed = True
                 except Exception:
                     pass
 
-                # Процентные SL/TP (зеркально)
-                sl = float(getattr(self, 'STOP_LOSS_PCT', -0.03))   # отрицательная величина
-                tp = float(getattr(self, 'TAKE_PROFIT_PCT', 0.05))  # положительная величина
-                if unrealized <= sl:
-                    self.short_held = 0.0
-                    self.short_entry_price = None
-                    reward += -0.05
-                elif unrealized >= tp:
-                    self.short_held = 0.0
-                    self.short_entry_price = None
-                    reward += 0.05
-
-                # Trailing (для шорта — drawup от минимума/вверх)
-                if not hasattr(self, '_short_trailing_counter'):
-                    self._short_trailing_counter = 0
-                drawup = (current_price - self.short_entry_price) / max(self.short_entry_price, 1e-9)
-                # Порог трейлинга: ATR‑базированный (freeze at entry) или фикс. 2%
-                thr_trail = 0.02
-                try:
-                    if bool(getattr(self.cfg, 'use_atr_stop', True)) and getattr(self, '_short_entry_atr_abs', None) is not None:
-                        k_tr = float(getattr(self.cfg, 'atr_trail_mult', 1.0))
-                        thr_trail = float(np.clip(k_tr * (self._short_entry_atr_abs / max(self.short_entry_price, 1e-9)), 0.002, 0.08))
-                except Exception:
-                    thr_trail = 0.02
-                if drawup > thr_trail:
-                    self._short_trailing_counter += 1
+                if closed:
+                    # позиция уже закрыта — не продолжаем percent SL/TP/trailing
+                    pass
                 else:
-                    self._short_trailing_counter = 0
-                if self._short_trailing_counter >= 3:
-                    self.short_held = 0.0
-                    self.short_entry_price = None
-                    reward += -0.03
-                    self._short_trailing_counter = 0
+                    # Процентные SL/TP (зеркально)
+                    sl = float(getattr(self, 'STOP_LOSS_PCT', -0.03))   # отрицательная величина
+                    tp = float(getattr(self, 'TAKE_PROFIT_PCT', 0.05))  # положительная величина
+                    if unrealized <= sl:
+                        reward += -0.05
+                        _close_short(current_price, reason="stop_loss", apply_balance=True)
+                        closed = True
+                    elif unrealized >= tp:
+                        reward += 0.05
+                        _close_short(current_price, reason="take_profit", apply_balance=True)
+                        closed = True
+
+                    if closed:
+                        pass
+                    else:
+                        # Trailing (для шорта — drawup от минимума/вверх)
+                        if not hasattr(self, '_short_trailing_counter'):
+                            self._short_trailing_counter = 0
+                        drawup = (current_price - self.short_entry_price) / max(self.short_entry_price, 1e-9)
+                        # Порог трейлинга: ATR‑базированный (freeze at entry) или фикс. 2%
+                        thr_trail = 0.02
+                        try:
+                            if bool(getattr(self.cfg, 'use_atr_stop', True)) and getattr(self, '_short_entry_atr_abs', None) is not None:
+                                k_tr = float(getattr(self.cfg, 'atr_trail_mult', 1.0))
+                                thr_trail = float(np.clip(k_tr * (self._short_entry_atr_abs / max(self.short_entry_price, 1e-9)), 0.002, 0.08))
+                        except Exception:
+                            thr_trail = 0.02
+                        if drawup > thr_trail:
+                            self._short_trailing_counter += 1
+                        else:
+                            self._short_trailing_counter = 0
+                        if self._short_trailing_counter >= 3:
+                            reward += -0.03
+                            _close_short(current_price, reason="trailing", apply_balance=True)
+                            self._short_trailing_counter = 0
         except Exception:
             pass
 
@@ -229,17 +336,8 @@ class CryptoTradingEnvShort(CryptoTradingEnvOptimized):
         # при завершении эпизода закрываем шорт по последней цене
         if done and self.short_held > 0.0 and self.short_entry_price is not None:
             final_price = float(self.df_5min[self.current_step - 1, 3])
-            cover_cost = self.short_held * final_price
-            fee_exit = cover_cost * self.trade_fee_percent
-            self.balance -= (cover_cost + fee_exit)
-
-            pnl = ((self.short_entry_price - final_price) / self.short_entry_price) \
-                  - ((self.fee_entry_short + fee_exit) / max(self.short_entry_price * self.short_held, 1e-9))
-            # не добавляем reward здесь (закрытие по таймауту)
-
-            self.short_held = 0.0
-            self.short_entry_price = None
-            self.fee_entry_short = 0.0
+            # не добавляем reward здесь (закрытие по таймауту), но сделку фиксируем
+            _close_short(final_price, reason="timeout", apply_balance=True)
 
         info.update({
             'current_balance': float(self.balance),
@@ -250,6 +348,12 @@ class CryptoTradingEnvShort(CryptoTradingEnvOptimized):
 
         # масштабируем награду как и в базе
         reward = reward * reward_scale
+
+        # Обновляем market_state (ровно 1 раз на шаг) перед возвратом
+        try:
+            self._update_market_state_once()
+        except Exception:
+            pass
 
         # состояние из предвычисленного буфера
         next_state = self._get_state()

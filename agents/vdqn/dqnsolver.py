@@ -332,8 +332,14 @@ class DQNSolver:
                 if platform.system().lower() == "windows":
                     backend = "aot_eager"
 
-                self.model = torch.compile(self.model, backend=backend, mode=compile_mode)
-                self.target_model = torch.compile(self.target_model, backend=backend, mode=compile_mode)
+                # Важно: aot_eager (aot_autograd backend) игнорирует mode и шумит warning'ом.
+                # Передаём mode только для inductor.
+                compile_kwargs = {"backend": backend}
+                if backend == "inductor":
+                    compile_kwargs["mode"] = compile_mode
+
+                self.model = torch.compile(self.model, **compile_kwargs)
+                self.target_model = torch.compile(self.target_model, **compile_kwargs)
                 print(f"✅ Модели скомпилированы успешно с режимом '{compile_mode}'!")
                 
             except Exception as e:

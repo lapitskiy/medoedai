@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <link rel="stylesheet" href="/static/css/styles.css">
+  <link rel="stylesheet" href="/static/css/sidebar.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🧩 Работа с энкодерами</title>
+</head>
+<body>
+  {% include 'include/_sidebar.html' %}
+  <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+  <div class="container">
+    <div class="main-content">
+      <div class="header">
+        <h1>🧩 Работа с энкодерами</h1>
+        <p>Список энкодеров из <code>result/dqn/&lt;SYMBOL&gt;/encoder</code> + удаление по чекбоксам</p>
+      </div>
+
+      <div class="content">
+        <a href="/" class="back-link">← Вернуться на главную</a>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0;">
+          <label>Symbol:
+            <select id="symSel" class="form-control" style="width:auto;display:inline-block;min-width:140px;"></select>
+          </label>
+          <button class="btn btn-info" id="loadBtn">Обновить</button>
+          <button class="btn btn-danger" id="delBtn" disabled>Удалить выбранные</button>
+          <span class="muted" id="selCount"></span>
+        </div>
+
+        <div id="status" class="status" style="display:none;"></div>
+
+        <div class="section">
+          <h2>Что делает страница</h2>
+          <p>Показывает энкодеры, которые уже лежат в <code>result</code>. Удаление удаляет соответствующие папки <code>vN</code>.</p>
+          <p class="muted">Важно: удаляйте только те версии, которые точно больше не нужны в обучении/торговле.</p>
+        </div>
+
+        <div class="section">
+          <h2>Список энкодеров</h2>
+          <div style="width:100%;max-height:70vh;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;padding:8px;">
+            <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:920px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;"></th>
+                  <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">ID</th>
+                  <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">direction</th>
+                  <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">created</th>
+                  <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">winrate</th>
+                  <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">pnl</th>
+                  <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">episodes</th>
+                </tr>
+              </thead>
+              <tbody id="encT"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function toggleSidebar(){ document.body.classList.toggle('sidebar-open'); }
+    const symSel = document.getElementById('symSel');
+    const loadBtn = document.getElementById('loadBtn');
+    const delBtn = document.getElementById('delBtn');
+    const st = document.getElementById('status');
+    const encT = document.getElementById('encT');
+    const selCount = document.getElementById('selCount');
+
+    function setStatus(kind, text){
+      st.style.display = 'block';
+      st.className = 'status ' + (kind || 'info');
+      st.textContent = text || '';
+    }
+    function esc(s){
+      return String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+    }
+    function fmtNum(v, digits){
+      try{
+        if(typeof v !== 'number' || !isFinite(v)) return '';
+        const d = (typeof digits === 'number') ? digits : 2;
+        return v.toFixed(d);
+      }catch(_){ return ''; }
+    }
+    function selectedIds(){
+      const boxes = Array.from(document.querySelectorAll('input[data-enc-id]'));
+      return boxes.filter(b=>b.checked).map(b=>b.getAttribute('data-enc-id')).filter(Boolean);
+    }
+    function refreshSelUi(){
+      const ids = selectedIds();
+      delBtn.disabled = ids.length === 0;
+      selCount.textContent = ids.length ? (`выбрано: ${ids.length}`) : '';
+    }
+    function render(encoders){
+      const arr = Array.isArray(encoders) ? encoders : [];
+      encT.innerHTML = arr.map(it=>{
+        const id = esc(it.id);
+        const m = it.manifest || {};
+        const dir = esc(m.direction || m.trained_as || '');
+        const created = esc(m.created_at || m.created_at_utc || m.created_at_utc_str || '');
+        const s = it.stats || {};
+        const wr = (typeof s.winrate === 'number' && isFinite(s.winrate)) ? (s.winrate * 100).toFixed(1) + '%' : '';
+        const pnl = (typeof s.pnl === 'number' && isFinite(s.pnl)) ? fmtNum(s.pnl, 4) : '';
+        const eps = (typeof s.episodes === 'number' && isFinite(s.episodes)) ? String(Math.trunc(s.episodes)) : '';
+        return `<tr>
+          <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;">
+            <input type="checkbox" data-enc-id="${id}">
+          </td>
+          <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;"><code>${id}</code></td>
+          <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;"><code>${dir}</code></td>
+          <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;"><code>${created}</code></td>
+          <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;"><code>${esc(wr)}</code></td>
+          <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;"><code>${esc(pnl)}</code></td>
+          <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;"><code>${esc(eps)}</code></td>
+        </tr>`;
+      }).join('');
+      Array.from(document.querySelectorAll('input[data-enc-id]')).forEach(b=>b.addEventListener('change', refreshSelUi));
+      refreshSelUi();
+    }
+
+    async function loadSymbols(){
+      try{
+        setStatus('info','Загружаю symbols...');
+        const resp = await fetch('/api/runs/symbols?model_type=dqn');
+        const data = await resp.json();
+        if(!data.success){ setStatus('error', data.error || 'Ошибка symbols'); return; }
+        const list = Array.isArray(data.symbols) ? data.symbols : [];
+        symSel.innerHTML = list.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+        setStatus('success','Готово');
+      }catch(e){
+        setStatus('error','Ошибка загрузки symbols');
+      }
+    }
+
+    async function loadEncoders(){
+      try{
+        const sym = symSel.value || '';
+        if(!sym){ setStatus('error','Выберите symbol'); return; }
+        setStatus('info','Загружаю энкодеры...');
+        const resp = await fetch('/api/encoders?symbol=' + encodeURIComponent(sym));
+        const data = await resp.json();
+        if(!data.success){ setStatus('error', data.error || 'Ошибка'); return; }
+        render(data.encoders);
+        setStatus('success', `OK: ${sym}`);
+      }catch(e){
+        setStatus('error','Ошибка загрузки энкодеров');
+      }
+    }
+
+    async function deleteSelected(){
+      const sym = symSel.value || '';
+      const ids = selectedIds();
+      if(!sym || ids.length === 0) return;
+      if(!confirm(`Удалить ${ids.length} энкодер(ов)?`)) return;
+      delBtn.disabled = true;
+      try{
+        setStatus('info','Удаляю...');
+        const resp = await fetch('/api/encoders/delete', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ symbol: sym, ids })
+        });
+        const data = await resp.json();
+        if(!data.success){ setStatus('error', data.error || 'Ошибка удаления'); return; }
+        setStatus('success', `Удалено: ${(data.deleted||[]).length}`);
+        await loadEncoders();
+      }catch(e){
+        setStatus('error','Ошибка удаления');
+      }finally{
+        delBtn.disabled = false;
+      }
+    }
+
+    loadBtn?.addEventListener('click', loadEncoders);
+    delBtn?.addEventListener('click', deleteSelected);
+    symSel?.addEventListener('change', loadEncoders);
+    (async ()=>{ await loadSymbols(); await loadEncoders(); })();
+  </script>
+</body>
+</html>
+

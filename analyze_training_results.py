@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import sys
 import os
 import glob
+import json
 from datetime import datetime
 
 def analyze_training_results(results_file):
@@ -235,6 +236,13 @@ def analyze_training_results(results_file):
     
     # Статистика сделок
     trades = results.get('all_trades') or []
+    if (not trades) and isinstance(results.get('all_trades_path'), str):
+        try:
+            p = results.get('all_trades_path')
+            if p and os.path.exists(p):
+                trades = json.loads(open(p, 'r', encoding='utf-8').read()) or []
+        except Exception:
+            trades = []
     if trades:
         print(f"\n💰 СТАТИСТИКА СДЕЛОК:")
         print(f"  • Всего сделок: {len(trades)}")
@@ -337,9 +345,19 @@ def create_plots(results, results_file):
         plt.savefig('plots/winrate_progression.png', dpi=300, bbox_inches='tight')
         plt.close()
     
+    # Загружаем сделки с fallback на all_trades_path (новый формат)
+    trades = results.get('all_trades') or []
+    if (not trades) and isinstance(results.get('all_trades_path'), str):
+        try:
+            p = results.get('all_trades_path')
+            if p and os.path.exists(p):
+                trades = json.loads(open(p, 'r', encoding='utf-8').read()) or []
+        except Exception:
+            trades = []
+
     # График распределения ROI
-    if results['all_trades']:
-        rois = [t.get('roi', 0) for t in results['all_trades']]
+    if trades:
+        rois = [t.get('roi', 0) for t in trades]
         
         plt.figure(figsize=(12, 6))
         plt.hist(rois, bins=50, alpha=0.7, edgecolor='black')

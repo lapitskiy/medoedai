@@ -453,14 +453,17 @@ def ensure_risk_orders(self, symbol: str):
     # Важно: для limit_post_only fill может произойти позже, поэтому при "позиции нет" держим TTL коротким,
     # чтобы отложенные повторы ensure_risk_orders смогли отработать.
     ensure_key = f"risk:ensured:{symbol}"
+    recently_ensured = False
     try:
         if rc is not None and rc.get(ensure_key):
+            recently_ensured = True
             try:
                 logger.info(f"[ensure_risk] skip {symbol}: recently_ensured")
             except Exception:
                 pass
-            return {"success": True, "skipped": True, "reason": "recently_ensured"}
-        if rc is not None:
+        # ВАЖНО: не выходим сразу — нам нужно выполнить exit-detection (open->none) даже при антидублировании,
+        # иначе last_exit_ts_ms/reason в Redis может остаться старым и post-exit cooldown не сработает.
+        if rc is not None and not recently_ensured:
             rc.setex(ensure_key, 180, "1")
     except Exception:
         pass
@@ -705,8 +708,18 @@ def ensure_risk_orders(self, symbol: str):
                         prev_exit = int(prev_exit) if prev_exit is not None and str(prev_exit).strip() != '' else None
                     except Exception:
                         prev_exit = None
-                    if now_bucket_ts and (prev_exit is None or int(now_bucket_ts) > int(prev_exit)):
+                    if now_bucket_ts:
                         evt = _detect_exit_event(getattr(agent, 'exchange', None), symbol) or {}
+                        # Пишем реальное время выхода из закрытого reduceOnly (если доступно),
+                        # иначе fallback на "последнюю закрытую 5m свечу".
+                        try:
+                            evt_ts = evt.get('ts_ms')
+                            evt_ts = int(evt_ts) if evt_ts is not None and str(evt_ts).strip() != '' else None
+                        except Exception:
+                            evt_ts = None
+                        exit_ts_to_save = int(evt_ts) if evt_ts else int(now_bucket_ts)
+                        if prev_exit is not None and exit_ts_to_save <= int(prev_exit):
+                            return {"success": True, "skipped": True, "reason": "exit_not_newer_than_prev"}
                         reason = str(evt.get('reason') or 'unknown')
                         # anti-dup by exchange order id (best-effort)
                         try:
@@ -717,7 +730,7 @@ def ensure_risk_orders(self, symbol: str):
                         if oid and last_oid and str(oid) == str(last_oid):
                             return {"success": True, "skipped": True, "reason": "exit_duplicate_order"}
                         try:
-                            rc.setex(f"trading:last_exit_ts_ms:{symbol}", 86400, str(int(now_bucket_ts)))
+                            rc.setex(f"trading:last_exit_ts_ms:{symbol}", 86400, str(int(exit_ts_to_save)))
                             rc.setex(f"trading:last_exit_reason:{symbol}", 86400, str(reason))
                             if oid:
                                 rc.setex(f"trading:last_exit_order_id:{symbol}", 86400, str(oid))
@@ -775,6 +788,13 @@ def ensure_risk_orders(self, symbol: str):
                             logger.warning("[exit_detect] symbol=%s exit_ts=%s reason=%s", symbol, now_bucket_ts, reason)
                         except Exception:
                             pass
+    except Exception:
+        pass
+
+    # Если мы здесь из-за антидублирования — exit-detection уже выполнен, TP/SL не трогаем.
+    try:
+        if recently_ensured and (entry_price and amount and float(amount) > 0):
+            return {"success": True, "skipped": True, "reason": "recently_ensured_exit_checked"}
     except Exception:
         pass
 
@@ -1752,6 +1772,56 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         except Exception:
             pass
 
+        # 2.5) long-short режим: выбираем подмножество моделей по роли (per-symbol) и режиму рынка
+        trade_mode = 'single'
+        model_roles_map = {}
+        try:
+            if rc is not None:
+                tm = rc.get(f'trading:trade_mode:{symbol}')
+                if isinstance(tm, (bytes, bytearray)):
+                    tm = tm.decode('utf-8', errors='ignore')
+                tm = str(tm).strip() if tm else ''
+                if tm == 'long-short':
+                    trade_mode = 'long-short'
+                raw_roles = rc.get(f'trading:model_roles:{symbol}')
+                if raw_roles:
+                    if isinstance(raw_roles, (bytes, bytearray)):
+                        raw_roles = raw_roles.decode('utf-8', errors='ignore')
+                    parsed = json.loads(raw_roles)
+                    if isinstance(parsed, dict):
+                        # Нормализуем ключи так же, как model_paths (абсолютный путь внутри /workspace)
+                        for k, v in parsed.items():
+                            try:
+                                kp = str(k).replace('\\', '/')
+                                kp_abs = kp if kp.startswith('/') else ('/workspace/' + kp.lstrip('/'))
+                                rv = str(v).strip().lower()
+                                model_roles_map[kp_abs] = ('short' if rv == 'short' else 'long')
+                            except Exception:
+                                continue
+        except Exception:
+            trade_mode = 'single'
+            model_roles_map = {}
+
+        try:
+            if trade_mode == 'long-short' and isinstance(model_paths, list) and model_paths:
+                target_role = None
+                if market_regime == 'uptrend':
+                    target_role = 'long'
+                elif market_regime == 'downtrend':
+                    target_role = 'short'
+                if target_role:
+                    mp_before = list(model_paths)
+                    mp_filtered = [p for p in model_paths if model_roles_map.get(str(p)) == target_role]
+                    if mp_filtered:
+                        model_paths = mp_filtered
+                    try:
+                        logger.warning("[long-short] symbol=%s regime=%s target_role=%s models_before=%s models_after=%s",
+                                       symbol, market_regime, target_role, len(mp_before), len(model_paths))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         # 3) Вызов serving (+ передаём настройки консенсуса, если заданы)
         # Читаем консенсус из Redis для конкретного символа: {'counts': {flat, trend, total_selected}, 'percents': {flat, trend}}
         consensus_cfg = None
@@ -1865,12 +1935,12 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     now_bucket_ts = 0
 
                 ex_ts_raw = rc.get(f"trading:last_exit_ts_ms:{sym0}")
-                ex_reason = rc.get(f"trading:last_exit_reason:{sym0}")
+                ex_reason_raw = rc.get(f"trading:last_exit_reason:{sym0}")
                 try:
                     ex_ts = int(ex_ts_raw) if ex_ts_raw is not None and str(ex_ts_raw).strip() != '' else None
                 except Exception:
                     ex_ts = None
-                ex_reason = str(ex_reason or '').strip().lower()
+                ex_reason = str(ex_reason_raw or '').strip().lower()
                 allowed_reasons = ('stop_loss', 'take_profit', 'trailing')
                 if ex_ts and now_bucket_ts and ex_reason in allowed_reasons and now_bucket_ts >= ex_ts:
                     candles_since = int((now_bucket_ts - ex_ts) // 300000)
@@ -1925,6 +1995,17 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         'boost_T1': post_T1,
                         'boost_T2': post_T2,
                     }
+                    # Диагностика: что пришло из Redis (сырьё) + ISO время для UI/логов
+                    try:
+                        postexit['redis_last_exit_ts_ms_raw'] = ex_ts_raw
+                        postexit['redis_last_exit_reason_raw'] = ex_reason_raw
+                    except Exception:
+                        pass
+                    try:
+                        postexit['exit_ts_iso_utc'] = datetime.utcfromtimestamp(int(ex_ts) / 1000).isoformat()
+                        postexit['now_bucket_ts_iso_utc'] = datetime.utcfromtimestamp(int(now_bucket_ts) / 1000).isoformat()
+                    except Exception:
+                        pass
                     pred_json['postexit'] = postexit
 
                     # apply boosted thresholds during boost window (after cooldown)
@@ -2146,6 +2227,15 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             _dir = (str(_dir).strip().lower() if _dir else 'long')
         except Exception:
             _dir = 'long'
+        # long-short: направление выбираем по market_regime (uptrend->long, downtrend->short)
+        try:
+            if (str(trade_mode).strip() == 'long-short'):
+                if market_regime == 'uptrend':
+                    _dir = 'long'
+                elif market_regime == 'downtrend':
+                    _dir = 'short'
+        except Exception:
+            pass
         agent = TradingAgent(model_path=(model_paths[0] if model_paths else None), direction=_dir, symbol=symbol)
         agent.symbols = syms
         agent.symbol = symbol

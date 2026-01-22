@@ -215,6 +215,9 @@ def continue_training_route():
                 episode_length = int(episode_length_str)
         except Exception:
             episode_length = None
+        # Direction (long/short) для DQN do-обучения
+        direction_raw = (data.get('direction') or request.form.get('direction') or '').strip().lower()
+        direction = 'short' if direction_raw == 'short' else 'long'
 
         result_dir = _Path('result')
         if not result_dir.exists():
@@ -310,7 +313,19 @@ def continue_training_route():
         if model_type == 'sac':
             task = train_sac_symbol.apply_async(kwargs={'symbol': symbol_guess, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length, 'model_path': str(model_file), 'buffer_path': str(replay_file) if replay_file and os.path.exists(replay_file) else None}, queue='train')
         else:
-            task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol_guess, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length}, queue='train')
+            # Прокидываем пути на веса/буфер через Redis, чтобы Celery-задача могла продолжить обучение
+            try:
+                redis_client.setex('continue:model_path', 600, str(model_file))
+                if replay_file and os.path.exists(replay_file):
+                    redis_client.setex('continue:buffer_path', 600, str(replay_file))
+                else:
+                    try:
+                        redis_client.delete('continue:buffer_path')
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol_guess, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length, 'direction': direction}, queue='train')
 
         # Добавим задачу в UI список
         try:
@@ -320,7 +335,7 @@ def continue_training_route():
         except Exception:
             pass
 
-        return jsonify({"success": True, "task_id": task.id, "seed": seed, "model_type": model_type, "symbol": symbol_guess})
+        return jsonify({"success": True, "task_id": task.id, "seed": seed, "model_type": model_type, "symbol": symbol_guess, "direction": direction})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

@@ -320,12 +320,18 @@ def main():
     if not results:
         return
     
-    # Проверяем наличие сделок
-    if 'all_trades' not in results:
-        print("❌ В файле нет данных о сделках")
+    # Проверяем наличие сделок (поддерживаем новый формат: all_trades_path)
+    trades = results.get('all_trades') if isinstance(results, dict) else None
+    if not trades and isinstance(results, dict) and isinstance(results.get('all_trades_path'), str):
+        try:
+            p = results.get('all_trades_path')
+            if p and os.path.exists(p):
+                trades = json.loads(open(p, 'r', encoding='utf-8').read()) or []
+        except Exception:
+            trades = None
+    if not trades:
+        print("❌ В файле нет данных о сделках (all_trades / all_trades_path)")
         return
-    
-    trades = results['all_trades']
     print(f"📊 Загружено сделок: {len(trades)}")
     
     # Анализируем плохие сделки

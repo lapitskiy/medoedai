@@ -139,6 +139,17 @@
                         <option value="short">Short</option>
                     </select>
                 </div>
+                <!-- Режим торговли -->
+                <div class="form-group" style="margin-top:10px;">
+                    <label style="font-weight:600;">Режим (long/short/long-short)</label>
+                    <select id="tradeModeSelect" class="form-control" onchange="onTradeModeChange()">
+                        <option value="single" selected>Один режим (как “Направление”)</option>
+                        <option value="long-short">Long-Short (переключение по режиму рынка)</option>
+                    </select>
+                    <small id="tradeModeHint" style="color:#666; display:block; margin-top:6px;">
+                        В режиме long-short для каждой выбранной версии задайте роль (лонг/шорт).
+                    </small>
+                </div>
                 <!-- Плечо -->
                 <div class="form-group" style="margin-top:10px;">
                     <label style="font-weight:600;">Плечо (x1–x5)</label>
@@ -195,8 +206,9 @@
                             </select>
                         </div>
                         <div>
-                            <label>Количество (опц.)</label>
-                            <input id="immediateQtyInput" type="number" min="0" step="0.0001" class="form-control" placeholder="авто" />
+                            <label>Количество (опц., в базовой валюте: XRP)</label>
+                            <input id="immediateQtyInput" type="number" min="0" step="0.0001" class="form-control" placeholder="в XRP; пусто = авто по Account %" />
+                            <small style="color:#666; display:block; margin-top:6px;">Важно: это qty в монетах (XRP), не сумма в USDT. Для покупки на $200: qty ≈ 200 / price.</small>
                         </div>
                     </div>
                 </div>
@@ -207,12 +219,14 @@
                                 <div class="c-check">Выб.</div>
                                 <div>Версия</div>
                                 <div>Модель</div>
+                                <div>Роль</div>
                                 <div>Статистика</div>
                             </div>
                             <div class="vt-row">
                                 <div class="c-check"><input type="checkbox" disabled></div>
                                 <div>—</div>
                                 <div><em>Выберите символ и ансамбль</em></div>
+                                <div>—</div>
                                 <div>—</div>
                             </div>
                         </div>
@@ -468,6 +482,24 @@
                     });
                 });
             }catch(_){ }
+
+            // Стратегия исполнения: показать/скрыть лимитный блок (post-only)
+            try{
+                window.onExecutionModeChange = function(){
+                    try{
+                        const modeSel = document.getElementById('executionModeSelect');
+                        const box = document.getElementById('limitConfigBox');
+                        if(!box) return;
+                        const mode = (modeSel && modeSel.value) ? String(modeSel.value).trim() : '';
+                        box.style.display = (mode === 'limit_post_only') ? 'block' : 'none';
+                    }catch(_){ }
+                };
+                // Фолбэк: на всякий случай повесим слушатель, даже если inline onchange не сработал
+                const modeSel = document.getElementById('executionModeSelect');
+                if (modeSel) modeSel.addEventListener('change', window.onExecutionModeChange);
+                // И синхронизируем при загрузке
+                window.onExecutionModeChange();
+            }catch(_){ }
         });
         let monitoringInterval = null;
         let previousSymbol = 'BTCUSDT'; // Отслеживаем предыдущий символ
@@ -548,6 +580,68 @@
             } catch (e) {
                 console.error('Ошибка сохранения настроек консенсуса:', e);
             }
+        }
+
+        // --- Model roles (long/short) per selected version (per symbol) ---
+        function getModelRolesForSymbol(symbol){
+            try{
+                const raw = localStorage.getItem(`model_roles_${symbol}`) || '{}';
+                const obj = JSON.parse(raw);
+                return (obj && typeof obj === 'object') ? obj : {};
+            }catch(_){
+                return {};
+            }
+        }
+        function setModelRoleForPath(symbol, path, role){
+            try{
+                if(!symbol || !path) return;
+                const r = (String(role||'').trim().toLowerCase() === 'short') ? 'short' : 'long';
+                const roles = getModelRolesForSymbol(symbol);
+                roles[path] = r;
+                localStorage.setItem(`model_roles_${symbol}`, JSON.stringify(roles));
+            }catch(_){ }
+        }
+        function getSelectedModelRoles(symbol){
+            const roles = getModelRolesForSymbol(symbol);
+            const selectedPaths = Array.from(document.querySelectorAll('.verCheck:checked')).map(i => i.value).filter(Boolean);
+            const out = {};
+            selectedPaths.forEach(p => {
+                out[p] = (roles[p] === 'short') ? 'short' : 'long';
+            });
+            return out;
+        }
+
+        // --- Trade mode (single vs long-short) per symbol ---
+        function getTradeModeForSymbol(symbol){
+            try{
+                const v = localStorage.getItem(`trade_mode_${symbol}`);
+                return (v === 'long-short') ? 'long-short' : 'single';
+            }catch(_){
+                return 'single';
+            }
+        }
+        function setTradeModeForSymbol(symbol, mode){
+            try{
+                const v = (String(mode||'').trim() === 'long-short') ? 'long-short' : 'single';
+                localStorage.setItem(`trade_mode_${symbol}`, v);
+            }catch(_){ }
+        }
+        function onTradeModeChange(){
+            try{
+                const symbol = (document.getElementById('ensembleSymbolSelect')?.value) || 'BTCUSDT';
+                const modeSel = document.getElementById('tradeModeSelect');
+                const mode = modeSel ? (modeSel.value || 'single') : 'single';
+                setTradeModeForSymbol(symbol, mode);
+                const dirSel = document.getElementById('directionSelect');
+                const hint = document.getElementById('tradeModeHint');
+                if (mode === 'long-short'){
+                    if (dirSel) dirSel.disabled = true;
+                    if (hint) hint.textContent = 'long-short: назначьте каждой выбранной версии роль long/short. Направление будет выбираться автоматически по режиму рынка.';
+                }else{
+                    if (dirSel) dirSel.disabled = false;
+                    if (hint) hint.textContent = 'single: используется выбранное “Направление”. Для long-short назначьте роли моделям.';
+                }
+            }catch(_){ }
         }
 
         // Загрузить настройки консенсуса для символа
@@ -656,6 +750,14 @@
                 
                 // Загружаем настройки консенсуса для нового символа
                 loadConsensusSettingsForSymbol(symbol);
+
+                // Восстанавливаем trade_mode для символа
+                try{
+                    const tm = getTradeModeForSymbol(symbol);
+                    const tmSel = document.getElementById('tradeModeSelect');
+                    if (tmSel) tmSel.value = tm;
+                    onTradeModeChange();
+                }catch(_){ }
                 
                 renderEnsembleVersions();
                 
@@ -684,6 +786,7 @@
                         <div class=\"c-check\">Выб.</div>
                         <div>Версия</div>
                         <div>Модель</div>
+                        <div>Роль</div>
                         <div>Статистика</div>
                     </div>`;
                 const rows = ens.versions.map(v => {
@@ -698,11 +801,19 @@
                     // Используем ID модели из манифеста, если доступен, иначе имя файла
                     const modelDisplay = (v.manifest_id && v.manifest_id !== '') ? v.manifest_id : (modelFile || '—');
                     
+                    const symbol = (document.getElementById('ensembleSymbolSelect')?.value) || 'BTCUSDT';
+                    const role = (getModelRolesForSymbol(symbol)[path] || 'long');
                     return `
                         <div class=\"vt-row\">
                             <div class=\"c-check\"><input type=\"checkbox\" class=\"verCheck\" value=\"${path}\" data-version=\"${v.version}\" onchange=\"updateConsensusDisplay(); saveConsensusSettingsForSymbol(document.getElementById('ensembleSymbolSelect')?.value || 'BTCUSDT')\"></div>
                             <div><span style=\"font-weight:600;\">${v.version}</span></div>
                             <div><code>${modelDisplay}</code></div>
+                            <div>
+                                <select class=\"form-control\" style=\"padding:4px 6px; font-size:12px;\" onchange=\"setModelRoleForPath('${symbol}','${path}', this.value)\">
+                                    <option value=\"long\" ${role==='long'?'selected':''}>long</option>
+                                    <option value=\"short\" ${role==='short'?'selected':''}>short</option>
+                                </select>
+                            </div>
                             <div style=\"font-size:12px;color:#555;\">Winrate: ${winrate} · P/L: ${plr} · Trades: ${trades}</div>
                         </div>`;
                 }).join('');
@@ -733,10 +844,14 @@
             // Отправляем данные консенсуса в Redis перед запуском торговли
             try {
                 const consensusSettings = getConsensusSettings();
+                const tradeMode = (document.getElementById('tradeModeSelect')?.value) || 'single';
+                const modelRoles = getSelectedModelRoles(symbol);
                 console.log('[UI] Sending to Redis on START:', { 
                     symbols: [symbol],
                     model_paths: selectedPaths,
-                    consensus: consensusSettings
+                    consensus: consensusSettings,
+                    trade_mode: tradeMode,
+                    model_roles: modelRoles
                 });
                 await fetch('/api/trading/save_config', {
                     method: 'POST',
@@ -744,7 +859,9 @@
                     body: JSON.stringify({ 
                         symbols: [symbol],
                         model_paths: selectedPaths,
-                        consensus: consensusSettings
+                        consensus: consensusSettings,
+                        trade_mode: tradeMode,
+                        model_roles: modelRoles
                     })
                 });
             } catch (e) {
@@ -791,6 +908,13 @@
                             qgate_maxq: (isNaN(qgateMaxQ) ? 0.500 : qgateMaxQ),
                             qgate_gapq: (isNaN(qgateGapQ) ? 0.440 : qgateGapQ)
                         };
+                        // Trade mode + per-model roles
+                        try{
+                            const tmSel = document.getElementById('tradeModeSelect');
+                            const tmVal = (tmSel && tmSel.value) ? String(tmSel.value).trim() : 'single';
+                            payload.trade_mode = (tmVal === 'long-short') ? 'long-short' : 'single';
+                            payload.model_roles = getSelectedModelRoles(symbol);
+                        }catch(_){ }
                         // Направление (если в UI есть селектор #directionSelect)
                         try {
                             const dirSel = document.getElementById('directionSelect');
@@ -2050,6 +2174,14 @@
                     body: null
                 };
                 const bodyObj = { symbols: [symbol], model_paths: selectedPaths, consensus: consensusSettings, risk_management_type: riskType, account_pct: accountPct };
+                // trade_mode + roles + direction
+                try{
+                    const tm = (document.getElementById('tradeModeSelect')?.value) || 'single';
+                    bodyObj.trade_mode = (tm === 'long-short') ? 'long-short' : 'single';
+                    bodyObj.model_roles = getSelectedModelRoles(symbol);
+                    const dirVal = (document.getElementById('directionSelect')?.value) || '';
+                    if (dirVal === 'long' || dirVal === 'short') bodyObj.direction = dirVal;
+                }catch(_){ }
                 if (tpEnabled) bodyObj.take_profit_pct = takeProfitPct;
                 if (slEnabled) bodyObj.stop_loss_pct = stopLossPct;
                 // Новые поля по ATR
@@ -2119,6 +2251,13 @@
             
             // Загружаем настройки консенсуса для BTCUSDT по умолчанию
             loadConsensusSettingsForSymbol('BTCUSDT');
+            // Восстанавливаем trade_mode для BTCUSDT по умолчанию
+            try{
+                const tm = getTradeModeForSymbol('BTCUSDT');
+                const tmSel = document.getElementById('tradeModeSelect');
+                if (tmSel) tmSel.value = tm;
+                onTradeModeChange();
+            }catch(_){ }
             // Восстанавливаем долю счёта из localStorage
             try{
                 const v = parseInt(localStorage.getItem('trading:account_pct')||'100',10);

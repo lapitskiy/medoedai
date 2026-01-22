@@ -75,6 +75,12 @@ def save_trading_config():
             pass
         symbols = data.get('symbols') or []
         model_paths = data.get('model_paths') or []
+        # Режим: 'single' (фикс. направление) | 'long-short' (переключение по режиму рынка)
+        trade_mode = str(data.get('trade_mode') or '').strip() or None
+        if trade_mode not in ('single', 'long-short'):
+            trade_mode = None
+        # Роли моделей: {model_path: 'long'|'short'} (используется в режиме long-short)
+        model_roles = data.get('model_roles') if isinstance(data.get('model_roles'), dict) else None
         consensus = data.get('consensus') or None
         take_profit_pct = data.get('take_profit_pct')  # Процент тейк-профита
         stop_loss_pct = data.get('stop_loss_pct')      # Процент стоп-лосса
@@ -143,6 +149,26 @@ def save_trading_config():
             rc.set(f'trading:model_paths:{symbol}', _json.dumps(model_paths, ensure_ascii=False))
             try:
                 logging.info(f"[save_config] symbol={symbol} model_paths_selected={len(model_paths)} -> saved per-symbol model_paths")
+            except Exception:
+                pass
+            # Сохраняем режим/роли per-symbol (backward compatible: старые ключи не трогаем)
+            try:
+                if trade_mode:
+                    rc.set(f'trading:trade_mode:{symbol}', str(trade_mode))
+                # Нормализуем роли и сохраняем только для выбранных model_paths
+                if isinstance(model_roles, dict):
+                    roles_norm = {}
+                    mp_set = set(str(p) for p in (model_paths or []) if p)
+                    for k, v in model_roles.items():
+                        try:
+                            kp = str(k)
+                            if kp not in mp_set:
+                                continue
+                            rv = str(v).strip().lower()
+                            roles_norm[kp] = ('short' if rv == 'short' else 'long')
+                        except Exception:
+                            continue
+                    rc.set(f'trading:model_roles:{symbol}', _json.dumps(roles_norm, ensure_ascii=False))
             except Exception:
                 pass
         # Не перетираем консенсус пустыми/дефолтными значениями
@@ -283,6 +309,11 @@ def start_trading():
         account_pct = data.get('account_pct')  # Доля счёта, %
         # Направление торговли (long | short)
         direction = str(data.get('direction') or '').strip().lower() or None
+        # Режим (single | long-short)
+        trade_mode = str(data.get('trade_mode') or '').strip() or None
+        if trade_mode not in ('single', 'long-short'):
+            trade_mode = None
+        model_roles = data.get('model_roles') if isinstance(data.get('model_roles'), dict) else None
         # Поддержка многомодельного запуска: model_paths (список) + совместимость с model_path
         model_paths = data.get('model_paths') or []
         model_path = data.get('model_path')
@@ -371,6 +402,21 @@ def start_trading():
                     _rc.set(f'trading:execution_mode:{symbol}', execution_mode)
                 if direction in ('long','short'):
                     _rc.set(f'trading:direction:{symbol}', direction)
+                if trade_mode in ('single', 'long-short'):
+                    _rc.set(f'trading:trade_mode:{symbol}', trade_mode)
+                if isinstance(model_roles, dict):
+                    try:
+                        roles_norm = {}
+                        mp_set = set(str(p) for p in (model_paths or []) if p)
+                        for k, v in model_roles.items():
+                            kp = str(k)
+                            if kp not in mp_set:
+                                continue
+                            rv = str(v).strip().lower()
+                            roles_norm[kp] = ('short' if rv == 'short' else 'long')
+                        _rc.set(f'trading:model_roles:{symbol}', _json.dumps(roles_norm, ensure_ascii=False))
+                    except Exception:
+                        pass
                 if isinstance(limit_config, dict):
                     _rc.set(f'trading:limit_config:{symbol}', _json.dumps(limit_config, ensure_ascii=False))
                 if exit_mode:
@@ -745,6 +791,8 @@ def list_trading_agents():
                 exit_mode_v = rc.get(f'trading:exit_mode:{sym}')
                 leverage_v = rc.get(f'trading:leverage:{sym}')
                 limit_cfg_raw = rc.get(f'trading:limit_config:{sym}')
+                trade_mode_v = rc.get(f'trading:trade_mode:{sym}')
+                model_roles_raw = rc.get(f'trading:model_roles:{sym}')
                 risk_type_v = rc.get(f'trading:risk_management_type:{sym}') or rc.get('trading:risk_management_type')
                 tp_pct_v = rc.get(f'trading:take_profit_pct:{sym}') or rc.get('trading:take_profit_pct')
                 sl_pct_v = rc.get(f'trading:stop_loss_pct:{sym}') or rc.get('trading:stop_loss_pct')
@@ -761,6 +809,20 @@ def list_trading_agents():
                     limit_cfg = json.loads(limit_cfg_raw) if limit_cfg_raw else None
                 except Exception:
                     limit_cfg = None
+                try:
+                    if model_roles_raw and isinstance(model_roles_raw, (bytes, bytearray)):
+                        model_roles_raw = model_roles_raw.decode('utf-8', errors='ignore')
+                    model_roles_v = json.loads(model_roles_raw) if model_roles_raw else None
+                    if not isinstance(model_roles_v, dict):
+                        model_roles_v = {}
+                except Exception:
+                    model_roles_v = {}
+                try:
+                    if trade_mode_v and isinstance(trade_mode_v, (bytes, bytearray)):
+                        trade_mode_v = trade_mode_v.decode('utf-8', errors='ignore')
+                    trade_mode_v = str(trade_mode_v).strip() if trade_mode_v else None
+                except Exception:
+                    trade_mode_v = None
                 # debug_buy из ENV (пер-символьно > глобально)
                 dbg_env_sym = _os.getenv(f'DEBUG_BUY_{sym}')
                 dbg_env_glob = _os.getenv('DEBUG_BUY')
@@ -777,6 +839,8 @@ def list_trading_agents():
             except Exception:
                 exec_mode_v = exit_mode_v = leverage_v = None
                 limit_cfg = None
+                trade_mode_v = None
+                model_roles_v = {}
                 risk_type_v = None
                 tp_pct_v = None
                 sl_pct_v = None
@@ -826,6 +890,8 @@ def list_trading_agents():
                 'settings': {
                     'execution_mode': (str(exec_mode_v).strip() if exec_mode_v else None),
                     'direction': sel_direction,
+                    'trade_mode': (str(trade_mode_v).strip() if trade_mode_v else None),
+                    'model_roles': (model_roles_v if isinstance(model_roles_v, dict) else {}),
                     'exit_mode': (str(exit_mode_v).strip() if exit_mode_v else None),
                     'leverage': (int(str(leverage_v)) if leverage_v not in (None, '') else None),
                     'limit_config': (limit_cfg or {}),

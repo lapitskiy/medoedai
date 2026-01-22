@@ -496,6 +496,33 @@ def _save_training_results(
         }
 
         # Объединяем
+        # Сохраняем all_trades отдельно, чтобы не раздувать train_result.pkl
+        all_trades_path = None
+        all_trades_count = len(all_trades) if isinstance(all_trades, list) else 0
+        try:
+            if isinstance(all_trades, list) and all_trades:
+                trades_json_path = os.path.join(run_dir, 'all_trades.json')
+                def _norm_trade(t):
+                    if isinstance(t, dict):
+                        return {
+                            k: v for k, v in t.items()
+                            if isinstance(k, str) and isinstance(v, (int, float, str, bool, type(None)))
+                        }
+                    return t
+                safe_trades = [_norm_trade(t) for t in all_trades]
+                with open(trades_json_path, 'w', encoding='utf-8') as tf:
+                    json.dump(safe_trades, tf, ensure_ascii=False)
+                all_trades_path = trades_json_path
+        except Exception:
+            all_trades_path = None
+
+        store_trades_inline = False
+        try:
+            v = str(get_config_value('TS_STORE_ALL_TRADES_IN_PKL', '0'))
+            store_trades_inline = v.lower() in ('1', 'true', 'yes', 'y')
+        except Exception:
+            store_trades_inline = False
+
         enriched_results = {
             **training_results,
             'train_metadata': train_metadata,
@@ -507,6 +534,9 @@ def _save_training_results(
                 'target': arch_target,
             },
             'weights': weights_info,
+            'all_trades': (all_trades if store_trades_inline else []),
+            'all_trades_path': all_trades_path,
+            'all_trades_count': all_trades_count,
         }
 
         # Создаем папку, если не существует
@@ -1126,7 +1156,7 @@ def train_model_optimized(
             observation_space=get_env_attr_safe(env, 'observation_space_shape'),
             action_space=env.action_space.n
         )
-        # Если указан путь загрузки существующей модели/буфера — загружаем сначала
+        # Если указан путь загрузки существующей модели/буфера — реально загружаем (continue-training)
         if load_model_path and isinstance(load_model_path, str):
             try:
                 dqn_solver.cfg.model_path = load_model_path
@@ -1134,7 +1164,9 @@ def train_model_optimized(
                 pass
         if load_buffer_path and isinstance(load_buffer_path, str):
             try:
+                # DQNSolver.load_state() читает cfg.buffer_path
                 dqn_solver.cfg.replay_buffer_path = load_buffer_path
+                dqn_solver.cfg.buffer_path = load_buffer_path
             except Exception:
                 pass
         # Если внешняя cfg не передана — используем конфиг из dqn_solver
@@ -1155,8 +1187,42 @@ def train_model_optimized(
                 
             print("🚀 CUDA оптимизации включены: cudnn.benchmark, TF32")
         
-        # Автоподгрузка моделей/буфера отключена: старт всегда с нуля.
-        print("🛑 Автоматическая загрузка старых весов и replay buffer отключена — начинаем с нуля")
+        # Continue-training: загрузим веса/буфер ДО переназначения путей сохранения на новый run_dir
+        try:
+            did_load_any = False
+            if load_model_path and isinstance(load_model_path, str):
+                try:
+                    print(f"🔁 Continue: loading model from {load_model_path}")
+                except Exception:
+                    pass
+                try:
+                    dqn_solver.load_model()
+                    did_load_any = True
+                except Exception as _e:
+                    try:
+                        print(f"⚠️ Continue: failed to load model: {_e}")
+                    except Exception:
+                        pass
+            if load_buffer_path and isinstance(load_buffer_path, str):
+                try:
+                    print(f"🔁 Continue: loading replay buffer from {load_buffer_path}")
+                except Exception:
+                    pass
+                try:
+                    dqn_solver.load_state()
+                    did_load_any = True
+                except Exception as _e:
+                    try:
+                        print(f"⚠️ Continue: failed to load buffer: {_e}")
+                    except Exception:
+                        pass
+            if not did_load_any:
+                try:
+                    print("🆕 Training: start from scratch (no continue paths provided)")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         # После загрузки переназначаем пути сохранения на НОВЫЕ в result/<symbol>_<id>
         # Обновляем пути сохранения на структурированные независимо от наличия внешней cfg

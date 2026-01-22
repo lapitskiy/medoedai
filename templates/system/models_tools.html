@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <link rel="stylesheet" href="/static/css/styles.css">
+  <link rel="stylesheet" href="/static/css/sidebar.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🔧 Работа с моделями</title>
+</head>
+<body>
+  {% include 'include/_sidebar.html' %}
+  <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+  <div class="container">
+    <div class="main-content">
+      <div class="header">
+        <h1>🔧 Работа с моделями</h1>
+        <p>Миграция результатов к новому формату (all_trades → all_trades.json)</p>
+      </div>
+
+      <div class="content">
+        <a href="/" class="back-link">← Вернуться на главную</a>
+
+        <div class="section">
+          <h2>🧰 Миграция all_trades</h2>
+          <p>Для старых <code>train_result.pkl</code> вынесет <code>all_trades</code> в <code>all_trades.json</code> рядом с run.</p>
+
+          <div class="button-group" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <label style="display:flex;gap:6px;align-items:center;">
+              <input type="checkbox" id="dryRun" checked>
+              <span class="muted">dry-run (ничего не писать)</span>
+            </label>
+            <button class="btn btn-info" id="runMigrateBtn">▶️ Запустить миграцию</button>
+          </div>
+
+          <div id="migrateStatus" class="status" style="margin-top:10px;display:none;"></div>
+          <pre id="migrateOut" style="margin-top:10px;white-space:pre-wrap;"></pre>
+        </div>
+
+        <div class="section">
+          <h2>🔎 Просмотр данных run</h2>
+          <p>Покажет содержимое <code>manifest.json</code> и <code>train_result.pkl</code> (в безопасном виде, без огромных массивов).</p>
+
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+            <label>Тип:
+              <select id="inspectModelType" class="form-control" style="width:auto;display:inline-block;">
+                <option value="dqn" selected>DQN</option>
+                <option value="sac">SAC</option>
+              </select>
+            </label>
+            <label>Symbol/Run:
+              <select id="inspectSymbol" class="form-control" style="width:auto;display:inline-block;min-width:140px;"></select>
+            </label>
+            <label>Run ID:
+              <select id="inspectRunId" class="form-control" style="width:auto;display:inline-block;min-width:120px;"></select>
+            </label>
+            <button class="btn btn-info" id="loadRunBtn">Показать</button>
+          </div>
+
+          <div id="inspectStatus" class="status" style="display:none;"></div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start;">
+            <div>
+              <h3 style="margin:6px 0;">manifest.json</h3>
+              <div style="max-height:520px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;padding:8px;">
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                  <thead><tr><th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">Key</th><th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">Value</th></tr></thead>
+                  <tbody id="manifestTable"></tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <h3 style="margin:6px 0;">train_result.pkl</h3>
+              <div style="max-height:520px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;padding:8px;">
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                  <thead><tr><th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">Key</th><th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">Value</th></tr></thead>
+                  <tbody id="trainTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function toggleSidebar(){ document.body.classList.toggle('sidebar-open'); }
+    const btn = document.getElementById('runMigrateBtn');
+    const st = document.getElementById('migrateStatus');
+    const out = document.getElementById('migrateOut');
+    btn?.addEventListener('click', async ()=>{
+      btn.disabled = true; st.style.display='block'; st.className='status info'; st.textContent='Запуск...'; out.textContent='';
+      try{
+        const dry = document.getElementById('dryRun')?.checked;
+        const resp = await fetch('/api/system/migrate_all_trades',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry_run: !!dry})});
+        const data = await resp.json();
+        st.className = data.success ? 'status success' : 'status error';
+        st.textContent = data.success ? 'Готово' : ('Ошибка: '+(data.error||'unknown'));
+        out.textContent = JSON.stringify(data, null, 2);
+      }catch(e){
+        st.className='status error'; st.textContent='Ошибка сети'; out.textContent=String(e);
+      }finally{ btn.disabled=false; }
+    });
+  </script>
+  <script>
+    const mtSel = document.getElementById('inspectModelType');
+    const symSel = document.getElementById('inspectSymbol');
+    const runSel = document.getElementById('inspectRunId');
+    const loadBtn = document.getElementById('loadRunBtn');
+    const ist = document.getElementById('inspectStatus');
+    const manT = document.getElementById('manifestTable');
+    const trT = document.getElementById('trainTable');
+
+    function setStatus(kind, text){
+      if(!ist) return;
+      ist.style.display = 'block';
+      ist.className = 'status ' + (kind || 'info');
+      ist.textContent = text || '';
+    }
+    function esc(s){
+      return String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+    }
+    function renderRows(tbody, items){
+      if(!tbody) return;
+      const arr = Array.isArray(items) ? items : [];
+      tbody.innerHTML = arr.map(it=>{
+        const k = esc(it.key);
+        const v = esc(JSON.stringify(it.value));
+        return `<tr><td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;"><code>${k}</code></td><td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;"><code>${v}</code></td></tr>`;
+      }).join('');
+    }
+    async function loadSymbols(){
+      try{
+        const mt = mtSel?.value || 'dqn';
+        setStatus('info','Загружаю symbols...');
+        const resp = await fetch(`/api/runs/symbols?model_type=${encodeURIComponent(mt)}`);
+        const data = await resp.json();
+        if(!data.success){ setStatus('error', data.error || 'Ошибка symbols'); return; }
+        const list = Array.isArray(data.symbols) ? data.symbols : [];
+        symSel.innerHTML = list.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+        await loadRuns();
+      }catch(e){ setStatus('error','Ошибка загрузки symbols'); }
+    }
+    async function loadRuns(){
+      try{
+        const mt = mtSel?.value || 'dqn';
+        const sym = symSel?.value || '';
+        if(!sym){ runSel.innerHTML=''; return; }
+        setStatus('info','Загружаю runs...');
+        const resp = await fetch(`/api/runs/list?model_type=${encodeURIComponent(mt)}&symbol=${encodeURIComponent(sym)}`);
+        const data = await resp.json();
+        const runs = Array.isArray(data.runs) ? data.runs : [];
+        runSel.innerHTML = runs.map(r=>`<option value="${esc(r.run_id)}">${esc(r.run_id)}</option>`).join('');
+        setStatus('success','Готово');
+      }catch(e){ setStatus('error','Ошибка загрузки runs'); }
+    }
+    async function loadDetails(){
+      try{
+        const mt = mtSel?.value || 'dqn';
+        const sym = symSel?.value || '';
+        const runId = runSel?.value || '';
+        if(!sym || !runId){ setStatus('error','Выберите symbol и run'); return; }
+        setStatus('info','Загружаю данные...');
+        const resp = await fetch(`/api/system/run_details?model_type=${encodeURIComponent(mt)}&symbol=${encodeURIComponent(sym)}&run_id=${encodeURIComponent(runId)}`);
+        const data = await resp.json();
+        if(!data.success){ setStatus('error', data.error || 'Ошибка'); return; }
+        renderRows(manT, data.manifest_items);
+        renderRows(trT, data.train_items);
+        setStatus('success', `OK: ${data.run_dir}`);
+      }catch(e){ setStatus('error','Ошибка загрузки данных'); }
+    }
+
+    mtSel?.addEventListener('change', loadSymbols);
+    symSel?.addEventListener('change', loadRuns);
+    loadBtn?.addEventListener('click', loadDetails);
+    try{ loadSymbols(); }catch(_){}
+  </script>
+</body>
+</html>
+

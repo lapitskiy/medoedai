@@ -239,6 +239,7 @@
                             <td class="nowrap">${run.agent_type || 'N/A'}</td>
                             <td class="nowrap"><span class="truncate" title="${symbolOrRunId}">${symbolOrRunId}</span></td>
                             <td class="nowrap">${run.version || 'N/A'}</td> <!-- Version может быть в манифесте SAC -->
+                            <td class="nowrap">${run.direction ? (String(run.direction).toLowerCase()==='short' ? 'Short' : 'Long') : 'N/A'}</td>
                             <td class="nowrap">${win} ${!resultExists && win === 'N/A' ? resultNotFoundMsg : ''}</td>
                             <td class="nowrap">${roi} ${!resultExists && roi === 'N/A' ? resultNotFoundMsg : ''}</td>
                             <td class="nowrap">${max_dd}</td>
@@ -254,6 +255,7 @@
                             <th class="nowrap">Тип агента</th>
                             <th class="nowrap">ID Запуска/Символ</th>
                             <th class="nowrap">Версия</th>
+                            <th class="nowrap">Направление</th>
                             <th class="nowrap">Winrate</th>
                             <th class="nowrap">ROI/P/L Ratio</th>
                             <th class="nowrap">Max DD</th>
