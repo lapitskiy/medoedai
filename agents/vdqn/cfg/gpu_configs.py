@@ -78,13 +78,13 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         vram_gb=6.0,
         batch_size=64,
         memory_size=50_000,  # Увеличиваем до ~2.7GB VRAM (45% от 6GB)
-        hidden_sizes=(192, 96, 48),
+        hidden_sizes=(96, 64, 48),
         train_repeats=2,
         use_amp=False,
         use_gpu_storage=False,  # Включаем GPU storage для синхронизации устройств
         learning_rate=0.00015,        
         use_torch_compile=False,
-        eps_decay_steps=2_500_000,
+        eps_decay_steps=5_000_000,
         dropout_rate=0.25,
         description="Оптимальная конфигурация для GTX 1660 Super"
     ),
