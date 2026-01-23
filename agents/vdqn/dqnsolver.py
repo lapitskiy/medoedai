@@ -22,6 +22,38 @@ cfg = vDqnConfig()
 
 print(f"Используемое устройство для PyTorch: {cfg.device}")
 
+def _is_wsl() -> bool:
+    """True если процесс внутри WSL/WSL2 (часто Docker Desktop на Windows)."""
+    try:
+        # /proc/version обычно содержит "Microsoft" в WSL1/2
+        with open("/proc/version", "r", encoding="utf-8", errors="ignore") as f:
+            s = f.read().lower()
+        if "microsoft" in s or "wsl" in s:
+            return True
+    except Exception:
+        pass
+    # Доп. эвристика
+    try:
+        if os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
+            return True
+    except Exception:
+        pass
+    return False
+
+def _parse_bool_env(name: str, default: bool | None = None) -> bool | None:
+    try:
+        v = os.environ.get(name)
+        if v is None:
+            return default
+        s = str(v).strip().lower()
+        if s in ("1", "true", "yes", "y", "on"):
+            return True
+        if s in ("0", "false", "no", "n", "off"):
+            return False
+        return default
+    except Exception:
+        return default
+
 class PrioritizedReplayBuffer:
     """Приоритизированный буфер воспроизведения опыта с GPU оптимизациями"""
     
@@ -46,15 +78,48 @@ class PrioritizedReplayBuffer:
             self.gamma_ns = torch.ones(capacity, dtype=torch.float32, device=self.device)
             self.priorities = torch.ones(capacity, dtype=torch.float32, device=self.device)
         else:
-            # Pinned memory на CPU имеет смысл только если доступна CUDA
-            pin_flag = torch.cuda.is_available()
-            self.states = torch.zeros((capacity, state_size), dtype=torch.float32, pin_memory=pin_flag)
-            self.next_states = torch.zeros((capacity, state_size), dtype=torch.float32, pin_memory=pin_flag)
-            self.actions = torch.zeros(capacity, dtype=torch.long, pin_memory=pin_flag)
-            self.rewards = torch.zeros(capacity, dtype=torch.float32, pin_memory=pin_flag)
-            self.dones = torch.zeros(capacity, dtype=torch.bool, pin_memory=pin_flag)
-            self.gamma_ns = torch.ones(capacity, dtype=torch.float32, pin_memory=pin_flag)
-            self.priorities = torch.ones(capacity, dtype=torch.float32, pin_memory=pin_flag)
+            # Pinned memory на CPU имеет смысл только если доступна CUDA.
+            # ВАЖНО: на WSL2/Docker Desktop pinned host allocations часто падают как "CUDA out of memory".
+            # Можно управлять флагом через env: REPLAY_PINNED_MEMORY=0/1
+            pin_env = _parse_bool_env("REPLAY_PINNED_MEMORY", default=None)
+            pin_flag = bool(torch.cuda.is_available()) if pin_env is None else bool(pin_env)
+            if pin_env is None and _is_wsl():
+                pin_flag = False
+            try:
+                self.states = torch.zeros((capacity, state_size), dtype=torch.float32, pin_memory=pin_flag)
+                self.next_states = torch.zeros((capacity, state_size), dtype=torch.float32, pin_memory=pin_flag)
+                self.actions = torch.zeros(capacity, dtype=torch.long, pin_memory=pin_flag)
+                self.rewards = torch.zeros(capacity, dtype=torch.float32, pin_memory=pin_flag)
+                self.dones = torch.zeros(capacity, dtype=torch.bool, pin_memory=pin_flag)
+                self.gamma_ns = torch.ones(capacity, dtype=torch.float32, pin_memory=pin_flag)
+                self.priorities = torch.ones(capacity, dtype=torch.float32, pin_memory=pin_flag)
+            except RuntimeError as e:
+                # Диагностика: сколько памяти пытались выделить под буфер
+                try:
+                    bytes_states = int(capacity) * int(state_size) * 4
+                    bytes_next = int(capacity) * int(state_size) * 4
+                    bytes_vecs = int(capacity) * (8 + 4 + 1 + 4 + 4)  # actions+rewards+dones+gamma_ns+priorities (грубо)
+                    bytes_total = bytes_states + bytes_next + bytes_vecs
+                    gb_total = bytes_total / (1024 ** 3)
+                    gb_states = bytes_states / (1024 ** 3)
+                    print("❌ ReplayBuffer allocation failed")
+                    print(f"   • capacity={capacity}, state_size={state_size}, pin_memory={pin_flag}")
+                    print(f"   • states≈{gb_states:.2f} GB, next_states≈{gb_states:.2f} GB, total≈{gb_total:.2f} GB (host)")
+                    if pin_flag:
+                        print("   • hint: pinned host memory может падать в WSL2/Docker Desktop как 'CUDA out of memory'")
+                        print("   • try: set REPLAY_PINNED_MEMORY=0 or disable pinning for this environment")
+                    # Рекомендация по memory_size: целимся в ~2GB на states+next_states
+                    try:
+                        target_gb = float(os.environ.get("REPLAY_HOST_BUDGET_GB", "2.0"))
+                    except Exception:
+                        target_gb = 2.0
+                    target_bytes = int(target_gb * (1024 ** 3))
+                    denom = max(1, int(state_size) * 4 * 2)  # states+next_states float32
+                    suggested_cap = max(10_000, target_bytes // denom)
+                    print(f"   • suggest: reduce memory_size to ~{suggested_cap} (REPLAY_HOST_BUDGET_GB={target_gb})")
+                except Exception:
+                    pass
+                raise
         
         self.position = 0
         self.size = 0
