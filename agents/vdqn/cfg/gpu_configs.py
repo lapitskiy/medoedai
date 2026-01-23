@@ -76,11 +76,11 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
     "gtx_1660_super": GPUConfig(
         name="GTX 1660 Super",
         vram_gb=6.0,
-        batch_size=192,
-        memory_size=75_000,  # Увеличиваем до ~2.7GB VRAM (45% от 6GB)
-        hidden_sizes=(384, 192, 96),
-        train_repeats=4,
-        use_amp=True,
+        batch_size=64,
+        memory_size=50_000,  # Увеличиваем до ~2.7GB VRAM (45% от 6GB)
+        hidden_sizes=(192, 96, 48),
+        train_repeats=2,
+        use_amp=False,
         use_gpu_storage=False,  # Включаем GPU storage для синхронизации устройств
         learning_rate=0.00015,        
         use_torch_compile=False,
