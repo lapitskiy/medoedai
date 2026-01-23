@@ -50,7 +50,7 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         vram_gb=16.0, # 
         batch_size=192,
         memory_size=75_000,  # Уменьшено для снижения пиков памяти (реплей-буфер)
-        hidden_sizes=(1024, 512, 256), #hidden_sizes= (1024, 512, 256),  hidden_sizes=(384, 192, 96),
+        hidden_sizes=(384, 256, 192), #hidden_sizes= (1024, 512, 256) (winrate 36%),  hidden_sizes=(384, 192, 96),
         train_repeats=4,
         use_amp=True,
         use_gpu_storage=False,  # Включаем GPU storage для синхронизации устройств
