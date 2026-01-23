@@ -358,8 +358,10 @@
                     const path = r.model_path || '';
                     if(path && path.toLowerCase().endsWith('.pth')){
                         const fname = path.split('/').pop().split('\\').pop();
-                        const label = `${r.run_id || 'run'} — ${fname}`;
-                        options.push(`<option value="${path}">${label}</option>`);
+                        const d = String(r.direction || '').trim().toLowerCase();
+                        const dirTag = (d === 'long' || d === 'short') ? ` (${d})` : '';
+                        const label = `${r.run_id || 'run'} — ${fname}${dirTag}`;
+                        options.push(`<option value="${path}" data-direction="${d}">${label}</option>`);
                     }
                 }
                 select.innerHTML = options.length? options.join('') : '<option value="">Нет обученных моделей</option>';

@@ -2567,106 +2567,119 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             except Exception:
                 pass
 
-            if decision == 'buy' and not agent.current_position:
+            # Тип позиции: long/short (если удалось определить)
+            try:
+                pos_type = (agent.current_position or {}).get('type') if isinstance(getattr(agent, 'current_position', None), dict) else None
+            except Exception:
+                pos_type = None
+            # Направление входа (в long-short задаётся по market_regime выше)
+            try:
+                dir_now = str(_dir).strip().lower() if _dir else 'long'
+            except Exception:
+                dir_now = 'long'
+
+            # --- ENTRY ---
+            # long entry: BUY + dir=long + нет позиции
+            # short entry: SELL + dir=short + нет позиции
+            if (not agent.current_position) and ((decision == 'buy' and dir_now == 'long') or (decision == 'sell' and dir_now == 'short')):
+                entry_side = 'buy' if decision == 'buy' else 'sell'
                 if exec_mode == 'limit_post_only':
                     try:
                         base_qty = float(getattr(agent, 'trade_amount', 0.0)) or 0.0
-                        # Всегда только BUY (двухсторонний вход отключен)
-                        qty_buy = _apply_safety_buffer_qty(base_qty) if base_qty > 0 else None
+                        qty_entry = _apply_safety_buffer_qty(base_qty) if base_qty > 0 else None
                         start_execution_strategy.apply_async(kwargs={
                             'symbol': symbol,
                             'execution_mode': 'limit_post_only',
-                            'side': 'buy',
-                            'qty': qty_buy,
+                            'side': entry_side,
+                            'qty': qty_entry,
                             'limit_config': (limit_cfg or {}),
                             'leverage': leverage_val
                         }, queue='trade')
-                        trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": "buy", "qty": qty_buy}
-                    except Exception as _e:
-                        # Фолбэк на рыночное исполнение через агента
-                        trade_result = agent._execute_buy()
-                else:
-                    trade_result = agent._execute_buy()
-                    # После рыночной покупки — выставим TP/SL, если включено
-                    try:
-                        # Дефолтные значения как в ручной покупке: 1%/1%, тип по умолчанию — exchange_orders
-                        tp_pct = 1.0; sl_pct = 1.0; rtype = 'exchange_orders'
-                        try:
-                            if rc is not None:
-                                tp_raw = rc.get('trading:take_profit_pct')
-                                sl_raw = rc.get('trading:stop_loss_pct')
-                                rt = rc.get('trading:risk_management_type')
-                                # Тип риск-менеджмента (если задан)
-                                if rt is not None and str(rt).strip() != '':
-                                    rtype = str(rt)
-                                # TP/SL из Redis, иначе остаются дефолты 1.0
-                                if tp_raw is not None and str(tp_raw).strip() != '':
-                                    tp_pct = float(tp_raw)
-                                if sl_raw is not None and str(sl_raw).strip() != '':
-                                    sl_pct = float(sl_raw)
-                        except Exception:
-                            # При ошибке чтения Redis остаёмся на дефолтах
-                            tp_pct = 1.0; sl_pct = 1.0; rtype = 'exchange_orders'
-                        if (rtype in ('exchange_orders','both')) and (tp_pct is not None or sl_pct is not None):
-                            entry_price = None; amount = None
-                            try:
-                                pos = getattr(agent, 'current_position', None) or {}
-                                entry_price = float(pos.get('entry_price')) if pos and (pos.get('entry_price') is not None) else None
-                                amount = float(pos.get('amount')) if pos and (pos.get('amount') is not None) else None
-                            except Exception:
-                                entry_price = None; amount = None
-                            if entry_price is None:
-                                try:
-                                    entry_price = float(agent._get_current_price())
-                                except Exception:
-                                    entry_price = None
-                            if amount is None or amount <= 0:
-                                try:
-                                    amount = float(getattr(agent, 'trade_amount', 0.0))
-                                except Exception:
-                                    amount = 0.0
-                            if (entry_price and entry_price > 0) and (amount and amount > 0):
-                                # Нормализация цены по precision
-                                try:
-                                    mkt = agent.exchange.market(symbol)
-                                    p_prec = int((mkt.get('precision', {}) or {}).get('price', 2))
-                                except Exception:
-                                    p_prec = 2
-                                def _roundp(x):
-                                    try:
-                                        return float(f"{float(x):.{max(0,p_prec)}f}")
-                                    except Exception:
-                                        return float(x)
-                                # Выставляем TP (лимит sell reduceOnly)
-                                if tp_pct is not None and tp_pct > 0:
-                                    try:
-                                        tp_price = _roundp(entry_price * (1.0 + float(tp_pct)/100.0))
-                                        agent.exchange.create_limit_sell_order(
-                                            symbol,
-                                            amount,
-                                            tp_price,
-                                            { 'reduceOnly': True, 'timeInForce': 'GTC' }
-                                        )
-                                    except Exception:
-                                        pass
-                                # Выставляем SL (стоп‑маркет reduceOnly)
-                                if sl_pct is not None and sl_pct > 0:
-                                    try:
-                                        sl_price = _roundp(entry_price * (1.0 - float(sl_pct)/100.0))
-                                        agent.exchange.create_order(
-                                            symbol,
-                                            'market',
-                                            'sell',
-                                            amount,
-                                            None,
-                                            { 'reduceOnly': True, 'triggerPrice': sl_price, 'triggerDirection': 'descending', 'triggerBy': 'LastPrice', 'timeInForce': 'GTC' }
-                                        )
-                                    except Exception:
-                                        pass
+                        trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": entry_side, "qty": qty_entry}
                     except Exception:
-                        pass
-            elif decision == 'sell' and agent.current_position:
-                # Если выбрана стратегия выхода через биржевые SL/TP — не продаём по предсказанию
+                        # Фолбэк на market исполнение через агента
+                        trade_result = agent._execute_buy() if entry_side == 'buy' else agent._execute_open_short()
+                else:
+                    # market: long -> BUY, short -> OPEN_SHORT
+                    trade_result = agent._execute_buy() if entry_side == 'buy' else agent._execute_open_short()
+
+                    # После рыночного лонга — выставим TP/SL (как раньше). Для шорта риск-ордера ставятся через ensure_risk_orders ниже.
+                    if entry_side == 'buy':
+                        try:
+                            tp_pct = 1.0; sl_pct = 1.0; rtype = 'exchange_orders'
+                            try:
+                                if rc is not None:
+                                    tp_raw = rc.get('trading:take_profit_pct')
+                                    sl_raw = rc.get('trading:stop_loss_pct')
+                                    rt = rc.get('trading:risk_management_type')
+                                    if rt is not None and str(rt).strip() != '':
+                                        rtype = str(rt)
+                                    if tp_raw is not None and str(tp_raw).strip() != '':
+                                        tp_pct = float(tp_raw)
+                                    if sl_raw is not None and str(sl_raw).strip() != '':
+                                        sl_pct = float(sl_raw)
+                            except Exception:
+                                tp_pct = 1.0; sl_pct = 1.0; rtype = 'exchange_orders'
+                            if (rtype in ('exchange_orders','both')) and (tp_pct is not None or sl_pct is not None):
+                                entry_price = None; amount = None
+                                try:
+                                    pos = getattr(agent, 'current_position', None) or {}
+                                    entry_price = float(pos.get('entry_price')) if pos and (pos.get('entry_price') is not None) else None
+                                    amount = float(pos.get('amount')) if pos and (pos.get('amount') is not None) else None
+                                except Exception:
+                                    entry_price = None; amount = None
+                                if entry_price is None:
+                                    try:
+                                        entry_price = float(agent._get_current_price())
+                                    except Exception:
+                                        entry_price = None
+                                if amount is None or amount <= 0:
+                                    try:
+                                        amount = float(getattr(agent, 'trade_amount', 0.0))
+                                    except Exception:
+                                        amount = 0.0
+                                if (entry_price and entry_price > 0) and (amount and amount > 0):
+                                    try:
+                                        mkt = agent.exchange.market(symbol)
+                                        p_prec = int((mkt.get('precision', {}) or {}).get('price', 2))
+                                    except Exception:
+                                        p_prec = 2
+                                    def _roundp(x):
+                                        try:
+                                            return float(f"{float(x):.{max(0,p_prec)}f}")
+                                        except Exception:
+                                            return float(x)
+                                    if tp_pct is not None and tp_pct > 0:
+                                        try:
+                                            tp_price = _roundp(entry_price * (1.0 + float(tp_pct)/100.0))
+                                            agent.exchange.create_limit_sell_order(
+                                                symbol,
+                                                amount,
+                                                tp_price,
+                                                { 'reduceOnly': True, 'timeInForce': 'GTC' }
+                                            )
+                                        except Exception:
+                                            pass
+                                    if sl_pct is not None and sl_pct > 0:
+                                        try:
+                                            sl_price = _roundp(entry_price * (1.0 - float(sl_pct)/100.0))
+                                            agent.exchange.create_order(
+                                                symbol,
+                                                'market',
+                                                'sell',
+                                                amount,
+                                                None,
+                                                { 'reduceOnly': True, 'triggerPrice': sl_price, 'triggerDirection': 'descending', 'triggerBy': 'LastPrice', 'timeInForce': 'GTC' }
+                                            )
+                                        except Exception:
+                                            pass
+                        except Exception:
+                            pass
+
+            # --- EXIT ---
+            # long exit: SELL when long position
+            # short exit: BUY when short position
+            elif agent.current_position and decision == 'sell' and pos_type == 'long':
                 if (str(exit_mode).lower() == 'risk_orders') or (risk_type_exec and str(risk_type_exec).lower() in ('exchange_orders','both')):
                     trade_result = {"success": True, "action": "hold_exit_via_risk", "reason": "exit_mode=risk_orders"}
                 else:
@@ -2675,7 +2688,6 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         try:
                             sell_qty = float(sell_strategy.get('sell_amount', 0) or 0)
                             if sell_strategy.get('sell_all') and sell_qty <= 0:
-                                # Если не удалось рассчитать количество — пусть стратегия сама решит
                                 sell_qty = None
                             start_execution_strategy.apply_async(kwargs={
                                 'symbol': symbol,
@@ -2690,6 +2702,11 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                             trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
                     else:
                         trade_result = agent._execute_sell() if sell_strategy.get('sell_all') else agent._execute_partial_sell(sell_strategy.get('sell_amount', 0))
+
+            elif agent.current_position and decision == 'buy' and pos_type == 'short':
+                # Закрытие шорта делаем market BUY reduceOnly через TradingAgent (без DDD), чтобы точно не открыть long по ошибке.
+                trade_result = agent._execute_cover_short()
+
             else:
                 trade_result = {"success": True, "action": "hold"}
 

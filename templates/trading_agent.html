@@ -800,6 +800,9 @@
                     
                     // Используем ID модели из манифеста, если доступен, иначе имя файла
                     const modelDisplay = (v.manifest_id && v.manifest_id !== '') ? v.manifest_id : (modelFile || '—');
+                    // Направление, с которым модель обучалась (long/short)
+                    const trainedDir = (v.direction === 'short' || v.direction === 'long') ? v.direction : 'long';
+                    const modelDisplayWithDir = `${modelDisplay} (${trainedDir})`;
                     
                     const symbol = (document.getElementById('ensembleSymbolSelect')?.value) || 'BTCUSDT';
                     const role = (getModelRolesForSymbol(symbol)[path] || 'long');
@@ -807,7 +810,7 @@
                         <div class=\"vt-row\">
                             <div class=\"c-check\"><input type=\"checkbox\" class=\"verCheck\" value=\"${path}\" data-version=\"${v.version}\" onchange=\"updateConsensusDisplay(); saveConsensusSettingsForSymbol(document.getElementById('ensembleSymbolSelect')?.value || 'BTCUSDT')\"></div>
                             <div><span style=\"font-weight:600;\">${v.version}</span></div>
-                            <div><code>${modelDisplay}</code></div>
+                            <div><code>${modelDisplayWithDir}</code></div>
                             <div>
                                 <select class=\"form-control\" style=\"padding:4px 6px; font-size:12px;\" onchange=\"setModelRoleForPath('${symbol}','${path}', this.value)\">
                                     <option value=\"long\" ${role==='long'?'selected':''}>long</option>
@@ -2280,6 +2283,7 @@
                     const regime = (a.status&&a.status.market_regime) || 'flat';
                     const s = a.settings || {};
                     const lim = s.limit_config || {};
+                    const tradeModeDisp = (s.trade_mode === 'long-short') ? 'long-short' : (s.direction || '—');
                     const dbg = (s.debug_buy_env===true? 'ON' : (s.debug_buy_env===false? 'OFF' : '—'));
                     const qMax = (typeof s.qgate_maxq === 'number') ? s.qgate_maxq : null;
                     const qGap = (typeof s.qgate_gapq === 'number') ? s.qgate_gapq : null;
@@ -2311,6 +2315,7 @@
                         </div>
                         <div class="trade-details" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">
                             <div class="trade-detail"><div class="label">Режим</div><div class="value">${regime}</div></div>
+                            <div class="trade-detail"><div class="label">Режим торговли</div><div class="value">${tradeModeDisp}</div></div>
                             <div class="trade-detail"><div class="label">Моделей</div><div class="value">${a.total_models}</div></div>
                             <div class="trade-detail"><div class="label">Требуется</div><div class="value">${a.required} (${a.required_type})</div></div>
                             <div class="trade-detail"><div class="label">Консенсус</div><div class="value">flat=${counts.flat??'—'}, trend=${counts.trend??'—'}</div></div>

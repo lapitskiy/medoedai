@@ -248,6 +248,19 @@
                 const fmtSec = (s)=>{ if(!s && s!==0) return 'N/A'; try{ const m=Math.floor(s/60), r=Math.round(s%60); return (m>0?`${m}м `:'')+`${r}с`; }catch(_){ return s.toFixed? s.toFixed(1)+'с' : String(s); } };
 
                 const lines = [];
+                // --- DQN model / encoder provenance (first lines in green block) ---
+                try{
+                    const mt = (result.model_training_type || '').toString().trim().toLowerCase();
+                    const pr = (result.parent_run_id != null) ? String(result.parent_run_id) : '';
+                    lines.push(mt === 'continued' ? `Модель DQN: дообучение${pr?` (parent: ${pr})`:''}` : 'Модель DQN: обучалась с нуля');
+                    const enc = (result.encoder_info && typeof result.encoder_info === 'object') ? result.encoder_info : null;
+                    if(enc && enc.path){
+                        const v = enc.version_str || enc.version || '';
+                        const frozen = (enc.frozen === true);
+                        lines.push(`Энкодер: ${v?`существующий ${v}`:'существующий'}${frozen?' (frozen)':' (unfrozen, дообучение)'}`);
+                    }
+                    lines.push('');
+                }catch(_){}
                 lines.push(`Символ: ${symbolDir.toUpperCase()}`);
                 lines.push(`Run: ${runId}`);
                 const dir = (result.direction || found?.direction || '').toString().trim().toLowerCase();
@@ -259,6 +272,17 @@
                     lines.push(`Длина эпизода (шагов): ${episodeLength}`);
                 }
                 lines.push(`Устройство: ${gpu}`);
+                // GPU config profile (from gpu_configs.py)
+                try{
+                    const gp = (result.gpu_config_profile && typeof result.gpu_config_profile === 'object') ? result.gpu_config_profile : null;
+                    if(gp){
+                        const hs = Array.isArray(gp.hidden_sizes) ? `(${gp.hidden_sizes.join(', ')})` : '—';
+                        lines.push(`GPU config: ${gp.name || gp.key || '—'}`);
+                        lines.push(`batch_size=${gp.batch_size}, memory_size=${gp.memory_size}, hidden_sizes=${hs}`);
+                        lines.push(`train_repeats=${gp.train_repeats}, use_amp=${gp.use_amp}, use_gpu_storage=${gp.use_gpu_storage}`);
+                        lines.push(`learning_rate=${gp.learning_rate}, torch_compile=${gp.use_torch_compile}, eps_decay_steps=${gp.eps_decay_steps}, dropout_rate=${gp.dropout_rate}`);
+                    }
+                }catch(_){}
                 lines.push(`Эпизодов (факт/план): ${episodes} / ${plannedEpisodes}`);
                 lines.push(`Winrate: ${winrate}`);
                 lines.push(`Лучший winrate: ${bestWinrate}`);

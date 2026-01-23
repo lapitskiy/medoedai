@@ -393,6 +393,10 @@ def get_result_model_info():
                 direction = (mf_data.get('direction') or mf_data.get('trained_as') or '').strip().lower()
                 if direction in ('long', 'short'):
                     info['direction'] = direction
+                # Тип обучения: с нуля или continue (по parent_run_id)
+                parent_run_id = mf_data.get('parent_run_id')
+                info['parent_run_id'] = parent_run_id
+                info['model_training_type'] = 'continued' if parent_run_id else 'from_scratch'
         except Exception:
             pass
 
@@ -439,6 +443,45 @@ def get_result_model_info():
                     'seed': train_metadata.get('seed'),
                 }
 
+                # GPU профиль (из agents/vdqn/cfg/gpu_configs.py) — чтобы показать в /analitika
+                try:
+                    gpu_name = str(train_metadata.get('gpu_name') or '').strip().lower()
+                    gpu_key = None
+                    if 'v100' in gpu_name:
+                        gpu_key = 'tesla_v100'
+                    elif 'p100' in gpu_name:
+                        gpu_key = 'tesla_p100'
+                    elif 'gtx 1660' in gpu_name or '1660 super' in gpu_name:
+                        gpu_key = 'gtx_1660_super'
+                    elif 'rtx 3080' in gpu_name:
+                        gpu_key = 'rtx_3080'
+                    elif 'rtx 4090' in gpu_name:
+                        gpu_key = 'rtx_4090'
+                    else:
+                        gpu_key = None
+
+                    if gpu_key:
+                        from agents.vdqn.cfg.gpu_configs import GPU_CONFIGS  # type: ignore
+                        cfgp = GPU_CONFIGS.get(gpu_key)
+                        if cfgp:
+                            info['gpu_config_profile'] = {
+                                'key': gpu_key,
+                                'name': getattr(cfgp, 'name', None),
+                                'vram_gb': getattr(cfgp, 'vram_gb', None),
+                                'batch_size': getattr(cfgp, 'batch_size', None),
+                                'memory_size': getattr(cfgp, 'memory_size', None),
+                                'hidden_sizes': list(getattr(cfgp, 'hidden_sizes', []) or []),
+                                'train_repeats': getattr(cfgp, 'train_repeats', None),
+                                'use_amp': getattr(cfgp, 'use_amp', None),
+                                'use_gpu_storage': getattr(cfgp, 'use_gpu_storage', None),
+                                'learning_rate': getattr(cfgp, 'learning_rate', None),
+                                'use_torch_compile': getattr(cfgp, 'use_torch_compile', None),
+                                'eps_decay_steps': getattr(cfgp, 'eps_decay_steps', None),
+                                'dropout_rate': getattr(cfgp, 'dropout_rate', None),
+                            }
+                except Exception:
+                    pass
+
                 # Добавляем длину эпизода, если она сохранена в gym_snapshot
                 gym_snapshot = results.get('gym_snapshot', {}) or {}
                 if 'episode_length' in gym_snapshot:
@@ -457,6 +500,31 @@ def get_result_model_info():
                     'buffer_path': weights.get('buffer_path'),
                     'buffer_sha256': weights.get('buffer_sha256'),
                 }
+
+                # Информация об энкодере (для UI /analitika)
+                try:
+                    cfg_snapshot = results.get('cfg_snapshot') or {}
+                    encoder_path = cfg_snapshot.get('encoder_path') or weights.get('encoder_path') or results.get('encoder_path')
+                    freeze_encoder = cfg_snapshot.get('freeze_encoder', None)
+                    enc_version = cfg_snapshot.get('encoder_version') or results.get('encoder_version')
+                    enc_type = cfg_snapshot.get('encoder_type') or results.get('encoder_type')
+                    if encoder_path:
+                        enc_info = {
+                            'path': str(encoder_path),
+                            'frozen': bool(freeze_encoder) if freeze_encoder is not None else None,
+                            'type': str(enc_type) if enc_type is not None else None,
+                            'version': enc_version,
+                        }
+                        try:
+                            import re
+                            m = re.search(r'/v(\d+)/', str(encoder_path).replace('\\', '/'))
+                            if m:
+                                enc_info['version_str'] = f"v{m.group(1)}"
+                        except Exception:
+                            pass
+                        info['encoder_info'] = enc_info
+                except Exception:
+                    pass
 
                 # Сводная статистика валидации и winrate по эпизодам
                 def _sanitize_sequence(seq):
@@ -1041,6 +1109,34 @@ def create_model_version():
                     print(f"[create_model_version] COPY SKIP/ERR result: {selected_result_file} -> {ver_result}")
                 except Exception:
                     pass
+
+            # Дополнительно копируем ВСЕ остальные артефакты из run_dir (новый состав папки: all_trades.json, encoder_selection.json, last_*.pth, train.log, ...)
+            # Важно: не дублируем тяжёлые/канонические файлы, т.к. они уже скопированы под унифицированными именами выше.
+            try:
+                if run_dir_path is not None and run_dir_path.exists() and run_dir_path.is_dir():
+                    excluded_names = {'model.pth', 'replay.pkl', 'train_result.pkl'}
+                    copied_extra = 0
+                    for f in run_dir_path.iterdir():
+                        try:
+                            if not f.is_file():
+                                continue
+                            if f.name in excluded_names:
+                                continue
+                            dst = version_dir / f.name
+                            if dst.exists():
+                                # не перезаписываем (на случай если имя совпало)
+                                continue
+                            shutil.copy2(f, dst)
+                            copied_extra += 1
+                        except Exception:
+                            continue
+                    try:
+                        print(f"[create_model_version] COPY EXTRA | from={run_dir_path} -> {version_dir} | files={copied_extra}")
+                    except Exception:
+                        pass
+            except Exception:
+                # extra-copy best-effort, не валим основной сценарий
+                pass
             
             # Пишем manifest.yaml (без зависимости от PyYAML)
             manifest_path = version_dir / 'manifest.yaml'
@@ -1059,6 +1155,23 @@ def create_model_version():
                 created_ts = _dt.utcnow().isoformat()
                 # Используем run_id из исходной папки, если она известна
                 manifest_id = (str(run_dir_path.name) if run_dir_path is not None else named_id)
+                # Direction (long/short) — если есть manifest.json в run_dir_path
+                trained_dir = None
+                try:
+                    if run_dir_path is not None:
+                        mfj = run_dir_path / 'manifest.json'
+                        if mfj.exists():
+                            with open(mfj, 'r', encoding='utf-8') as _mf:
+                                _mj = _json.load(_mf) or {}
+                                trained_dir = (_mj.get('direction') or _mj.get('trained_as') or None)
+                except Exception:
+                    trained_dir = None
+                try:
+                    trained_dir = str(trained_dir).strip().lower() if trained_dir is not None else None
+                except Exception:
+                    trained_dir = None
+                if trained_dir not in ('long', 'short'):
+                    trained_dir = None
                 yaml_text = (
                     'id: "' + manifest_id + '"\n'
                     'symbol: "' + base_code.lower() + '"\n'
@@ -1066,6 +1179,7 @@ def create_model_version():
                     'version: "' + version_name + '"\n'
                     'created_at: "' + created_ts + '"\n'
                     'run_id: "' + manifest_id + '"\n'
+                    + (('direction: "' + trained_dir + '"\ntrained_as: "' + trained_dir + '"\n') if trained_dir else '')
                     + (('source_run_path: "' + str(run_dir_path).replace('\\','/') + '"\n') if run_dir_path is not None else '')
                     + 'files:\n'
                     '  model: "' + ver_model.name + '"\n'
@@ -1277,25 +1391,67 @@ def list_ensembles():
                     
                     # Читаем ID из манифеста, если он есть
                     manifest_id = None
+                    manifest_direction = None
+                    source_run_path = None
                     if manifest:
                         try:
                             manifest_path = vdir / manifest
                             if manifest_path.exists():
                                 with open(manifest_path, 'r', encoding='utf-8') as mf:
                                     manifest_content = mf.read()
-                                    # Ищем строку с id: "значение"
+                                    # Ищем простые поля (id/direction/source_run_path) без YAML-парсера
                                     for line in manifest_content.split('\n'):
-                                        if line.strip().startswith('id:'):
-                                            manifest_id = line.split(':', 1)[1].strip().strip('"\'')
-                                            break
+                                        sline = line.strip()
+                                        if sline.startswith('id:') and not manifest_id:
+                                            manifest_id = sline.split(':', 1)[1].strip().strip('"\'')
+                                        elif sline.startswith('direction:') and not manifest_direction:
+                                            manifest_direction = sline.split(':', 1)[1].strip().strip('"\'').lower()
+                                        elif sline.startswith('trained_as:') and not manifest_direction:
+                                            manifest_direction = sline.split(':', 1)[1].strip().strip('"\'').lower()
+                                        elif sline.startswith('source_run_path:') and not source_run_path:
+                                            source_run_path = sline.split(':', 1)[1].strip().strip('"\'')
                         except Exception:
                             pass
+                    # Fallback: manifest.json рядом с моделью
+                    if manifest_direction not in ('long', 'short'):
+                        manifest_direction = None
+                        try:
+                            import json as _json
+                            mfj = vdir / 'manifest.json'
+                            if mfj.exists():
+                                with open(mfj, 'r', encoding='utf-8') as _mf:
+                                    _mj = _json.load(_mf) or {}
+                                md = (_mj.get('direction') or _mj.get('trained_as') or None)
+                                md = str(md).strip().lower() if md is not None else None
+                                if md in ('long', 'short'):
+                                    manifest_direction = md
+                        except Exception:
+                            pass
+                    # Fallback: manifest.json в source_run_path (если сохранён в manifest.yaml)
+                    if manifest_direction not in ('long', 'short') and source_run_path:
+                        try:
+                            from pathlib import Path as _Path
+                            import json as _json
+                            sp = _Path(str(source_run_path).replace('\\','/'))
+                            mfj2 = sp / 'manifest.json'
+                            if mfj2.exists():
+                                with open(mfj2, 'r', encoding='utf-8') as _mf:
+                                    _mj = _json.load(_mf) or {}
+                                md = (_mj.get('direction') or _mj.get('trained_as') or None)
+                                md = str(md).strip().lower() if md is not None else None
+                                if md in ('long', 'short'):
+                                    manifest_direction = md
+                        except Exception:
+                            pass
+                    if manifest_direction not in ('long', 'short'):
+                        manifest_direction = 'long'
                     
                     versions.append({
                         'version': vdir.name,
                         'files': files,
                         'manifest': manifest,
                         'manifest_id': manifest_id,
+                        'direction': manifest_direction,
                         'stats': stats,
                         'path': str(vdir).replace('\\','/')
                     })
