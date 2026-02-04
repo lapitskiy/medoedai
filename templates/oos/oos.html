@@ -45,6 +45,8 @@
                     <p>Показывает файлы в папке <code>result/</code> с краткой статистикой. Можно удалить комплект (веса, буфер, результат) по коду модели.</p>
                     <div class="button-group">
                         <button class="btn btn-info" id="refreshResultModelsBtn">🔄 Обновить список</button>
+                        <button class="btn btn-danger" id="bulkDeleteRunsBtn" disabled>🗑️ Удалить выбранные</button>
+                        <span class="muted" id="selectedRunsInfo" style="margin-left:8px;">Выбрано: 0</span>
                     </div>
                     <div id="modelTypeSelection" style="margin-bottom: 10px;">
                         <label for="agentTypeSelect">Тип модели:</label>
@@ -236,6 +238,7 @@
 
                     rows.push(`
                         <tr ${rowStyle}>
+                            <td class="nowrap"><input type="checkbox" class="runSelect" data-run-id="${symbolOrRunId}"></td>
                             <td class="nowrap">${run.agent_type || 'N/A'}</td>
                             <td class="nowrap"><span class="truncate" title="${symbolOrRunId}">${symbolOrRunId}</span></td>
                             <td class="nowrap">${run.version || 'N/A'}</td> <!-- Version может быть в манифесте SAC -->
@@ -252,6 +255,7 @@
                 const header = `
                     <thead>
                         <tr>
+                            <th class="nowrap" style="width:32px;"><input type="checkbox" id="selectAllRuns"></th>
                             <th class="nowrap">Тип агента</th>
                             <th class="nowrap">ID Запуска/Символ</th>
                             <th class="nowrap">Версия</th>
@@ -267,9 +271,92 @@
                 if (rows.length === 0) {
                     console.log('refreshResultModels: No rows rendered, resultModelsList should show empty message');
                 }
+                wireBulkSelectionUI();
             } catch (e) {
                 console.error('Error in refreshResultModels:', e);
                 listDiv.innerHTML = `<div class="status error">❌ Ошибка загрузки: ${e.message}</div>`;
+            }
+        }
+
+        function getSelectedRunIds() {
+            return Array.from(document.querySelectorAll('.runSelect:checked'))
+                .map(el => el.getAttribute('data-run-id'))
+                .filter(Boolean);
+        }
+
+        function updateSelectedRunsInfo() {
+            const ids = getSelectedRunIds();
+            const info = document.getElementById('selectedRunsInfo');
+            const btn = document.getElementById('bulkDeleteRunsBtn');
+            if (info) info.textContent = `Выбрано: ${ids.length}`;
+            if (btn) btn.disabled = ids.length === 0;
+        }
+
+        function wireBulkSelectionUI() {
+            const selectAll = document.getElementById('selectAllRuns');
+            const checks = Array.from(document.querySelectorAll('.runSelect'));
+            if (selectAll) {
+                selectAll.checked = false;
+                selectAll.indeterminate = false;
+                selectAll.onchange = () => {
+                    const v = !!selectAll.checked;
+                    for (const c of checks) c.checked = v;
+                    updateSelectedRunsInfo();
+                };
+            }
+            for (const c of checks) {
+                c.onchange = () => {
+                    if (selectAll) {
+                        const total = checks.length;
+                        const checked = checks.filter(x => x.checked).length;
+                        selectAll.checked = total > 0 && checked === total;
+                        selectAll.indeterminate = checked > 0 && checked < total;
+                    }
+                    updateSelectedRunsInfo();
+                };
+            }
+            updateSelectedRunsInfo();
+        }
+
+        async function bulkDeleteSelectedRuns() {
+            const agentType = document.getElementById('agentTypeSelect')?.value || 'dqn';
+            const ids = getSelectedRunIds();
+            if (!ids.length) return;
+
+            let symbolHint = '';
+            if (agentType === 'dqn') {
+                symbolHint = document.getElementById('dqnSymbolSelect')?.value || '';
+            } else if (agentType === 'sac') {
+                symbolHint = document.getElementById('sacRunNameSelect')?.value || '';
+            }
+            if (!symbolHint) {
+                alert('Не выбран символ (фильтр) — не могу безопасно удалить.');
+                return;
+            }
+
+            if (!confirm(`Удалить выбранные (${ids.length}) запуск(ов) для ${agentType.toUpperCase()} (${symbolHint})?`)) return;
+            const btn = document.getElementById('bulkDeleteRunsBtn');
+            const prev = btn ? btn.textContent : '';
+            if (btn) { btn.disabled = true; btn.textContent = '⏳ Удаляю...'; }
+            try {
+                const resp = await fetch('/api/runs/delete_bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model_type: agentType, symbol: symbolHint, run_ids: ids })
+                });
+                const data = await resp.json();
+                if (!data.success) {
+                    alert('Ошибка bulk удаления: ' + (data.error || 'Unknown'));
+                    return;
+                }
+                const msg = `Удалено: ${data.deleted_count || 0}, не найдено: ${data.not_found_count || 0}, ошибок: ${data.error_count || 0}`;
+                alert(msg);
+                await refreshResultModels();
+            } catch (e) {
+                alert('Сеть: ' + e.message);
+            } finally {
+                if (btn) { btn.textContent = prev || '🗑️ Удалить выбранные'; }
+                updateSelectedRunsInfo();
             }
         }
 
@@ -283,9 +370,9 @@
                 apiUrl = '/api/runs/delete'; // Существующий эндпоинт для DQN
                 payload = { model_type: 'dqn', symbol: symbolHint, run_id: id };
             } else if (agentType === 'sac') {
-                confirmMsg = `Удалить SAC модель ${id}/${ensembleName}/${version}?`;
-                apiUrl = '/api/sac_models/delete'; // Эндпоинт для SAC
-                payload = { run_name: id, ensemble: ensembleName, version: version };
+                confirmMsg = `Удалить SAC запуск ${id} (symbol ${symbolHint || 'N/A'})?`;
+                apiUrl = '/api/runs/delete';
+                payload = { model_type: 'sac', symbol: symbolHint, run_id: id };
             } else {
                 alert('Неизвестный тип агента: ' + agentType);
                 return;
@@ -706,6 +793,7 @@ Symbol: ${test.symbol || 'N/A'} | Capital: ${metrics.start_capital || 'N/A'}
             updateFilterVisibility(agentSelect?.value || 'dqn');
             try { refreshResultModels(); } catch(_){ console.error("Error calling refreshResultModels on DOMContentLoaded:", _); }
             document.getElementById('refreshResultModelsBtn')?.addEventListener('click', refreshResultModels);
+            document.getElementById('bulkDeleteRunsBtn')?.addEventListener('click', bulkDeleteSelectedRuns);
             document.getElementById('openOOSModalBtn')?.addEventListener('click', openOOSModal);
             document.getElementById('clearOOSResultsBtn')?.addEventListener('click', clearOOSResults);
         });

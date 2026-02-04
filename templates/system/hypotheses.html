@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <link rel="stylesheet" href="/static/css/styles.css">
+  <link rel="stylesheet" href="/static/css/sidebar.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🧠 Гипотезы</title>
+</head>
+<body>
+  {% include 'include/_sidebar.html' %}
+  <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+  <div class="container">
+    <div class="main-content">
+      <div class="header">
+        <h1>🧠 Гипотезы</h1>
+        <p>Экспорт агрегированных данных по runs (CSV) + текстовый summary для генерации гипотез в ChatGPT.</p>
+      </div>
+
+      <div class="content">
+        <a href="/" class="back-link">← Вернуться на главную</a>
+
+        <div class="section">
+          <h2>⚙️ Экспорт</h2>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+            <label>Symbol:
+              <input id="symbol" class="form-control" style="width:140px;" value="XRPUSDT">
+            </label>
+            <label>Limit runs:
+              <input id="limitRuns" class="form-control" style="width:120px;" value="200">
+            </label>
+            <button class="btn btn-info" id="genBtn">Сгенерировать</button>
+            <button class="btn btn-secondary" id="dlCsvBtn" disabled>Скачать CSV</button>
+            <button class="btn btn-secondary" id="dlTxtBtn" disabled>Скачать TXT</button>
+          </div>
+          <div id="status" class="status" style="margin-top:10px;display:none;"></div>
+        </div>
+
+        <div class="section">
+          <h2>📄 Текст для ChatGPT</h2>
+          <textarea id="promptOut" class="form-control" style="width:100%;min-height:320px;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,'Liberation Mono','Courier New',monospace;"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function toggleSidebar(){ document.body.classList.toggle('sidebar-open'); }
+    const st = document.getElementById('status');
+    const btn = document.getElementById('genBtn');
+    const dlCsv = document.getElementById('dlCsvBtn');
+    const dlTxt = document.getElementById('dlTxtBtn');
+    const promptOut = document.getElementById('promptOut');
+    let _csvText = '';
+    let _txtText = '';
+
+    function setStatus(kind, text){
+      st.style.display = 'block';
+      st.className = 'status ' + (kind || 'info');
+      st.textContent = text || '';
+    }
+    function download(name, text, mime){
+      const blob = new Blob([text], {type: (mime||'text/plain') + ';charset=utf-8'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = name; a.click();
+      setTimeout(()=>URL.revokeObjectURL(url), 500);
+    }
+
+    btn?.addEventListener('click', async ()=>{
+      btn.disabled = true; dlCsv.disabled = true; dlTxt.disabled = true;
+      setStatus('info','Собираю данные...');
+      try{
+        const sym = document.getElementById('symbol')?.value || '';
+        const lim = document.getElementById('limitRuns')?.value || '200';
+        const resp = await fetch(`/api/system/hypotheses_export?symbol=${encodeURIComponent(sym)}&limit_runs=${encodeURIComponent(lim)}`);
+        const data = await resp.json();
+        if(!data.success){ setStatus('error', data.error || 'Ошибка'); return; }
+        _csvText = data.csv || '';
+        _txtText = data.prompt || '';
+        promptOut.value = _txtText;
+        dlCsv.disabled = !_csvText;
+        dlTxt.disabled = !_txtText;
+        setStatus('success', `OK: runs=${data.runs_count}`);
+      }catch(e){
+        setStatus('error','Ошибка сети');
+      }finally{
+        btn.disabled = false;
+      }
+    });
+    dlCsv?.addEventListener('click', ()=>{
+      const sym = (document.getElementById('symbol')?.value || 'symbol').toUpperCase();
+      download(`hypotheses_${sym}.csv`, _csvText, 'text/csv');
+    });
+    dlTxt?.addEventListener('click', ()=>{
+      const sym = (document.getElementById('symbol')?.value || 'symbol').toUpperCase();
+      download(`hypotheses_${sym}.txt`, _txtText, 'text/plain');
+    });
+  </script>
+</body>
+</html>
+

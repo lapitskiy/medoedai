@@ -25,7 +25,9 @@ class IntentState(str, Enum):
 class LimitConfig:
     requote_interval_sec: int = 15
     max_lifetime_sec: int = 300   # ≤ 5 минут
-    offset_max_ticks: int = 16
+    # Сколько тиков максимум допускаем отходить от edge (best bid/ask) в post-only.
+    # Дефолт 2, чтобы лимитка всегда была "рядом" (1-2 тика), и не улетала на 8-16 тиков при ретраях.
+    offset_max_ticks: int = 2
 
 
 @dataclass

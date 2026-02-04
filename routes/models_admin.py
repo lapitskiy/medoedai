@@ -434,28 +434,77 @@ def api_runs_delete():
         run_dir = resolve_run_dir(model_type, run_id, symbol_hint=symbol, create=False)
         if run_dir is None or not run_dir.exists() or not run_dir.is_dir():
             return jsonify({'success': False, 'error': 'run directory not found'}), 404
-        deleted = []
-        errors = []
-        # Удаляем все файлы в директории run
+        # Safety: allow deletion only under ./result
         try:
-            for p in run_dir.iterdir():
-                if p.is_file():
-                    try:
-                        os.remove(p)
-                        deleted.append(str(p))
-                    except Exception as e:
-                        errors.append(f'{p.name}: {e}')
-        except Exception as e:
-            errors.append(f'iterdir: {e}')
-        # Пытаемся удалить директорию, если пуста
-        removed_dir = False
-        try:
-            if run_dir.exists() and len(list(run_dir.iterdir())) == 0:
-                run_dir.rmdir()
-                removed_dir = True
+            root = Path('result').resolve()
+            resolved = run_dir.resolve()
+            if root != resolved and root not in resolved.parents:
+                return jsonify({'success': False, 'error': 'refusing to delete outside result/'}), 400
         except Exception:
-            removed_dir = False
-        return jsonify({'success': True, 'deleted': deleted, 'removed_dir': removed_dir, 'errors': errors})
+            return jsonify({'success': False, 'error': 'failed to validate path'}), 400
+
+        try:
+            # Remove whole tree (run can contain nested folders like charts, dumps, etc.)
+            shutil.rmtree(run_dir)
+            return jsonify({'success': True, 'removed_dir': True, 'run_dir': str(run_dir)})
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'failed to delete run_dir: {e}'}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@models_admin_bp.post('/api/runs/delete_bulk')
+def api_runs_delete_bulk():
+    try:
+        data = request.get_json(silent=True) or {}
+        model_type = (data.get('model_type') or data.get('agent_type') or 'dqn').strip().lower()
+        symbol = (data.get('symbol') or '').strip().upper()
+        run_ids = data.get('run_ids') or data.get('run_id_list') or data.get('ids') or []
+        if isinstance(run_ids, str):
+            run_ids = [run_ids]
+        if not isinstance(run_ids, list) or not run_ids:
+            return jsonify({'success': False, 'error': 'run_ids required'}), 400
+        # Limit to prevent accidental mass deletion by UI bug
+        if len(run_ids) > 500:
+            return jsonify({'success': False, 'error': 'too many run_ids (max 500)'}), 400
+        if not symbol:
+            return jsonify({'success': False, 'error': 'symbol required'}), 400
+
+        root = Path('result').resolve()
+        results = []
+        deleted_count = 0
+        not_found_count = 0
+        error_count = 0
+
+        for rid in run_ids:
+            run_id = (str(rid) or '').strip()
+            if not run_id:
+                continue
+            try:
+                run_dir = resolve_run_dir(model_type, run_id, symbol_hint=symbol, create=False)
+                if run_dir is None or not run_dir.exists() or not run_dir.is_dir():
+                    not_found_count += 1
+                    results.append({'run_id': run_id, 'success': False, 'error': 'not found'})
+                    continue
+                resolved = run_dir.resolve()
+                if root != resolved and root not in resolved.parents:
+                    error_count += 1
+                    results.append({'run_id': run_id, 'success': False, 'error': 'outside result/'})
+                    continue
+                shutil.rmtree(run_dir)
+                deleted_count += 1
+                results.append({'run_id': run_id, 'success': True})
+            except Exception as e:
+                error_count += 1
+                results.append({'run_id': run_id, 'success': False, 'error': str(e)})
+
+        return jsonify({
+            'success': True,
+            'deleted_count': deleted_count,
+            'not_found_count': not_found_count,
+            'error_count': error_count,
+            'results': results,
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

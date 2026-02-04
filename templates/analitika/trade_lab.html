@@ -57,6 +57,7 @@
                         </div>
                     </div>
                     <div class="button-group" style="margin-top: 12px;">
+                        <button class="btn btn-secondary" onclick="buildDataset()">📦 Сгенерировать датасет</button>
                         <button class="btn btn-info" onclick="analyze()">🔍 Анализ результатов</button>
                         <button class="btn btn-primary" onclick="optimize()">⚙ Запустить оптимизацию</button>
                     </div>
@@ -120,6 +121,22 @@
                 const data = await resp.json();
                 if(!data.success) throw new Error(data.error || 'Ошибка анализа');
                 status.className='status success'; status.textContent='Готово';
+                output.style.display='block'; output.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+            }catch(e){
+                status.className='status error'; status.textContent='Ошибка: '+e.message;
+            }
+        }
+        async function buildDataset(){
+            const status = document.getElementById('status');
+            const output = document.getElementById('output');
+            status.style.display = 'block'; status.className = 'status running'; status.textContent = 'Генерирую датасет...';
+            output.style.display = 'none';
+            try{
+                const p = collectPayload();
+                const resp = await fetch('/api/trade_lab/dataset/build', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model_type:p.model_type, symbol:p.symbol}) });
+                const data = await resp.json();
+                if(!data.success) throw new Error(data.error || 'Ошибка генерации');
+                status.className='status success'; status.textContent='Датасет готов';
                 output.style.display='block'; output.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
             }catch(e){
                 status.className='status error'; status.textContent='Ошибка: '+e.message;

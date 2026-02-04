@@ -49,7 +49,7 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         name="Tesla V100",
         vram_gb=16.0, # 
         batch_size=192,
-        memory_size=75_000,  # Уменьшено для снижения пиков памяти (реплей-буфер)
+        memory_size=150_000,  # Уменьшено для снижения пиков памяти (реплей-буфер)
         hidden_sizes=(384, 256, 192), #hidden_sizes= (1024, 512, 256) (winrate 36%),  hidden_sizes=(384, 192, 96),
         train_repeats=4,
         use_amp=True,
@@ -57,7 +57,7 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         learning_rate=0.00015,
         description="Оптимальная конфигурация для Tesla V100 с Tensor Cores",
         use_torch_compile=True,
-        eps_decay_steps=3_000_000,
+        eps_decay_steps=2_500_000,
         dropout_rate=0.25
         #vram_gb=16.0,
         #batch_size=2048,

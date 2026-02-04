@@ -191,7 +191,7 @@
                         </div>
                         <div>
                             <label style="font-weight:500;">Offset max, тиков</label>
-                            <input id="limitOffsetInput" type="number" min="2" max="128" step="1" class="form-control" value="16" />
+                            <input id="limitOffsetInput" type="number" min="2" max="128" step="1" class="form-control" value="2" />
                         </div>
                     </div>
                     <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:10px; margin-top:10px;">
@@ -1718,6 +1718,12 @@
                             const qgateT2 = prediction.market_conditions && prediction.market_conditions.qgate_T2;
                             const qgateMaxQ = prediction.market_conditions && prediction.market_conditions.qgate_maxQ;
                             const qgateGapQ = prediction.market_conditions && prediction.market_conditions.qgate_gapQ;
+                            const gigachatText = prediction.market_conditions && prediction.market_conditions.gigachat_text;
+                            const gigachatOk = prediction.market_conditions && prediction.market_conditions.gigachat_ok;
+                            const gigachatLatency = prediction.market_conditions && prediction.market_conditions.gigachat_latency_ms;
+                            const gigachatError = prediction.market_conditions && prediction.market_conditions.gigachat_error;
+                            const gigachatDecision = prediction.market_conditions && prediction.market_conditions.gigachat_decision;
+                            const gigachatReason = prediction.market_conditions && prediction.market_conditions.gigachat_reason;
                             
                             predictionsHTML += `
                                 <div class="trade-item" style="border-left: 4px solid ${isQgateFiltered ? '#ffc107' : (actionClass === 'buy' ? '#28a745' : actionClass === 'sell' ? '#dc3545' : '#6c757d')};">
@@ -1761,9 +1767,19 @@
                                     ${prediction.market_conditions && Object.keys(prediction.market_conditions).length > 0 && !isQgateFiltered ? `
                                     <div style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px; font-size: 12px;">
                                         <strong>Условия рынка:</strong><br>
-                                        ${Object.entries(prediction.market_conditions).filter(([key]) => !key.startsWith('qgate_')).map(([key, value]) => 
+                                        ${Object.entries(prediction.market_conditions)
+                                            .filter(([key]) => !key.startsWith('qgate_') && !key.startsWith('gigachat_'))
+                                            .map(([key, value]) => 
                                             `${key}: ${value}`
                                         ).join(', ')}
+                                        ${gigachatText || gigachatDecision ? `
+                                        <div style="margin-top:8px;">
+                                            <strong>GigaChat:</strong>
+                                            <span style="font-weight:700;">${gigachatDecision ? String(gigachatDecision) : '—'}</span>
+                                            ${gigachatReason ? `<span style="opacity:0.9;"> — ${gigachatReason}</span>` : ''}
+                                            ${gigachatText ? `<div style="margin-top:6px;"><strong>gigachat_text:</strong> <span style="font-weight:700;">${gigachatText}</span></div>` : ''}
+                                            <span style="opacity:0.7;">${gigachatOk === false ? '(error)' : ''}${typeof gigachatLatency === 'number' ? ` (${gigachatLatency}ms)` : ''}${gigachatError ? `: ${gigachatError}` : ''}</span>
+                                        </div>` : ''}
                                     </div>
                                     ` : ''}
                                 </div>

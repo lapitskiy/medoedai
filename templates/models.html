@@ -122,8 +122,18 @@
                     <label>Seed (если пусто — сгенерируем случайный)</label>
                     <input id="trainSeedInput" class="form-control" type="number" min="1" step="1" placeholder="например, 42">
                 </div>
+                <div id="xgb-training"></div>
+                <div class="form-group">
+                    <label>XGB: horizon_steps (5m шаги)</label>
+                    <input id="xgbHorizonStepsInput" class="form-control" type="number" min="1" step="1" value="12">
+                </div>
+                <div class="form-group">
+                    <label>XGB: threshold (future return)</label>
+                    <input id="xgbThresholdInput" class="form-control" type="number" min="0" step="0.0001" value="0.002">
+                </div>
                 <div class="button-group">
                     <button class="btn btn-primary" onclick="startTrainingSelected()">🚀 Обучить</button>
+                    <button class="btn btn-info" onclick="startXgbTrainingSelected()">🧠 Обучить XGB</button>
                 </div>
                 <div id="trainStatus"></div>
             </div>
@@ -153,6 +163,10 @@
                     <label>Эпизоды дообучения</label>
                     <input id="continueEpisodesInput" class="form-control" type="number" min="1" step="1" value="1000" oninput="updateEstimatedTime()">
                     <div id="episodesEstimate" class="status info" style="display:none; margin-top:6px;"></div>
+                </div>
+                <div class="form-group">
+                    <label>Длина эпизода (количество свечей)</label>
+                    <input id="continueEpisodeLengthInput" class="form-control" type="number" min="1" step="1" value="2000">
                 </div>
                 <div class="form-group">
                     <label>Seed для дообучения (если пусто — случайный)</label>
@@ -513,13 +527,14 @@ P/L Ratio: ${plr}
                 statusDiv.innerHTML = '<div class="status error">❌ Сначала выберите веса dqn_model_*.pth</div>';
                 return;
             }
-            const episodeLength = document.getElementById('continueEpisodeLengthInput').value;
+            const episodeLengthEl = document.getElementById('continueEpisodeLengthInput');
+            const episodeLength = episodeLengthEl ? episodeLengthEl.value : 2000;
             const dirEl = document.getElementById('continueDirectionSelect');
             const dirVal = (dirEl && dirEl.value) ? String(dirEl.value).trim().toLowerCase() : 'long';
 
             statusDiv.innerHTML = '<div class="status info">⏳ Запуск дообучения...</div>';
             try {
-                const resp = await fetch('/continue_training', {
+                const resp = await fetch('/training/continue_training', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ model: selectedFile, episodes, episode_length: episodeLength, seed: seedVal, direction: dirVal })
@@ -787,6 +802,33 @@ P/L Ratio: ${plr}
             }
         }
 
+        async function startXgbTrainingForSymbol(symbol) {
+            const statusDiv = document.getElementById('trainStatus');
+            const dirEl = document.getElementById('trainDirectionSelect');
+            const direction = (dirEl && dirEl.value) ? String(dirEl.value).trim().toLowerCase() : 'long';
+            const horizonSteps = document.getElementById('xgbHorizonStepsInput')?.value || 12;
+            const threshold = document.getElementById('xgbThresholdInput')?.value || 0.002;
+            statusDiv.innerHTML = '<div class="status info">⏳ Запуск XGB обучения ' + symbol + ' (' + direction + ')...</div>';
+            try {
+                const payload = { symbol, direction, horizon_steps: horizonSteps, threshold: threshold };
+                const resp = await fetch('/training/train_xgb_symbol', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json().catch(() => null);
+                if (data && data.success) {
+                    statusDiv.innerHTML = '<div class="status success">✅ XGB обучение запущено (task: ' + data.task_id + ')</div>';
+                } else if (data && data.error) {
+                    statusDiv.innerHTML = '<div class="status error">❌ ' + String(data.error) + '</div>';
+                } else {
+                    statusDiv.innerHTML = '<div class="status error">❌ Неизвестный ответ сервера</div>';
+                }
+            } catch (e) {
+                statusDiv.innerHTML = '<div class="status error">❌ Ошибка запуска XGB: ' + (e && e.message ? e.message : e) + '</div>';
+            }
+        }
+
         function startTrainingSelected(){
             const sel = document.getElementById('trainSymbolSelect');
             const encSelect = document.getElementById('encoderSelect');
@@ -799,6 +841,17 @@ P/L Ratio: ${plr}
             // Если список энкодеров ещё не загружен для символа — подгрузим
             try{ if(encSelect && encSelect.options.length<=1) loadEncodersForSymbol(symbol); }catch(_){ }
             startTrainingForSymbol(symbol, 'optimized');
+        }
+
+        function startXgbTrainingSelected(){
+            const sel = document.getElementById('trainSymbolSelect');
+            const statusDiv = document.getElementById('trainStatus');
+            const symbol = sel ? (sel.value || '').trim() : '';
+            if(!symbol){
+                if(statusDiv) statusDiv.innerHTML = '<div class="status error">❌ Выберите символ</div>';
+                return;
+            }
+            startXgbTrainingForSymbol(symbol);
         }
 
         // Привязки

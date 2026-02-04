@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <link rel="stylesheet" href="/static/css/styles.css">
+  <link rel="stylesheet" href="/static/css/sidebar.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🧭 Adaptive параметры</title>
+</head>
+<body>
+  {% include 'include/_sidebar.html' %}
+  <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+  <div class="container">
+    <div class="main-content">
+      <div class="header">
+        <h1>🧭 Adaptive параметры (full auto)</h1>
+        <p>Просмотр рассчитанных параметров по криптовалютам (stop_loss/take_profit/min_hold/volume_threshold и др.)</p>
+      </div>
+
+      <div class="content">
+        <a href="/" class="back-link">← Вернуться на главную</a>
+
+        <div class="section">
+          <h2>⚙️ Запрос</h2>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+            <label>Symbols (CSV):
+              <input id="symbols" class="form-control" style="min-width:320px;" value="BTCUSDT,ETHUSDT,SOLUSDT,TONUSDT,ADAUSDT,BNBUSDT,XRPUSDT">
+            </label>
+            <label>Timeframe:
+              <select id="timeframe" class="form-control" style="width:auto;display:inline-block;">
+                <option value="5m" selected>5m</option>
+                <option value="15m">15m</option>
+                <option value="1h">1h</option>
+              </select>
+            </label>
+            <label>Limit candles:
+              <input id="limitCandles" class="form-control" style="width:120px;" value="100000">
+            </label>
+            <label style="display:flex;gap:6px;align-items:center;">
+              <input type="checkbox" id="recalc">
+              <span class="muted">recalc (обойти кеш)</span>
+            </label>
+            <button class="btn btn-info" id="loadBtn">Показать</button>
+          </div>
+          <div id="status" class="status" style="margin-top:10px;display:none;"></div>
+        </div>
+
+        <div class="section">
+          <h2>📋 Результаты</h2>
+          <div style="overflow:auto;border:1px solid #e5e7eb;border-radius:8px;">
+            <table style="width:100%;border-collapse:collapse;font-size:12px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left;padding:8px;border-bottom:1px solid #eee;">Symbol</th>
+                  <th style="text-align:left;padding:8px;border-bottom:1px solid #eee;">stop_loss (%)</th>
+                  <th style="text-align:left;padding:8px;border-bottom:1px solid #eee;">take_profit (%)</th>
+                  <th style="text-align:left;padding:8px;border-bottom:1px solid #eee;">min_hold</th>
+                  <th style="text-align:left;padding:8px;border-bottom:1px solid #eee;">volume_threshold (%)</th>
+                  <th style="text-align:left;padding:8px;border-bottom:1px solid #eee;">vol_mult</th>
+                  <th style="text-align:left;padding:8px;border-bottom:1px solid #eee;">trend_strength</th>
+                  <th style="text-align:left;padding:8px;border-bottom:1px solid #eee;">SL/TP source</th>
+                </tr>
+              </thead>
+              <tbody id="rows"></tbody>
+            </table>
+          </div>
+          <pre id="raw" style="margin-top:10px;white-space:pre-wrap;"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function toggleSidebar(){ document.body.classList.toggle('sidebar-open'); }
+    const st = document.getElementById('status');
+    const rows = document.getElementById('rows');
+    const raw = document.getElementById('raw');
+    const btn = document.getElementById('loadBtn');
+
+    function setStatus(kind, text){
+      if(!st) return;
+      st.style.display = 'block';
+      st.className = 'status ' + (kind || 'info');
+      st.textContent = text || '';
+    }
+    function esc(s){
+      return String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+    }
+    function num(v){
+      if(v === null || v === undefined) return '';
+      const x = Number(v);
+      if(Number.isNaN(x)) return '';
+      return x.toFixed(4);
+    }
+    function pct(v){
+      if(v === null || v === undefined) return '';
+      const x = Number(v);
+      if(Number.isNaN(x)) return '';
+      return (x * 100).toFixed(2) + '%';
+    }
+    function render(items){
+      const arr = Array.isArray(items) ? items : [];
+      rows.innerHTML = arr.map(it=>{
+        const sym = esc(it.symbol);
+        if(!it.success){
+          return `<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6;"><code>${sym}</code></td><td colspan="6" style="padding:8px;border-bottom:1px solid #f3f4f6;color:#b91c1c;">${esc(it.error||'error')}</td></tr>`;
+        }
+        const p = it.params || {};
+        const srcRaw = String(p.risk_calc_source || '');
+        const src = srcRaw === 'atr_rel_med' ? 'ATR' : (srcRaw === 'returns_std' ? 'STD(returns)' : srcRaw);
+        return `<tr>
+          <td style="padding:8px;border-bottom:1px solid #f3f4f6;"><code>${sym}</code></td>
+          <td style="padding:8px;border-bottom:1px solid #f3f4f6;"><code>${pct(p.stop_loss_pct)}</code></td>
+          <td style="padding:8px;border-bottom:1px solid #f3f4f6;"><code>${pct(p.take_profit_pct)}</code></td>
+          <td style="padding:8px;border-bottom:1px solid #f3f4f6;"><code>${esc(p.min_hold_steps)}</code></td>
+          <td style="padding:8px;border-bottom:1px solid #f3f4f6;"><code>${pct(p.volume_threshold)}</code></td>
+          <td style="padding:8px;border-bottom:1px solid #f3f4f6;"><code>${num(p.volatility_multiplier)}</code></td>
+          <td style="padding:8px;border-bottom:1px solid #f3f4f6;"><code>${num(p.trend_strength)}</code></td>
+          <td style="padding:8px;border-bottom:1px solid #f3f4f6;"><code>${esc(src)}</code></td>
+        </tr>`;
+      }).join('');
+    }
+
+    btn?.addEventListener('click', async ()=>{
+      btn.disabled = true;
+      setStatus('info','Загружаю...');
+      raw.textContent = '';
+      try{
+        const symbols = document.getElementById('symbols')?.value || '';
+        const timeframe = document.getElementById('timeframe')?.value || '5m';
+        const limit = document.getElementById('limitCandles')?.value || '100000';
+        const recalc = document.getElementById('recalc')?.checked ? '1' : '0';
+        const url = `/api/system/adaptive_params?symbols=${encodeURIComponent(symbols)}&timeframe=${encodeURIComponent(timeframe)}&limit_candles=${encodeURIComponent(limit)}&recalc=${encodeURIComponent(recalc)}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if(!data.success){ setStatus('error', data.error || 'Ошибка'); return; }
+        render(data.items);
+        setStatus('success','OK');
+        raw.textContent = JSON.stringify(data, null, 2);
+      }catch(e){
+        setStatus('error','Ошибка сети');
+        raw.textContent = String(e);
+      }finally{
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
+

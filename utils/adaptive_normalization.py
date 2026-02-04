@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 from typing import Dict, Tuple, Optional
@@ -12,66 +13,204 @@ class AdaptiveNormalizer:
     """
     
     def __init__(self):
-        # Характеристики разных криптовалют
-        self.crypto_profiles = {
-            'BTCUSDT': {
-                'volatility_multiplier': 1.0,      # Базовая волатильность
-                'volume_threshold': 0.002,         # Порог объема
-                'price_sensitivity': 1.0,          # Чувствительность к цене
-                'trend_strength': 1.0,             # Сила тренда
-                'min_hold_time': 12,               # Минимальное время удержания (шаги)
-                'stop_loss': -0.01,                # Меньше терпения
-                'take_profit': 0.004,               # Меньше прибыли
-            },
-            'BNBUSDT': {
-                'volatility_multiplier': 0.95,     # Чуть ниже волатильность, чем у BTC
-                'volume_threshold': 0.0018,        # Мягче порог объема для входа
-                'price_sensitivity': 1.0,          # Стандартная чувствительность
-                'trend_strength': 0.95,            # Чуть слабее требования к тренду
-                'min_hold_time': 20,               # Держим меньше по BNB
-                'stop_loss': -0.01,                # Меньше терпения
-                'take_profit': 0.004,               # Меньше прибыли
-            },
-            'ETHUSDT': {
-                'volatility_multiplier': 1.2,      # ETH более волатилен
-                'volume_threshold': 0.0015,        # Меньший порог объема
-                'price_sensitivity': 1.0,          # Более чувствителен
-                'trend_strength': 1.2,             # Сильнее тренды
-                'min_hold_time': 12,               # Меньше времени удержания
-                'stop_loss': -0.01,                # Меньше терпения
-                'take_profit': 0.004,               # Меньше прибыли
-            },
-            'TONUSDT': {
-                'volatility_multiplier': 0.8,      # TON менее волатилен
-                'volume_threshold': 0.003,         # Больший порог объема
-                'price_sensitivity': 1.0,          # Менее чувствителен
-                'trend_strength': 0.8,             # Слабые тренды
-                'min_hold_time': 12,               # Больше времени удержания
-                'stop_loss': -0.01,                # Меньше терпения
-                'take_profit': 0.004,               # Меньше прибыли
-            },
-            'SOLUSDT': {
-                'volatility_multiplier': 1.5,      # SOL очень волатилен
-                'volume_threshold': 0.001,         # Очень низкий порог
-                'price_sensitivity': 1.0,          # Очень чувствителен
-                'trend_strength': 1.5,             # Очень сильные тренды
-                'min_hold_time': 16,               # Очень быстрое реагирование
-                'stop_loss': -0.01,                # Меньше терпения
-                'take_profit': 0.004,               # Меньше прибыли
-            },
-            'ADAUSDT': {
-                'volatility_multiplier': 0.9,      # ADA умеренно волатилен
-                'volume_threshold': 0.0025,        # Средний порог
-                'price_sensitivity': 1.0,         # Средняя чувствительность
-                'trend_strength': 0.9,             # Средние тренды
-                'min_hold_time': 26,               # Среднее время
-                'stop_loss': -0.01,                # Меньше терпения
-                'take_profit': 0.004,               # Меньше прибыли
-            }
-        }
+        # Ручные профили криптовалют убраны: расчёт торговых параметров идёт динамически
+        # через get_trading_params() -> adapt_parameters() -> _full_auto_base_profile().
+        # get_crypto_profile() оставлен для обратной совместимости (возвращает дефолтный профиль).
+        self.crypto_profiles = {}
         
         # Динамические параметры
         self.dynamic_params = {}
+
+        # --- Full-auto calibration cache (small JSON files) ---
+        # Храним только компактные параметры, без больших массивов regime_precomputed.
+        self._cache_dir = os.environ.get("ADAPT_CACHE_DIR", "result/adaptive_cache")
+        try:
+            self._cache_ttl_sec = int(os.environ.get("ADAPT_CACHE_TTL_SEC", "3600"))
+        except Exception:
+            self._cache_ttl_sec = 3600
+        self._cache_mem: dict[tuple, dict] = {}
+
+    def _df_signature(self, df: pd.DataFrame) -> dict:
+        """Компактная сигнатура данных для кеша (быстро, без хеширования всего массива)."""
+        try:
+            n = int(len(df))
+        except Exception:
+            n = 0
+        last_ts = None
+        try:
+            if n > 0 and "timestamp" in df.columns:
+                last_ts = int(df["timestamp"].iloc[-1])
+        except Exception:
+            last_ts = None
+        try:
+            last_close = float(df["close"].iloc[-1]) if (n > 0 and "close" in df.columns) else None
+        except Exception:
+            last_close = None
+        return {"n": n, "last_ts": last_ts, "last_close": last_close}
+
+    def _cache_key(self, symbol: str, timeframe: str, train_split_point: int | None, sig: dict) -> tuple:
+        # bump version when output schema changes (e.g., adding meta fields)
+        algo_ver = "v2_full_auto_meta"
+        return (algo_ver, str(symbol).upper(), str(timeframe), int(train_split_point or -1), int(sig.get("n") or 0), sig.get("last_ts"), sig.get("last_close"))
+
+    def _cache_path(self, key: tuple) -> str:
+        # filename safe and short
+        algo_ver, sym, tf, split, n, last_ts, last_close = key
+        fname = f"{sym}_{tf}_split{split}_n{n}_last{last_ts}_{algo_ver}.json"
+        return os.path.join(self._cache_dir, fname)
+
+    def _cache_load(self, key: tuple) -> dict | None:
+        # ttl<=0 means "disable cache"
+        try:
+            if int(self._cache_ttl_sec) <= 0:
+                return None
+        except Exception:
+            pass
+        # 1) memory cache
+        try:
+            hit = self._cache_mem.get(key)
+            if isinstance(hit, dict):
+                ts = float(hit.get("_cached_at", 0.0) or 0.0)
+                if ts and (ts + self._cache_ttl_sec) >= float(pd.Timestamp.utcnow().timestamp()):
+                    return hit.get("payload")
+        except Exception:
+            pass
+        # 2) file cache
+        try:
+            path = self._cache_path(key)
+            if not os.path.exists(path):
+                return None
+            st = os.stat(path)
+            if self._cache_ttl_sec > 0:
+                now = float(pd.Timestamp.utcnow().timestamp())
+                if (st.st_mtime + self._cache_ttl_sec) < now:
+                    return None
+            import json as _json
+            with open(path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            if isinstance(data, dict) and "payload" in data:
+                self._cache_mem[key] = data
+                return data.get("payload")
+        except Exception:
+            return None
+        return None
+
+    def _cache_save(self, key: tuple, payload: dict) -> None:
+        try:
+            os.makedirs(self._cache_dir, exist_ok=True)
+        except Exception:
+            return
+        try:
+            import json as _json
+            data = {"_cached_at": float(pd.Timestamp.utcnow().timestamp()), "payload": payload}
+            path = self._cache_path(key)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, path)
+            self._cache_mem[key] = data
+        except Exception:
+            pass
+
+    def _full_auto_base_profile(self, symbol: str, df: pd.DataFrame, train_split_point: int | None) -> Dict:
+        """
+        Full-auto базовые параметры из train-части данных (робастно, без оптимизации по PnL).
+        Возвращает профиль в формате self.crypto_profiles[*].
+        """
+        analysis_df = df.iloc[:train_split_point] if (train_split_point is not None and train_split_point > 0) else df
+        # fallbacks
+        base = {
+            "volatility_multiplier": 1.0,
+            "volume_threshold": 0.002,
+            "price_sensitivity": 1.0,
+            "trend_strength": 1.0,
+            "min_hold_time": 12,
+            "stop_loss": -0.02,
+            "take_profit": 0.02,
+            # meta: откуда взят риск-прокси для SL/TP (ATR или std(returns))
+            "risk_calc_source": "unknown",
+            "atr_rel_med": None,
+            "returns_std": None,
+            "vol_proxy": None,
+        }
+        try:
+            if analysis_df is None or len(analysis_df) < 50:
+                return base
+
+            close = analysis_df["close"].astype(float) if "close" in analysis_df.columns else None
+            if close is None:
+                return base
+            ret = close.pct_change().dropna()
+            ret_std = float(ret.std()) if len(ret) > 5 else 0.0
+            base["returns_std"] = float(ret_std)
+
+            # ATR-relative (median) if available
+            atr_rel_med = None
+            try:
+                if {"high", "low", "close"}.issubset(set(analysis_df.columns)) and len(analysis_df) > 30:
+                    high = analysis_df["high"].astype(float)
+                    low = analysis_df["low"].astype(float)
+                    prev_close = close.shift(1).fillna(close.iloc[0])
+                    tr = np.maximum(high - low, np.maximum((high - prev_close).abs(), (low - prev_close).abs()))
+                    atr = tr.rolling(14, min_periods=14).mean()
+                    atr_rel = (atr / close).dropna()
+                    if len(atr_rel) > 0:
+                        atr_rel_med = float(atr_rel.median())
+            except Exception:
+                atr_rel_med = None
+            base["atr_rel_med"] = float(atr_rel_med) if (atr_rel_med is not None) else None
+
+            vol_proxy = float(atr_rel_med if (atr_rel_med is not None and atr_rel_med > 0) else max(0.0, ret_std))
+            vol_proxy = float(np.clip(vol_proxy, 1e-6, 0.20))
+            base["vol_proxy"] = float(vol_proxy)
+            base["risk_calc_source"] = "atr_rel_med" if (atr_rel_med is not None and atr_rel_med > 0) else "returns_std"
+
+            # stop_loss / take_profit from volatility proxy
+            # keep inside existing global clips later: stop_loss in [-0.05,-0.01], take_profit in [0.02,0.05]
+            stop_loss = -float(np.clip(2.0 * vol_proxy, 0.01, 0.05))
+            take_profit = float(np.clip(1.5 * vol_proxy, 0.02, 0.05))
+
+            # min_hold_time from median run-length of return sign (simple regime persistence proxy)
+            min_hold = 12
+            try:
+                sgn = np.sign(ret.fillna(0.0).values)
+                # collapse zeros
+                sgn = np.where(sgn == 0, 0, sgn)
+                runs = []
+                cur = 0
+                last = 0
+                for x in sgn:
+                    if x == 0:
+                        continue
+                    if x == last:
+                        cur += 1
+                    else:
+                        if cur > 0:
+                            runs.append(cur)
+                        cur = 1
+                        last = x
+                if cur > 0:
+                    runs.append(cur)
+                if runs:
+                    med_run = float(np.median(runs))
+                    min_hold = int(np.clip(int(med_run * 2), 12, 96))
+            except Exception:
+                min_hold = 12
+
+            # volatility_multiplier relative to a baseline (2% typical)
+            volatility_multiplier = float(np.clip(vol_proxy / 0.02, 0.5, 2.0))
+
+            base.update(
+                {
+                    "volatility_multiplier": volatility_multiplier,
+                    "min_hold_time": int(min_hold),
+                    "stop_loss": float(stop_loss),
+                    "take_profit": float(take_profit),
+                }
+            )
+            return base
+        except Exception:
+            return base
         
     def get_crypto_profile(self, symbol: str) -> Dict:
         """Получает профиль криптовалюты"""
@@ -81,8 +220,7 @@ class AdaptiveNormalizer:
         if base_symbol in self.crypto_profiles:
             return self.crypto_profiles[base_symbol].copy()
         else:
-            # Дефолтный профиль для неизвестных криптовалют
-            logger.warning(f"Неизвестная криптовалюта: {symbol}, используем дефолтный профиль")
+            # Дефолтный профиль (без warning-спама: динамика считается в get_trading_params()).
             return {
                 'volatility_multiplier': 1.0,
                 'volume_threshold': 0.002,
@@ -166,8 +304,9 @@ class AdaptiveNormalizer:
             df: DataFrame с историческими данными
             train_split_point: Точка разделения train/test данных
         """
-        # Базовый профиль
-        profile = self.get_crypto_profile(symbol)
+        # Full-auto базовый профиль: всегда вычисляем из train-части OHLCV.
+        # Это убирает "профили от балды" и делает поведение одинаковым для известных/неизвестных символов.
+        profile = self._full_auto_base_profile(symbol, df, train_split_point)
         
         # Анализ рыночных условий ТОЛЬКО по обучающим данным
         market_conditions = self.analyze_market_conditions(df, train_split_point)
@@ -480,7 +619,7 @@ class AdaptiveNormalizer:
         # Ограничиваем значения
         adapted_params['min_hold_time'] = max(12, min(96, adapted_params['min_hold_time']))
         adapted_params['stop_loss'] = max(-0.05, min(-0.01, adapted_params['stop_loss']))
-        adapted_params['take_profit'] = max(0.005, min(0.05, adapted_params['take_profit']))
+        adapted_params['take_profit'] = max(0.02, min(0.05, adapted_params['take_profit']))
         
         return adapted_params
     
@@ -553,6 +692,17 @@ class AdaptiveNormalizer:
             df: DataFrame с историческими данными
             train_split_point: Точка разделения train/test данных
         """
+        # Кешируем компактный результат (без больших массивов), чтобы UI/обучение не считали повторно.
+        timeframe = "5m"
+        try:
+            sig = self._df_signature(df)
+            key = self._cache_key(symbol, timeframe, train_split_point, sig)
+            cached = self._cache_load(key)
+            if isinstance(cached, dict):
+                return cached
+        except Exception:
+            pass
+
         params = self.adapt_parameters(symbol, df, train_split_point)
         
         out = {
@@ -563,6 +713,11 @@ class AdaptiveNormalizer:
             'volatility_multiplier': params['volatility_multiplier'],
             'price_sensitivity': params['price_sensitivity'],
             'trend_strength': params['trend_strength'],
+            # meta: source for SL/TP volatility proxy + key proxy values (for UI visibility)
+            'risk_calc_source': params.get('risk_calc_source'),
+            'atr_rel_med': params.get('atr_rel_med'),
+            'returns_std': params.get('returns_std'),
+            'vol_proxy': params.get('vol_proxy'),
         }
         # Передаём трендовые настройки и статистику/предвычисления, если посчитаны
         if 'regime_stats' in params:
@@ -573,6 +728,14 @@ class AdaptiveNormalizer:
             out['trend_tau'] = params['trend_tau']
         if 'regime_precomputed' in params:
             out['regime_precomputed'] = params['regime_precomputed']
+        # В кеш кладём только компактную часть
+        try:
+            compact = dict(out)
+            if "regime_precomputed" in compact:
+                compact.pop("regime_precomputed", None)
+            self._cache_save(key, compact)  # type: ignore[name-defined]
+        except Exception:
+            pass
         return out
 
 # Глобальный экземпляр

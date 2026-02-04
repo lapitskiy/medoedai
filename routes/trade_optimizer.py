@@ -4,6 +4,8 @@ from celery.result import AsyncResult  # type: ignore
 from tasks import celery  # type: ignore
 import json
 
+from utils.trade_lab_dataset import TradeLabDatasetConfig, write_symbol_runs_dataset_to_tmp
+
 trade_opt_bp = Blueprint('trade_opt', __name__)
 
 
@@ -59,6 +61,28 @@ def trade_lab_runs():
         except Exception:
             pass
         return jsonify({'success': True, 'runs': items})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@trade_opt_bp.post('/api/trade_lab/dataset/build')
+def trade_lab_build_dataset():
+    """
+    Генерирует JSON датасет по всем обученным run'ам выбранного symbol/model_type.
+    Сохраняет в result/trade_lab_tmp/<SYMBOL>/trade_lab_dataset_<type>_<SYMBOL>_<ts>.json
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        symbol = (data.get('symbol') or '').strip()
+        model_type = (data.get('model_type') or 'dqn').strip().lower()
+        if not symbol:
+            return jsonify({'success': False, 'error': 'symbol required'}), 400
+        if model_type not in ('dqn', 'sac'):
+            model_type = 'dqn'
+
+        cfg = TradeLabDatasetConfig(model_type=model_type, out_dir='result/trade_lab_tmp', max_pkl_mb=64)
+        out_path = write_symbol_runs_dataset_to_tmp(symbol, cfg=cfg)
+        return jsonify({'success': True, 'dataset_path': out_path})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

@@ -465,22 +465,83 @@ def _save_training_results(
         adaptive_snapshot = {}
         try:
             if is_multi_crypto:
+                # Мульти-режим: сохраняем компактно по символам (без тяжёлых массивов).
                 per_symbol = {}
-                # Для мульти-режима лучше формировать снапшот в среде и передавать сюда уже готовые данные.
+                try:
+                    if isinstance(dfs, dict):
+                        for sym, data in dfs.items():
+                            try:
+                                df5 = (data.get('df_5min') if isinstance(data, dict) else None)
+                                if df5 is None:
+                                    continue
+                                train_split_point = None
+                                try:
+                                    train_split_point = int(len(df5) * 0.8)
+                                except Exception:
+                                    train_split_point = None
+                                tp = adaptive_normalizer.get_trading_params(
+                                    str(sym or ''),
+                                    df5,
+                                    train_split_point=train_split_point,
+                                )
+                                if isinstance(tp, dict):
+                                    tp.pop('regime_precomputed', None)
+                                mc = adaptive_normalizer.analyze_market_conditions(df5, train_split_point=train_split_point)
+                                ap = adaptive_normalizer.adapt_parameters(str(sym or ''), df5, train_split_point=train_split_point)
+                                if isinstance(ap, dict):
+                                    ap.pop('regime_precomputed', None)
+                                per_symbol[str(sym)] = {
+                                    'trading_params': tp,
+                                    'market_conditions': mc,
+                                    'adapted_params': ap,
+                                }
+                            except Exception:
+                                continue
+                except Exception:
+                    per_symbol = {}
                 adaptive_snapshot = {'per_symbol': per_symbol}
             else:
-                # Если передали dfs, фиксируем базовую информацию о доступных фреймах
-                if dfs:
-                    adaptive_snapshot = {
-                        'frames': {
-                            key: {
-                                'rows': len(value) if hasattr(value, '__len__') else None
-                            }
-                            for key, value in dfs.items()
-                        }
-                    }
-                else:
-                    adaptive_snapshot = {}
+                # Single-режим: фиксируем символ + динамические параметры (compact) + базовую инфу по фреймам.
+                sym = None
+                try:
+                    sym = get_env_attr_safe(env, 'symbol', None)
+                except Exception:
+                    sym = None
+                if not sym:
+                    # training_name для single обычно равен crypto_symbol (например TONUSDT)
+                    sym = training_name
+                df5 = dfs.get('df_5min') if isinstance(dfs, dict) else None
+                frames = {}
+                try:
+                    if isinstance(dfs, dict):
+                        for key, value in dfs.items():
+                            try:
+                                if key in ('df_5min', 'df_15min', 'df_1h'):
+                                    frames[key] = {'rows': (len(value) if hasattr(value, '__len__') else None)}
+                            except Exception:
+                                continue
+                except Exception:
+                    frames = {}
+                adaptive_snapshot = {'symbol': sym, 'frames': frames}
+                try:
+                    if df5 is not None and isinstance(sym, str) and sym:
+                        train_split_point = None
+                        try:
+                            train_split_point = int(len(df5) * 0.8)
+                        except Exception:
+                            train_split_point = None
+                        tp = adaptive_normalizer.get_trading_params(sym, df5, train_split_point=train_split_point)
+                        if isinstance(tp, dict):
+                            tp.pop('regime_precomputed', None)
+                        mc = adaptive_normalizer.analyze_market_conditions(df5, train_split_point=train_split_point)
+                        ap = adaptive_normalizer.adapt_parameters(sym, df5, train_split_point=train_split_point)
+                        if isinstance(ap, dict):
+                            ap.pop('regime_precomputed', None)
+                        adaptive_snapshot['trading_params'] = tp
+                        adaptive_snapshot['market_conditions'] = mc
+                        adaptive_snapshot['adapted_params'] = ap
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning(f"Ошибка при создании adaptive_snapshot: {e}")
             adaptive_snapshot = {}
@@ -599,6 +660,12 @@ def _save_training_results(
             'trained_as': (direction or 'long'),
             'direction': (direction or 'long'),
         }
+        # Добавляем компактный снэпшот adaptive params в manifest.json
+        try:
+            if isinstance(adaptive_snapshot, dict) and adaptive_snapshot.get('trading_params'):
+                manifest['adaptive_params'] = adaptive_snapshot.get('trading_params')
+        except Exception:
+            pass
         try:
             with open(os.path.join(run_dir, 'manifest.json'), 'w', encoding='utf-8') as mf:
                 _json.dump(manifest, mf, ensure_ascii=False, indent=2)
@@ -841,42 +908,8 @@ def train_model_optimized(
         except Exception:
             gym_snapshot = {}
 
-        # --- Снимок адаптивной нормализации (по символам) ---
-        adaptive_snapshot = {}
-        try:
-            if is_multi_crypto:
-                per_symbol = {}
-                for sym, data in dfs.items():
-                    try:
-                        df5s = data.get('df_5min') if isinstance(data, dict) else None
-                        if df5s is None:
-                            continue
-                        base_profile = adaptive_normalizer.get_crypto_profile(sym)
-                        market = adaptive_normalizer.analyze_market_conditions(df5s)
-                        adapted = adaptive_normalizer.adapt_parameters(sym, df5s)
-                        per_symbol[sym] = {
-                            'base_profile': base_profile,
-                            'market_conditions': market,
-                            'adapted_params': adapted,
-                        }
-                    except Exception:
-                        continue
-                adaptive_snapshot = {'per_symbol': per_symbol}
-            else:
-                df5s = dfs.get('df_5min') if isinstance(dfs, dict) else None
-                sym = crypto_symbol
-                if df5s is not None and isinstance(sym, str):
-                    base_profile = adaptive_normalizer.get_crypto_profile(sym)
-                    market = adaptive_normalizer.analyze_market_conditions(df5s)
-                    adapted = adaptive_normalizer.adapt_parameters(sym, df5s)
-                    adaptive_snapshot = {
-                        'symbol': sym,
-                        'base_profile': base_profile,
-                        'market_conditions': market,
-                        'adapted_params': adapted,
-                    }
-        except Exception:
-            adaptive_snapshot = {}
+        # Примечание: снапшот adaptive_normalization сохраняется централизованно в _save_training_results()
+        # (там же обеспечена compact-форма без regime_precomputed). Здесь не считаем повторно.
         
         # Проверяем, что окружение правильно инициализировано
         if not hasattr(getattr(env, 'unwrapped', env), 'observation_space_shape'):

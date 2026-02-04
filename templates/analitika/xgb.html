@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MedoedAI - 📊 XGB статистика</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+</head>
+<body>
+    {% include 'include/_sidebar.html' %}
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <div class="container">
+        <div class="main-content">
+            <div class="header">
+                <h1>📊 XGB — Статистика</h1>
+                <p>Сводка по всем XGB run’ам из <code>result/xgb/*/runs/*</code></p>
+                <div class="button-group" style="margin-top: 12px;">
+                    <a href="/xgb_models" class="btn btn-secondary">🧠 Перейти к обучению XGB</a>
+                </div>
+            </div>
+
+            <div class="content">
+                <div class="section">
+                    <h2>Доступные модели</h2>
+                    <div class="status info" style="margin-bottom:10px;">
+                        <b>y_counts_val</b>: <code>[hold, buy, sell]</code> • <b>y_non_hold</b>: доля non-hold в label на val • <b>pred_non_hold</b>: доля предсказаний non-hold на val
+                    </div>
+                    <div class="form-group" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-bottom:12px;">
+                        <div style="min-width:220px;">
+                            <label>Фильтр: Symbol</label>
+                            <select id="xgbFilterSymbol" class="form-control">
+                                <option value="">Все</option>
+                            </select>
+                        </div>
+                        <div style="min-width:220px;">
+                            <label>Фильтр: Task</label>
+                            <select id="xgbFilterTask" class="form-control">
+                                <option value="">Все</option>
+                            </select>
+                        </div>
+                        <div style="min-width:260px;">
+                            <label>Сортировка</label>
+                            <select id="xgbSortMode" class="form-control">
+                                <option value="best" selected>Best first (по качеству)</option>
+                                <option value="mtime">Сначала новые</option>
+                                <option value="val_acc">val_acc</option>
+                                <option value="f1_buy_sell">f1_buy_sell (directional)</option>
+                                <option value="f1_pos">f1(1) (entry/exit)</option>
+                                <option value="precision_pos">precision(1) (entry/exit)</option>
+                                <option value="recall_pos">recall(1) (entry/exit)</option>
+                                <option value="y_non_hold">y_non_hold (label coverage)</option>
+                                <option value="pred_non_hold">pred_non_hold</option>
+                            </select>
+                        </div>
+                        <div>
+                            <button class="btn btn-info" onclick="applyXgbFilters()">Применить</button>
+                        </div>
+                        <div>
+                            <button class="btn btn-warning" onclick="deleteSelectedXgbRuns()">🗑️ Удалить выбранные</button>
+                        </div>
+                    </div>
+                    <div id="xgbDeleteStatus" class="status info" style="display:none; margin-bottom:10px; white-space: pre-wrap;"></div>
+                    {% if not runs %}
+                        <div class="status info">Нет XGB run’ов. Сначала обучите модель на странице <code>/xgb_models</code>.</div>
+                    {% else %}
+                        <div style="overflow-x:auto;">
+                            <table class="table" style="width:100%; border-collapse: collapse;">
+                                <thead>
+                                    <tr>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">
+                                            <input type="checkbox" id="xgbSelectAll" />
+                                        </th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Symbol</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Run</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Manifest</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Dir</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Task</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Source</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">H</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Thr</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">max_hold</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">min_profit, %</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">val_acc</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">f1_buy_sell</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">f1(1)</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">prec(1)</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">recall(1)</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">y_counts_val</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">y_non_hold</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">pred_non_hold</th>
+                                        <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Path</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for r in runs %}
+                                        {% set m = r.metrics or {} %}
+                                        {% set f1pos = (m.get('f1_val')[1] if (m.get('f1_val') and (m.get('f1_val')|length) > 1) else '') %}
+                                        {% set ppos = (m.get('precision_val')[1] if (m.get('precision_val') and (m.get('precision_val')|length) > 1) else '') %}
+                                        {% set rpos = (m.get('recall_val')[1] if (m.get('recall_val') and (m.get('recall_val')|length) > 1) else '') %}
+                                        {% set yNonHold = m.get('y_non_hold_rate_val', '') %}
+                                        {% set predNonHold = m.get('pred_non_hold_rate_val', '') %}
+                                        <tr>
+                                        <tr class="xgb-row"
+                                            data-symbol="{{ r.symbol }}"
+                                            data-task="{{ r.task or '' }}"
+                                            data-source="{{ r.source or '' }}"
+                                            data-mtime="{{ r.mtime or 0 }}"
+                                            data-val-acc="{{ m.get('val_acc', '') }}"
+                                            data-f1-buy-sell="{{ m.get('f1_buy_sell_val', '') }}"
+                                            data-f1-pos="{{ f1pos }}"
+                                            data-precision-pos="{{ ppos }}"
+                                            data-recall-pos="{{ rpos }}"
+                                            data-y-non-hold="{{ yNonHold }}"
+                                            data-pred-non-hold="{{ predNonHold }}"
+                                            data-path="{{ r.result_dir }}"
+                                        >
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
+                                                <input type="checkbox" class="xgb-row-check" />
+                                            </td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ r.symbol }}</td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;"><code>{{ r.run_name }}</code></td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
+                                                <a href="/analitika/xgb/manifest?path={{ (r.result_dir ~ '/manifest.json') | urlencode }}" target="_blank">open</a>
+                                            </td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ r.direction or '—' }}</td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;"><code>{{ r.task or '—' }}</code></td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;"><code>{{ r.source or '—' }}</code></td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ r.horizon_steps or '—' }}</td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ r.threshold or '—' }}</td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ r.max_hold_steps or '—' }}</td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
+                                                {% if r.min_profit is not none %}
+                                                    {{ '%.3f' % (r.min_profit * 100.0) }}
+                                                {% else %}
+                                                    —
+                                                {% endif %}
+                                            </td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ m.get('val_acc', '—') }}</td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ m.get('f1_buy_sell_val', '—') }}</td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ f1pos if f1pos != '' else '—' }}</td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ ppos if ppos != '' else '—' }}</td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ rpos if rpos != '' else '—' }}</td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;"><code>{{ m.get('y_counts_val', '—') }}</code></td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ yNonHold if yNonHold != '' else '—' }}</td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ m.get('pred_non_hold_rate_val', '—') }}</td>
+                                            <td style="padding:8px; border-bottom:1px solid #f0f0f0;"><code>{{ r.result_dir }}</code></td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function _num(v){
+            const x = parseFloat(String(v ?? '').replace(',', '.'));
+            return Number.isFinite(x) ? x : null;
+        }
+
+        function _taskType(task){
+            const t = String(task || '').toLowerCase();
+            if(t.startsWith('entry') || t.startsWith('exit')) return 'binary';
+            if(t === 'directional') return 'directional';
+            return 'unknown';
+        }
+
+        function _bestScore(row){
+            const task = row.dataset.task || '';
+            const kind = _taskType(task);
+            if(kind === 'directional'){
+                const v = _num(row.dataset.f1BuySell);
+                return (v !== null) ? v : -1e9;
+            }
+            if(kind === 'binary'){
+                const v = _num(row.dataset.f1Pos);
+                return (v !== null) ? v : -1e9;
+            }
+            // fallback
+            const acc = _num(row.dataset.valAcc);
+            return (acc !== null) ? acc : -1e9;
+        }
+
+        function applyXgbFilters(){
+            const sym = (document.getElementById('xgbFilterSymbol')?.value || '').trim();
+            const task = (document.getElementById('xgbFilterTask')?.value || '').trim().toLowerCase();
+            const sortMode = (document.getElementById('xgbSortMode')?.value || 'best').trim();
+            const rows = Array.from(document.querySelectorAll('tr.xgb-row'));
+
+            // filter
+            rows.forEach(r=>{
+                const okSym = !sym || String(r.dataset.symbol||'') === sym;
+                const okTask = !task || String(r.dataset.task||'').toLowerCase() === task;
+                r.style.display = (okSym && okTask) ? '' : 'none';
+            });
+
+            // sort visible rows
+            const tbody = rows.length ? rows[0].parentElement : null;
+            if(!tbody) return;
+
+            const visible = rows.filter(r => r.style.display !== 'none');
+            const keyFn = (r)=>{
+                if(sortMode === 'mtime') return _num(r.dataset.mtime) ?? 0;
+                if(sortMode === 'val_acc') return _num(r.dataset.valAcc) ?? -1e9;
+                if(sortMode === 'f1_buy_sell') return _num(r.dataset.f1BuySell) ?? -1e9;
+                if(sortMode === 'f1_pos') return _num(r.dataset.f1Pos) ?? -1e9;
+                if(sortMode === 'precision_pos') return _num(r.dataset.precisionPos) ?? -1e9;
+                if(sortMode === 'recall_pos') return _num(r.dataset.recallPos) ?? -1e9;
+                if(sortMode === 'y_non_hold') return _num(r.dataset.yNonHold) ?? -1e9;
+                if(sortMode === 'pred_non_hold') return _num(r.dataset.predNonHold) ?? -1e9;
+                return _bestScore(r);
+            };
+            visible.sort((a,b)=> (keyFn(b) - keyFn(a)));
+            visible.forEach(r=>tbody.appendChild(r));
+        }
+
+        async function deleteSelectedXgbRuns(){
+            const status = document.getElementById('xgbDeleteStatus');
+            const rows = Array.from(document.querySelectorAll('tr.xgb-row'));
+            const selected = rows.filter(r=>{
+                const cb = r.querySelector('input.xgb-row-check');
+                return cb && cb.checked;
+            });
+            if(!selected.length){
+                if(status){ status.style.display='block'; status.className='status info'; status.textContent='Ничего не выбрано.'; }
+                return;
+            }
+            const paths = selected.map(r=>String(r.dataset.path||'')).filter(Boolean);
+            if(!paths.length) return;
+            const ok = confirm('Удалить выбранные run директории?\n' + paths.slice(0,5).join('\n') + (paths.length>5 ? `\n... (+${paths.length-5})` : ''));
+            if(!ok) return;
+            if(status){ status.style.display='block'; status.className='status info'; status.textContent='Удаляю...'; }
+            try{
+                const resp = await fetch('/analitika/xgb/delete_runs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify({ paths })
+                });
+                const data = await resp.json().catch(()=>null);
+                if(data && data.success){
+                    // remove rows from table
+                    selected.forEach(r=>{ try{ r.remove(); }catch(_){} });
+                    if(status){
+                        status.className='status success';
+                        status.textContent = `Удалено: ${data.deleted_count || 0}` + ((data.errors && data.errors.length) ? `\nОшибки: ${data.errors.length}` : '');
+                    }
+                }else{
+                    if(status){ status.className='status error'; status.textContent = 'Ошибка удаления: ' + (data && data.error ? data.error : 'unknown'); }
+                }
+            }catch(e){
+                if(status){ status.className='status error'; status.textContent = 'Ошибка удаления: ' + (e && e.message ? e.message : e); }
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', function(){
+            const rows = Array.from(document.querySelectorAll('tr.xgb-row'));
+            const symSel = document.getElementById('xgbFilterSymbol');
+            const taskSel = document.getElementById('xgbFilterTask');
+            if(symSel){
+                const set = new Set(rows.map(r=>String(r.dataset.symbol||'')).filter(Boolean));
+                Array.from(set).sort().forEach(s=>{
+                    const o=document.createElement('option'); o.value=s; o.textContent=s; symSel.appendChild(o);
+                });
+            }
+            if(taskSel){
+                const set = new Set(rows.map(r=>String(r.dataset.task||'')).filter(Boolean));
+                Array.from(set).sort().forEach(t=>{
+                    const o=document.createElement('option'); o.value=t; o.textContent=t; taskSel.appendChild(o);
+                });
+            }
+            try{
+                const all = document.getElementById('xgbSelectAll');
+                if(all){
+                    all.addEventListener('change', function(){
+                        const cbs = Array.from(document.querySelectorAll('input.xgb-row-check'));
+                        cbs.forEach(cb=>{ cb.checked = !!all.checked; });
+                    });
+                }
+            }catch(_){}
+            applyXgbFilters();
+        });
+    </script>
+    <script src="/static/js/sidebar.js"></script>
+</body>
+</html>
+

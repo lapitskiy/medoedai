@@ -1667,6 +1667,56 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 weights = (cfg.get('weights') if isinstance(cfg, dict) else None) or [1, 1, 1]
                 voting = (cfg.get('voting') if isinstance(cfg, dict) else None) or 'majority'
                 tie_break = (cfg.get('tie_break') if isinstance(cfg, dict) else None) or 'last'
+                # Conflict‑veto (UI /settings -> /api/trading/regime_config):
+                # если 2 коротких окна (576/1440) совпали и противоположны длинному (2880) → можно блокировать вход (HOLD).
+                conflict_veto_enabled = False
+                conflict_veto_trend_only = True
+                # Trend-veto: запрещаем торговать ПРОТИВ режима (downtrend блокирует BUY, uptrend блокирует SELL).
+                trend_veto_enabled = False
+
+                # 1) Читаем флаги из Postgres (app_settings), чтобы настраивать как остальные настройки в /settings.
+                #    scope='trading', group='regime'
+                #    keys: CONFLICT_VETO, CONFLICT_VETO_TREND_ONLY, TREND_VETO
+                def _truthy(v) -> bool:
+                    try:
+                        return str(v).strip().lower() in ('1', 'true', 'yes', 'on')
+                    except Exception:
+                        return False
+
+                db_conflict_veto = None
+                db_conflict_veto_trend_only = None
+                db_trend_veto = None
+                try:
+                    from utils.settings_store import get_setting_value as _get_setting_value
+                    db_conflict_veto = _get_setting_value('trading', 'regime', 'CONFLICT_VETO')
+                    db_conflict_veto_trend_only = _get_setting_value('trading', 'regime', 'CONFLICT_VETO_TREND_ONLY')
+                    db_trend_veto = _get_setting_value('trading', 'regime', 'TREND_VETO')
+                except Exception:
+                    db_conflict_veto = None
+                    db_conflict_veto_trend_only = None
+                    db_trend_veto = None
+
+                if db_conflict_veto is not None:
+                    conflict_veto_enabled = _truthy(db_conflict_veto)
+                if db_conflict_veto_trend_only is not None:
+                    conflict_veto_trend_only = _truthy(db_conflict_veto_trend_only)
+                if db_trend_veto is not None:
+                    trend_veto_enabled = _truthy(db_trend_veto)
+
+                # 2) Фолбэк: если в БД не задано — читаем из Redis cfg (как раньше)
+                try:
+                    if isinstance(cfg, dict):
+                        if db_conflict_veto is None:
+                            conflict_veto_enabled = bool(cfg.get('conflict_veto') is True or str(cfg.get('conflict_veto') or '').strip().lower() in ('1', 'true', 'yes', 'on'))
+                        # По умолчанию: veto только для uptrend/downtrend (flat игнорируем)
+                        if db_conflict_veto_trend_only is None and ('conflict_veto_trend_only' in cfg):
+                            conflict_veto_trend_only = bool(cfg.get('conflict_veto_trend_only') is True or str(cfg.get('conflict_veto_trend_only') or '').strip().lower() in ('1', 'true', 'yes', 'on'))
+                        if db_trend_veto is None:
+                            trend_veto_enabled = bool(cfg.get('trend_veto') is True or str(cfg.get('trend_veto') or '').strip().lower() in ('1', 'true', 'yes', 'on'))
+                except Exception:
+                    conflict_veto_enabled = False
+                    conflict_veto_trend_only = True
+                    trend_veto_enabled = False
                 drift_thr = float((cfg.get('drift_threshold') if isinstance(cfg, dict) else 0.001) or 0.001)
                 vol_flat_thr = float((cfg.get('flat_vol_threshold') if isinstance(cfg, dict) else 0.003) or 0.003)
                 # Пока регрессию/ADX не включаем (флаги можно будет учесть позже)
@@ -1713,6 +1763,29 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     wt = float(weights[i] if i < len(weights) else 1.0)
                     votes[lab] += wt
 
+                # Conflict-veto candidate: 2 коротких одинаковые и противоположны длинному (по максимальному window)
+                long_idx = None
+                long_window = None
+                long_label = None
+                short_label = None
+                conflict_veto_candidate = False
+                try:
+                    if windows and labels and len(windows) == len(labels) and len(windows) >= 3:
+                        long_idx = max(range(len(windows)), key=lambda i: int(windows[i]))
+                        long_window = int(windows[long_idx])
+                        long_label = str(labels[long_idx])
+                        shorts = [str(lab) for i, lab in enumerate(labels) if i != long_idx]
+                        if len(shorts) >= 2 and shorts[0] == shorts[1]:
+                            short_label = shorts[0]
+                            # veto только если это явный трендовый конфликт (up vs down)
+                            if short_label != long_label:
+                                if conflict_veto_trend_only:
+                                    conflict_veto_candidate = ({short_label, long_label} <= {'uptrend', 'downtrend'})
+                                else:
+                                    conflict_veto_candidate = True
+                except Exception:
+                    conflict_veto_candidate = False
+
                 if voting == 'majority':
                     # Простое большинство по равным весам
                     counts = {'flat': labels.count('flat'), 'uptrend': labels.count('uptrend'), 'downtrend': labels.count('downtrend')}
@@ -1740,6 +1813,15 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     'tie_break': tie_break,
                     'labels': labels,
                     'votes_map': votes,
+                    # Conflict-veto diagnostics/config
+                    'conflict_veto_enabled': bool(conflict_veto_enabled),
+                    'conflict_veto_trend_only': bool(conflict_veto_trend_only),
+                    'conflict_veto_candidate': bool(conflict_veto_candidate),
+                    'long_window': long_window,
+                    'long_label': long_label,
+                    'short_label': short_label,
+                    # Trend-veto config
+                    'trend_veto_enabled': bool(trend_veto_enabled),
                     'drift_threshold': float(drift_thr),
                     'flat_vol_threshold': float(vol_flat_thr),
                     'metrics': metrics
@@ -1753,6 +1835,13 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     'tie_break': 'last',
                     'labels': ['flat', 'flat', 'flat'],
                     'votes_map': {'flat': 0.0, 'uptrend': 0.0, 'downtrend': 0.0},
+                    'conflict_veto_enabled': False,
+                    'conflict_veto_trend_only': True,
+                    'conflict_veto_candidate': False,
+                    'long_window': 2880,
+                    'long_label': 'flat',
+                    'short_label': None,
+                    'trend_veto_enabled': False,
                     'drift_threshold': 0.002,
                     'flat_vol_threshold': 0.0025,
                     'metrics': []
@@ -1775,6 +1864,10 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         # 2.5) long-short режим: выбираем подмножество моделей по роли (per-symbol) и режиму рынка
         trade_mode = 'single'
         model_roles_map = {}
+        # Для UI/диагностики: покажем, какая роль/какие модели реально активировались в long-short
+        ls_target_role = None
+        ls_models_before = list(model_paths) if isinstance(model_paths, list) else []
+        ls_models_after = None
         try:
             if rc is not None:
                 tm = rc.get(f'trading:trade_mode:{symbol}')
@@ -1809,11 +1902,14 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     target_role = 'long'
                 elif market_regime == 'downtrend':
                     target_role = 'short'
+                ls_target_role = target_role
                 if target_role:
                     mp_before = list(model_paths)
                     mp_filtered = [p for p in model_paths if model_roles_map.get(str(p)) == target_role]
                     if mp_filtered:
                         model_paths = mp_filtered
+                    ls_models_before = mp_before
+                    ls_models_after = list(model_paths)
                     try:
                         logger.warning("[long-short] symbol=%s regime=%s target_role=%s models_before=%s models_after=%s",
                                        symbol, market_regime, target_role, len(mp_before), len(model_paths))
@@ -1886,6 +1982,36 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             except Exception as e:
                 print(f"Failed to save error prediction: {e}")
             return {"success": False, "error": error_msg}
+
+        # --- IMPORTANT: short-model action/Q-values mapping ---
+        # В CryptoTradingEnvShort действие=1 означает ENTER_SHORT (SELL), а действие=2 означает COVER (BUY).
+        # Serving по умолчанию мапит [0,1,2] как [hold,buy,sell], поэтому short-модель выглядит как BUY и не открывает шорт.
+        # Здесь приводим q_values и action к "каноническому" формату [hold,buy,sell] путём swap(1<->2) для моделей роли short.
+        try:
+            preds_list0 = pred_json.get('predictions') or []
+            if isinstance(preds_list0, list) and preds_list0:
+                for _p in preds_list0:
+                    try:
+                        mp0 = str((_p or {}).get('model_path') or '').replace('\\', '/')
+                        role0 = model_roles_map.get(mp0)
+                        if role0 != 'short':
+                            continue
+                        qv0 = (_p or {}).get('q_values') or []
+                        if not (isinstance(qv0, list) and len(qv0) >= 3):
+                            continue
+                        # qv: [hold, enter_short, cover] -> [hold, cover, enter_short]
+                        qv1 = [qv0[0], qv0[2], qv0[1]]
+                        _p['q_values'] = qv1
+                        # recompute action from swapped q-values
+                        try:
+                            idx = max(range(3), key=lambda i: float(qv1[i]))
+                            _p['action'] = ['hold', 'buy', 'sell'][int(idx)]
+                        except Exception:
+                            pass
+                    except Exception:
+                        continue
+        except Exception:
+            pass
 
         # Подготовим пороги Q-gate: per-symbol Redis > ENV/Config > JSON > дефолт
         qgate_cfg = pred_json.get('qgate') or {}
@@ -2154,6 +2280,70 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         except Exception:
             pass
 
+        # --- Conflict-veto gate (window disagreement) ---
+        # Если 2 коротких окна согласны и противоположны длинному — блокируем вход (decision -> HOLD),
+        # но только если это включено в trading:regime_config.
+        try:
+            cv_enabled = False
+            cv_candidate = False
+            cv_long_window = None
+            cv_long_label = None
+            cv_short_label = None
+            if isinstance(market_regime_details, dict):
+                cv_enabled = bool(market_regime_details.get('conflict_veto_enabled'))
+                cv_candidate = bool(market_regime_details.get('conflict_veto_candidate'))
+                cv_long_window = market_regime_details.get('long_window')
+                cv_long_label = market_regime_details.get('long_label')
+                cv_short_label = market_regime_details.get('short_label')
+            if cv_enabled:
+                try:
+                    pred_json['conflict_veto_gate'] = {
+                        'enabled': True,
+                        'candidate': bool(cv_candidate),
+                        'long_window': cv_long_window,
+                        'long_label': cv_long_label,
+                        'short_label': cv_short_label,
+                    }
+                except Exception:
+                    pass
+            if cv_enabled and cv_candidate and decision in ('buy', 'sell'):
+                try:
+                    pred_json['decision_before_conflict_veto'] = str(decision)
+                except Exception:
+                    pass
+                decision = 'hold'
+                try:
+                    logger.warning("[conflict_veto] symbol=%s blocked %s due to short=%s vs long=%s (window=%s)",
+                                   symbol, pred_json.get('decision_before_conflict_veto'), cv_short_label, cv_long_label, cv_long_window)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # --- Trend-veto gate (block trading against regime) ---
+        # Если включено: downtrend блокирует BUY, uptrend блокирует SELL (decision -> HOLD).
+        try:
+            tv_enabled = bool(market_regime_details.get('trend_veto_enabled')) if isinstance(market_regime_details, dict) else False
+            if tv_enabled:
+                try:
+                    pred_json['trend_veto_gate'] = {'enabled': True, 'market_regime': str(market_regime)}
+                except Exception:
+                    pass
+                if market_regime == 'downtrend' and decision == 'buy':
+                    try:
+                        pred_json['decision_before_trend_veto'] = str(decision)
+                    except Exception:
+                        pass
+                    decision = 'hold'
+                elif market_regime == 'uptrend' and decision == 'sell':
+                    try:
+                        pred_json['decision_before_trend_veto'] = str(decision)
+                    except Exception:
+                        pass
+                    decision = 'hold'
+        except Exception:
+            pass
+
         # --- MarketState gate (OOD-safety) ---
         # Если рынок не NORMAL (HIGH_VOL/PANIC/DRAWDOWN) — блокируем BUY (override -> HOLD).
         # ВАЖНО: делаем это здесь (в оркестраторе), т.к. только тут есть OHLCV df_5m.
@@ -2312,6 +2502,61 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     rc.setex(f"trading:last_ensemble_group_id:{symbol}", 900, str(ensemble_group_id))
             except Exception:
                 pass
+            # 4.1.a) GigaChat (LLM) — добавляем текст ответа в market_conditions каждой карточки предсказания
+            gigachat_mc = None
+            try:
+                from utils.gigachat_client import GigaChatClient, load_gigachat_config
+                from utils.gigachat_features import build_gigachat_prompt, build_semantic_snapshot
+
+                cfg_llm = load_gigachat_config()
+                run_llm = bool(cfg_llm.enabled)
+                try:
+                    if bool(cfg_llm.only_on_buy) and str(decision or "").lower() != "buy":
+                        run_llm = False
+                except Exception:
+                    pass
+
+                if run_llm:
+                    snap = build_semantic_snapshot(
+                        df_5m,
+                        symbol=str(symbol),
+                        market_regime=str(market_regime),
+                        market_regime_details=market_regime_details if isinstance(market_regime_details, dict) else None,
+                        decision=str(decision),
+                        votes=votes if isinstance(votes, dict) else None,
+                    )
+                    prompt = build_gigachat_prompt(snap)
+                    res = GigaChatClient().chat(prompt=prompt, cfg=cfg_llm)
+                    txt = (res.get("text") if isinstance(res, dict) else None) or ""
+                    parsed = (res.get("parsed") if isinstance(res, dict) else None) or {}
+                    err = (res.get("error") if isinstance(res, dict) else None)
+                    lat = (res.get("latency_ms") if isinstance(res, dict) else None)
+                    gigachat_mc = {
+                        "gigachat_ok": bool(res.get("ok")) if isinstance(res, dict) else False,
+                        "gigachat_latency_ms": int(lat) if isinstance(lat, (int, float)) else None,
+                        "gigachat_decision": (parsed.get("decision") if isinstance(parsed, dict) else None),
+                        "gigachat_confidence": (parsed.get("confidence") if isinstance(parsed, dict) else None),
+                        "gigachat_reason": (parsed.get("reason") if isinstance(parsed, dict) else None),
+                        "gigachat_risk": (parsed.get("risk") if isinstance(parsed, dict) else None),
+                        "gigachat_text": str(txt)[:4000],  # keep DB/UI reasonable
+                        "gigachat_error": str(err)[:400] if err else None,
+                    }
+                    # Для выдачи наружу (в ответах задач/логах)
+                    try:
+                        if isinstance(pred_json, dict):
+                            pred_json["gigachat"] = {
+                                "ok": gigachat_mc.get("gigachat_ok"),
+                                "latency_ms": gigachat_mc.get("gigachat_latency_ms"),
+                                "decision": gigachat_mc.get("gigachat_decision"),
+                                "confidence": gigachat_mc.get("gigachat_confidence"),
+                                "reason": gigachat_mc.get("gigachat_reason"),
+                                "text": gigachat_mc.get("gigachat_text"),
+                                "error": gigachat_mc.get("gigachat_error"),
+                            }
+                    except Exception:
+                        pass
+            except Exception:
+                gigachat_mc = None
             for p in preds_list:
                 try:
                     mp = p.get('model_path')
@@ -2347,6 +2592,12 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         'ensemble_regime': market_regime,
                         'ensemble_decision': decision,
                         'ensemble_group_id': ensemble_group_id,
+                        # long-short diagnostics for UI
+                        'trade_mode': str(trade_mode) if trade_mode else None,
+                        'trade_direction': (str(_dir) if _dir else None),
+                        'active_role': (str(ls_target_role) if (str(trade_mode).strip() == 'long-short' and ls_target_role) else None),
+                        'models_before_role_filter': (len(ls_models_before) if isinstance(ls_models_before, list) else None),
+                        'models_after_role_filter': (len(ls_models_after) if isinstance(ls_models_after, list) else (len(model_paths) if isinstance(model_paths, list) else None)),
                         # Детали режима по окнам, чтобы UI мог показать 60=F,180=U,300=D
                         'regime_windows': list(market_regime_details.get('windows', [])) if isinstance(market_regime_details, dict) else [],
                         'regime_labels': list(market_regime_details.get('labels', [])) if isinstance(market_regime_details, dict) else [],
@@ -2359,6 +2610,19 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         'qgate_gapQ': float(q_gap) if q_gap is not None else None,
                         'qgate_filtered': (False if q_pass is None else (not q_pass)),
                     }
+                    # Добавим результат GigaChat в каждую карточку
+                    try:
+                        if isinstance(gigachat_mc, dict) and gigachat_mc:
+                            for k, v in gigachat_mc.items():
+                                mc[k] = v
+                    except Exception:
+                        pass
+                    # Роль конкретной модели (long/short), если задано в режиме long-short
+                    try:
+                        mp_key = str(mp).replace('\\', '/')
+                        mc['model_role'] = model_roles_map.get(mp_key)
+                    except Exception:
+                        pass
                     # Прокинем причины runtime-гейтов в market_conditions, чтобы UI (/agent/<symbol>) их показывал.
                     # ВАЖНО: UI читает именно ModelPrediction.market_conditions, а не pred_json напрямую.
                     try:
@@ -2601,7 +2865,56 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         trade_result = agent._execute_buy() if entry_side == 'buy' else agent._execute_open_short()
                 else:
                     # market: long -> BUY, short -> OPEN_SHORT
-                    trade_result = agent._execute_buy() if entry_side == 'buy' else agent._execute_open_short()
+                    # Опционально: split entry (например, 2 входа по 50% вместо 1 на 100%).
+                    entry_splits = 1
+                    try:
+                        from utils.settings_store import get_setting_value as _get_setting_value
+                        _spl = _get_setting_value('trading', 'sizing', 'ENTRY_SPLITS')
+                        if _spl is not None and str(_spl).strip() != '':
+                            entry_splits = int(float(str(_spl)))
+                    except Exception:
+                        entry_splits = 1
+                    entry_splits = max(1, min(5, int(entry_splits or 1)))
+
+                    if entry_splits <= 1:
+                        trade_result = agent._execute_buy() if entry_side == 'buy' else agent._execute_open_short()
+                    else:
+                        total_qty = 0.0
+                        try:
+                            total_qty = float(getattr(agent, 'trade_amount', 0.0)) or 0.0
+                        except Exception:
+                            total_qty = 0.0
+                        part_qty = (total_qty / float(entry_splits)) if (total_qty and total_qty > 0) else 0.0
+                        results = []
+                        ok_all = True
+                        for i in range(int(entry_splits)):
+                            try:
+                                agent.trade_amount = float(part_qty)
+                            except Exception:
+                                pass
+                            try:
+                                r = agent._execute_buy() if entry_side == 'buy' else agent._execute_open_short()
+                                results.append(r)
+                                if not (isinstance(r, dict) and r.get('success') is True):
+                                    ok_all = False
+                                    break
+                            except Exception:
+                                ok_all = False
+                                break
+                        # После нескольких ордеров: восстановим позицию с биржи, чтобы риск-ордера ставились на полный объём
+                        try:
+                            agent._restore_position_from_exchange()
+                        except Exception:
+                            pass
+                        trade_result = {
+                            "success": bool(ok_all),
+                            "action": "market_split_entry",
+                            "side": entry_side,
+                            "splits": int(entry_splits),
+                            "qty_total": float(total_qty),
+                            "qty_each": float(part_qty),
+                            "results": results,
+                        }
 
                     # После рыночного лонга — выставим TP/SL (как раньше). Для шорта риск-ордера ставятся через ensure_risk_orders ниже.
                     if entry_side == 'buy':

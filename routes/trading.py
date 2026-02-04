@@ -10,6 +10,7 @@ import json
 from datetime import datetime
 from typing import Optional
 import time
+import re
 
 trading_bp = Blueprint('trading', __name__)
 
@@ -254,6 +255,22 @@ def save_trading_config():
                 ap = int(account_pct)
                 if 1 <= ap <= 100:
                     rc.set('trading:account_pct', str(ap))
+                    # Дублируем в Postgres app_settings, чтобы настраивать через /settings
+                    try:
+                        from utils.settings_store import ensure_settings_table, upsert_setting as _upsert_setting
+                        ensure_settings_table()
+                        _upsert_setting(
+                            scope='trading',
+                            group='sizing',
+                            key='ACCOUNT_PCT',
+                            value_type='number',
+                            label='Account %',
+                            description='Доля свободного USDT для входа (1..100)',
+                            is_secret=False,
+                            value=str(ap),
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
         # Глобальные Q-gate значения (fallback)
@@ -433,6 +450,23 @@ def start_trading():
                         ap = int(account_pct)
                         if 1 <= ap <= 100:
                             _rc.set('trading:account_pct', str(ap))
+                    except Exception:
+                        pass
+                    # Дублируем в Postgres app_settings, чтобы настраивать через /settings
+                    try:
+                        if 1 <= ap <= 100:
+                            from utils.settings_store import ensure_settings_table, upsert_setting as _upsert_setting
+                            ensure_settings_table()
+                            _upsert_setting(
+                                scope='trading',
+                                group='sizing',
+                                key='ACCOUNT_PCT',
+                                value_type='number',
+                                label='Account %',
+                                description='Доля свободного USDT для входа (1..100)',
+                                is_secret=False,
+                                value=str(ap),
+                            )
                     except Exception:
                         pass
             except Exception:
@@ -1156,7 +1190,11 @@ def trading_latest_results():
                     raw = rc.get(k)
                     if not raw:
                         continue
-                    result = json.loads(raw.decode('utf-8'))
+                    if isinstance(raw, (bytes, bytearray)):
+                        s = raw.decode('utf-8')
+                    else:
+                        s = str(raw)
+                    result = json.loads(s)
                     latest_results.append(result)
                 except Exception:
                     continue
@@ -1172,6 +1210,167 @@ def trading_latest_results():
         }), 200
     except Exception as e:
         logging.error(f"Ошибка получения последних результатов: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@trading_bp.get('/api/trading/accounts_balances')
+def trading_accounts_balances():
+    """Баланс по всем Bybit API аккаунтам из БД (UNIFIED/derivatives), чтобы диагностировать 'USDT_free'."""
+    try:
+        rc = get_redis_client()
+        cache_key = 'trading:balances:bybit_accounts'
+        force = str(request.args.get('force') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+        if rc and not force:
+            cached = rc.get(cache_key)
+            if cached:
+                try:
+                    obj = json.loads(cached if isinstance(cached, str) else cached.decode('utf-8'))
+                    if isinstance(obj, dict) and obj.get('success'):
+                        return jsonify(obj), 200
+                except Exception:
+                    pass
+
+        # Собираем аккаунты из settings (не отдаём секреты в ответ)
+        try:
+            from utils.settings_store import ensure_settings_table, list_settings, get_setting_value
+            ensure_settings_table()
+            rows = list_settings(scope='api', group='bybit')
+        except Exception:
+            rows = []
+            get_setting_value = None
+
+        ids = []
+        for r in rows or []:
+            try:
+                k = str(r.get('key') or '')
+                m = re.match(r'^BYBIT_(\d+)_API_KEY$', k)
+                if m:
+                    ids.append(int(m.group(1)))
+            except Exception:
+                continue
+        ids = sorted(set(ids))
+
+        accounts = []
+        for idx in ids:
+            try:
+                if not get_setting_value:
+                    continue
+                api_key = get_setting_value('api', 'bybit', f'BYBIT_{idx}_API_KEY')
+                secret = get_setting_value('api', 'bybit', f'BYBIT_{idx}_SECRET_KEY')
+                label = get_setting_value('api', 'bybit', f'BYBIT_{idx}_LABEL') or f'Account {idx}'
+                if api_key and secret:
+                    accounts.append({'id': idx, 'label': label})
+            except Exception:
+                continue
+
+        # Если аккаунтов нет в БД — ответим пустым списком
+        if not accounts:
+            obj = {'success': True, 'ts': datetime.utcnow().isoformat(), 'accounts': []}
+            if rc:
+                try:
+                    rc.setex(cache_key, 10, json.dumps(obj, ensure_ascii=False))
+                except Exception:
+                    pass
+            return jsonify(obj), 200
+
+        # Запрашиваем баланс по каждому аккаунту
+        results = []
+        try:
+            import ccxt
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'ccxt import error: {e}'}), 500
+
+        def _extract_usdt(bal: dict) -> dict:
+            free = None
+            total = None
+            try:
+                u = bal.get('USDT')
+                if isinstance(u, dict):
+                    free = u.get('free')
+                    total = u.get('total')
+                elif u is not None:
+                    # иногда ccxt кладёт число/строку
+                    free = float(u)
+                    total = float(u)
+            except Exception:
+                pass
+            if free is None:
+                try:
+                    f = bal.get('free') or {}
+                    if isinstance(f, dict) and f.get('USDT') is not None:
+                        free = float(f.get('USDT'))
+                except Exception:
+                    pass
+            if total is None:
+                try:
+                    t = bal.get('total') or {}
+                    if isinstance(t, dict) and t.get('USDT') is not None:
+                        total = float(t.get('USDT'))
+                except Exception:
+                    pass
+            return {'usdt_free': free, 'usdt_total': total}
+
+        from utils.settings_store import get_setting_value as _gsv
+        for a in accounts:
+            idx = a['id']
+            label = a.get('label') or f'Account {idx}'
+            api_key = _gsv('api', 'bybit', f'BYBIT_{idx}_API_KEY')
+            secret = _gsv('api', 'bybit', f'BYBIT_{idx}_SECRET_KEY')
+            err = None
+            payload = {'account_id': idx, 'label': label}
+            try:
+                ex = ccxt.bybit({
+                    'apiKey': api_key,
+                    'secret': secret,
+                    'enableRateLimit': True,
+                    'timeout': 30000,
+                    'options': {
+                        'defaultType': 'swap',
+                        'defaultMarginMode': 'isolated',
+                        'recv_window': 20000,
+                        'recvWindow': 20000,
+                        'adjustForTimeDifference': True,
+                        'timeDifference': True,
+                    }
+                })
+                # Пытаемся взять именно UNIFIED/деривативный баланс (ccxt-совместимый best effort)
+                variants = [
+                    {'accountType': 'UNIFIED', 'type': 'swap', 'recv_window': 20000, 'recvWindow': 20000},
+                    {'accountType': 'UNIFIED', 'recv_window': 20000, 'recvWindow': 20000},
+                    {'type': 'swap', 'recv_window': 20000, 'recvWindow': 20000},
+                    {'recv_window': 20000, 'recvWindow': 20000},
+                ]
+                bal = None
+                used = None
+                last_e = None
+                for v in variants:
+                    try:
+                        b = ex.fetch_balance(v)
+                        if isinstance(b, dict) and b:
+                            bal = b
+                            used = v
+                            break
+                    except Exception as ee:
+                        last_e = ee
+                        continue
+                if bal is None:
+                    raise RuntimeError(f'fetch_balance failed: {last_e}')
+                payload.update(_extract_usdt(bal))
+                payload['params_used'] = used
+            except Exception as e:
+                err = str(e)
+            if err:
+                payload['error'] = err
+            results.append(payload)
+
+        obj = {'success': True, 'ts': datetime.utcnow().isoformat(), 'accounts': results}
+        if rc:
+            try:
+                rc.setex(cache_key, 10, json.dumps(obj, ensure_ascii=False))
+            except Exception:
+                pass
+        return jsonify(obj), 200
+    except Exception as e:
+        logging.error(f"Ошибка получения accounts_balances: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @trading_bp.get('/api/trading/balance')

@@ -655,6 +655,12 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
       const qgateErrorDetails = prediction.market_conditions && prediction.market_conditions.qgate_error_details;
       const qgateBalance = prediction.market_conditions && prediction.market_conditions.qgate_available_balance;
       const qgateRequiredCost = prediction.market_conditions && prediction.market_conditions.qgate_required_cost;
+      const gigachatText = prediction.market_conditions && prediction.market_conditions.gigachat_text;
+      const gigachatOk = prediction.market_conditions && prediction.market_conditions.gigachat_ok;
+      const gigachatLatency = prediction.market_conditions && prediction.market_conditions.gigachat_latency_ms;
+      const gigachatError = prediction.market_conditions && prediction.market_conditions.gigachat_error;
+      const gigachatDecision = prediction.market_conditions && prediction.market_conditions.gigachat_decision;
+      const gigachatReason = prediction.market_conditions && prediction.market_conditions.gigachat_reason;
       const execError = prediction.market_conditions && prediction.market_conditions.exec_error;
       const execErrorType = prediction.market_conditions && prediction.market_conditions.exec_error_type;
       const execIntentId = prediction.market_conditions && prediction.market_conditions.exec_intent_id;
@@ -756,13 +762,14 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
             const pass = !gateBlocked;
             const color = pass ? '#28a745' : '#dc3545';
             const mp = pp.model_path || '';
+            const role = (pp.market_conditions && pp.market_conditions.model_role) ? String(pp.market_conditions.model_role) : null;
             let ver = '';
             try{
               const m = mp.match(/\/(v\d+)\//i);
               ver = m ? m[1].toUpperCase() : (mp.split('/')?.slice(-2,-1)?.[0] || '').toUpperCase();
             }catch(_){ ver=''; }
             const letter = act === 'buy' ? 'B' : (act === 'sell' ? 'S' : 'H');
-            return `<span style="padding:2px 8px; border-radius:999px; background:${color}1a; color:${color}; font-weight:600; font-size:12px;">${ver||'—'} ${letter}</span>`;
+            return `<span style="padding:2px 8px; border-radius:999px; background:${color}1a; color:${color}; font-weight:600; font-size:12px;">${ver||'—'} ${letter}${role ? ` (${role})` : ''}</span>`;
           }catch(__){ return ''; }
         }).filter(Boolean);
         if(chips.length){ modelsLine = chips.join(' / '); }
@@ -782,6 +789,7 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
               const act = (pp.action||'hold').toLowerCase();
               const letter = act==='buy'?'B':(act==='sell'?'S':'H');
               const mc2 = pp.market_conditions || {};
+              const role = mc2.model_role ? String(mc2.model_role) : null;
               const t1 = (typeof mc2.qgate_T1 === 'number') ? mc2.qgate_T1 : null;
               const t2 = (typeof mc2.qgate_T2 === 'number') ? mc2.qgate_T2 : null;
               const mQ = (typeof mc2.qgate_maxQ === 'number') ? mc2.qgate_maxQ : null;
@@ -790,7 +798,7 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
               const dG = (gQ!=null && t2!=null) ? (gQ - t2) : null;
               const fmt = (v)=> (typeof v === 'number' ? v.toFixed(3) : '—');
               const details = `MAXQ>=${fmt(t1)}, GAPQ>=${fmt(t2)}, m=${fmt(mQ)}, g=${fmt(gQ)}${(dM!=null||dG!=null)?` (Δm=${fmt(dM)}, Δg=${fmt(dG)})`:''}`;
-              return `<div><strong>${ver||'—'} ${letter}</strong>: [${qs}] <span style="font-weight:600; color:${blocked?'#dc3545':'#28a745'}">${gate}</span><span style="margin-left:8px; color:#555;">${details}</span></div>`;
+              return `<div><strong>${ver||'—'} ${letter}${role ? ` (${role})` : ''}</strong>: [${qs}] <span style="font-weight:600; color:${blocked?'#dc3545':'#28a745'}">${gate}</span><span style="margin-left:8px; color:#555;">${details}</span></div>`;
             }catch(__){ return ''; }
           }).filter(Boolean);
           if(rows.length){ perModelQHtml = rows.join(''); }
@@ -801,6 +809,9 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
         const votesLine = `BUY=${Number.isFinite(evb)?evb:'—'}, SELL=${Number.isFinite(evs)?evs:'—'}, HOLD=${Number.isFinite(evh)?evh:'—'}`;
         const reqLine = (ereq!=null) ? `Требуется: ${ereq} (${ereqType||'—'})` : '';
         const regLine = ereg ? `Режим: ${ereg}` : '';
+        const tm = mc.trade_mode ? String(mc.trade_mode) : null;
+        const tdir = mc.trade_direction ? String(mc.trade_direction) : null;
+        const ar = mc.active_role ? String(mc.active_role) : null;
         // Детали режима по окнам: 60=F, 180=U, 300=D
         let regWindowsLine = '';
         try{
@@ -830,6 +841,9 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
             <div style="margin-top:4px; display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:6px;">
               <div>Всего моделей: ${etotal}</div>
               <div>Голоса: ${votesLine}</div>
+              ${tm ? `<div>Режим торговли: ${tm}</div>` : ''}
+              ${tdir ? `<div>Направление (dir): ${tdir}</div>` : ''}
+              ${(tm === 'long-short' && ar) ? `<div>Активная модель (роль): ${ar}</div>` : ''}
               ${reqLine ? `<div>${reqLine}</div>` : ''}
               ${regLine ? `<div>${regLine}</div>` : ''}
               ${regWindowsLine ? `<div style="grid-column: 1 / -1;">Режим (окна): ${regWindowsLine}</div>` : ''}
@@ -885,7 +899,7 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
           <div style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px; font-size: 12px;">
             <strong>Условия рынка:</strong><br>
             ${Object.entries(prediction.market_conditions)
-              .filter(([key]) => !String(key).startsWith('qgate_'))
+              .filter(([key]) => !String(key).startsWith('qgate_') && !String(key).startsWith('gigachat_'))
               .map(([key, value]) => {
                 try{
                   if (value && typeof value === 'object') return `${key}: ${JSON.stringify(value)}`;
@@ -894,6 +908,14 @@ async function loadPredictions(symbol, filter = currentPredictionFilter){
                   return `${key}: ${String(value)}`;
                 }
               }).join(', ')}
+            ${gigachatText || gigachatDecision ? `
+              <div style="margin-top:8px;">
+                <strong>GigaChat:</strong>
+                <span style="font-weight:700;">${gigachatDecision ? String(gigachatDecision) : '—'}</span>
+                ${gigachatReason ? `<span style="opacity:0.9;"> — ${gigachatReason}</span>` : ''}
+                ${gigachatText ? `<div style="margin-top:6px;"><strong>gigachat_text:</strong> <span style="font-weight:700;">${gigachatText}</span></div>` : ''}
+                <span style="opacity:0.7;">${gigachatOk === false ? '(error)' : ''}${typeof gigachatLatency === 'number' ? ` (${gigachatLatency}ms)` : ''}${gigachatError ? `: ${gigachatError}` : ''}</span>
+              </div>` : ''}
           </div>` : ''}
         </div>
       `

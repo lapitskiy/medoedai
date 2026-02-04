@@ -21,6 +21,16 @@ def ensure_settings_table() -> None:
         _bootstrap_bybit_from_env()
     except Exception:
         pass
+    # Bootstrap: дефолты для LLM (GigaChat) — чтобы они появлялись в /settings без ручных вызовов.
+    try:
+        _bootstrap_gigachat_defaults()
+    except Exception:
+        pass
+    # Bootstrap: дефолты для торгового сайзинга — чтобы они появлялись в /settings.
+    try:
+        _bootstrap_trading_sizing_defaults()
+    except Exception:
+        pass
 
 
 def _bootstrap_bybit_from_env() -> None:
@@ -71,6 +81,95 @@ def _bootstrap_bybit_from_env() -> None:
                 row.value = val if (val is None or str(val).strip()) else None
                 session.add(row)
         session.commit()
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+def _bootstrap_gigachat_defaults() -> None:
+    """
+    Создаёт дефолтные ключи (scope=llm, group=gigachat), если их ещё нет.
+    ВАЖНО: без зависимостей на utils.gigachat_* чтобы не получить циклический импорт.
+    """
+    session = get_db_session()
+    try:
+        rows = session.query(AppSetting).filter(
+            AppSetting.scope == 'llm',
+            AppSetting.group == 'gigachat',
+        ).all()
+        existing = {str(r.key or '') for r in rows}
+
+        defaults = [
+            ('ENABLED', 'bool', False, '0'),
+            ('ONLY_ON_BUY', 'bool', False, '0'),
+            ('AUTH_TYPE', 'string', False, 'oauth'),
+            ('CREDENTIALS', 'string', True, None),
+            ('ACCESS_TOKEN', 'string', True, None),
+            ('OAUTH_URL', 'string', False, 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth'),
+            ('OAUTH_SCOPE', 'string', False, 'GIGACHAT_API_PERS'),
+            ('CHAT_URL', 'string', False, 'https://gigachat.devices.sberbank.ru/api/v1/chat/completions'),
+            ('MODEL', 'string', False, 'GigaChat'),
+            ('TIMEOUT_SEC', 'number', False, '10'),
+            ('TEMPERATURE', 'number', False, '0.2'),
+            ('MAX_TOKENS', 'number', False, '256'),
+            ('VERIFY_SSL', 'bool', False, '0'),
+            ('SYSTEM_PROMPT', 'string', False, 'Ты опытный трейдер. Ответь кратко: 1) что видишь, 2) риск, 3) что бы сделал.'),
+        ]
+
+        changed = False
+        for key, vt, is_secret, val in defaults:
+            if key in existing:
+                continue
+            row = AppSetting(scope='llm', group='gigachat', key=key)
+            row.value_type = vt
+            row.is_secret = bool(is_secret)
+            row.value = val
+            session.add(row)
+            changed = True
+
+        if changed:
+            session.commit()
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+def _bootstrap_trading_sizing_defaults() -> None:
+    """
+    Создаёт дефолтные ключи (scope=trading, group=sizing), если их ещё нет.
+    """
+    session = get_db_session()
+    try:
+        rows = session.query(AppSetting).filter(
+            AppSetting.scope == 'trading',
+            AppSetting.group == 'sizing',
+        ).all()
+        existing = {str(r.key or '') for r in rows}
+
+        defaults = [
+            ('ACCOUNT_PCT', 'number', False, '100', 'Account %', 'Доля свободного USDT для входа (1..100)'),
+            ('ENTRY_SPLITS', 'number', False, '1', 'Entry splits', 'Сколько market-ордеров делать при входе (1=одним, 2=по половине)'),
+        ]
+
+        changed = False
+        for key, vt, is_secret, val, label, desc in defaults:
+            if key in existing:
+                continue
+            row = AppSetting(scope='trading', group='sizing', key=key)
+            row.value_type = vt
+            row.is_secret = bool(is_secret)
+            row.value = val
+            row.label = label
+            row.description = desc
+            session.add(row)
+            changed = True
+
+        if changed:
+            session.commit()
     finally:
         try:
             session.close()

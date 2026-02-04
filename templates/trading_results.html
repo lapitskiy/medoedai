@@ -16,8 +16,42 @@
     .pill { padding: 2px 6px; border-radius: 12px; background: #eef2ff; color: #223; font-weight: 600; }
     .meta { color: #666; font-size: 12px; }
     .wrap { white-space: nowrap; }
+    .balances { margin: 6px 0 10px; padding: 8px 10px; background:#fafafa; border:1px solid #eee; border-radius:8px; }
   </style>
   <script>
+    function fmtMoney(v) {
+      if (v === null || v === undefined || v === '') return '—';
+      const n = Number(v);
+      if (!isFinite(n)) return '—';
+      return n.toFixed(2);
+    }
+    async function loadBalances() {
+      const el = document.getElementById('balances');
+      if (!el) return;
+      el.textContent = 'Баланс: загружаю...';
+      try {
+        const r = await fetch('/api/trading/accounts_balances');
+        const j = await r.json();
+        if (!j.success) {
+          el.textContent = `Баланс: ошибка (${j.error||'unknown'})`;
+          return;
+        }
+        const accs = Array.isArray(j.accounts) ? j.accounts : [];
+        if (accs.length === 0) {
+          el.textContent = 'Баланс: в БД нет Bybit API аккаунтов (BYBIT_<id>_API_KEY/SECRET_KEY).';
+          return;
+        }
+        const parts = accs.map(a=>{
+          const id = a.account_id;
+          const label = a.label || `Account ${id}`;
+          if (a.error) return `BYBIT_${id} (${label}): error`;
+          return `BYBIT_${id} (${label}): USDT_free=${fmtMoney(a.usdt_free)} / total=${fmtMoney(a.usdt_total)}`;
+        });
+        el.textContent = parts.join(' | ') + (j.ts ? ` (ts=${j.ts})` : '');
+      } catch (e) {
+        el.textContent = `Баланс: ошибка (${e})`;
+      }
+    }
     async function loadResults() {
       const sym = document.getElementById('f-symbol').value;
       const r = await fetch('/api/trading/latest_results' + (sym? ('?symbol='+encodeURIComponent(sym)) : ''));
@@ -69,13 +103,16 @@
     }
     window.addEventListener('DOMContentLoaded', async ()=>{
       await loadSymbols();
+      loadBalances();
       document.getElementById('btn-load').addEventListener('click', loadResults);
       loadResults();
+      setInterval(loadBalances, 15000);
     });
   </script>
 </head>
 <body>
   <h2>Результаты торговли</h2>
+  <div id="balances" class="balances meta">Баланс: —</div>
   <div class="toolbar">
     <label>Символ: 
       <select id="f-symbol"></select>

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>!Обучение XGB</title>
+</head>
+<body>
+    {% include 'include/_sidebar.html' %}
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <div class="container">
+        <div class="main-content">
+            <div class="header">
+                <h1>🧠 XGB (buy/sell/hold)</h1>
+                <p>Отдельная страница обучения XGBoost-классификатора</p>
+            </div>
+
+            <div class="content">
+                <a href="/" class="back-link">← Вернуться на главную</a>
+
+                <div class="section" id="xgb-training">
+                    <h2>🎯 Обучение XGB модели</h2>
+                    <p>
+                        Запуск обучения XGB. Важно: <b>Task</b> определяет тип модели.
+                        Кнопка <b>Grid</b> сейчас работает только для <code>directional</code>.
+                    </p>
+
+                    <div class="form-group">
+                        <label>Символ для обучения</label>
+                        <select id="xgbSymbolSelect" class="form-control">
+                            <option value="BTCUSDT">BTC</option>
+                            <option value="TONUSDT">TON</option>
+                            <option value="ETHUSDT">ETH</option>
+                            <option value="SOLUSDT">SOL</option>
+                            <option value="ADAUSDT">ADA</option>
+                            <option value="BNBUSDT">BNB</option>
+                            <option value="XMRUSDT">XMR</option>
+                            <option value="XRPUSDT">XRP</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Направление</label>
+                        <select id="xgbDirectionSelect" class="form-control">
+                            <option value="long" selected>Long</option>
+                            <option value="short">Short</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Task</label>
+                        <select id="xgbTaskSelect" class="form-control">
+                            <option value="directional" selected>directional (hold/buy/sell)</option>
+                            <option value="entry_long">entry_long (flat→enter)</option>
+                            <option value="exit_long">exit_long (long→exit)</option>
+                            <option value="entry_short">entry_short (flat→enter)</option>
+                            <option value="exit_short">exit_short (short→exit)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>horizon_steps (5m шаги)</label>
+                        <input id="xgbHorizonStepsInput" class="form-control" type="number" min="1" step="1" value="12">
+                    </div>
+
+                    <div class="form-group">
+                        <label>threshold, % (порог hold для directional)</label>
+                        <input id="xgbThresholdPctInput" class="form-control" type="number" min="0" step="0.01" value="0.20">
+                    </div>
+
+                    <div class="form-group">
+                        <label>max_hold_steps (макс. удержание, шаги 5m)</label>
+                        <input id="xgbMaxHoldStepsInput" class="form-control" type="number" min="2" step="1" value="48">
+                    </div>
+
+                    <div class="form-group">
+                        <label>fee, % (комиссия+слиппедж round-trip)</label>
+                        <input id="xgbFeePctInput" class="form-control" type="number" min="0" step="0.01" value="0.06">
+                    </div>
+
+                    <div class="form-group">
+                        <label>min_profit, % (минимальная прибыль для label=1)</label>
+                        <input id="xgbMinProfitPctInput" class="form-control" type="number" min="0" step="0.01" value="0.00">
+                    </div>
+
+                    <div class="form-group">
+                        <label>label_delta, % (допуск до best для выхода)</label>
+                        <input id="xgbLabelDeltaPctInput" class="form-control" type="number" min="0" step="0.01" value="0.05">
+                    </div>
+
+                    <div class="form-group">
+                        <label>limit_candles (5m)</label>
+                        <input id="xgbLimitCandlesInput" class="form-control" type="number" min="1000" step="1000" value="100000">
+                    </div>
+
+                    <div class="button-group">
+                        <button class="btn btn-info" onclick="startXgbTrainingSelected()">🧠 Обучить XGB</button>
+                        <button class="btn btn-primary" onclick="startXgbGridSelected()">🧪 Grid (auto → финал)</button>
+                    </div>
+
+                    <div id="xgbStatus"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function startXgbTrainingSelected(){
+            const statusDiv = document.getElementById('xgbStatus');
+            const symbol = (document.getElementById('xgbSymbolSelect')?.value || 'BTCUSDT').trim();
+            const direction = (document.getElementById('xgbDirectionSelect')?.value || 'long').trim().toLowerCase();
+            const task = (document.getElementById('xgbTaskSelect')?.value || 'directional').trim().toLowerCase();
+            const horizonSteps = document.getElementById('xgbHorizonStepsInput')?.value || 12;
+            const thresholdPct = document.getElementById('xgbThresholdPctInput')?.value || 0.20;
+            const maxHold = document.getElementById('xgbMaxHoldStepsInput')?.value || 48;
+            const feePct = document.getElementById('xgbFeePctInput')?.value || 0.06;
+            const minProfitPct = document.getElementById('xgbMinProfitPctInput')?.value || 0.00;
+            const labelDeltaPct = document.getElementById('xgbLabelDeltaPctInput')?.value || 0.05;
+            const limitCandles = document.getElementById('xgbLimitCandlesInput')?.value || 100000;
+            statusDiv.innerHTML = '<div class="status info">⏳ Запуск XGB: ' + symbol + ' dir=' + direction + ' task=' + task + '...</div>';
+            try {
+                const threshold = (parseFloat(thresholdPct) || 0.0) / 100.0;
+                const fee_bps = (parseFloat(feePct) || 0.0) * 100.0; // % -> bps
+                const min_profit = (parseFloat(minProfitPct) || 0.0) / 100.0;
+                const label_delta = (parseFloat(labelDeltaPct) || 0.0) / 100.0;
+                const payload = { symbol, direction, task, horizon_steps: horizonSteps, threshold: threshold, max_hold_steps: maxHold, fee_bps: fee_bps, min_profit: min_profit, label_delta: label_delta, limit_candles: limitCandles };
+                const resp = await fetch('/training/train_xgb_symbol', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json().catch(() => null);
+                if (data && data.success) {
+                    const tname = data.task ? String(data.task) : task;
+                    statusDiv.innerHTML = '<div class="status success">✅ XGB запущен: task=' + tname + ' (celery: ' + data.task_id + ')</div>';
+                } else if (data && data.error) {
+                    statusDiv.innerHTML = '<div class="status error">❌ ' + String(data.error) + '</div>';
+                } else {
+                    statusDiv.innerHTML = '<div class="status error">❌ Неизвестный ответ сервера</div>';
+                }
+            } catch (e) {
+                statusDiv.innerHTML = '<div class="status error">❌ Ошибка запуска XGB: ' + (e && e.message ? e.message : e) + '</div>';
+            }
+        }
+
+        async function startXgbGridSelected(){
+            const statusDiv = document.getElementById('xgbStatus');
+            const symbol = (document.getElementById('xgbSymbolSelect')?.value || 'BTCUSDT').trim();
+            const task = (document.getElementById('xgbTaskSelect')?.value || 'directional').trim().toLowerCase();
+            const direction = (document.getElementById('xgbDirectionSelect')?.value || 'long').trim().toLowerCase();
+            const limitFinal = document.getElementById('xgbLimitCandlesInput')?.value || 100000;
+            const limitQuick = Math.min(50000, parseInt(limitFinal, 10) || 100000);
+            const maxHold = document.getElementById('xgbMaxHoldStepsInput')?.value || 48;
+            const feePct = document.getElementById('xgbFeePctInput')?.value || 0.06;
+            const minProfitPct = document.getElementById('xgbMinProfitPctInput')?.value || 0.00;
+            const labelDeltaPct = document.getElementById('xgbLabelDeltaPctInput')?.value || 0.05;
+            statusDiv.innerHTML = '<div class="status info">⏳ Запуск XGB grid: ' + symbol + ' task=' + task + '...</div>';
+            try {
+                const fee_bps = (parseFloat(feePct) || 0.0) * 100.0; // % -> bps
+                const min_profit = (parseFloat(minProfitPct) || 0.0) / 100.0;
+                const label_delta = (parseFloat(labelDeltaPct) || 0.0) / 100.0;
+                const payload = { symbol, task, direction, limit_candles_final: limitFinal, limit_candles_quick: limitQuick, max_hold_steps: maxHold, fee_bps, min_profit, label_delta };
+                const resp = await fetch('/training/train_xgb_grid_task', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json().catch(() => null);
+                if (data && data.success) {
+                    const tname = data.task ? String(data.task) : task;
+                    statusDiv.innerHTML = '<div class="status success">✅ XGB grid запущен: task=' + tname + ' (celery: ' + data.task_id + ')</div>';
+                } else if (data && data.error) {
+                    statusDiv.innerHTML = '<div class="status error">❌ ' + String(data.error) + '</div>';
+                } else {
+                    statusDiv.innerHTML = '<div class="status error">❌ Неизвестный ответ сервера</div>';
+                }
+            } catch (e) {
+                statusDiv.innerHTML = '<div class="status error">❌ Ошибка запуска grid: ' + (e && e.message ? e.message : e) + '</div>';
+            }
+        }
+    </script>
+    <script src="/static/js/sidebar.js"></script>
+</body>
+</html>
+

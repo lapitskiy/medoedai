@@ -2,6 +2,7 @@ from flask import Blueprint, jsonify, request, redirect, url_for, current_app as
 from celery.result import AsyncResult
 from tasks.celery_tasks import celery, train_dqn_multi_crypto, train_dqn_symbol
 from tasks.sac_tasks import train_sac_symbol
+from tasks.xgb_tasks import train_xgb_symbol, train_xgb_grid, train_xgb_grid_entry_exit
 from utils.redis_utils import get_redis_client
 import os
 import logging
@@ -207,6 +208,213 @@ def train_dqn_symbol_route():
             "episodes": episodes,
             "seed": seed
         })
+    return redirect(url_for("index"))
+
+
+@training_bp.route('/train_xgb_symbol', methods=['POST'])
+def train_xgb_symbol_route():
+    """
+    Запускает обучение XGB (buy/sell/hold) для одного символа.
+    """
+    data = request.get_json(silent=True) or {}
+    symbol = (data.get('symbol') or request.form.get('symbol') or 'BTCUSDT').strip().upper()
+    direction = (data.get('direction') or request.form.get('direction') or 'long').strip().lower()
+    horizon_steps = data.get('horizon_steps') or request.form.get('horizon_steps')
+    threshold = data.get('threshold') or request.form.get('threshold')
+    limit_candles = data.get('limit_candles') or request.form.get('limit_candles')
+    task_name = data.get('task') or request.form.get('task')
+    fee_bps = data.get('fee_bps') or request.form.get('fee_bps')
+    max_hold_steps = data.get('max_hold_steps') or request.form.get('max_hold_steps')
+    min_profit = data.get('min_profit') or request.form.get('min_profit')
+    label_delta = data.get('label_delta') or request.form.get('label_delta')
+    entry_stride = data.get('entry_stride') or request.form.get('entry_stride')
+    max_trades = data.get('max_trades') or request.form.get('max_trades')
+    try:
+        horizon_steps = int(horizon_steps) if horizon_steps not in (None, '') else None
+    except Exception:
+        horizon_steps = None
+    try:
+        threshold = float(threshold) if threshold not in (None, '') else None
+    except Exception:
+        threshold = None
+    try:
+        limit_candles = int(limit_candles) if limit_candles not in (None, '') else None
+    except Exception:
+        limit_candles = None
+    try:
+        fee_bps = float(fee_bps) if fee_bps not in (None, '') else None
+    except Exception:
+        fee_bps = None
+    try:
+        max_hold_steps = int(max_hold_steps) if max_hold_steps not in (None, '') else None
+    except Exception:
+        max_hold_steps = None
+    try:
+        min_profit = float(min_profit) if min_profit not in (None, '') else None
+    except Exception:
+        min_profit = None
+    try:
+        label_delta = float(label_delta) if label_delta not in (None, '') else None
+    except Exception:
+        label_delta = None
+    try:
+        entry_stride = int(entry_stride) if entry_stride not in (None, '') else None
+    except Exception:
+        entry_stride = None
+    try:
+        max_trades = int(max_trades) if max_trades not in (None, '') else None
+    except Exception:
+        max_trades = None
+
+    task = train_xgb_symbol.apply_async(kwargs={
+        'symbol': symbol,
+        'direction': direction,
+        'horizon_steps': horizon_steps,
+        'threshold': threshold,
+        'limit_candles': limit_candles,
+        'task': task_name,
+        'fee_bps': fee_bps,
+        'max_hold_steps': max_hold_steps,
+        'min_profit': min_profit,
+        'label_delta': label_delta,
+        'entry_stride': entry_stride,
+        'max_trades': max_trades,
+    }, queue='train')
+
+    # UI list
+    try:
+        redis_client.lrem("ui:tasks", 0, task.id)
+        redis_client.lpush("ui:tasks", task.id)
+        redis_client.ltrim("ui:tasks", 0, 49)
+    except Exception:
+        pass
+
+    wants_json = request.is_json or 'application/json' in (request.headers.get('Accept') or '')
+    if wants_json:
+        return jsonify({"success": True, "task_id": task.id, "symbol": symbol, "direction": direction, "task": task_name})
+    return redirect(url_for("index"))
+
+
+@training_bp.route('/train_xgb_grid', methods=['POST'])
+def train_xgb_grid_route():
+    """
+    Запускает быстрый grid (threshold/horizon/direction) и затем финальный train лучшего конфига.
+    """
+    data = request.get_json(silent=True) or {}
+    symbol = (data.get('symbol') or request.form.get('symbol') or 'BTCUSDT').strip().upper()
+    limit_final = data.get('limit_candles_final') or request.form.get('limit_candles_final')
+    limit_quick = data.get('limit_candles_quick') or request.form.get('limit_candles_quick')
+    max_hold_steps = data.get('max_hold_steps') or request.form.get('max_hold_steps')
+    min_profit = data.get('min_profit') or request.form.get('min_profit')
+    try:
+        limit_final = int(limit_final) if limit_final not in (None, '') else None
+    except Exception:
+        limit_final = None
+    try:
+        limit_quick = int(limit_quick) if limit_quick not in (None, '') else None
+    except Exception:
+        limit_quick = None
+    try:
+        max_hold_steps = int(max_hold_steps) if max_hold_steps not in (None, '') else None
+    except Exception:
+        max_hold_steps = None
+    try:
+        min_profit = float(min_profit) if min_profit not in (None, '') else None
+    except Exception:
+        min_profit = None
+
+    task = train_xgb_grid.apply_async(kwargs={
+        'symbol': symbol,
+        'limit_candles_final': limit_final,
+        'limit_candles_quick': limit_quick,
+        'base_max_hold_steps': max_hold_steps,
+        'base_min_profit': min_profit,
+    }, queue='train')
+
+    try:
+        redis_client.lrem("ui:tasks", 0, task.id)
+        redis_client.lpush("ui:tasks", task.id)
+        redis_client.ltrim("ui:tasks", 0, 49)
+    except Exception:
+        pass
+
+    wants_json = request.is_json or 'application/json' in (request.headers.get('Accept') or '')
+    if wants_json:
+        return jsonify({"success": True, "task_id": task.id, "symbol": symbol})
+    return redirect(url_for("index"))
+
+
+@training_bp.route('/train_xgb_grid_task', methods=['POST'])
+def train_xgb_grid_task_route():
+    """
+    Универсальный grid: directional или entry/exit в зависимости от task.
+    """
+    data = request.get_json(silent=True) or {}
+    symbol = (data.get('symbol') or request.form.get('symbol') or 'BTCUSDT').strip().upper()
+    direction = (data.get('direction') or request.form.get('direction') or 'long').strip().lower()
+    task_name = (data.get('task') or request.form.get('task') or 'directional').strip().lower()
+    limit_final = data.get('limit_candles_final') or request.form.get('limit_candles_final')
+    limit_quick = data.get('limit_candles_quick') or request.form.get('limit_candles_quick')
+    fee_bps = data.get('fee_bps') or request.form.get('fee_bps')
+    max_hold_steps = data.get('max_hold_steps') or request.form.get('max_hold_steps')
+    min_profit = data.get('min_profit') or request.form.get('min_profit')
+    label_delta = data.get('label_delta') or request.form.get('label_delta')
+    try:
+        limit_final = int(limit_final) if limit_final not in (None, '') else None
+    except Exception:
+        limit_final = None
+    try:
+        limit_quick = int(limit_quick) if limit_quick not in (None, '') else None
+    except Exception:
+        limit_quick = None
+    try:
+        fee_bps = float(fee_bps) if fee_bps not in (None, '') else None
+    except Exception:
+        fee_bps = None
+    try:
+        max_hold_steps = int(max_hold_steps) if max_hold_steps not in (None, '') else None
+    except Exception:
+        max_hold_steps = None
+    try:
+        min_profit = float(min_profit) if min_profit not in (None, '') else None
+    except Exception:
+        min_profit = None
+    try:
+        label_delta = float(label_delta) if label_delta not in (None, '') else None
+    except Exception:
+        label_delta = None
+
+    if task_name == 'directional':
+        task = train_xgb_grid.apply_async(kwargs={
+            'symbol': symbol,
+            'limit_candles_final': limit_final,
+            'limit_candles_quick': limit_quick,
+            'base_max_hold_steps': max_hold_steps,
+            'base_min_profit': min_profit,
+        }, queue='train')
+    else:
+        task = train_xgb_grid_entry_exit.apply_async(kwargs={
+            'symbol': symbol,
+            'task': task_name,
+            'direction': direction,
+            'limit_candles_final': limit_final,
+            'limit_candles_quick': limit_quick,
+            'base_max_hold_steps': max_hold_steps,
+            'base_fee_bps': fee_bps,
+            'base_min_profit': min_profit,
+            'base_label_delta': label_delta,
+        }, queue='train')
+
+    try:
+        redis_client.lrem("ui:tasks", 0, task.id)
+        redis_client.lpush("ui:tasks", task.id)
+        redis_client.ltrim("ui:tasks", 0, 49)
+    except Exception:
+        pass
+
+    wants_json = request.is_json or 'application/json' in (request.headers.get('Accept') or '')
+    if wants_json:
+        return jsonify({"success": True, "task_id": task.id, "symbol": symbol, "task": task_name, "direction": direction})
     return redirect(url_for("index"))
 
 

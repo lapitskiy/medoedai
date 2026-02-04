@@ -24,7 +24,9 @@ from routes.oos import oos_bp
 from routes.training import training_bp
 from routes.analysis_page import analytics_bp
 from routes.sac import sac_bp
+from routes.xgb import xgb_bp
 from routes.atr import atr_bp
+from routes.llm import llm_bp
 from utils.redis_utils import get_redis_client, clear_redis_on_startup
 from routes.system_models import system_models_bp
 
@@ -81,8 +83,10 @@ app.register_blueprint(clean_bp)
 app.register_blueprint(system_models_bp)
 app.register_blueprint(oos_bp)
 app.register_blueprint(sac_bp)
+app.register_blueprint(xgb_bp)
 app.register_blueprint(analytics_bp)
 app.register_blueprint(atr_bp)
+app.register_blueprint(llm_bp)
 from routes.trade_optimizer import trade_opt_bp
 app.register_blueprint(trade_opt_bp)
 
@@ -1578,6 +1582,45 @@ def get_recent_predictions():
                 pass
         
         # Преобразуем в JSON-совместимый формат
+        # Enrich: добавим long-short контекст из Redis даже для "старых" предсказаний, где этих полей ещё нет
+        try:
+            from utils.redis_utils import get_redis_client as _get_rc2
+        except Exception:
+            _get_rc2 = None
+        _rc2 = None
+        _sym_cfg = {}
+        if _get_rc2 is not None:
+            try:
+                _rc2 = _get_rc2()
+            except Exception:
+                _rc2 = None
+        if _rc2 is not None and symbol:
+            try:
+                tm = _rc2.get(f'trading:trade_mode:{symbol}')
+                direction = _rc2.get(f'trading:direction:{symbol}')
+                roles_raw = _rc2.get(f'trading:model_roles:{symbol}')
+                tm = str(tm).strip() if tm else None
+                direction = str(direction).strip().lower() if direction else None
+                roles = {}
+                try:
+                    parsed = json.loads(roles_raw) if roles_raw else None
+                    if isinstance(parsed, dict):
+                        for k, v in parsed.items():
+                            try:
+                                kp = str(k).replace('\\', '/')
+                                rv = str(v).strip().lower()
+                                roles[kp] = ('short' if rv == 'short' else 'long')
+                                # также добавим вариант с /workspace префиксом, если ключ относительный
+                                if not kp.startswith('/') and kp:
+                                    roles['/workspace/' + kp.lstrip('/')] = roles[kp]
+                            except Exception:
+                                continue
+                except Exception:
+                    roles = {}
+                _sym_cfg = {'trade_mode': tm, 'direction': direction, 'roles': roles}
+            except Exception:
+                _sym_cfg = {}
+
         predictions_data = []
         for prediction in predictions or []:
             try:
@@ -1586,6 +1629,31 @@ def get_recent_predictions():
             except:
                 q_values = []
                 market_conditions = {}
+
+            # Ретро-enrichment long-short полей (чтобы UI показывал роль модели и соответствие режиму)
+            try:
+                if isinstance(market_conditions, dict) and _sym_cfg:
+                    if 'trade_mode' not in market_conditions and _sym_cfg.get('trade_mode'):
+                        market_conditions['trade_mode'] = _sym_cfg.get('trade_mode')
+                    # active_role/trade_direction считаем по режиму рынка, если long-short
+                    tm0 = market_conditions.get('trade_mode')
+                    reg0 = market_conditions.get('ensemble_regime') or market_conditions.get('market_regime')
+                    if str(tm0).strip() == 'long-short':
+                        if 'active_role' not in market_conditions and str(reg0).strip().lower() in ('uptrend', 'downtrend'):
+                            market_conditions['active_role'] = ('long' if str(reg0).strip().lower() == 'uptrend' else 'short')
+                        if 'trade_direction' not in market_conditions and market_conditions.get('active_role'):
+                            market_conditions['trade_direction'] = market_conditions.get('active_role')
+                    else:
+                        if 'trade_direction' not in market_conditions and _sym_cfg.get('direction'):
+                            market_conditions['trade_direction'] = _sym_cfg.get('direction')
+                    # model_role по пути модели из Redis roles map
+                    if 'model_role' not in market_conditions and _sym_cfg.get('roles'):
+                        mp = str(getattr(prediction, 'model_path', '') or '').replace('\\', '/')
+                        role = _sym_cfg['roles'].get(mp)
+                        if role:
+                            market_conditions['model_role'] = role
+            except Exception:
+                pass
             
             prediction_data = {
                 'id': prediction.id,

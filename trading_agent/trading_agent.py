@@ -64,7 +64,10 @@ class TradingAgent:
         
         # Попытка восстановить выбранные символы из Redis и открытую позицию с биржи
         try:
-            self._load_last_symbols_from_redis()
+            # Важно: если symbol был передан явно (например, запуск per-symbol),
+            # не перетираем его значением из Redis (trading:symbols).
+            if not _sym:
+                self._load_last_symbols_from_redis()
         except Exception:
             pass
         try:
@@ -576,13 +579,64 @@ class TradingAgent:
         try:
             if not self.exchange:
                 return {"success": False, "error": "Биржа не инициализирована"}
-            
-            balance = self.exchange.fetch_balance({'recv_window': 20000, 'recvWindow': 20000})
+
+            def _as_float(x):
+                try:
+                    if x is None:
+                        return None
+                    return float(x)
+                except Exception:
+                    return None
+
+            def _extract_currency(balance_obj: dict, code: str) -> float:
+                # ccxt: иногда баланс[code] = {'free','used','total'}, иногда balance['free'][code]
+                try:
+                    cur = balance_obj.get(code)
+                    if isinstance(cur, dict):
+                        v = cur.get('free')
+                        if v is not None:
+                            return float(v)
+                    elif cur is not None:
+                        v = _as_float(cur)
+                        if v is not None:
+                            return v
+                except Exception:
+                    pass
+                try:
+                    free_map = balance_obj.get('free') or {}
+                    if isinstance(free_map, dict) and free_map.get(code) is not None:
+                        v = _as_float(free_map.get(code))
+                        if v is not None:
+                            return v
+                except Exception:
+                    pass
+                return 0.0
+
+            # Важно: Bybit через ccxt часто по умолчанию отдаёт spot. Нам нужен derivatives UNIFIED.
+            variants = [
+                {'accountType': 'UNIFIED', 'type': 'swap', 'recv_window': 20000, 'recvWindow': 20000},
+                {'accountType': 'UNIFIED', 'recv_window': 20000, 'recvWindow': 20000},
+                {'type': 'swap', 'recv_window': 20000, 'recvWindow': 20000},
+                {'recv_window': 20000, 'recvWindow': 20000},
+            ]
+            balance = None
+            last_e = None
+            for p in variants:
+                try:
+                    b = self.exchange.fetch_balance(p)
+                    if isinstance(b, dict) and b:
+                        balance = b
+                        break
+                except Exception as e:
+                    last_e = e
+                    continue
+            if balance is None:
+                raise RuntimeError(f"fetch_balance failed: {last_e}")
             return {
                 "success": True,
                 "balance": {
-                    "USDT": balance.get('USDT', {}).get('free', 0),
-                    "BTC": balance.get('BTC', {}).get('free', 0)
+                    "USDT": _extract_currency(balance, 'USDT'),
+                    "BTC": _extract_currency(balance, 'BTC')
                 }
             }
         except Exception as e:
@@ -859,8 +913,17 @@ class TradingAgent:
             # Получаем ограничения Bybit
             bybit_limits = self._get_bybit_limits()
             
-            # Доля счёта для сделки из Redis (по умолчанию 100%)
+            # Доля счёта для сделки (по умолчанию 100%)
             account_pct = 100
+            # 1) Пробуем Postgres (app_settings): scope=trading, group=sizing, key=ACCOUNT_PCT
+            try:
+                from utils.settings_store import get_setting_value as _get_setting_value
+                _ap_db = _get_setting_value('trading', 'sizing', 'ACCOUNT_PCT')
+                if _ap_db is not None and str(_ap_db).strip() != '':
+                    account_pct = max(1, min(100, int(float(str(_ap_db)))))
+            except Exception:
+                pass
+            # 2) Фолбэк на Redis (старое поведение)
             try:
                 from redis import Redis as _Redis
                 _rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
@@ -868,7 +931,7 @@ class TradingAgent:
                 if _ap is not None and str(_ap).strip() != '':
                     account_pct = max(1, min(100, int(str(_ap))))
             except Exception:
-                account_pct = 100
+                pass
             # Минимальная/максимальная стоимость из лимитов биржи
             min_trade_usdt = max(10.0, float(bybit_limits['min_cost']))
             max_trade_usdt = float(bybit_limits['max_cost']) if bybit_limits['max_cost'] else float('inf')
@@ -1111,10 +1174,26 @@ class TradingAgent:
                         # Если есть только одна свеча — используем её
                         current_price = float(df_sorted['close'].iloc[-1])
                         logger.debug("Недостаточно данных для закрытой свечи, используем последнюю доступную цену")
-                return current_price
+                # Защита: если по какой-то причине получили 0/NaN — попробуем взять цену с биржи
+                try:
+                    if current_price and current_price > 0:
+                        return current_price
+                except Exception:
+                    pass
             else:
-                logger.warning("Свечи из БД недоступны — цена недоступна")
-                return 0.0
+                logger.warning("Свечи из БД недоступны — пробуем цену с биржи (ccxt.fetch_ticker)")
+
+            # Fallback: цена с биржи, если БД не дала адекватную цену
+            try:
+                if getattr(self, 'exchange', None):
+                    sym = getattr(self, 'symbol', None) or getattr(self, 'base_symbol', None) or symbol_for_db
+                    t = self.exchange.fetch_ticker(sym) or {}
+                    px = t.get('last') or t.get('close') or t.get('bid') or t.get('ask')
+                    if px is not None and float(px) > 0:
+                        return float(px)
+            except Exception as te:
+                logger.warning(f"fetch_ticker fallback failed: {te}")
+            return 0.0
                 
         except Exception as e:
             logger.error(f"Ошибка получения цены: {e}")

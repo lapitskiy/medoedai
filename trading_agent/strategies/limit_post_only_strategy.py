@@ -355,6 +355,113 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
         else:
             return round(best_ask + tick * offset_ticks, 8)
 
+    def _get_free_usdt(self) -> float:
+        """
+        Best-effort получение свободного USDT из ccxt balance.
+        Важно: для деривативов/linear структура balance может отличаться, поэтому делаем несколько fallback.
+        """
+        ex = getattr(self.gateway, 'ex', None)
+        if not ex:
+            return 0.0
+        bal = None
+        # ccxt может отличаться по account type; пробуем несколько вариантов без падения
+        for params in (None, {'type': 'swap'}, {'type': 'future'}, {'category': 'linear'}):
+            try:
+                bal = ex.fetch_balance(params) if params else ex.fetch_balance()
+                if bal:
+                    break
+            except Exception:
+                bal = None
+                continue
+        if not bal:
+            return 0.0
+        try:
+            free = bal.get('free') or {}
+            if isinstance(free, dict) and free.get('USDT') is not None:
+                return float(free.get('USDT') or 0.0)
+        except Exception:
+            pass
+        try:
+            usdt = bal.get('USDT') or {}
+            if isinstance(usdt, dict) and usdt.get('free') is not None:
+                return float(usdt.get('free') or 0.0)
+        except Exception:
+            pass
+        try:
+            # иногда ccxt кладёт сразу числом
+            if bal.get('USDT') is not None and not isinstance(bal.get('USDT'), dict):
+                return float(bal.get('USDT') or 0.0)
+        except Exception:
+            pass
+        return 0.0
+
+    def _get_min_amount(self, symbol: str) -> float:
+        ex = getattr(self.gateway, 'ex', None)
+        if not ex:
+            return 0.0
+        try:
+            m = ex.market(symbol) or {}
+            limits = (m.get('limits', {}) or {}).get('amount', {}) or {}
+            return float(limits.get('min') or 0.0)
+        except Exception:
+            return 0.0
+
+    def _downsize_buy_qty_to_balance(self, cur: Intent, price: float, buffer_ratio: float = 0.95) -> bool:
+        """
+        Для BUY: если на текущую цену не хватает свободного USDT, уменьшаем qty_remaining до доступного.
+        Возвращает False если даже на min_amount не хватает — тогда intent переводим в FAILED.
+        """
+        try:
+            if cur.side != Side.BUY:
+                return True
+            if not price or price <= 0:
+                return True
+            if not cur.qty_remaining or cur.qty_remaining <= 0:
+                return True
+
+            free_usdt = float(self._get_free_usdt() or 0.0)
+            avail = max(0.0, free_usdt * float(buffer_ratio))
+            required = float(cur.qty_remaining) * float(price)
+            if required <= avail or avail <= 0:
+                return True
+
+            max_qty = avail / float(price)
+            min_qty = float(self._get_min_amount(cur.symbol) or 0.0)
+            if min_qty > 0 and max_qty < min_qty:
+                # Недостаточно средств даже для минималки — завершаем intent, чтобы не крутиться в amend_failed
+                try:
+                    self._cancel_all_non_reduce_only(cur.symbol)
+                except Exception:
+                    pass
+                self.store.set_state(cur.intent_id, IntentState.FAILED, last_error=f"insufficient USDT for min order: free={free_usdt:.4f} need>={min_qty*price:.4f}")
+                self.store.remove_pending(cur.symbol, cur.intent_id)
+                try:
+                    self._log.warning(f"[LimitPO] insufficient USDT for min: symbol={cur.symbol} free={free_usdt:.4f} price={price} min_qty={min_qty}")
+                except Exception:
+                    pass
+                return False
+
+            new_qty = max_qty
+            if min_qty > 0:
+                new_qty = max(new_qty, min_qty)
+            # downsize only
+            new_qty = min(float(cur.qty_remaining), float(new_qty))
+            if new_qty <= 0:
+                return False
+
+            cur.qty_remaining = float(new_qty)
+            try:
+                self.store.update_intent(cur)
+            except Exception:
+                pass
+            try:
+                self._log.info(f"[LimitPO] qty downsized by balance: symbol={cur.symbol} free={free_usdt:.4f} price={price} -> qty={cur.qty_remaining}")
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return True
+
     def _requote_edge(self, cur: Intent, best_bid: float, best_ask: float) -> None:
         if not cur.tick_size:
             return
@@ -369,6 +476,12 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                 except Exception:
                     pass
                 cur.exchange_order_id = None
+
+            # Guard: если цена ушла и на BUY не хватает свободного USDT, уменьшаем qty_remaining до доступного.
+            if cur.side == Side.BUY:
+                ok = self._downsize_buy_qty_to_balance(cur, target, buffer_ratio=0.95)
+                if not ok:
+                    return
 
             # Пересчёт TP/SL на новой цене (если включены биржевые ордера)
             extra_params = {}
