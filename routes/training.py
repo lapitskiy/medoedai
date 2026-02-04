@@ -279,7 +279,7 @@ def train_xgb_symbol_route():
         'label_delta': label_delta,
         'entry_stride': entry_stride,
         'max_trades': max_trades,
-    }, queue='train')
+    }, queue='celery')
 
     # UI list
     try:
@@ -329,7 +329,7 @@ def train_xgb_grid_route():
         'limit_candles_quick': limit_quick,
         'base_max_hold_steps': max_hold_steps,
         'base_min_profit': min_profit,
-    }, queue='train')
+    }, queue='celery')
 
     try:
         redis_client.lrem("ui:tasks", 0, task.id)
@@ -391,7 +391,7 @@ def train_xgb_grid_task_route():
             'limit_candles_quick': limit_quick,
             'base_max_hold_steps': max_hold_steps,
             'base_min_profit': min_profit,
-        }, queue='train')
+        }, queue='celery')
     else:
         task = train_xgb_grid_entry_exit.apply_async(kwargs={
             'symbol': symbol,
@@ -403,7 +403,7 @@ def train_xgb_grid_task_route():
             'base_fee_bps': fee_bps,
             'base_min_profit': min_profit,
             'base_label_delta': label_delta,
-        }, queue='train')
+        }, queue='celery')
 
     try:
         redis_client.lrem("ui:tasks", 0, task.id)
@@ -532,13 +532,24 @@ def continue_training_route():
             if symbol_from_path and model_type == 'dqn':
                 symbol_guess = (str(symbol_from_path).upper())
             elif symbol_from_path and model_type == 'sac':
-                symbol_guess = (str(Path(symbol_from_path).stem).upper())
+                # NOTE: в этом модуле pathlib.Path импортирован как _Path
+                symbol_guess = (str(_Path(symbol_from_path).stem).upper())
             else:
                 symbol_guess = (code.split('_', 1)[0] + 'USDT').upper()
         except Exception:
             symbol_guess = None
         if not symbol_guess:
             symbol_guess = 'BTCUSDT'
+
+        # DQN: когда путь вида result/dqn/<SYMBOL>/runs/<run_id>/model.pth,
+        # <SYMBOL> обычно "TON"/"BTC" без суффикса USDT. Per-symbol overrides
+        # (lookback_window/indicators_config/и т.д.) завязаны на ключи типа TONUSDT,
+        # поэтому нормализуем для совместимости continue-training.
+        try:
+            if model_type == 'dqn' and symbol_guess and not str(symbol_guess).upper().endswith('USDT'):
+                symbol_guess = str(symbol_guess).upper() + 'USDT'
+        except Exception:
+            pass
 
         if seed is None:
             import random as _rnd

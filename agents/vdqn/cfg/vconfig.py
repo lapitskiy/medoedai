@@ -37,7 +37,7 @@ class vDqnConfig:
 
     # === сеть / обучение ===
     lr: float              = 3e-4     # базовый lr; может быть переопределен GPU-конфигом
-    encoder_lr_scale: float = 0.1     # множитель LR для энкодера (медленнее головы)
+    encoder_lr_scale: float = 0.03    # множитель LR для энкодера (медленнее головы, стабильнее)
     gamma: float           = 0.99     # discount factor
     soft_tau: float        = 1e-2     # мягкие обновления таргета
     soft_update_every: int = 1        # применяем каждый шаг
@@ -67,7 +67,7 @@ class vDqnConfig:
 
     # --- STATE-based action masking (feature flag for env) ---
     # Legacy train passes vDqnConfig into MultiCryptoTradingEnv; env reads getattr(cfg,'use_state_action_mask', False)
-    use_state_action_mask: bool = False
+    use_state_action_mask: bool = True
     
     def __post_init__(self):
         """Проверяем переменные окружения после инициализации"""

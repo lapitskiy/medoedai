@@ -800,8 +800,18 @@ def train_model_optimized(
             # Feature flag: state-based action masking (default OFF).
             # Allow enabling via symbol override gym_config.use_state_action_mask
             try:
-                if override and isinstance(override.get('gym_config', None), dict) and ('use_state_action_mask' in override.get('gym_config', {})):
-                    gym_cfg.use_state_action_mask = bool(override.get('gym_config', {}).get('use_state_action_mask'))
+                if override and isinstance(override.get('gym_config', None), dict):
+                    og = override.get('gym_config', {}) or {}
+                    # small allowlist of safe gym-config overrides
+                    for k in ('use_state_action_mask', 'micro_profit_tau_mult', 'micro_profit_tau_min'):
+                        if k in og and hasattr(gym_cfg, k):
+                            try:
+                                if k == 'use_state_action_mask':
+                                    setattr(gym_cfg, k, bool(og.get(k)))
+                                else:
+                                    setattr(gym_cfg, k, float(og.get(k)))
+                            except Exception:
+                                pass
             except Exception:
                 pass
             # Feature flag from Postgres (app_settings) via /settings.
@@ -2265,12 +2275,13 @@ def train_model_optimized(
                 saved_eps = dqn_solver.epsilon
                 try:
                     for _ in range(eval_episodes_count):
-                        # Отсечём текущее количество кумулятивных сделок, чтобы выделить сделки этого eval-эпизода
+                        state_eval = env.reset()
+                        # Отсечём текущее количество кумулятивных сделок ПОСЛЕ reset(),
+                        # т.к. reset() может очищать trades/all_trades и иначе winrate может залипать в 0.0
                         try:
                             _before_count = len(get_env_attr_safe(env, 'all_trades') or [])
                         except Exception:
                             _before_count = None
-                        state_eval = env.reset()
                         # Убедимся, что состояние — numpy
                         if isinstance(state_eval, (list, tuple)):
                             state_eval = np.array(state_eval, dtype=np.float32)

@@ -175,8 +175,11 @@ class CryptoTradingEnvShort(CryptoTradingEnvOptimized):
                 self._short_entry_step = int(self.current_step)
                 self.balance += (short_notional - self.fee_entry_short)
 
-                # небольшой базовый бонус + бонус уверенности
-                reward = 0.03 + entry_confidence * 0.02
+                # Reward на входе ≈ 0: оставляем только комиссию (минус)
+                try:
+                    reward += -float(self.fee_entry_short) / max(float(short_notional), 1e-9)
+                except Exception:
+                    pass
                 # Статистика ENTER_SHORT (используем buy_stats_total как "входы")
                 try:
                     self.buy_stats_total['executed'] += 1
@@ -238,7 +241,8 @@ class CryptoTradingEnvShort(CryptoTradingEnvOptimized):
                 except Exception:
                     pass
             else:
-                reward += 0.001
+                # Без бонуса за бездействие
+                reward += 0.0
                 try:
                     self.hold_stats_total['no_position'] += 1
                 except Exception:

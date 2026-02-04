@@ -963,10 +963,7 @@ class CryptoTradingEnvOptimized(gym.Env):
                     # Учитываем эффективный BUY
                     self.action_counts[1] += 1
                     
-                    # Награда зависит от уверенности входа
-                    base_reward = 0.03
-                    confidence_bonus = entry_confidence * 0.02  # Дополнительная награда за высокую уверенность
-                    reward = base_reward + confidence_bonus
+                    # Reward на входе ≈ 0: не даём бонусов за вход, оставляем только комиссию (минус)
                     
                     if self._can_log:
                         print(f"🔵 BUY: {crypto_to_buy:.4f} at {current_price:.2f}, уверенность: {entry_confidence:.2f}, награда: {reward:.4f}")
@@ -1104,13 +1101,6 @@ class CryptoTradingEnvOptimized(gym.Env):
         # Обработка HOLD действия (как в оригинале)
         if action == 0:
             if self.crypto_held > 0 and self.last_buy_price is not None:
-                # Награда за длительное удержание позиции
-                if hasattr(self, 'last_buy_step') and self.last_buy_step is not None:
-                    hold_time = self.current_step - self.last_buy_step
-                    if hold_time >= self.min_hold_steps * 2:  # Двойное минимальное время
-                        reward += 0.001  # Небольшая награда за терпение
-                        if self.current_step % 100 == 0:
-                            self._log(f"[{self.current_step}] 🕐 Награда за терпение: {hold_time} шагов")
                 # --- Трейлинг-стоп (как в оригинале) ---
                 if self.epsilon <= 0.2:  # фаза exploitation
                     # 1. обновляем максимум
@@ -1187,30 +1177,12 @@ class CryptoTradingEnvOptimized(gym.Env):
                         reward -= self.time_penalty_after_hold
             else:
                 # Если action == HOLD и нет открытой позиции
-                reward = 0.001  # Небольшое поощрение за разумное бездействие вместо штрафа
+                reward = 0.0  # Без бонуса за бездействие
         
         # Обновляем статистики
         self._update_stats(current_price)
         
-        # АДАПТИВНЫЕ НАГРАДЫ для разных рыночных условий
-        if action != 0:  # Если действие не HOLD
-            base_activity_reward = 0.001
-            
-            # Адаптируем награду к времени дня (НЕ блокируем, а обучаем)
-            if hasattr(self, '_candle_datetimes') and self.current_step - 1 < len(self._candle_datetimes):
-                current_hour = self._candle_datetimes[self.current_step - 1].hour
-                
-                if 6 <= current_hour <= 22:
-                    # Активные часы - стандартная награда
-                    reward += base_activity_reward
-                else:
-                    # Низкая ликвидность - повышенная награда за смелость
-                    # Агент учится торговать в сложных условиях
-                    reward += base_activity_reward * 1.5
-                    
-            else:
-                # Если нет информации о времени - стандартная награда
-                reward += base_activity_reward
+        # ВАЖНО: не добавляем "плюсы за активность" (иначе агент начнёт торговать ради reward, а не ради PnL)
         
         # Переходим к следующему шагу
         self.current_step += 1

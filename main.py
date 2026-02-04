@@ -21,6 +21,7 @@ from routes.trading import trading_bp, get_matched_full_trades
 from routes.settings import settings_bp
 from routes.models_admin import models_admin_bp
 from routes.oos import oos_bp
+from routes.xgb_oos import xgb_oos_bp
 from routes.training import training_bp
 from routes.analysis_page import analytics_bp
 from routes.sac import sac_bp
@@ -82,6 +83,7 @@ from routes.clean import clean_bp
 app.register_blueprint(clean_bp)
 app.register_blueprint(system_models_bp)
 app.register_blueprint(oos_bp)
+app.register_blueprint(xgb_oos_bp)
 app.register_blueprint(sac_bp)
 app.register_blueprint(xgb_bp)
 app.register_blueprint(analytics_bp)
@@ -613,6 +615,44 @@ def get_result_model_info():
                 except Exception:
                     pass
 
+                # BUY/HOLD фильтры и churn-метрики (для /analitika)
+                try:
+                    def _sanitize_int_dict(d):
+                        out = {}
+                        if not isinstance(d, dict):
+                            return out
+                        for k, v in d.items():
+                            try:
+                                out[str(k)] = int(v)
+                            except Exception:
+                                continue
+                        return out
+
+                    buy_stats_total = _sanitize_int_dict(results.get('buy_stats_total') or {})
+                    hold_stats_total = _sanitize_int_dict(results.get('hold_stats_total') or {})
+                    if buy_stats_total:
+                        info['buy_stats_total'] = buy_stats_total
+                    if hold_stats_total:
+                        info['hold_stats_total'] = hold_stats_total
+
+                    buy_accept_rate = results.get('buy_accept_rate')
+                    if isinstance(buy_accept_rate, (int, float)) and buy_accept_rate == buy_accept_rate:
+                        info['buy_accept_rate'] = float(buy_accept_rate)
+                    avg_minutes_between_buys = results.get('avg_minutes_between_buys')
+                    if isinstance(avg_minutes_between_buys, (int, float)) and avg_minutes_between_buys == avg_minutes_between_buys:
+                        info['avg_minutes_between_buys'] = float(avg_minutes_between_buys)
+
+                    # churn: trades / episode (если episodes известны)
+                    try:
+                        ep_n = info.get('episodes')
+                        tr_n = info.get('stats', {}).get('trades_count')
+                        if isinstance(ep_n, (int, float)) and isinstance(tr_n, (int, float)) and float(ep_n) > 0:
+                            info['trades_per_episode'] = float(tr_n) / float(ep_n)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
                 # Market state (NORMAL/HIGH_VOL/PANIC/DRAWDOWN) — распределение состояний в обучении
                 try:
                     raw_ms = results.get('market_state_counts_total') or {}
@@ -695,19 +735,75 @@ def get_result_model_info():
                     if rois:
                         # equity as cumulative ROI (percent)
                         eq = []
+                        underwater = []
                         c = 0.0
+                        peak = -1e9
                         for i, r in enumerate(rois):
                             c += float(r)
-                            eq.append((i + 1, c * 100.0))
+                            v = c * 100.0
+                            if v > peak:
+                                peak = v
+                            dd = v - peak  # <= 0
+                            eq.append((i + 1, v))
+                            underwater.append((i + 1, dd))
                         # downsample equity to max points
                         MAX_EQ = 2000
                         if len(eq) > MAX_EQ:
                             step = max(1, int(len(eq) / MAX_EQ))
-                            sampled = [eq[i] for i in range(0, len(eq), step)]
-                            if sampled and sampled[-1][0] != eq[-1][0]:
-                                sampled.append(eq[-1])
-                            eq = sampled[: MAX_EQ + 1]
+                            idxs = list(range(0, len(eq), step))
+                            if idxs and idxs[-1] != (len(eq) - 1):
+                                idxs.append(len(eq) - 1)
+                            eq = [eq[i] for i in idxs][: MAX_EQ + 1]
+                            underwater = [underwater[i] for i in idxs][: MAX_EQ + 1]
                         info['equity_curve'] = [{'i': int(i), 'v': float(v)} for (i, v) in eq]
+                        info['underwater_curve'] = [{'i': int(i), 'v': float(v)} for (i, v) in underwater]
+
+                        # Rolling metrics (last N trades): avg ROI% + profit factor
+                        try:
+                            N = int(results.get('rolling_window_trades') or 50)
+                            N = max(10, min(500, N))
+                        except Exception:
+                            N = 50
+                        try:
+                            roll_avg = []
+                            roll_pf = []
+                            pos_sum = 0.0
+                            neg_sum = 0.0
+                            # sliding window sums
+                            for i in range(len(rois)):
+                                r = float(rois[i])
+                                if r >= 0:
+                                    pos_sum += r
+                                else:
+                                    neg_sum += -r
+                                if i >= N:
+                                    old = float(rois[i - N])
+                                    if old >= 0:
+                                        pos_sum -= old
+                                    else:
+                                        neg_sum -= -old
+                                if i + 1 >= N:
+                                    window = rois[i - N + 1:i + 1]
+                                    avg = (float(sum(window)) / float(N)) * 100.0
+                                    pf = (pos_sum / neg_sum) if neg_sum > 1e-12 else None
+                                    roll_avg.append((i + 1, avg))
+                                    if pf is not None and pf == pf:
+                                        roll_pf.append((i + 1, float(pf)))
+                            # downsample rolling
+                            MAX_R = 2000
+                            if len(roll_avg) > MAX_R:
+                                step = max(1, int(len(roll_avg) / MAX_R))
+                                roll_avg = [roll_avg[i] for i in range(0, len(roll_avg), step)]
+                            if len(roll_pf) > MAX_R:
+                                step = max(1, int(len(roll_pf) / MAX_R))
+                                roll_pf = [roll_pf[i] for i in range(0, len(roll_pf), step)]
+                            if roll_avg:
+                                info['rolling_window_trades'] = int(N)
+                                info['rolling_avg_roi'] = [{'i': int(i), 'v': float(v)} for (i, v) in roll_avg]
+                            if roll_pf:
+                                info['rolling_profit_factor'] = [{'i': int(i), 'v': float(v)} for (i, v) in roll_pf]
+                        except Exception:
+                            pass
 
                         # histogram of ROI (percent) with fixed bins
                         import numpy as _np  # type: ignore

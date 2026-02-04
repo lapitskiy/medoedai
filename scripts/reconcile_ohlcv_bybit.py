@@ -47,13 +47,28 @@ def map_symbol_on_exchange(ex: ccxt.Exchange, symbol: str) -> str:
     return normalize_symbol(symbol)
 
 
-def fetch_range_ohlcv(ex: ccxt.Exchange, uni_symbol: str, timeframe: str, since_ms: int, until_ms: int, limit_total: int = 1_000_000) -> list[list]:
+def fetch_range_ohlcv(
+    ex: ccxt.Exchange,
+    uni_symbol: str,
+    timeframe: str,
+    since_ms: int,
+    until_ms: int,
+    limit_total: int = 1_000_000,
+    params: dict | None = None,
+) -> list[list]:
     """Загружает OHLCV пачками по 1000, двигая курсор по времени."""
     rows: list[list] = []
     cursor = since_ms
     tf_ms = ex.parse_timeframe(timeframe) * 1000
+    effective_params = params
+    if effective_params is None and getattr(ex, "id", "") == "bybit":
+        # Для Bybit linear опираемся на category='linear'
+        effective_params = {"category": "linear"}
     while cursor <= until_ms and len(rows) < limit_total:
-        batch = ex.fetch_ohlcv(uni_symbol, timeframe, since=cursor, limit=1000, params={'category': 'linear'})
+        if effective_params:
+            batch = ex.fetch_ohlcv(uni_symbol, timeframe, since=cursor, limit=1000, params=effective_params)
+        else:
+            batch = ex.fetch_ohlcv(uni_symbol, timeframe, since=cursor, limit=1000)
         if not batch:
             break
         rows.extend(batch)

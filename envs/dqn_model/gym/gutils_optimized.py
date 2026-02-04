@@ -19,6 +19,10 @@ def compute_market_state(
     vol_buf: Optional[Iterable[float]] = None,
     trend_regime: int = 0,
     atr_rel: float | None = None,
+    high_vol_atr: float = 0.006,
+    high_vol_ret: float = 0.008,
+    panic_atr: float = 0.010,
+    panic_drop: float = -0.020,
 ) -> MarketState:
     """Pure market-regime detector.
 
@@ -73,10 +77,11 @@ def compute_market_state(
         dd_flag = False
 
     # Thresholds are intentionally conservative and stable.
-    HIGH_VOL_ATR = 0.006
-    HIGH_VOL_RET = 0.008
-    PANIC_ATR = 0.010
-    PANIC_DROP = -0.020
+    # NOTE: values are overridable via function args to avoid hardcoding in env.
+    HIGH_VOL_ATR = float(high_vol_atr)
+    HIGH_VOL_RET = float(high_vol_ret)
+    PANIC_ATR = float(panic_atr)
+    PANIC_DROP = float(panic_drop)
 
     try:
         tr = int(trend_regime)

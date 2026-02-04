@@ -58,8 +58,11 @@
                     <div id="epsChartContainer" class="results" style="display:none;"></div>
                     <div id="marketStateChartContainer" class="results" style="display:none;"></div>
                     <div id="equityChartContainer" class="results" style="display:none;"></div>
+                    <div id="drawdownChartContainer" class="results" style="display:none;"></div>
+                    <div id="rollingChartContainer" class="results" style="display:none;"></div>
                     <div id="roiHistContainer" class="results" style="display:none;"></div>
                     <div id="actionsStatsContainer" class="results" style="display:none;"></div>
+                    <div id="churnStatsContainer" class="results" style="display:none;"></div>
                     <div id="analysisStatus" class="status" style="display: none;"></div>
                     <div id="analysisResults" class="results" style="display: none;"></div>
                     <div id="filesList" class="results" style="display: none;"></div>
@@ -186,8 +189,11 @@
             const epsWrap = document.getElementById('epsChartContainer');
             const msWrap = document.getElementById('marketStateChartContainer');
             const eqWrap = document.getElementById('equityChartContainer');
+            const ddWrap = document.getElementById('drawdownChartContainer');
+            const rollWrap = document.getElementById('rollingChartContainer');
             const histWrap = document.getElementById('roiHistContainer');
             const actionsWrap = document.getElementById('actionsStatsContainer');
+            const churnWrap = document.getElementById('churnStatsContainer');
             const symRaw = document.getElementById('indexSymbolSelect')?.value || '';
             const sym = symRaw.trim();
             const runId = (document.getElementById('indexRunSelect')?.value||'').trim();
@@ -197,8 +203,11 @@
                 if(epsWrap) epsWrap.style.display='none';
                 if(msWrap) msWrap.style.display='none';
                 if(eqWrap) eqWrap.style.display='none';
+                if(ddWrap) ddWrap.style.display='none';
+                if(rollWrap) rollWrap.style.display='none';
                 if(histWrap) histWrap.style.display='none';
                 if(actionsWrap) actionsWrap.style.display='none';
+                if(churnWrap) churnWrap.style.display='none';
                 return;
             }
             const entry = indexRunsBySymbol[symRaw] || indexRunsBySymbol[sym.replace(/^SAC:/i, '')] || null;
@@ -219,8 +228,11 @@
                     if(epsWrap) epsWrap.style.display='none';
                     if(msWrap) msWrap.style.display='none';
                     if(eqWrap) eqWrap.style.display='none';
+                    if(ddWrap) ddWrap.style.display='none';
+                    if(rollWrap) rollWrap.style.display='none';
                     if(histWrap) histWrap.style.display='none';
                     if(actionsWrap) actionsWrap.style.display='none';
+                    if(churnWrap) churnWrap.style.display='none';
                     return;
                 }
                 const stats = result.stats || {};
@@ -463,6 +475,90 @@
                     }
                 }catch(e){ /* ignore */ }
 
+                // --- Drawdown / underwater curve (%, <=0) ---
+                try{
+                    if(ddWrap){ ddWrap.innerHTML=''; ddWrap.style.display='none'; }
+                    const uw = Array.isArray(result.underwater_curve) ? result.underwater_curve : [];
+                    if(ddWrap && uw.length){
+                        ddWrap.style.display='block';
+                        ddWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">Drawdown / Underwater (%, points=${uw.length})</div><div id="ddChart" style="width:100%;height:220px;"></div>`;
+                        const el = document.getElementById('ddChart');
+                        if(el && typeof LightweightCharts !== 'undefined'){
+                            const chart = LightweightCharts.createChart(el, {
+                                width: el.clientWidth,
+                                height: 220,
+                                layout: { backgroundColor: '#ffffff', textColor: '#333' },
+                                grid: { vertLines: { color: '#e1e2e4' }, horzLines: { color: '#e1e2e4' } },
+                                timeScale: { visible: false },
+                                rightPriceScale: { visible: true },
+                            });
+                            const addLineSeriesCompat = (ch, opts) => {
+                                if (ch && typeof ch.addLineSeries === 'function') return ch.addLineSeries(opts);
+                                if (ch && typeof ch.addSeries === 'function' && LightweightCharts && LightweightCharts.LineSeries) {
+                                    return ch.addSeries(LightweightCharts.LineSeries, opts);
+                                }
+                                throw new Error('Line series API is not available');
+                            };
+                            const line = addLineSeriesCompat(chart, { color:'#ef4444', lineWidth:2 });
+                            const data = uw.map(p=>({ time: Number(p.i||0), value: Number(p.v||0) }));
+                            line.setData(data);
+                            chart.timeScale().fitContent();
+                            new ResizeObserver(()=>{ chart.applyOptions({ width: el.clientWidth }); }).observe(el);
+                        }
+                    }
+                }catch(e){ /* ignore */ }
+
+                // --- Rolling quality: avg ROI% + profit factor (last N trades) ---
+                try{
+                    if(rollWrap){ rollWrap.innerHTML=''; rollWrap.style.display='none'; }
+                    const rollAvg = Array.isArray(result.rolling_avg_roi) ? result.rolling_avg_roi : [];
+                    const rollPf = Array.isArray(result.rolling_profit_factor) ? result.rolling_profit_factor : [];
+                    const wN = Number.isFinite(result.rolling_window_trades) ? Number(result.rolling_window_trades) : 50;
+                    if(rollWrap && (rollAvg.length || rollPf.length)){
+                        rollWrap.style.display='block';
+                        rollWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">Rolling metrics (last N trades), N=${wN}</div><div id="rollAvgChart" style="width:100%;height:220px;margin-bottom:10px;"></div><div id="rollPfChart" style="width:100%;height:220px;"></div>`;
+                        const el1 = document.getElementById('rollAvgChart');
+                        const el2 = document.getElementById('rollPfChart');
+                        if(typeof LightweightCharts !== 'undefined'){
+                            const addLineSeriesCompat = (ch, opts) => {
+                                if (ch && typeof ch.addLineSeries === 'function') return ch.addLineSeries(opts);
+                                if (ch && typeof ch.addSeries === 'function' && LightweightCharts && LightweightCharts.LineSeries) {
+                                    return ch.addSeries(LightweightCharts.LineSeries, opts);
+                                }
+                                throw new Error('Line series API is not available');
+                            };
+                            if(el1 && rollAvg.length){
+                                const chart = LightweightCharts.createChart(el1, {
+                                    width: el1.clientWidth,
+                                    height: 220,
+                                    layout: { backgroundColor: '#ffffff', textColor: '#333' },
+                                    grid: { vertLines: { color: '#e1e2e4' }, horzLines: { color: '#e1e2e4' } },
+                                    timeScale: { visible: false },
+                                    rightPriceScale: { visible: true },
+                                });
+                                const line = addLineSeriesCompat(chart, { color:'#0ea5e9', lineWidth:2 });
+                                line.setData(rollAvg.map(p=>({ time: Number(p.i||0), value: Number(p.v||0) })));
+                                chart.timeScale().fitContent();
+                                new ResizeObserver(()=>{ chart.applyOptions({ width: el1.clientWidth }); }).observe(el1);
+                            }
+                            if(el2 && rollPf.length){
+                                const chart = LightweightCharts.createChart(el2, {
+                                    width: el2.clientWidth,
+                                    height: 220,
+                                    layout: { backgroundColor: '#ffffff', textColor: '#333' },
+                                    grid: { vertLines: { color: '#e1e2e4' }, horzLines: { color: '#e1e2e4' } },
+                                    timeScale: { visible: false },
+                                    rightPriceScale: { visible: true },
+                                });
+                                const line = addLineSeriesCompat(chart, { color:'#16a34a', lineWidth:2 });
+                                line.setData(rollPf.map(p=>({ time: Number(p.i||0), value: Number(p.v||0) })));
+                                chart.timeScale().fitContent();
+                                new ResizeObserver(()=>{ chart.applyOptions({ width: el2.clientWidth }); }).observe(el2);
+                            }
+                        }
+                    }
+                }catch(e){ /* ignore */ }
+
                 // --- ROI histogram (counts by ROI%, rendered as text bars) ---
                 try{
                     if(histWrap){ histWrap.innerHTML=''; histWrap.style.display='none'; }
@@ -507,12 +603,42 @@
  <pre>HOLD(0): ${hold}\nBUY(1):  ${buy}\nSELL(2): ${sell}\nTOTAL:   ${total}\n\nMARKET_STATE:\n${msText}</pre>`;
                     }
                 }catch(e){ /* ignore */ }
+
+                // --- Churn + filters stats (text) ---
+                try{
+                    if(churnWrap){ churnWrap.innerHTML=''; churnWrap.style.display='none'; }
+                    const tpe = (typeof result.trades_per_episode === 'number') ? result.trades_per_episode : null;
+                    const bar = (typeof result.buy_accept_rate === 'number') ? result.buy_accept_rate : null;
+                    const mb = (typeof result.avg_minutes_between_buys === 'number') ? result.avg_minutes_between_buys : null;
+                    const bs = (result.buy_stats_total && typeof result.buy_stats_total === 'object') ? result.buy_stats_total : null;
+                    if(churnWrap && (tpe!=null || bar!=null || mb!=null || bs)){
+                        churnWrap.style.display='block';
+                        const lines = [];
+                        if(tpe!=null) lines.push(`trades_per_episode: ${tpe.toFixed(3)}`);
+                        if(bar!=null) lines.push(`buy_accept_rate: ${(bar*100).toFixed(1)}%`);
+                        if(mb!=null) lines.push(`avg_minutes_between_buys: ${mb.toFixed(1)} min`);
+                        if(bs){
+                            const keys = Object.keys(bs).sort();
+                            lines.push('');
+                            lines.push('buy_stats_total:');
+                            keys.forEach(k=>{ lines.push(`  ${k}: ${Number(bs[k]||0)}`); });
+                        }
+                        churnWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">Churn + filters</div><pre>${lines.join('\n')}</pre>`;
+                    }
+                }catch(e){ /* ignore */ }
             }catch(e){
                 infoDiv.className = 'status error';
                 infoDiv.textContent = '❌ Ошибка сети: ' + e.message;
                 infoDiv.style.display = 'block';
                 if(chartWrap) chartWrap.style.display='none';
+                if(epsWrap) epsWrap.style.display='none';
+                if(msWrap) msWrap.style.display='none';
+                if(eqWrap) eqWrap.style.display='none';
+                if(ddWrap) ddWrap.style.display='none';
+                if(rollWrap) rollWrap.style.display='none';
+                if(histWrap) histWrap.style.display='none';
                 if(actionsWrap) actionsWrap.style.display='none';
+                if(churnWrap) churnWrap.style.display='none';
             }
         }
 

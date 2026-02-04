@@ -1,1 +1,55 @@
 # Add directories or file patterns to ignore during indexing (e.g. foo/ or *.csv)
+
+# Служебные файлы Cursor и IDE
+.cursor/
+.vscode/
+.idea/
+
+# Большие файлы моделей и данных (не нужны для индексации)
+*.pkl
+*.pkl.bak
+*.pth
+*.h5
+*.hdf5
+*.bin
+*.model
+*.weights
+*.ckpt
+*.safetensors
+
+# Временные файлы и кэш
+temp/
+cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+*$py.class
+
+# Логи и артефакты
+*.log
+*.out
+*.err
+logs/
+wandb/
+plots/
+
+# Данные обучения
+replay_buffer*.pkl
+celerybeat-schedule.*
+
+# Миграции Alembic (обычно не нужны для индексации кода)
+alembic/versions/*.py
+
+# Docker и конфиги (опционально, если не нужны)
+# docker-compose*.yml
+# Dockerfile*
+
+# Файлы Tianshou (больше не используются в проекте)
+*tianshou*.py
+*tainshou*.py
+agents/vdqn/tianshou_train.py
+envs/dqn_model/gym/crypto_trading_env_tainshou.py
+

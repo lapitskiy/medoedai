@@ -55,9 +55,11 @@ celery.conf.task_routes = {
     'tasks.celery_tasks.train_dqn_multi_crypto': {'queue': 'train'},
     'tasks.celery_tasks.train_cnn_model': {'queue': 'train'},
     'tasks.sac_tasks.train_sac_symbol': {'queue': 'train'},
-    'tasks.xgb_tasks.train_xgb_symbol': {'queue': 'train'},
-    'tasks.xgb_tasks.train_xgb_grid': {'queue': 'train'},
-    'tasks.xgb_tasks.train_xgb_grid_entry_exit': {'queue': 'train'},
+    # XGB is lightweight compared to DQN/SAC; route it to the general worker queue
+    # so it can run in parallel with long training jobs on queue 'train'.
+    'tasks.xgb_tasks.train_xgb_symbol': {'queue': 'celery'},
+    'tasks.xgb_tasks.train_xgb_grid': {'queue': 'celery'},
+    'tasks.xgb_tasks.train_xgb_grid_entry_exit': {'queue': 'celery'},
     'tasks.celery_task_trade.execute_trade': {'queue': 'trade'},
     'tasks.celery_task_trade.start_trading_task': {'queue': 'trade'},
     'tasks.celery_task_trade.refresh_trading_status': {'queue': 'celery'},
@@ -89,3 +91,4 @@ import tasks.celery_task_trade
 import tasks.oos_tasks
 import tasks.sac_tasks
 import tasks.xgb_tasks
+import tasks.xgb_oos_tasks

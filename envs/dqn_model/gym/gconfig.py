@@ -44,6 +44,27 @@ class GymConfig:
     
     # --- масштабирование награды ---------------------------------------------
     reward_scale: float = 1.0  # коэффициент масштабирования reward (например, 10.0)
+
+    # --- churn / micro-trades control ----------------------------------------
+    # "микро-профит" порог (в долях, например 0.003 = 0.3%) ниже которого close не должен поощряться
+    # целевой режим "не скальпинг": микропрофит считаем ниже ~0.5% net ROI
+    min_net_profit: float = 0.005
+    micro_profit_tau_mult: float = 9.0
+    micro_profit_tau_min: float = 0.005
+    micro_profit_k_small: float = 0.10
+    micro_profit_penalty_fixed: float = 0.05
+
+    # --- entry confidence gate ------------------------------------------------
+    # If entry_confidence < gate -> BUY is masked to HOLD (softly reduces low-quality entries)
+    entry_confidence_gate: float = 0.50
+
+    # --- market regime thresholds (market_state) ------------------------------
+    # Make HIGH_VOL less frequent: treat only extreme volatility as HIGH_VOL.
+    # Defaults here are intentionally stricter than compute_market_state defaults.
+    high_vol_atr: float = 0.0085   # was 0.006
+    high_vol_ret: float = 0.011    # was 0.008
+    panic_atr: float = 0.010
+    panic_drop: float = -0.020
     
     #
     comission_kappa = 2_000.0
@@ -65,7 +86,7 @@ class GymConfig:
 
     # --- STATE-based action masking (feature flag) ---
     # Если False — get_action_mask() возвращает "все действия разрешены"
-    use_state_action_mask: bool = False
+    use_state_action_mask: bool = True
 
     # --- ATR-based risk management (optional) ---
     use_atr_stop: bool = True        # Включить ATR-стопы (SL/TP/Trailing)

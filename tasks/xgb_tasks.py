@@ -188,7 +188,7 @@ def _build_dfs_from_5m(df_5min: pd.DataFrame) -> Dict[str, Any]:
     return {"df_5min": df_5min, "df_15min": df_15min, "df_1h": df_1h}
 
 
-@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={"max_retries": 0}, queue="train")
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={"max_retries": 0}, queue="celery")
 def train_xgb_symbol(
     self,
     symbol: str,
@@ -284,7 +284,7 @@ def train_xgb_symbol(
             pass
 
 
-@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={"max_retries": 0}, queue="train")
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={"max_retries": 0}, queue="celery")
 def train_xgb_grid(
     self,
     symbol: str,
@@ -462,7 +462,7 @@ def train_xgb_grid(
             pass
 
 
-@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={"max_retries": 0}, queue="train")
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={"max_retries": 0}, queue="celery")
 def train_xgb_grid_entry_exit(
     self,
     symbol: str,

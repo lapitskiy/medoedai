@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📈 XGB OOS</title>
+    <style>
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+        .grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+        @media (min-width: 900px){ .grid { grid-template-columns: 1fr 1fr; } }
+        .card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; background: #fff; }
+        .row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+        .row .form-group { margin:0; }
+        pre { white-space: pre-wrap; word-break: break-word; }
+    </style>
+</head>
+<body>
+    {% include 'include/_sidebar.html' %}
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <div class="container">
+        <div class="main-content">
+            <div class="header">
+                <h1>📈 XGB OOS</h1>
+                <p>OOS-оценка XGB run на последних N днях свечей (метрики классификации).</p>
+            </div>
+
+            <div class="content">
+                <a href="/" class="back-link">← Вернуться на главную</a>
+
+                <div class="section">
+                    <div class="grid">
+                        <div class="card">
+                            <h2 style="margin-top:0;">⚙️ Запуск</h2>
+                            <div class="row">
+                                <div class="form-group" style="min-width: 420px;">
+                                    <label>Выбери XGB run</label>
+                                    <select id="xgbRunSelect" class="form-control">
+                                        {% for r in xgb_runs %}
+                                        <option value="{{ r.result_dir }}">
+                                            {{ r.symbol }} • {{ r.run_name }} • {{ r.task }} • {{ r.direction }} • {{ r.source }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div class="form-group" style="min-width: 160px;">
+                                    <label>Days</label>
+                                    <input id="xgbOosDays" class="form-control" type="number" min="1" max="365" step="1" value="30">
+                                </div>
+                                <div class="form-group">
+                                    <button class="btn btn-info" onclick="startXgbOos()">▶️ Run XGB OOS</button>
+                                </div>
+                            </div>
+                            <div id="xgbOosStatus" class="status info" style="display:none; margin-top:10px; white-space: pre-wrap;"></div>
+                        </div>
+
+                        <div class="card">
+                            <h2 style="margin-top:0;">📊 Результат</h2>
+                            <div id="xgbOosResult" class="mono" style="font-size:12px;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function toggleSidebar(){ document.body.classList.toggle('sidebar-open'); }
+
+        function _showStatus(msg, cls){
+            const el = document.getElementById('xgbOosStatus');
+            if(!el) return;
+            el.style.display = 'block';
+            el.className = 'status ' + (cls || 'info');
+            el.textContent = msg;
+        }
+
+        function _renderResult(data){
+            const el = document.getElementById('xgbOosResult');
+            if(!el) return;
+            if(!data){ el.innerHTML = ''; return; }
+            const m = data.oos_metrics || {};
+            const lines = [
+                `symbol: ${data.symbol || '—'}`,
+                `task: ${data.task || '—'}  direction: ${data.direction || '—'}`,
+                `days: ${data.days || '—'}  bars: ${data.bars || '—'}`,
+                '',
+                `val_acc: ${m.val_acc ?? '—'}`,
+                `y_counts_val: ${JSON.stringify(m.y_counts_val ?? '—')}`,
+                `y_non_hold: ${m.y_non_hold_rate_val ?? '—'}  pred_non_hold: ${m.pred_non_hold_rate_val ?? '—'}`,
+                `f1_buy_sell: ${m.f1_buy_sell_val ?? '—'}`,
+                '',
+                `f1_val: ${JSON.stringify(m.f1_val ?? '—')}`,
+                `precision_val: ${JSON.stringify(m.precision_val ?? '—')}`,
+                `recall_val: ${JSON.stringify(m.recall_val ?? '—')}`,
+            ];
+            el.innerHTML = '<pre>' + lines.join('\n') + '</pre>';
+        }
+
+        async function startXgbOos(){
+            try{
+                const runDir = (document.getElementById('xgbRunSelect')?.value || '').trim();
+                const days = parseInt(document.getElementById('xgbOosDays')?.value || '30', 10) || 30;
+                if(!runDir){ _showStatus('Выбери run.', 'error'); return; }
+                _showStatus('⏳ Ставлю задачу...', 'info');
+                _renderResult(null);
+
+                const r = await fetch('/xgb_oos_test_async', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify({ result_dir: runDir, days })
+                });
+                const d = await r.json().catch(()=>null);
+                if(!d || !d.success){ _showStatus('❌ Ошибка: ' + (d && d.error ? d.error : 'unknown'), 'error'); return; }
+                const taskId = d.task_id;
+                _showStatus('✅ Запущено. task_id=' + taskId + '\nЖду результат...', 'info');
+
+                const poll = async ()=>{
+                    const s = await fetch('/xgb_oos_test_status?task_id=' + encodeURIComponent(taskId));
+                    const sd = await s.json().catch(()=>null);
+                    if(!sd || !sd.success){ _showStatus('❌ Ошибка статуса', 'error'); return; }
+                    if(sd.state === 'SUCCESS'){
+                        const res = sd.result || {};
+                        if(res.success){
+                            _showStatus('✅ Готово', 'success');
+                            _renderResult(res);
+                        }else{
+                            _showStatus('❌ Ошибка: ' + (res.error || 'unknown'), 'error');
+                        }
+                        return;
+                    }
+                    if(sd.state === 'FAILURE'){
+                        _showStatus('❌ FAILURE', 'error');
+                        return;
+                    }
+                    setTimeout(poll, 1000);
+                };
+                setTimeout(poll, 600);
+            }catch(e){
+                _showStatus('❌ Ошибка: ' + (e && e.message ? e.message : e), 'error');
+            }
+        }
+    </script>
+</body>
+</html>
+
