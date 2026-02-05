@@ -31,6 +31,7 @@ from train.infrastructure.gym.position_aware_wrapper import PositionAwareEpisode
 from train.domain.episode.extension_policy import EpisodeExtensionPolicy
 from envs.dqn_model.gym.gconfig import GymConfig
 from agents.vdqn.hyperparameter.symbol_overrides import get_symbol_override
+from agents.vdqn.hyperparameter.global_overrides import GLOBAL_OVERRIDES
 from utils.settings_store import get_setting_value as _get_setting_value
 
 
@@ -167,6 +168,7 @@ def get_env_attr_safe(env, name: str, default=None):
     1) Пытается через get_wrapper_attr (для обёрток)
     2) Затем из env.unwrapped
     3) Затем напрямую из env
+    4) Затем пробует пройти по цепочке .env (обёртки)
     """
     try:
         if hasattr(env, 'get_wrapper_attr'):
@@ -182,6 +184,19 @@ def get_env_attr_safe(env, name: str, default=None):
         base = getattr(env, 'unwrapped', None)
         if base is not None and hasattr(base, name):
             return getattr(base, name)
+    except Exception:
+        pass
+    # direct attr disabled: gymnasium warns on wrapper access
+    # wrapper chain: env.env.env...
+    try:
+        cur = env
+        for _ in range(8):
+            nxt = getattr(cur, 'env', None)
+            if nxt is None:
+                break
+            cur = nxt
+            if hasattr(cur, name):
+                return getattr(cur, name)
     except Exception:
         pass
     return default
@@ -560,17 +575,49 @@ def _save_training_results(
         # Сохраняем all_trades отдельно, чтобы не раздувать train_result.pkl
         all_trades_path = None
         all_trades_count = len(all_trades) if isinstance(all_trades, list) else 0
+        # Компактный ряд ROI по сделкам (для /analitika), чтобы не зависеть от JSON сериализации all_trades
+        trades_roi = []
+        try:
+            if isinstance(all_trades, list) and all_trades:
+                for t in all_trades:
+                    if not isinstance(t, dict):
+                        continue
+                    v = t.get('roi', None)
+                    try:
+                        fv = float(v)
+                        if fv == fv:  # not NaN
+                            trades_roi.append(fv)
+                    except Exception:
+                        continue
+        except Exception:
+            trades_roi = []
         try:
             if isinstance(all_trades, list) and all_trades:
                 trades_json_path = os.path.join(run_dir, 'all_trades.json')
-                def _norm_trade(t):
+                def _jsonable(v):
+                    if v is None or isinstance(v, (int, float, str, bool)):
+                        return v
+                    try:
+                        import numpy as _np  # type: ignore
+                        if isinstance(v, (_np.integer,)):
+                            return int(v)
+                        if isinstance(v, (_np.floating,)):
+                            return float(v)
+                    except Exception:
+                        pass
+                    try:
+                        import datetime as _dt
+                        if isinstance(v, (_dt.datetime, _dt.date)):
+                            return v.isoformat()
+                    except Exception:
+                        pass
+                    return str(v)
+                safe_trades = []
+                for t in all_trades:
                     if isinstance(t, dict):
-                        return {
-                            k: v for k, v in t.items()
-                            if isinstance(k, str) and isinstance(v, (int, float, str, bool, type(None)))
-                        }
-                    return t
-                safe_trades = [_norm_trade(t) for t in all_trades]
+                        safe_trades.append({str(k): _jsonable(v) for k, v in t.items()})
+                    else:
+                        safe_trades.append({'_raw': str(t)})
                 with open(trades_json_path, 'w', encoding='utf-8') as tf:
                     json.dump(safe_trades, tf, ensure_ascii=False)
                 all_trades_path = trades_json_path
@@ -595,6 +642,7 @@ def _save_training_results(
                 'target': arch_target,
             },
             'weights': weights_info,
+            'trades_roi': trades_roi,
             'all_trades': (all_trades if store_trades_inline else []),
             'all_trades_path': all_trades_path,
             'all_trades_count': all_trades_count,
@@ -645,6 +693,7 @@ def _save_training_results(
             'episodes_added': int(current_episode) if not (getattr(cfg, 'load_model_path', None) or getattr(cfg, 'load_buffer_path', None)) else int(current_episode - (getattr(cfg, 'start_episode', 0))), # Считаем добавленные эпизоды
             'episodes_last': int(current_episode),
             'episodes_best': int(best_episode_idx) if best_episode_idx is not None and best_episode_idx >= 0 else None,
+            'training_time_sec': float(total_training_time) if isinstance(total_training_time, (int, float)) else None,
             'created_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
             'artifacts': {
                 'model': 'model.pth',
@@ -689,6 +738,7 @@ def train_model_optimized(
     root_id: Optional[str] = None,
     episode_length: Optional[int] = None,
     direction: str = 'long',
+    env_overrides: Optional[Dict] = None,
 ) -> str:
     """
     Оптимизированная функция тренировки модели без pandas в hot-path
@@ -854,7 +904,30 @@ def train_model_optimized(
             policy = EpisodeExtensionPolicy(max_extension=20, extension_steps=100)
             env = PositionAwareEpisodeWrapper(base_env, policy=policy)
 
-            # risk_management в env
+            # --- Global overrides (shared for all symbols) ---
+            # Apply AFTER env init (overrides adaptive_normalization / env defaults).
+            try:
+                gov = GLOBAL_OVERRIDES if isinstance(GLOBAL_OVERRIDES, dict) else {}
+                rm = gov.get('risk_management') if isinstance(gov.get('risk_management', None), dict) else {}
+                ps = gov.get('position_sizing') if isinstance(gov.get('position_sizing', None), dict) else {}
+
+                for k, v in rm.items():
+                    set_env_attr_safe(env, str(k), v)
+                for k, v in ps.items():
+                    set_env_attr_safe(env, str(k), v)
+
+                if rm:
+                    print(
+                        f"🧩 GLOBAL OVERRIDES | "
+                        f"SL={get_env_attr_safe(env,'STOP_LOSS_PCT')} | "
+                        f"TP={get_env_attr_safe(env,'TAKE_PROFIT_PCT')} | "
+                        f"minHold={get_env_attr_safe(env,'min_hold_steps')} | "
+                        f"volThr={get_env_attr_safe(env,'volume_threshold')}"
+                    )
+            except Exception:
+                pass
+
+            # risk_management per-symbol (optional override)
             if override and 'risk_management' in override:
                 rm = override['risk_management']
                 for field_name, env_attr in [
@@ -869,6 +942,28 @@ def train_model_optimized(
                     print(f"🔧 RISK OVERRIDE[{crypto_symbol}] | SL={get_env_attr_safe(env,'STOP_LOSS_PCT')} | TP={get_env_attr_safe(env,'TAKE_PROFIT_PCT')} | minHold={get_env_attr_safe(env,'min_hold_steps')} | volThr={get_env_attr_safe(env,'volume_threshold')}")
                 except Exception:
                     pass
+
+            # --- Per-run overrides (grid etc), applied OVER global + per-symbol ---
+            try:
+                if isinstance(env_overrides, dict):
+                    rm2 = env_overrides.get('risk_management')
+                    if isinstance(rm2, dict):
+                        for field_name, env_attr in [
+                            ('STOP_LOSS_PCT', 'STOP_LOSS_PCT'),
+                            ('TAKE_PROFIT_PCT', 'TAKE_PROFIT_PCT'),
+                            ('min_hold_steps', 'min_hold_steps'),
+                            ('volume_threshold', 'volume_threshold'),
+                        ]:
+                            if field_name in rm2:
+                                set_env_attr_safe(env, env_attr, rm2[field_name])
+                        print(
+                            f"🧪 GRID OVERRIDE | SL={get_env_attr_safe(env,'STOP_LOSS_PCT')} | "
+                            f"TP={get_env_attr_safe(env,'TAKE_PROFIT_PCT')} | "
+                            f"minHold={get_env_attr_safe(env,'min_hold_steps')} | "
+                            f"volThr={get_env_attr_safe(env,'volume_threshold')}"
+                        )
+            except Exception:
+                pass
             print(f"✅ Создано обычное окружение для одной криптовалюты")
         
         # Начинаем отсчет времени тренировки

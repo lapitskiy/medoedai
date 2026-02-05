@@ -522,6 +522,109 @@ def analyze_training_results():
                 print("💡 Для полного анализа используйте: pip install matplotlib numpy")
                 return "Анализ недоступен - установите зависимости"
         
+        def _to_jsonable(x):
+            try:
+                import numpy as _np  # type: ignore
+            except Exception:
+                _np = None
+            if x is None:
+                return None
+            if isinstance(x, (str, int, float, bool)):
+                return x
+            if _np is not None:
+                try:
+                    if isinstance(x, (_np.integer,)):
+                        return int(x)
+                    if isinstance(x, (_np.floating,)):
+                        return float(x)
+                except Exception:
+                    pass
+            if isinstance(x, dict):
+                return {str(k): _to_jsonable(v) for k, v in x.items()}
+            if isinstance(x, (list, tuple)):
+                return [_to_jsonable(v) for v in x]
+            return str(x)
+
+        def _build_report_ru(results: dict, file_path: str) -> dict:
+            cfg = results.get('cfg_snapshot') if isinstance(results.get('cfg_snapshot'), dict) else {}
+            gym = results.get('gym_snapshot') if isinstance(results.get('gym_snapshot'), dict) else {}
+            meta = results.get('train_metadata') if isinstance(results.get('train_metadata'), dict) else {}
+            final = results.get('final_stats') if isinstance(results.get('final_stats'), dict) else {}
+            weights = results.get('weights') if isinstance(results.get('weights'), dict) else {}
+
+            # High-level
+            out = {
+                "Файл": str(file_path).replace('\\', '/'),
+                "Символ": results.get('symbol') or gym.get('symbol') or cfg.get('symbol'),
+                "Run ID": results.get('model_id') or results.get('run_id'),
+                "Направление": results.get('direction') or results.get('trained_as') or cfg.get('direction'),
+                "Эпизодов (план)": results.get('episodes'),
+                "Эпизодов (факт)": results.get('actual_episodes') or results.get('episode_winrates_count'),
+                "Длина эпизода (шагов)": results.get('episode_length') or gym.get('episode_length') or cfg.get('episode_length'),
+                "Seed": (meta.get('seed') if meta else None) or cfg.get('seed') or results.get('seed'),
+                "Устройство": meta.get('gpu_name') if meta else None,
+                "Время обучения (сек)": results.get('total_training_time'),
+            }
+
+            # Config (real)
+            out["Конфиг (реальный, cfg_snapshot)"] = {
+                "batch_size": cfg.get('batch_size'),
+                "memory_size": cfg.get('memory_size'),
+                "hidden_sizes": cfg.get('hidden_sizes'),
+                "train_repeats": cfg.get('train_repeats'),
+                "learning_rate": cfg.get('learning_rate') if cfg.get('learning_rate') is not None else cfg.get('lr'),
+                "eps_decay_steps": cfg.get('eps_decay_steps'),
+                "dropout_rate": cfg.get('dropout_rate'),
+                "use_amp": cfg.get('use_amp') if cfg.get('use_amp') is not None else cfg.get('use_mixed_precision'),
+                "torch_compile": cfg.get('torch_compile') if cfg.get('torch_compile') is not None else cfg.get('use_torch_compile'),
+                "encoder_path": cfg.get('encoder_path'),
+                "encoder_version": cfg.get('encoder_version'),
+                "encoder_type": cfg.get('encoder_type'),
+            }
+
+            # Final stats
+            out["Итоговая статистика (final_stats)"] = {
+                "Winrate": final.get('winrate'),
+                "P/L Ratio": final.get('pl_ratio'),
+                "Средний ROI": final.get('avg_roi'),
+                "Средний профит": final.get('avg_profit'),
+                "Средний лосс": final.get('avg_loss'),
+                "Сделок": final.get('trades_count'),
+                "Плохих сделок": final.get('bad_trades_count'),
+            }
+
+            # Counts / distributions
+            out["Действия агента (всего)"] = results.get('action_counts_total') or {}
+            out["Рыночные режимы (всего)"] = results.get('market_state_counts_total') or {}
+            out["Рыночные режимы (последний эпизод)"] = results.get('market_state_counts_episode') or {}
+
+            # Churn / filters
+            buy_stats = results.get('buy_stats_total') if isinstance(results.get('buy_stats_total'), dict) else {}
+            out["Фильтры покупок (итого)"] = buy_stats or {}
+            out["Интервал между покупками (мин)"] = results.get('avg_minutes_between_buys')
+
+            # Trades storage
+            out["Сделки (хранение)"] = {
+                "all_trades_len": (len(results.get('all_trades')) if isinstance(results.get('all_trades'), list) else None),
+                "all_trades_count": results.get('all_trades_count'),
+                "all_trades_path": results.get('all_trades_path'),
+            }
+
+            # Artifacts
+            out["Артефакты"] = {
+                "model_path": results.get('model_path') or weights.get('model_path'),
+                "buffer_path": results.get('buffer_path') or weights.get('buffer_path'),
+                "encoder_path": weights.get('encoder_path') or cfg.get('encoder_path'),
+            }
+
+            # Keys
+            try:
+                out["Ключи в train_result.pkl"] = sorted([str(k) for k in results.keys()])
+            except Exception:
+                out["Ключи в train_result.pkl"] = []
+
+            return _to_jsonable(out)
+
         # Загружаем результаты для дополнительного анализа
         try:
             import pickle
@@ -563,6 +666,11 @@ def analyze_training_results():
             'output': analysis_output,
             'available_files': []
         }
+        try:
+            if isinstance(results, dict):
+                response_data['report_ru'] = _build_report_ru(results, selected_file)
+        except Exception:
+            pass
         
         # Добавляем информацию об эпизодах если доступна
         try:

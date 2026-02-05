@@ -3,11 +3,6 @@ from datetime import date, timedelta, datetime
 import os
 import time
 import pandas as pd
-try:
-    import ccxt
-except Exception:
-    ccxt = None
-
 def parser_download_and_combine_with_library(
     symbol: str = 'BTCUSDT',
     interval: str = '5m',
@@ -18,7 +13,7 @@ def parser_download_and_combine_with_library(
 ):
     
     output_file = f"{temp_data_dir}/bigdata_5m_klines.csv"
-    print(f"Начало загрузки данных {symbol} {interval} (основной источник: Binance, fallback: Bybit).")
+    print(f"Начало загрузки данных {symbol} {interval} (основной источник: Binance).")
 
     end_date = date.today()
     start_date = end_date - timedelta(days=30 * months_to_fetch)
@@ -31,33 +26,41 @@ def parser_download_and_combine_with_library(
     )
 
     try:
-        print(f"Загрузка данных с {start_date} по {end_date}...")
-        dumper.dump_data(
-            date_start=start_date,
-            date_end=end_date,
-            tickers=[symbol],
-            is_to_update_existing=False,
-        )
-        print("Загрузка завершена. Чтение и объединение данных...")
-
         # Путь в исходной библиотеке использует формат без разделителя (BTCUSDT)
         _sym_flat = str(symbol).replace('/', '').replace('-', '').replace('_', '').upper()
         data_path = f"{temp_data_dir}/spot/monthly/klines/{_sym_flat}/{interval}"
         all_files = []
 
-        if os.path.exists(data_path):
-            for root, _, files in os.walk(data_path):
-                for file in files:
-                    if file.endswith('.csv'):
-                        all_files.append(os.path.join(root, file))
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            print(f"Загрузка данных с {start_date} по {end_date} (попытка {attempt}/{max_attempts})...")
+            try:
+                dumper.dump_data(
+                    date_start=start_date,
+                    date_end=end_date,
+                    tickers=[symbol],
+                    is_to_update_existing=False,
+                )
+            except Exception as e:
+                print(f"Ошибка загрузки Binance: {e}")
+
+            all_files = []
+            if os.path.exists(data_path):
+                for root, _, files in os.walk(data_path):
+                    for file in files:
+                        if file.endswith('.csv'):
+                            all_files.append(os.path.join(root, file))
+
+            if all_files:
+                print("Загрузка завершена. Чтение и объединение данных...")
+                break
+
+            if attempt < max_attempts:
+                print("CSV-файлы Binance не найдены, повторяем попытку...")
+                time.sleep(5)
 
         if not all_files:
-            print("Не найдено CSV-файлов от Binance, пробуем fallback на Bybit через ccxt...")
-            # Попробуем fallback на Bybit
-            bybit_ok = _fallback_download_bybit(symbol=symbol, interval=interval, months_to_fetch=months_to_fetch, desired_candles=desired_candles, output_file=output_file)
-            if bybit_ok:
-                return output_file
-            print("Fallback на Bybit не дал данных.")
+            print("Не найдено CSV-файлов от Binance после повторных попыток.")
             return
 
         column_names = [
@@ -132,133 +135,3 @@ def parser_download_and_combine_with_library(
 
     except Exception as e:
         print(f"Ошибка в процессе: {e}")
-
-
-def _fallback_download_bybit(symbol: str, interval: str, months_to_fetch: int, desired_candles: int, output_file: str) -> bool:
-    """
-    Скачивает OHLCV через ccxt.bybit итерациями (limit ~200) за указанный период, сохраняет в CSV.
-    Возвращает True, если данные получены и сохранены, иначе False.
-    """
-    try:
-        if ccxt is None:
-            print("ccxt недоступен, пропускаю Bybit fallback")
-            return False
-
-        # Подготовим кандидатов символов и типов рынков
-        s = symbol.upper().replace('-', '').replace('_', '')
-        base = s[:-4] if s.endswith('USDT') else s
-        candidates = [
-            s,  # XMRUSDT (как просишь)
-            f"{base}/USDT",
-            f"{base}/USDT:USDT",
-        ]
-        market_types = ['spot', 'swap']  # пробуем спот и своп (перпеты)
-        found = False
-        chosen_symbol = None
-
-        timeframe = interval  # '5m'
-        now_ms = int(time.time() * 1000)
-        since_ms_start = now_ms - int(months_to_fetch * 30 * 24 * 60 * 60 * 1000)
-        max_limit = 200
-        all_rows = []
-
-        for mtype in market_types:
-            try:
-                exchange = ccxt.bybit({
-                    'enableRateLimit': True,
-                    'options': {
-                        'defaultType': mtype,
-                        'defaultSettle': 'USDT'
-                    }
-                })
-                markets = exchange.load_markets()
-            except Exception as e:
-                print(f"Bybit load_markets ошибка для {mtype}: {e}")
-                continue
-
-            # Собираем доступные ключи и id
-            market_ids = set([m.get('id') for m in markets.values() if isinstance(m, dict) and m.get('id')])
-            market_syms = set(markets.keys())
-
-            # Пытаемся найти совпадение по кандидатам
-            c_sym = None
-            for cand in candidates:
-                if cand in market_syms:
-                    c_sym = cand
-                    break
-                if cand in market_ids:
-                    # найдём unified symbol по id
-                    for k, v in markets.items():
-                        if v.get('id') == cand:
-                            c_sym = v.get('symbol', k)
-                            break
-                if c_sym:
-                    break
-
-            if not c_sym:
-                print(f"Bybit {mtype}: не найден символ среди кандидатов {candidates}")
-                continue
-
-            print(f"Bybit fallback найден: type={mtype}, symbol={c_sym}")
-            print(f"Начинаю итеративную загрузку: timeframe={timeframe}, целево {desired_candles} свечей, шаг {max_limit}")
-
-            # Итерируемся, собирая свечи
-            since_ms = since_ms_start
-            tmp_rows = []
-            safety_iters = 0
-            max_iters = 20000
-            while since_ms < now_ms and len(tmp_rows) < desired_candles and safety_iters < max_iters:
-                safety_iters += 1
-                try:
-                    ohlcv = exchange.fetch_ohlcv(c_sym, timeframe=timeframe, since=since_ms, limit=max_limit)
-                except ccxt.RateLimitExceeded:
-                    time.sleep(1.0)
-                    continue
-                except Exception as err:
-                    print(f"Ошибка fetch_ohlcv({mtype},{c_sym}): {err}")
-                    break
-
-                if not ohlcv:
-                    break
-
-                tmp_rows.extend(ohlcv)
-                last_ts = ohlcv[-1][0]
-                tf_ms = 5 * 60 * 1000 if timeframe == '5m' else 60 * 1000
-                since_ms = last_ts + tf_ms
-                # Прогресс
-                try:
-                    from datetime import datetime as _dt
-                    total = len(tmp_rows)
-                    pct = min(100, int(total * 100 / max(1, desired_candles)))
-                    print(f"[Bybit {mtype} {c_sym}] загружено {total}/{desired_candles} ({pct}%), последняя свеча: {_dt.fromtimestamp(last_ts/1000)}", flush=True)
-                except Exception:
-                    pass
-                time.sleep(0.1)
-
-            if tmp_rows:
-                all_rows = tmp_rows
-                chosen_symbol = c_sym
-                found = True
-                break
-
-        if not all_rows:
-            print("Bybit fallback: данных не получено")
-            return False
-
-        # В DataFrame
-        df = pd.DataFrame(all_rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df = df.drop_duplicates(subset=['timestamp']).sort_values(by='timestamp')
-        if len(df) > desired_candles:
-            df = df.tail(desired_candles)
-
-        # Гарантируем каталог
-        out_dir = os.path.dirname(output_file)
-        if out_dir and not os.path.exists(out_dir):
-            os.makedirs(out_dir, exist_ok=True)
-
-        df.to_csv(output_file, index=False)
-        print(f"Bybit fallback: сохранено {len(df)} свечей в {output_file}")
-        return True
-    except Exception as e:
-        print(f"Bybit fallback ошибка: {e}")
-        return False

@@ -255,6 +255,7 @@ def api_runs_list():
             validation_avg = None
             validation_last = None
             seed_value = manifest.get('seed')
+            training_time_sec = manifest.get('training_time_sec') if isinstance(manifest, dict) else None
             # Направление сделки/режим обучения (long/short) — сохраняется в manifest.json как direction/trained_as
             direction_value = manifest.get('direction') or manifest.get('trained_as')
             # IMPORTANT: do NOT unpickle train_result.pkl here — it can be huge and makes /oos slow.
@@ -315,6 +316,10 @@ def api_runs_list():
                                 with open(result_path, 'rb') as _f:
                                     _res = pickle.load(_f)
                                 if isinstance(_res, dict):
+                                    if training_time_sec is None:
+                                        tts = _res.get('total_training_time')
+                                        if isinstance(tts, (int, float)):
+                                            training_time_sec = float(tts)
                                     _fs = _res.get('final_stats') or {}
                                     if isinstance(_fs, dict):
                                         # winrate: legacy key or tianshou key
@@ -369,6 +374,7 @@ def api_runs_list():
                 'parent_run_id': manifest.get('parent_run_id'),
                 'root_id': manifest.get('root_id'),
                 'seed': seed_value,
+                'training_time_sec': training_time_sec,
                 'direction': (str(direction_value).strip().lower() if direction_value is not None else None),
                 'episodes_end': manifest.get('episodes_end'),
                 'created_at': manifest.get('created_at'),

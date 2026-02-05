@@ -7,13 +7,8 @@
 """
 
 BNB_OPTIMIZED_CONFIG = {
-    # Риск-менеджмент и фильтры
-    'risk_management': {
-        'STOP_LOSS_PCT': -0.035,   # было -0.045 → гибче удержание, но контролируем риск
-        'TAKE_PROFIT_PCT': 0.06,   # было 0.07 → быстрее фиксация профита
-        'min_hold_steps': 8,       # было 18 (≈90 мин) → 8 (≈40 мин)
-        'volume_threshold': 0.0011 # было ~0.00162 → пропускаем больше входов
-    },
+    # risk_management вынесен в общий файл:
+    # agents/vdqn/hyperparameter/global_overrides.py -> GLOBAL_OVERRIDES['risk_management']
 
     # Размер позиции и уверенность
     'position_sizing': {
@@ -31,22 +26,18 @@ BNB_OPTIMIZED_CONFIG = {
     },
 
     # Параметры обучения
-    # NOTE: GPU-owned параметры (batch_size/memory_size/train_repeats/use_amp/use_gpu_storage/use_torch_compile)
-    # НЕ должны задаваться per-symbol. Это делает прогоны непрозрачными и ломает hardware-профиль.
+    # NOTE: параметры из GPU профиля (см. agents/vdqn/cfg/gpu_configs.py) НЕ должны задаваться per-symbol:
+    # batch_size/memory_size/hidden_sizes/train_repeats/use_amp/use_gpu_storage/learning_rate/use_torch_compile/eps_decay_steps/dropout_rate
     'training_params': {
         'use_noisy_networks': True,
         'eps_start': 0.10,            # меньше случайности при NoisyNet
         'eps_final': 0.02,
-        'eps_decay_steps': 2_000_000,
-
-        'lr': 1e-4,                   # AdamW предпочтительнее, но поле lr здесь
         'gamma': 0.99,
 
         'soft_tau': 0.005,
         'soft_update_every': 1,
         'target_update_freq': 5000,   # оставим, но в будущем можно перейти на чистый soft
 
-        'dropout_rate': 0.0,          # отключаем dropout для DQN
         'layer_norm': True,
 
         'use_distributional_rl': True,

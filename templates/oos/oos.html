@@ -124,6 +124,16 @@
             }
             listDiv.innerHTML = '<div class="loading"><div class="spinner"></div>Загрузка...</div>';
             try {
+                function formatTrainTime(sec) {
+                    try {
+                        if (typeof sec !== 'number' || !isFinite(sec) || sec <= 0) return '';
+                        const m = sec / 60.0;
+                        if (m < 60) return `⏱ ${m.toFixed(1)}m`;
+                        const h = m / 60.0;
+                        return `⏱ ${h.toFixed(1)}h`;
+                    } catch (e) { return ''; }
+                }
+
                 const agentType = document.getElementById('agentTypeSelect')?.value || 'dqn';
                 updateFilterVisibility(agentType);
 
@@ -226,6 +236,8 @@
                     const symbolHint = agentType === 'sac'
                         ? (document.getElementById('sacRunNameSelect')?.value || '') // Для SAC символ может быть указан в селекте
                         : (document.getElementById('dqnSymbolSelect')?.value || ''); // Для DQN символ берется из селекта
+                    const trainTimeLabel = formatTrainTime(run.training_time_sec);
+                    const trainTimeHtml = trainTimeLabel ? `<div class="muted" style="font-size:11px;margin-top:2px;">${trainTimeLabel}</div>` : '';
                     const oosBtn = run.model_path ? `<button class="btn btn-info" onclick="runOOSTest('${agentType}', '${symbolOrRunId}', '${run.model_path}', '${symbolHint}')">Test</button>` : '';
                     const showResultsBtn = `<button class="btn btn-secondary" onclick="showOOSResults('${agentType}', '${symbolOrRunId}', '${symbolHint}')">Result</button>`;
                     const graphBtn = `<a class="btn btn-secondary" target="_blank" href="/oos_graph?agent_type=${agentType}&id=${encodeURIComponent(symbolOrRunId)}">Graph</a>`;
@@ -240,7 +252,7 @@
                         <tr ${rowStyle}>
                             <td class="nowrap"><input type="checkbox" class="runSelect" data-run-id="${symbolOrRunId}"></td>
                             <td class="nowrap">${run.agent_type || 'N/A'}</td>
-                            <td class="nowrap"><span class="truncate" title="${symbolOrRunId}">${symbolOrRunId}</span></td>
+                            <td class="nowrap"><span class="truncate" title="${symbolOrRunId}">${symbolOrRunId}</span>${trainTimeHtml}</td>
                             <td class="nowrap">${run.version || 'N/A'}</td> <!-- Version может быть в манифесте SAC -->
                             <td class="nowrap">${run.direction ? (String(run.direction).toLowerCase()==='short' ? 'Short' : 'Long') : 'N/A'}</td>
                             <td class="nowrap">${win} ${!resultExists && win === 'N/A' ? resultNotFoundMsg : ''}</td>

@@ -64,7 +64,7 @@
                     <div id="actionsStatsContainer" class="results" style="display:none;"></div>
                     <div id="churnStatsContainer" class="results" style="display:none;"></div>
                     <div id="analysisStatus" class="status" style="display: none;"></div>
-                    <div id="analysisResults" class="results" style="display: none;"></div>
+                    <div id="analysisResults" class="results no-scroll" style="display: none;"></div>
                     <div id="filesList" class="results" style="display: none;"></div>
                 </div>
 
@@ -260,6 +260,13 @@
                 const fmtSec = (s)=>{ if(!s && s!==0) return 'N/A'; try{ const m=Math.floor(s/60), r=Math.round(s%60); return (m>0?`${m}м `:'')+`${r}с`; }catch(_){ return s.toFixed? s.toFixed(1)+'с' : String(s); } };
 
                 const lines = [];
+                const setPlaceholder = (wrap, title, note)=>{
+                    try{
+                        if(!wrap) return;
+                        wrap.style.display = 'block';
+                        wrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">${title}</div><div class="status info" style="margin:0;">${note || 'Данных нет или они ещё не собраны для этого run.'}</div>`;
+                    }catch(_){}
+                };
                 // --- DQN model / encoder provenance (first lines in green block) ---
                 try{
                     const mt = (result.model_training_type || '').toString().trim().toLowerCase();
@@ -284,15 +291,22 @@
                     lines.push(`Длина эпизода (шагов): ${episodeLength}`);
                 }
                 lines.push(`Устройство: ${gpu}`);
-                // GPU config profile (from gpu_configs.py)
+                // Real run config (cfg_snapshot from train_result.pkl) — это фактические параметры прогона
+                try{
+                    const cs = (result.cfg_snapshot && typeof result.cfg_snapshot === 'object') ? result.cfg_snapshot : null;
+                    if(cs){
+                        const hs = Array.isArray(cs.hidden_sizes) ? `(${cs.hidden_sizes.join(', ')})` : '—';
+                        const lr = (cs.learning_rate != null) ? cs.learning_rate : (cs.lr != null ? cs.lr : '—');
+                        lines.push(`DQN cfg: batch_size=${cs.batch_size ?? '—'}, memory_size=${cs.memory_size ?? '—'}, hidden_sizes=${hs}`);
+                        lines.push(`DQN cfg: train_repeats=${cs.train_repeats ?? '—'}, use_amp=${cs.use_amp ?? cs.use_mixed_precision ?? '—'}, use_gpu_storage=${cs.use_gpu_storage ?? '—'}`);
+                        lines.push(`DQN cfg: learning_rate=${lr}, torch_compile=${cs.torch_compile ?? cs.use_torch_compile ?? '—'}, eps_decay_steps=${cs.eps_decay_steps ?? '—'}, dropout_rate=${cs.dropout_rate ?? '—'}`);
+                    }
+                }catch(_){}
+                // GPU config profile (gpu_configs.py) — справочно, может не совпадать с реальным cfg_snapshot
                 try{
                     const gp = (result.gpu_config_profile && typeof result.gpu_config_profile === 'object') ? result.gpu_config_profile : null;
                     if(gp){
-                        const hs = Array.isArray(gp.hidden_sizes) ? `(${gp.hidden_sizes.join(', ')})` : '—';
-                        lines.push(`GPU config: ${gp.name || gp.key || '—'}`);
-                        lines.push(`batch_size=${gp.batch_size}, memory_size=${gp.memory_size}, hidden_sizes=${hs}`);
-                        lines.push(`train_repeats=${gp.train_repeats}, use_amp=${gp.use_amp}, use_gpu_storage=${gp.use_gpu_storage}`);
-                        lines.push(`learning_rate=${gp.learning_rate}, torch_compile=${gp.use_torch_compile}, eps_decay_steps=${gp.eps_decay_steps}, dropout_rate=${gp.dropout_rate}`);
+                        lines.push(`GPU profile: ${gp.name || gp.key || '—'}`);
                     }
                 }catch(_){}
                 lines.push(`Эпизодов (факт/план): ${episodes} / ${plannedEpisodes}`);
@@ -481,7 +495,7 @@
                     const uw = Array.isArray(result.underwater_curve) ? result.underwater_curve : [];
                     if(ddWrap && uw.length){
                         ddWrap.style.display='block';
-                        ddWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">Drawdown / Underwater (%, points=${uw.length})</div><div id="ddChart" style="width:100%;height:220px;"></div>`;
+                        ddWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">Просадка / Underwater (%, points=${uw.length})</div><div id="ddChart" style="width:100%;height:220px;"></div>`;
                         const el = document.getElementById('ddChart');
                         if(el && typeof LightweightCharts !== 'undefined'){
                             const chart = LightweightCharts.createChart(el, {
@@ -505,6 +519,8 @@
                             chart.timeScale().fitContent();
                             new ResizeObserver(()=>{ chart.applyOptions({ width: el.clientWidth }); }).observe(el);
                         }
+                    } else if (ddWrap) {
+                        setPlaceholder(ddWrap, 'Просадка / Underwater', 'Данных нет (underwater_curve отсутствует или пустой).');
                     }
                 }catch(e){ /* ignore */ }
 
@@ -516,7 +532,7 @@
                     const wN = Number.isFinite(result.rolling_window_trades) ? Number(result.rolling_window_trades) : 50;
                     if(rollWrap && (rollAvg.length || rollPf.length)){
                         rollWrap.style.display='block';
-                        rollWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">Rolling metrics (last N trades), N=${wN}</div><div id="rollAvgChart" style="width:100%;height:220px;margin-bottom:10px;"></div><div id="rollPfChart" style="width:100%;height:220px;"></div>`;
+                        rollWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">Скользящие метрики (последние N сделок), N=${wN}</div><div id="rollAvgChart" style="width:100%;height:220px;margin-bottom:10px;"></div><div id="rollPfChart" style="width:100%;height:220px;"></div>`;
                         const el1 = document.getElementById('rollAvgChart');
                         const el2 = document.getElementById('rollPfChart');
                         if(typeof LightweightCharts !== 'undefined'){
@@ -556,6 +572,8 @@
                                 new ResizeObserver(()=>{ chart.applyOptions({ width: el2.clientWidth }); }).observe(el2);
                             }
                         }
+                    } else if (rollWrap) {
+                        setPlaceholder(rollWrap, `Скользящие метрики (последние N сделок), N=${wN}`, 'Данных нет (rolling_avg_roi / rolling_profit_factor отсутствуют или пустые).');
                     }
                 }catch(e){ /* ignore */ }
 
@@ -577,7 +595,9 @@
                             const barLen = Math.round((v/maxC)*20);
                             lines.push(`${c.toFixed(2)}% | ${'#'.repeat(barLen)} ${v}`);
                         }
-                        histWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">ROI histogram (≈${h.lo?.toFixed?.(2)??h.lo}%..${h.hi?.toFixed?.(2)??h.hi}%, bins=${h.bins})</div><pre>${lines.join('\n')}</pre>`;
+                        histWrap.innerHTML = `<div class="muted" style="margin-bottom:6px;">Гистограмма ROI (≈${h.lo?.toFixed?.(2)??h.lo}%..${h.hi?.toFixed?.(2)??h.hi}%, bins=${h.bins})</div><pre>${lines.join('\n')}</pre>`;
+                    } else if (histWrap) {
+                        setPlaceholder(histWrap, 'Гистограмма ROI', 'Данных нет (roi_histogram отсутствует или пустой).');
                     }
                 }catch(e){ /* ignore */ }
 
@@ -760,16 +780,61 @@
                     statusDiv.className = 'status success';
                     statusDiv.textContent = '✅ ' + result.message;
                     resultsDiv.style.display = 'block';
-                    let analysisText = `📊 АНАЛИЗ ФАЙЛА\n===============================\n\n`;
-                    analysisText += `📄 Файл: ${result.file_analyzed}\n`;
-                    if (Array.isArray(result.summaries) && result.summaries.length) {
-                        analysisText += `\n🔍 Сводка:\n`;
-                        analysisText += result.summaries.map(line => `  • ${line}`).join('\n');
-                        analysisText += '\n';
+                    const ru = (result.report_ru && typeof result.report_ru === 'object') ? result.report_ru : null;
+                    const raw = (result.output && result.output.trim()) ? result.output : '';
+
+                    const esc = (s)=> String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+                    const fmt = (v)=>{
+                        if(v === null || v === undefined || v === '') return '—';
+                        if(typeof v === 'number') return Number.isFinite(v) ? String(v) : '—';
+                        if(Array.isArray(v)) return esc(JSON.stringify(v));
+                        if(typeof v === 'object') return esc(JSON.stringify(v));
+                        return esc(String(v));
+                    };
+                    const row = (k,v)=> `<tr><td style="padding:6px 8px; font-weight:600; width:260px;">${esc(k)}</td><td style="padding:6px 8px;">${fmt(v)}</td></tr>`;
+
+                    let html = '';
+                    html += `<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start;">`;
+                    html += `<div style="flex:1; min-width:420px;">`;
+                    html += `<div style="font-weight:700; margin:4px 0 8px 0;">📊 Отчёт (структурировано)</div>`;
+                    if(ru){
+                        html += `<table style="width:100%; border-collapse: collapse; background:#fff; border:1px solid #e5e7eb; border-radius:10px; overflow:hidden;">`;
+                        const topKeys = ["Файл","Символ","Run ID","Направление","Эпизодов (план)","Эпизодов (факт)","Длина эпизода (шагов)","Seed","Устройство","Время обучения (сек)"];
+                        topKeys.forEach(k=>{ if(Object.prototype.hasOwnProperty.call(ru,k)) html += row(k, ru[k]); });
+                        html += `</table>`;
+
+                        const sections = [
+                            ["Конфиг (реальный, cfg_snapshot)","⚙️ Конфиг"],
+                            ["Итоговая статистика (final_stats)","🏁 Итоги"],
+                            ["Действия агента (всего)","🎮 Действия"],
+                            ["Рыночные режимы (всего)","🌦️ Рынок (всего)"],
+                            ["Рыночные режимы (последний эпизод)","🌦️ Рынок (последний эпизод)"],
+                            ["Фильтры покупок (итого)","🧱 Фильтры покупок"],
+                            ["Сделки (хранение)","📦 Хранение сделок"],
+                            ["Артефакты","📁 Артефакты"],
+                        ];
+                        html += `<div style="margin-top:10px; display:grid; gap:8px;">`;
+                        sections.forEach(([key,title])=>{
+                            if(!ru || !Object.prototype.hasOwnProperty.call(ru,key)) return;
+                            html += `<details open style="background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:8px 10px;">`;
+                            html += `<summary style="cursor:pointer; font-weight:700;">${esc(title)}</summary>`;
+                            html += `<div class="mono" style="margin-top:6px; font-size:12px;"><pre>${esc(JSON.stringify(ru[key], null, 2))}</pre></div>`;
+                            html += `</details>`;
+                        });
+                        html += `</div>`;
+                    }else{
+                        html += `<div class="status info">Нет структурированного отчёта (report_ru).</div>`;
                     }
-                    const outputText = (result.output && result.output.trim()) ? result.output : 'Нет детального вывода анализа.';
-                    analysisText += outputText;
-                    resultsDiv.innerHTML = `<pre>${analysisText}</pre>`;
+                    html += `</div>`;
+                    html += `<div style="flex:1; min-width:420px;">`;
+                    html += `<div style="font-weight:700; margin:4px 0 8px 0;">🧾 Сырой вывод (лог)</div>`;
+                    html += `<details ${raw ? '' : 'open'} style="background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:8px 10px;">`;
+                    html += `<summary style="cursor:pointer; font-weight:700;">Показать/скрыть</summary>`;
+                    html += raw ? `<pre>${esc(raw)}</pre>` : `<div class="muted">Нет сырого вывода.</div>`;
+                    html += `</details>`;
+                    html += `</div>`;
+                    html += `</div>`;
+                    resultsDiv.innerHTML = html;
                 } else {
                     throw new Error(result.message);
                 }

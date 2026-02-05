@@ -191,7 +191,18 @@ def train_dqn(self, seed: int | None = None):
     return {"message": result}
 
 @celery.task(bind=True, acks_late=False, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='train')  # добавлено acks_late=False
-def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None = None, episode_length: int = 2000, engine: str = 'optimized', encoder_id: str | None = None, train_encoder: bool = False, direction: str = 'long'):
+def train_dqn_symbol(
+    self,
+    symbol: str,
+    episodes: int = None,
+    seed: int | None = None,
+    episode_length: int = 2000,
+    engine: str = 'optimized',
+    encoder_id: str | None = None,
+    train_encoder: bool = False,
+    direction: str = 'long',
+    env_overrides: dict | None = None,
+):
     """Обучение DQN для одного символа (BTCUSDT/ETHUSDT/...)
 
     Загружает данные из БД, готовит 5m/15m/1h, запускает train_model_optimized.
@@ -208,12 +219,42 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
             if _rc.get(_done_key):
                 return {"message": f"⏭️ Повторная доставка задачи {symbol} проигнорирована (уже завершена)", "skipped": True}
         # Бизнес-дедупликация: тот же набор параметров недавно завершался — пропускаем
+        def _fmt_f(v):
+            try:
+                if v is None:
+                    return "na"
+                if isinstance(v, bool):
+                    return "1" if v else "0"
+                if isinstance(v, int):
+                    return str(v)
+                x = float(v)
+                s = f"{x:.6f}".rstrip('0').rstrip('.')
+                return s if s != '' else '0'
+            except Exception:
+                return str(v)
+
+        def _rm_tag(overrides: dict | None) -> str:
+            try:
+                if not isinstance(overrides, dict):
+                    return "rm:-"
+                rm = overrides.get("risk_management")
+                if not isinstance(rm, dict):
+                    return "rm:-"
+                sl = _fmt_f(rm.get("STOP_LOSS_PCT"))
+                tp = _fmt_f(rm.get("TAKE_PROFIT_PCT"))
+                mh = _fmt_f(rm.get("min_hold_steps"))
+                vt = _fmt_f(rm.get("volume_threshold"))
+                return f"rm:{sl}:{tp}:{mh}:{vt}"
+            except Exception:
+                return "rm:-"
+
         _engine = (engine or '').lower()
         _enc = (encoder_id or '-')
         _train_enc = 1 if train_encoder else 0
         _eps = episodes if (episodes is not None) else 'env'
         _ep_len = episode_length if (episode_length is not None) else 'cfg'
-        _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}"
+        _rm = _rm_tag(env_overrides)
+        _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}"
         _finished_key = f"celery:train:finished:{_biz_key}"
         _queued_key = f"celery:train:queued:{_biz_key}"
         _running_key_biz = f"celery:train:running:{_biz_key}"
@@ -398,7 +439,8 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
                 parent_run_id=parent_run_id,
                 root_id=root_run_id,
                 episode_length=episode_length,
-                direction=(direction or 'long')
+                direction=(direction or 'long'),
+                env_overrides=env_overrides,
             )
         return {"message": f"✅ Обучение {symbol} завершено: {result}"}
     except Exception as e:
@@ -433,7 +475,8 @@ def train_dqn_symbol(self, symbol: str, episodes: int = None, seed: int | None =
                     _train_enc = 1 if train_encoder else 0
                     _eps = episodes if (episodes is not None) else 'env'
                     _ep_len = episode_length if (episode_length is not None) else 'cfg'
-                    _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}"
+                    _rm = _rm_tag(env_overrides)
+                    _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}"
                     _running_key_biz = f"celery:train:running:{_biz_key}"
                     _finished_key = f"celery:train:finished:{_biz_key}"
                     redis_client.delete(_running_key_biz)

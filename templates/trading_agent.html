@@ -2355,6 +2355,7 @@
                             <div class="trade-detail"><div class="label">Trail k / Activate</div><div class="value">${trK} / ${trAct}</div></div>
                         </div>
                         <div style="text-align:right;margin-top:8px;">
+                            <button class="btn btn-warning" onclick="forceTrailing('${a.symbol}')">🧭 Trail</button>
                             <button class="btn btn-danger" onclick="stopAgent('${a.symbol}')">🛑 Стоп</button>
                         </div>
                     </div>`;
@@ -2370,6 +2371,15 @@
                 const r = await fetch('/api/trading/stop_symbol', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({symbol})});
                 const j = await r.json();
                 showStatus('tradingResult', j.success?'success':'error', j.success?'Остановлен '+symbol : (j.error||'Ошибка'));
+                if(j.success){ loadAgents(); getTradingStatus(); }
+            }catch(e){ showStatus('tradingResult','error','Сеть: '+e.message); }
+        }
+
+        async function forceTrailing(symbol){
+            try{
+                const r = await fetch('/api/trading/force_trailing', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({symbol})});
+                const j = await r.json();
+                showStatus('tradingResult', j.success?'success':'error', j.success?('Trailing установлен для '+symbol) : (j.error||'Ошибка'));
                 if(j.success){ loadAgents(); getTradingStatus(); }
             }catch(e){ showStatus('tradingResult','error','Сеть: '+e.message); }
         }

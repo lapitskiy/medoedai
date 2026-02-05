@@ -19,7 +19,11 @@ logger = logging.getLogger(__name__)
 
 @training_bp.route('/clear_train_lock', methods=['POST'])
 def clear_train_lock_route():
-    """Сбрасывает per-symbol блокировку обучения в Redis (НЕ останавливает реально running Celery task)."""
+    """Сбрасывает per-symbol блокировку обучения в Redis (НЕ останавливает реально running Celery task).
+
+    Важно: кроме `celery:train:task:<SYMBOL>` чистит также бизнес-ключи дедупликации:
+    `celery:train:{queued,running,finished}:<SYMBOL>|...`
+    """
     try:
         data = request.get_json(silent=True) or {}
         symbol = (data.get('symbol') or request.form.get('symbol') or '').strip().upper()
@@ -33,6 +37,19 @@ def clear_train_lock_route():
         except Exception:
             pass
 
+        # Чистим дедуп-ключи для этого символа (queued/running/finished)
+        deleted = []
+        try:
+            pattern = f"celery:train:*:{symbol}|*"
+            for k in redis_client.scan_iter(match=pattern, count=1000):
+                try:
+                    redis_client.delete(k)
+                    deleted.append(k)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
         # Опционально: убрать task_id из UI списка, если передали
         if task_id:
             try:
@@ -40,7 +57,7 @@ def clear_train_lock_route():
             except Exception:
                 pass
 
-        return jsonify({"success": True, "symbol": symbol, "cleared": True})
+        return jsonify({"success": True, "symbol": symbol, "cleared": True, "deleted": len(deleted)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -150,18 +167,55 @@ def train_dqn_symbol_route():
     direction = (data.get('direction') or request.form.get('direction') or 'long').strip().lower()
     # Переключаемся на Tianshou по умолчанию (engine='ts')
     engine = (data.get('engine') or request.args.get('engine') or 'ts').lower()
+    # Optional: env_overrides (grid etc)
+    env_overrides = data.get('env_overrides') if isinstance(data, dict) else None
+    # force=1 отключает дедупликацию queued/running/finished для этого запроса
+    force_raw = (data.get('force') if isinstance(data, dict) else None)
+    if force_raw is None:
+        force_raw = request.args.get('force') or request.form.get('force')
+    force = str(force_raw).strip().lower() in ('1', 'true', 'yes', 'on')
     # Дедупликация на этапе постановки: не ставим, если такой же запуск уже в очереди/был недавно
     try:
+        def _fmt_f(v):
+            try:
+                if v is None:
+                    return "na"
+                if isinstance(v, bool):
+                    return "1" if v else "0"
+                if isinstance(v, int):
+                    return str(v)
+                x = float(v)
+                s = f"{x:.6f}".rstrip('0').rstrip('.')
+                return s if s != '' else '0'
+            except Exception:
+                return str(v)
+
+        def _rm_tag(overrides: dict | None) -> str:
+            try:
+                if not isinstance(overrides, dict):
+                    return "rm:-"
+                rm = overrides.get("risk_management")
+                if not isinstance(rm, dict):
+                    return "rm:-"
+                sl = _fmt_f(rm.get("STOP_LOSS_PCT"))
+                tp = _fmt_f(rm.get("TAKE_PROFIT_PCT"))
+                mh = _fmt_f(rm.get("min_hold_steps"))
+                vt = _fmt_f(rm.get("volume_threshold"))
+                return f"rm:{sl}:{tp}:{mh}:{vt}"
+            except Exception:
+                return "rm:-"
+
         _engine = (engine or '').lower()
         _enc = (encoder_id or '-')
         _train_enc = 1 if train_encoder else 0
         _eps = episodes if (episodes is not None) else 'env'
         _ep_len = episode_length if (episode_length is not None) else 'cfg'
-        _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}"
+        _rm = _rm_tag(env_overrides)
+        _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}"
         _queued_key = f"celery:train:queued:{_biz_key}"
         _running_key_biz = f"celery:train:running:{_biz_key}"
         _finished_key = f"celery:train:finished:{_biz_key}"
-        if redis_client.get(_running_key_biz) or redis_client.get(_queued_key) or redis_client.get(_finished_key):
+        if not force and (redis_client.get(_running_key_biz) or redis_client.get(_queued_key) or redis_client.get(_finished_key)):
             wants_json = request.is_json or 'application/json' in (request.headers.get('Accept') or '')
             if wants_json:
                 return jsonify({
@@ -173,7 +227,7 @@ def train_dqn_symbol_route():
     except Exception:
         pass
 
-    task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length, 'engine': engine, 'encoder_id': encoder_id, 'train_encoder': train_encoder, 'direction': direction}, queue="train")
+    task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length, 'engine': engine, 'encoder_id': encoder_id, 'train_encoder': train_encoder, 'direction': direction, 'env_overrides': env_overrides}, queue="train")
     logger.info(f"/train_dqn_symbol queued symbol={symbol} queue=train task_id={task.id}")
     # Сохраняем task_id для отображения на главной и отметку per-symbol
     try:
@@ -192,7 +246,8 @@ def train_dqn_symbol_route():
             _train_enc = 1 if train_encoder else 0
             _eps = episodes if (episodes is not None) else 'env'
             _ep_len = episode_length if (episode_length is not None) else 'cfg'
-            _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}"
+            _rm = _rm_tag(env_overrides)
+            _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}"
             redis_client.setex(f"celery:train:queued:{_biz_key}", max(30, _ttl), task.id)
         except Exception:
             pass
@@ -206,9 +261,190 @@ def train_dqn_symbol_route():
             "task_id": task.id,
             "symbol": symbol,
             "episodes": episodes,
-            "seed": seed
+            "seed": seed,
+            "env_overrides": env_overrides,
         })
     return redirect(url_for("index"))
+
+
+@training_bp.post('/train_dqn_grid')
+def train_dqn_grid_route():
+    """Ставит в очередь несколько DQN-обучений (grid) с env_overrides поверх GLOBAL_OVERRIDES."""
+    try:
+        data = request.get_json(silent=True) or {}
+        symbol = (data.get('symbol') or '').strip().upper()
+        if not symbol:
+            return jsonify({"success": False, "error": "symbol required"}), 400
+
+        # base params
+        try:
+            episodes = int(data.get('episodes'))
+        except Exception:
+            return jsonify({"success": False, "error": "episodes required (int)"}), 400
+        try:
+            episode_length = int(data.get('episode_length'))
+        except Exception:
+            return jsonify({"success": False, "error": "episode_length required (int)"}), 400
+        direction = str(data.get('direction') or 'long').strip().lower()
+        engine = str(data.get('engine') or 'ts').strip().lower()
+        encoder_id = str(data.get('encoder_id') or '').strip()
+        train_encoder = data.get('train_encoder')
+        if isinstance(train_encoder, str):
+            train_encoder = train_encoder.strip().lower() in ('1', 'true', 'yes', 'on')
+        train_encoder = bool(train_encoder) if train_encoder is not None else False
+
+        seed_base_raw = (data.get('seed') or '').strip() if isinstance(data.get('seed'), str) else data.get('seed')
+        seed_base = None
+        if seed_base_raw not in (None, ''):
+            try:
+                seed_base = int(seed_base_raw)
+            except Exception:
+                return jsonify({"success": False, "error": "seed must be int"}), 400
+        if seed_base is None:
+            import random as _rnd
+            seed_base = _rnd.randint(1, 2**31 - 1)
+
+        grid = data.get('grid') or {}
+        if not isinstance(grid, dict):
+            return jsonify({"success": False, "error": "grid must be object"}), 400
+
+        def _float(v, name):
+            try:
+                return float(v)
+            except Exception:
+                raise ValueError(f"{name} must be float")
+
+        def _int(v, name):
+            try:
+                return int(v)
+            except Exception:
+                raise ValueError(f"{name} must be int")
+
+        def _frange(name: str, a, b, step, max_n=200):
+            if step <= 0:
+                raise ValueError(f"{name}: step must be > 0 (got {step})")
+            if b < a:
+                raise ValueError(f"{name}: to must be >= from (from={a}, to={b})")
+            out = []
+            x = a
+            # inclusive with tolerance
+            for _ in range(max_n):
+                if x > b + 1e-12:
+                    break
+                out.append(float(round(x, 12)))
+                x += step
+            if not out:
+                raise ValueError(f"{name}: empty range (from={a}, to={b}, step={step})")
+            return out
+
+        try:
+            sl_from = _float(grid.get('sl_from'), 'sl_from')
+            sl_to = _float(grid.get('sl_to'), 'sl_to')
+            sl_step = _float(grid.get('sl_step'), 'sl_step')
+            tp_from = _float(grid.get('tp_from'), 'tp_from')
+            tp_to = _float(grid.get('tp_to'), 'tp_to')
+            tp_step = _float(grid.get('tp_step'), 'tp_step')
+            mh_from = _int(grid.get('min_hold_from'), 'min_hold_from')
+            mh_to = _int(grid.get('min_hold_to'), 'min_hold_to')
+            mh_step = _int(grid.get('min_hold_step'), 'min_hold_step')
+            vt_from = _float(grid.get('vol_from'), 'vol_from')
+            vt_to = _float(grid.get('vol_to'), 'vol_to')
+            vt_step = _float(grid.get('vol_step'), 'vol_step')
+        except ValueError as ve:
+            return jsonify({"success": False, "error": str(ve)}), 400
+
+        try:
+            max_models = int(data.get('max_models'))
+        except Exception:
+            max_models = 10
+        if max_models <= 0 or max_models > 100:
+            return jsonify({"success": False, "error": "max_models must be 1..100"}), 400
+
+        sl_list = _frange("SL", sl_from, sl_to, sl_step)
+        tp_list = _frange("TP", tp_from, tp_to, tp_step)
+        mh_list = list(range(mh_from, mh_to + 1, mh_step)) if mh_step > 0 else []
+        if not mh_list:
+            return jsonify({"success": False, "error": "min_hold range invalid"}), 400
+        vt_list = _frange("volume_threshold", vt_from, vt_to, vt_step)
+
+        # cartesian size
+        total = len(sl_list) * len(tp_list) * len(mh_list) * len(vt_list)
+        if total <= 0:
+            return jsonify({"success": False, "error": "empty grid"}), 400
+        if total > 100:
+            return jsonify({"success": False, "error": f"grid too large: {total} (>100)"}), 400
+
+        # select subset deterministically if needed
+        combos = []
+        for sl in sl_list:
+            for tp in tp_list:
+                for mh in mh_list:
+                    for vt in vt_list:
+                        combos.append({"STOP_LOSS_PCT": sl, "TAKE_PROFIT_PCT": tp, "min_hold_steps": mh, "volume_threshold": vt})
+        selected = combos
+        if len(combos) > max_models:
+            idxs = []
+            for i in range(max_models):
+                idxs.append(int((i * len(combos)) / max_models))
+            selected = [combos[i] for i in idxs]
+
+        # queue tasks
+        queued = []
+        for i, rm in enumerate(selected):
+            env_overrides = {"risk_management": rm}
+            seed_i = int(seed_base) + int(i)
+            task = train_dqn_symbol.apply_async(
+                kwargs={
+                    "symbol": symbol,
+                    "episodes": episodes,
+                    "seed": seed_i,
+                    "episode_length": episode_length,
+                    "engine": engine,
+                    "encoder_id": (encoder_id or None),
+                    "train_encoder": bool(train_encoder),
+                    "direction": direction,
+                    "env_overrides": env_overrides,
+                },
+                queue="train",
+            )
+            queued.append({"i": i, "task_id": task.id, "seed": seed_i, "risk_management": rm})
+            try:
+                redis_client.lrem("ui:tasks", 0, task.id)
+                redis_client.lpush("ui:tasks", task.id)
+                redis_client.ltrim("ui:tasks", 0, 99)
+            except Exception:
+                pass
+            # mark biz queued
+            try:
+                _ttl = int(os.environ.get('TRAIN_QUEUED_TTL', '300'))
+            except Exception:
+                _ttl = 300
+            try:
+                def _fmt_f(v):
+                    if v is None:
+                        return "na"
+                    if isinstance(v, int):
+                        return str(v)
+                    s = f"{float(v):.6f}".rstrip('0').rstrip('.')
+                    return s if s else "0"
+                _rm = f"rm:{_fmt_f(rm.get('STOP_LOSS_PCT'))}:{_fmt_f(rm.get('TAKE_PROFIT_PCT'))}:{_fmt_f(rm.get('min_hold_steps'))}:{_fmt_f(rm.get('volume_threshold'))}"
+                _enc = (encoder_id or '-')
+                _train_enc = 1 if train_encoder else 0
+                _biz_key = f"{symbol}|{engine}|{_enc}|{_train_enc}|{episodes}|{episode_length}|{direction}|{_rm}"
+                redis_client.setex(f"celery:train:queued:{_biz_key}", max(30, _ttl), task.id)
+            except Exception:
+                pass
+
+        return jsonify({
+            "success": True,
+            "symbol": symbol,
+            "total_combinations": total,
+            "selected": len(selected),
+            "seed_base": seed_base,
+            "queued": queued,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @training_bp.route('/train_xgb_symbol', methods=['POST'])

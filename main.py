@@ -721,6 +721,19 @@ def get_result_model_info():
                         except Exception:
                             pass
                     rois = []
+                    # New compact series written by trainer (preferred for /analitika)
+                    try:
+                        _roi = results.get('trades_roi')
+                        if isinstance(_roi, list) and _roi:
+                            for v in _roi:
+                                try:
+                                    fv = float(v)
+                                    if fv == fv:
+                                        rois.append(fv)
+                                except Exception:
+                                    continue
+                    except Exception:
+                        pass
                     if isinstance(trades, list) and trades:
                         for t in trades:
                             if not isinstance(t, dict):

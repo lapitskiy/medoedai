@@ -96,6 +96,8 @@ def save_trading_config():
         trailing_mode = data.get('trailing_mode')
         atr_trail_mult = data.get('atr_trail_mult')
         atr_trail_activate_pct = data.get('atr_trail_activate_pct')
+        trailing_activate_mode = data.get('trailing_activate_mode')
+        trailing_activate_value = data.get('trailing_activate_value')
         account_pct = data.get('account_pct')  # Доля счёта для сделки, %
         # Q-gate thresholds (per-symbol)
         qgate_maxq = data.get('qgate_maxq')
@@ -227,6 +229,10 @@ def save_trading_config():
                     rc.set(f'trading:atr_trail_mult:{sym_ps}', str(atr_trail_mult))
                 if atr_trail_activate_pct is not None:
                     rc.set(f'trading:atr_trail_activate_pct:{sym_ps}', str(atr_trail_activate_pct))
+                if trailing_activate_mode is not None:
+                    rc.set(f'trading:trailing_activate_mode:{sym_ps}', str(trailing_activate_mode))
+                if trailing_activate_value is not None:
+                    rc.set(f'trading:trailing_activate_value:{sym_ps}', str(trailing_activate_value))
         except Exception:
             pass
         # Глобальные ключи ATR‑режима
@@ -250,6 +256,10 @@ def save_trading_config():
             rc.set('trading:atr_trail_mult', str(atr_trail_mult))
         if atr_trail_activate_pct is not None:
             rc.set('trading:atr_trail_activate_pct', str(atr_trail_activate_pct))
+        if trailing_activate_mode is not None:
+            rc.set('trailing_activate_mode', str(trailing_activate_mode))
+        if trailing_activate_value is not None:
+            rc.set('trailing_activate_value', str(trailing_activate_value))
         if account_pct is not None:
             try:
                 ap = int(account_pct)
@@ -715,6 +725,140 @@ def stop_trading_symbol():
         except Exception:
             pass
         return jsonify({'success': True, 'symbol': symbol})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@trading_bp.post('/api/trading/force_trailing')
+def force_trailing_stop():
+    """Принудительно выставляет биржевой trailing stop для открытой позиции."""
+    try:
+        data = request.get_json(silent=True) or {}
+        symbol = str(data.get('symbol') or '').strip().upper()
+        if not symbol:
+            return jsonify({'success': False, 'error': 'symbol is required'}), 400
+        if not re.match(r'^[A-Z]{2,10}USDT$', symbol):
+            return jsonify({'success': False, 'error': 'symbol must match [A-Z]{2,10}USDT'}), 400
+
+        rc = get_redis_client()
+        if rc is None:
+            return jsonify({'success': False, 'error': 'redis not available'}), 500
+
+        acc_id = rc.get(f'trading:account_id:{symbol}')
+        if isinstance(acc_id, (bytes, bytearray)):
+            acc_id = acc_id.decode('utf-8', errors='ignore')
+        if not acc_id:
+            return jsonify({'success': False, 'error': f'account_id not set for {symbol}'}), 400
+
+        def _get_rc(key: str):
+            v = rc.get(key)
+            if isinstance(v, (bytes, bytearray)):
+                v = v.decode('utf-8', errors='ignore')
+            return v
+
+        trailing_enabled_raw = _get_rc(f'trading:trailing_enabled:{symbol}')
+        if trailing_enabled_raw is None:
+            return jsonify({'success': False, 'error': f'trailing_enabled not set for {symbol}'}), 400
+        trailing_enabled = str(trailing_enabled_raw).strip().lower() in ('1','true','yes','on')
+        if not trailing_enabled:
+            return jsonify({'success': False, 'error': f'trailing is disabled for {symbol}'}), 400
+
+        risk_stop_mode = _get_rc(f'trading:risk_stop_mode:{symbol}')
+        if not risk_stop_mode:
+            return jsonify({'success': False, 'error': f'risk_stop_mode not set for {symbol}'}), 400
+        if str(risk_stop_mode).strip() != 'atr_trailing':
+            return jsonify({'success': False, 'error': f'risk_stop_mode={risk_stop_mode} (need atr_trailing)'}), 400
+
+        trailing_mode = _get_rc(f'trading:trailing_mode:{symbol}')
+        atr_trail_mult_raw = _get_rc(f'trading:atr_trail_mult:{symbol}')
+        if atr_trail_mult_raw is None or str(atr_trail_mult_raw).strip() == '':
+            return jsonify({'success': False, 'error': f'atr_trail_mult not set for {symbol}'}), 400
+        try:
+            atr_trail_mult = float(atr_trail_mult_raw)
+        except Exception:
+            return jsonify({'success': False, 'error': f'atr_trail_mult invalid for {symbol}'}), 400
+
+        trailing_activate_mode = _get_rc(f'trading:trailing_activate_mode:{symbol}')
+        trailing_activate_value_raw = _get_rc(f'trading:trailing_activate_value:{symbol}')
+        if trailing_activate_mode is None or trailing_activate_value_raw is None:
+            return jsonify({'success': False, 'error': f'trailing activation not set for {symbol}'}), 400
+        try:
+            trailing_activate_value = float(trailing_activate_value_raw)
+        except Exception:
+            return jsonify({'success': False, 'error': f'trailing_activate_value invalid for {symbol}'}), 400
+
+        try:
+            from trading_agent.trading_agent import TradingAgent
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'TradingAgent import error: {e}'}), 500
+
+        agent = TradingAgent(symbol=symbol)
+        agent.symbol = symbol
+        agent.base_symbol = symbol
+        if not getattr(agent, 'exchange', None):
+            return jsonify({'success': False, 'error': 'exchange not initialized'}), 500
+
+        try:
+            agent._restore_position_from_exchange()
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'position restore failed: {e}'}), 500
+
+        pos = getattr(agent, 'current_position', None) or {}
+        entry_price = pos.get('entry_price')
+        amount = pos.get('amount')
+        trailing_now = pos.get('trailingStop') or pos.get('trailing_stop') or pos.get('trailing_stop_price')
+        if trailing_now not in (None, '', 0):
+            return jsonify({'success': False, 'error': f'trailing already set for {symbol}'}), 409
+        if not entry_price or not amount:
+            return jsonify({'success': False, 'error': f'no open position for {symbol}'}), 400
+
+        try:
+            trailing_result = setup_trailing_stop_bybit(
+                agent.exchange,
+                symbol,
+                float(amount),
+                float(entry_price),
+                trailing_mode,
+                trailing_activate_mode,
+                trailing_activate_value,
+                float(atr_trail_mult),
+            )
+        except Exception as e_trail:
+            try:
+                rc.set(
+                    f"trading:trailing:last_setup:{symbol}",
+                    json.dumps(
+                        {
+                            "ts": time.time(),
+                            "ok": False,
+                            "symbol": symbol,
+                            "source": "force_trailing",
+                            "error": str(e_trail),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            except Exception:
+                pass
+            return jsonify({'success': False, 'error': str(e_trail)}), 500
+
+        try:
+            rc.set(
+                f"trading:trailing:last_setup:{symbol}",
+                json.dumps(
+                    {
+                        "ts": time.time(),
+                        "ok": True,
+                        "symbol": symbol,
+                        "source": "force_trailing",
+                        "result": trailing_result,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        except Exception:
+            pass
+
+        return jsonify({'success': True, 'symbol': symbol, 'trailing': trailing_result}), 200
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

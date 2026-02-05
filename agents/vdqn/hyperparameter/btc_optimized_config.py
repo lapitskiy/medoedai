@@ -7,13 +7,8 @@
 """
 
 BTC_OPTIMIZED_CONFIG = {
-    # Риск-менеджмент и фильтры
-    'risk_management': {
-        'STOP_LOSS_PCT': -0.03,     # более широкий стоп из-за волатильности
-        'TAKE_PROFIT_PCT': 0.05,    # умеренный тейк для частой фиксации
-        'min_hold_steps': 12,       # ~60 минут удержания
-        'volume_threshold': 0.001,  # фильтр по объёму
-    },
+    # risk_management вынесен в общий файл:
+    # agents/vdqn/hyperparameter/global_overrides.py -> GLOBAL_OVERRIDES['risk_management']
 
     # Размер позиции и уверенность
     'position_sizing': {
@@ -33,17 +28,12 @@ BTC_OPTIMIZED_CONFIG = {
     },
 
     # Параметры обучения
-    # NOTE: GPU-owned параметры (batch_size/memory_size/train_repeats/use_amp/use_gpu_storage/use_torch_compile)
-    # НЕ должны задаваться per-symbol. Это делает прогоны непрозрачными и ломает hardware-профиль.
+    # NOTE: параметры из GPU профиля (см. agents/vdqn/cfg/gpu_configs.py) НЕ должны задаваться per-symbol:
+    # batch_size/memory_size/hidden_sizes/train_repeats/use_amp/use_gpu_storage/learning_rate/use_torch_compile/eps_decay_steps/dropout_rate
     'training_params': {
         'eps_start': 0.6,
         'eps_final': 0.05,
-        'eps_decay_steps': 1_200_000,
-
-        'lr': 1e-4,
         'gamma': 0.99,
-        'hidden_sizes': (1024, 512, 256),
-        'dropout_rate': 0.2,
         'soft_update_every': 20,
         'target_update_freq': 1000,
 
