@@ -24,8 +24,15 @@
         <div class="section">
           <h2>⚙️ Экспорт</h2>
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-            <label>Symbol:
-              <input id="symbol" class="form-control" style="width:140px;" value="XRPUSDT">
+            <label>Model type:
+              <select id="modelType" class="form-control" style="width:140px;">
+                <option value="all" selected>ALL</option>
+                <option value="dqn">DQN</option>
+                <option value="sac">SAC</option>
+              </select>
+            </label>
+            <label>Token:
+              <select id="symbol" class="form-control" style="width:160px;"></select>
             </label>
             <label>Limit runs:
               <input id="limitRuns" class="form-control" style="width:120px;" value="200">
@@ -55,6 +62,17 @@
     let _csvText = '';
     let _txtText = '';
 
+    async function loadSymbols(){
+      const mt = document.getElementById('modelType')?.value || 'all';
+      try{
+        const resp = await fetch(`/api/system/hypotheses_symbols?model_type=${encodeURIComponent(mt)}`);
+        const data = await resp.json();
+        const sel = document.getElementById('symbol');
+        const list = (data && data.success && Array.isArray(data.symbols)) ? data.symbols : [];
+        sel.innerHTML = list.map(s=>`<option value="${s}">${s}</option>`).join('');
+      }catch(_){}
+    }
+
     function setStatus(kind, text){
       st.style.display = 'block';
       st.className = 'status ' + (kind || 'info');
@@ -73,8 +91,9 @@
       setStatus('info','Собираю данные...');
       try{
         const sym = document.getElementById('symbol')?.value || '';
+        const mt = document.getElementById('modelType')?.value || 'all';
         const lim = document.getElementById('limitRuns')?.value || '200';
-        const resp = await fetch(`/api/system/hypotheses_export?symbol=${encodeURIComponent(sym)}&limit_runs=${encodeURIComponent(lim)}`);
+        const resp = await fetch(`/api/system/hypotheses_export?symbol=${encodeURIComponent(sym)}&model_type=${encodeURIComponent(mt)}&limit_runs=${encodeURIComponent(lim)}`);
         const data = await resp.json();
         if(!data.success){ setStatus('error', data.error || 'Ошибка'); return; }
         _csvText = data.csv || '';
@@ -96,6 +115,11 @@
     dlTxt?.addEventListener('click', ()=>{
       const sym = (document.getElementById('symbol')?.value || 'symbol').toUpperCase();
       download(`hypotheses_${sym}.txt`, _txtText, 'text/plain');
+    });
+
+    document.addEventListener('DOMContentLoaded', async ()=>{
+      await loadSymbols();
+      document.getElementById('modelType')?.addEventListener('change', loadSymbols);
     });
   </script>
 </body>

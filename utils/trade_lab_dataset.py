@@ -64,6 +64,51 @@ def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def _jsonable(v: Any) -> Any:
+    """
+    Make payload JSON-serializable (handles numpy scalars like np.bool_).
+    """
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    try:
+        if isinstance(v, Path):
+            return v.as_posix()
+    except Exception:
+        pass
+    if isinstance(v, dict):
+        out: Dict[str, Any] = {}
+        for k, vv in v.items():
+            out[str(k)] = _jsonable(vv)
+        return out
+    if isinstance(v, (list, tuple, set)):
+        return [_jsonable(x) for x in v]
+    # numpy scalars
+    try:
+        import numpy as _np  # type: ignore
+
+        if isinstance(v, (_np.bool_,)):
+            return bool(v)
+        if isinstance(v, (_np.integer,)):
+            return int(v)
+        if isinstance(v, (_np.floating,)):
+            return float(v)
+    except Exception:
+        pass
+    # common scalar containers
+    try:
+        if hasattr(v, "item") and callable(getattr(v, "item")):
+            return _jsonable(v.item())
+    except Exception:
+        pass
+    try:
+        if hasattr(v, "tolist") and callable(getattr(v, "tolist")):
+            return _jsonable(v.tolist())
+    except Exception:
+        pass
+    # fallback
+    return str(v)
+
+
 @dataclass
 class TradeLabDatasetConfig:
     model_type: str = "dqn"  # dqn|sac
@@ -101,6 +146,7 @@ def build_symbol_runs_dataset(symbol: str, cfg: Optional[TradeLabDatasetConfig] 
             cfg_snap = tr.get("cfg_snapshot") if isinstance(tr.get("cfg_snapshot"), dict) else {}
             gym_snap = tr.get("gym_snapshot") if isinstance(tr.get("gym_snapshot"), dict) else {}
             adapt = tr.get("adaptive_normalization") if isinstance(tr.get("adaptive_normalization"), dict) else {}
+            risk_snap = gym_snap.get("risk_management") if isinstance(gym_snap.get("risk_management"), dict) else {}
 
             features = {
                 "direction": (mf.get("direction") or mf.get("trained_as")),
@@ -131,6 +177,16 @@ def build_symbol_runs_dataset(symbol: str, cfg: Optional[TradeLabDatasetConfig] 
                         "step_minutes",
                     ),
                 ),
+                # Risk params that materially change trading behavior (requested by user)
+                "risk": _pick(
+                    risk_snap,
+                    (
+                        "STOP_LOSS_PCT",
+                        "TAKE_PROFIT_PCT",
+                        "min_hold_steps",
+                        "volume_threshold",
+                    ),
+                ),
                 "adaptive": _pick(
                     adapt,
                     (
@@ -144,10 +200,40 @@ def build_symbol_runs_dataset(symbol: str, cfg: Optional[TradeLabDatasetConfig] 
             # metrics (whitelist)
             winrates = tr.get("winrates") if isinstance(tr.get("winrates"), dict) else {}
             final_stats = tr.get("final_stats") if isinstance(tr.get("final_stats"), dict) else {}
+            trades_roi = tr.get("trades_roi") if isinstance(tr.get("trades_roi"), list) else []
+            pnl_roi_sum = None
+            pnl_roi_avg = None
+            try:
+                if trades_roi:
+                    vals = [float(x) for x in trades_roi if x is not None]
+                    if vals:
+                        pnl_roi_sum = float(sum(vals))
+                        pnl_roi_avg = float(sum(vals) / float(len(vals)))
+            except Exception:
+                pnl_roi_sum = None
+                pnl_roi_avg = None
             metrics = {
                 "best_winrate": tr.get("best_winrate"),
                 "winrates": _pick(winrates, ("train_all", "train_exploit", "eps_threshold")),
-                "final_stats": _pick(final_stats, ("winrate", "avg_roi", "pl_ratio", "trades_count")),
+                # final_stats is used as "headline" metrics for trade quality
+                "final_stats": _pick(
+                    final_stats,
+                    (
+                        "winrate",
+                        "avg_roi",
+                        "pl_ratio",
+                        "trades_count",
+                        "bad_trades_count",
+                        "avg_profit",
+                        "avg_loss",
+                    ),
+                ),
+                # pnl proxy computed from compact ROI series (kept small in train_result.pkl)
+                "pnl": {
+                    "roi_sum": pnl_roi_sum,
+                    "roi_avg": pnl_roi_avg,
+                    "roi_count": (len(trades_roi) if isinstance(trades_roi, list) else 0),
+                },
                 "all_trades_count": tr.get("all_trades_count"),
                 "episodes_planned": tr.get("episodes"),
                 "episodes_completed": tr.get("actual_episodes"),
@@ -174,7 +260,7 @@ def build_symbol_runs_dataset(symbol: str, cfg: Optional[TradeLabDatasetConfig] 
         "runs_count": len(runs),
         "runs": runs,
     }
-    return dataset
+    return _jsonable(dataset)
 
 
 def write_symbol_runs_dataset_to_tmp(symbol: str, cfg: Optional[TradeLabDatasetConfig] = None) -> str:

@@ -40,7 +40,7 @@ def setup_trailing_stop_bybit(
     if get_atr_1h_func is None:
         from utils.indicators import get_atr_1h as get_atr_1h_func  # lazy import to avoid cycles
 
-    atr_abs, _, _ = get_atr_1h_func(symbol, length=21)
+    atr_abs, _, _ = get_atr_1h_func(symbol, length=None)
     if atr_abs <= 0 or entry_price <= 0:
         raise RuntimeError("Invalid ATR or entry price for trailing")
 

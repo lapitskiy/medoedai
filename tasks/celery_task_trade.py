@@ -1068,7 +1068,7 @@ def ensure_risk_orders(self, symbol: str):
     def _atr_tp_sl_prices(_symbol: str, _entry: float, _k: float, _m: float, _min_k: float, _is_long: bool) -> tuple[float, float]:
         try:
             from utils.indicators import get_atr_1h
-            atr_abs, _, _ = get_atr_1h(_symbol, length=21)
+            atr_abs, _, _ = get_atr_1h(_symbol, length=None)
         except Exception:
             return None, None
         k_eff = max(float(_k), float(_min_k))

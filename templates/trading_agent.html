@@ -2320,6 +2320,11 @@
                         if (typeof s.atr_trail_activate_pct === 'number') return `${s.atr_trail_activate_pct}%`;
                         return '—';
                     })();
+                    const atrAbsNum = (typeof s.atr_1h_abs === 'number') ? s.atr_1h_abs : null;
+                    const atrAbs = (atrAbsNum!=null) ? atrAbsNum.toFixed(6) : '—';
+                    const curPx = (a.status && typeof a.status.current_price === 'number') ? a.status.current_price : null;
+                    const atrPct = (atrAbsNum!=null && curPx!=null && curPx>0) ? ((atrAbsNum/curPx)*100.0) : null;
+                    const atrPctStr = (atrPct!=null && isFinite(atrPct)) ? atrPct.toFixed(2) + '%' : null;
                     const stopStrategy = s.risk_stop_mode || '—';
                     const tpDisp = (typeof s.take_profit_pct === 'number') ? (s.take_profit_pct.toFixed(2) + '%') : '—';
                     const slDisp = (typeof s.stop_loss_pct === 'number') ? ('-' + s.stop_loss_pct.toFixed(2) + '%') : '—';
@@ -2352,7 +2357,7 @@
                             <div class="trade-detail"><div class="label">Q-gate</div><div class="value">${qGateDisp}</div></div>
                             <div class="trade-detail"><div class="label">Trailing</div><div class="value">${trEnabled}</div></div>
                             <div class="trade-detail"><div class="label">Trailing mode</div><div class="value">${trMode}</div></div>
-                            <div class="trade-detail"><div class="label">Trail k / Activate</div><div class="value">${trK} / ${trAct}</div></div>
+                            <div class="trade-detail"><div class="label">Trail k / Activate</div><div class="value">${trK} / ${trAct} / ATR <span id="atrVal_${a.symbol}">${atrAbs}${atrPctStr?` (${atrPctStr})`:''}</span></div></div>
                         </div>
                         <div style="text-align:right;margin-top:8px;">
                             <button class="btn btn-warning" onclick="forceTrailing('${a.symbol}')">🧭 Trail</button>
@@ -2361,8 +2366,45 @@
                     </div>`;
                 }).join('');
                 box.innerHTML = rows || '<div class="status info">Нет активных агентов</div>';
+
+                // Асинхронно прогреваем ATR для видимых агентов (чтобы не зависал /api/trading/agents)
+                try{
+                    const actives = agents.filter(a=>a && a.active && a.symbol);
+                    for(const a of actives){
+                        try{ refreshAtrForAgent(a); }catch(_){ }
+                    }
+                }catch(_){ }
             }catch(e){
                 const box = document.getElementById('agentsTable'); if(box) box.innerHTML = '<div class="status error">❌ Ошибка: '+e.message+'</div>';
+            }
+        }
+
+        async function refreshAtrForAgent(agent){
+            try{
+                const symbol = agent && agent.symbol ? String(agent.symbol).toUpperCase() : '';
+                if(!symbol) return;
+                const el = document.getElementById('atrVal_'+symbol);
+                if(!el) return;
+                // Если уже есть число — не дёргаем
+                if (el.textContent && el.textContent.trim() && el.textContent.trim() !== '—') return;
+                el.textContent = '…';
+                const resp = await fetch('/api/trading/atr_1h?symbol=' + encodeURIComponent(symbol));
+                const j = await resp.json();
+                if(!j || !j.success || typeof j.atr_abs !== 'number'){
+                    el.textContent = '—';
+                    return;
+                }
+                const atrAbs = Number(j.atr_abs);
+                const curPx = (agent.status && typeof agent.status.current_price === 'number') ? agent.status.current_price : null;
+                const pct = (curPx!=null && curPx>0) ? ((atrAbs/curPx)*100.0) : null;
+                const pctStr = (pct!=null && isFinite(pct)) ? ` (${pct.toFixed(2)}%)` : '';
+                el.textContent = atrAbs.toFixed(6) + pctStr;
+            }catch(_){
+                try{
+                    const symbol = agent && agent.symbol ? String(agent.symbol).toUpperCase() : '';
+                    const el = document.getElementById('atrVal_'+symbol);
+                    if(el) el.textContent = '—';
+                }catch(__){}
             }
         }
 

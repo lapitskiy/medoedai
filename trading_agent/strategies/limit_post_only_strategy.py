@@ -81,7 +81,7 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                 elif risk_stop_mode == 'atr_tp_sl':
                     try:
                         from utils.indicators import get_atr_1h
-                        atr_abs, _, _ = get_atr_1h(symbol, length=21)
+                        atr_abs, _, _ = get_atr_1h(symbol, length=None)
                         k_eff = max(float(atr_k), float(atr_min_sl_mult))
                         if side == Side.BUY:
                             extra_params['takeProfit'] = float(f"{price + float(atr_m) * atr_abs:.8f}")
@@ -527,7 +527,7 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                     if risk_stop_mode == 'atr_tp_sl':
                         try:
                             from utils.indicators import get_atr_1h
-                            atr_abs, _, _ = get_atr_1h(cur.symbol, length=21)
+                            atr_abs, _, _ = get_atr_1h(cur.symbol, length=None)
                             k_eff = max(float(atr_k), float(atr_min_sl_mult))
                             if cur.side == Side.BUY:
                                 extra_params['takeProfit'] = float(f"{target + float(atr_m) * atr_abs:.8f}")

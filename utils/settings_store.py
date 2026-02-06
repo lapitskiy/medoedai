@@ -31,6 +31,11 @@ def ensure_settings_table() -> None:
         _bootstrap_trading_sizing_defaults()
     except Exception:
         pass
+    # Bootstrap: дефолты для ATR — чтобы они появлялись в /settings.
+    try:
+        _bootstrap_trading_atr_defaults()
+    except Exception:
+        pass
 
 
 def _bootstrap_bybit_from_env() -> None:
@@ -160,6 +165,44 @@ def _bootstrap_trading_sizing_defaults() -> None:
             if key in existing:
                 continue
             row = AppSetting(scope='trading', group='sizing', key=key)
+            row.value_type = vt
+            row.is_secret = bool(is_secret)
+            row.value = val
+            row.label = label
+            row.description = desc
+            session.add(row)
+            changed = True
+
+        if changed:
+            session.commit()
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+def _bootstrap_trading_atr_defaults() -> None:
+    """
+    Создаёт дефолтные ключи (scope=trading, group=atr), если их ещё нет.
+    """
+    session = get_db_session()
+    try:
+        rows = session.query(AppSetting).filter(
+            AppSetting.scope == 'trading',
+            AppSetting.group == 'atr',
+        ).all()
+        existing = {str(r.key or '') for r in rows}
+
+        defaults = [
+            ('ATR_1H_LENGTH', 'number', False, '34', 'ATR 1h length', 'Период ATR по 1h свечам (Wilder).'),
+        ]
+
+        changed = False
+        for key, vt, is_secret, val, label, desc in defaults:
+            if key in existing:
+                continue
+            row = AppSetting(scope='trading', group='atr', key=key)
             row.value_type = vt
             row.is_secret = bool(is_secret)
             row.value = val

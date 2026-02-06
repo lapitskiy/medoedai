@@ -9,9 +9,47 @@ from utils.db_utils import db_get_or_fetch_ohlcv, db_get_ohlcv_only
 from utils.redis_utils import get_redis_client
 
 
+_ATR_LEN_CACHE = {"ts": 0.0, "val": None}
+
+
+def get_atr_1h_length(default: int = 34, cache_ttl_sec: int = 60) -> int:
+    """Читает ATR length из Postgres (app_settings), scope=trading, group=atr, key=ATR_1H_LENGTH."""
+    try:
+        now = time.time()
+        try:
+            if _ATR_LEN_CACHE["val"] is not None and (now - float(_ATR_LEN_CACHE["ts"] or 0)) <= cache_ttl_sec:
+                return int(_ATR_LEN_CACHE["val"])
+        except Exception:
+            pass
+
+        try:
+            from utils.settings_store import get_setting_value as _get_setting_value
+            raw = _get_setting_value("trading", "atr", "ATR_1H_LENGTH")
+        except Exception:
+            raw = None
+
+        val = default
+        try:
+            if raw is not None and str(raw).strip() != "":
+                v = int(float(str(raw).strip()))
+                if v >= 2 and v <= 500:
+                    val = v
+        except Exception:
+            val = default
+
+        try:
+            _ATR_LEN_CACHE["ts"] = now
+            _ATR_LEN_CACHE["val"] = val
+        except Exception:
+            pass
+        return int(val)
+    except Exception:
+        return int(default)
+
+
 def get_atr_1h(
     symbol: str,
-    length: int = 21,
+    length: int | None = None,
     cache_ttl_sec: int = 90,
     db_only: bool = False,
 ) -> Tuple[float, float, float]:
@@ -20,6 +58,9 @@ def get_atr_1h(
     ATR считается по классической формуле Wilder (EMA с alpha=1/length).
     Результат кэшируется в Redis на короткое время для снижения нагрузки.
     """
+    if length is None:
+        length = get_atr_1h_length(default=34)
+
     # Попробуем вернуть из кэша
     rc = None
     try:

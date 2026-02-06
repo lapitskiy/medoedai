@@ -51,22 +51,95 @@ def _pick(d: dict, path: str):
         return None
 
 
-def _iter_symbol_runs(symbol: str, limit_runs: int = 200):
-    base = Path("result") / str(symbol).upper() / "runs"
-    if not base.exists():
-        return []
-    runs = []
-    for run_dir in sorted(base.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
-        if not run_dir.is_dir():
-            continue
-        manifest_path = run_dir / "manifest.json"
-        pkl_path = run_dir / "train_result.pkl"
-        if not manifest_path.exists() or not pkl_path.exists():
-            continue
-        runs.append({"run_dir": run_dir, "manifest_path": manifest_path, "pkl_path": pkl_path})
-        if limit_runs and len(runs) >= limit_runs:
+def _symbol_to_dir_name(symbol: str) -> str:
+    """
+    DQN stores in result/dqn/<BASE>/... where BASE = symbol without USDT/USD/USDC/...
+    Example: TONUSDT -> TON.
+    """
+    s = (symbol or "").strip().upper().replace("/", "")
+    for suf in ("USDT", "USD", "USDC", "BUSD", "USDP"):
+        if s.endswith(suf):
+            s = s[: -len(suf)]
             break
-    return runs
+    return s or "UNKNOWN"
+
+
+def _iter_symbol_runs(symbol: str, model_type: str = "all", limit_runs: int = 200):
+    """
+    Returns combined list of run dirs (new layout):
+      - DQN: result/dqn/<SYMBOL_DIR>/runs/<run_id>/
+      - SAC: result/sac/<symbol_lower>/runs/<run_id>/
+    """
+    mt = (model_type or "all").strip().lower()
+    sym_in = (symbol or "").strip()
+    if not sym_in:
+        return []
+
+    roots: list[tuple[str, Path]] = []
+    if mt in ("all", "dqn"):
+        sym_dir = _symbol_to_dir_name(sym_in)
+        roots.append(("dqn", Path("result") / "dqn" / sym_dir / "runs"))
+    if mt in ("all", "sac"):
+        sym_dir = sym_in.strip().lower().replace("/", "")
+        roots.append(("sac", Path("result") / "sac" / sym_dir / "runs"))
+
+    items = []
+    for kind, base in roots:
+        if not base.exists():
+            continue
+        for run_dir in base.iterdir():
+            if not run_dir.is_dir():
+                continue
+            manifest_path = run_dir / "manifest.json"
+            pkl_path = run_dir / "train_result.pkl"
+            if not manifest_path.exists() or not pkl_path.exists():
+                continue
+            try:
+                mtime = float(run_dir.stat().st_mtime)
+            except Exception:
+                mtime = 0.0
+            items.append(
+                {
+                    "model_type": kind,
+                    "run_dir": run_dir,
+                    "manifest_path": manifest_path,
+                    "pkl_path": pkl_path,
+                    "mtime": mtime,
+                }
+            )
+
+    items.sort(key=lambda x: float(x.get("mtime") or 0.0), reverse=True)
+    if limit_runs and limit_runs > 0:
+        items = items[: int(limit_runs)]
+    return items
+
+
+@system_models_bp.get("/api/system/hypotheses_symbols")
+def api_system_hypotheses_symbols():
+    """
+    Lists available symbols for hypotheses page (from result/dqn and result/sac).
+    Query:
+      - model_type: all|dqn|sac (default all)
+    """
+    try:
+        mt = (request.args.get("model_type") or "all").strip().lower()
+        out = set()
+        if mt in ("all", "dqn"):
+            base = Path("result") / "dqn"
+            if base.exists():
+                for p in base.iterdir():
+                    if p.is_dir() and (p / "runs").exists():
+                        out.add(p.name.upper())
+        if mt in ("all", "sac"):
+            base = Path("result") / "sac"
+            if base.exists():
+                for p in base.iterdir():
+                    if p.is_dir() and (p / "runs").exists():
+                        out.add(p.name.upper())
+        syms = sorted(out)
+        return jsonify({"success": True, "model_type": mt, "symbols": syms})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @system_models_bp.get("/api/system/hypotheses_export")
@@ -76,21 +149,24 @@ def api_system_hypotheses_export():
     Возвращает JSON: {csv, prompt}.
     Query:
       - symbol (required)
+      - model_type: all|dqn|sac (default all)
       - limit_runs (default 200)
     """
     try:
         symbol = (request.args.get("symbol") or "").strip().upper()
         if not symbol:
             return jsonify({"success": False, "error": "symbol is required"}), 400
+        model_type = (request.args.get("model_type") or "all").strip().lower()
         try:
             limit_runs = int(request.args.get("limit_runs") or "200")
         except Exception:
             limit_runs = 200
 
         rows = []
-        items = _iter_symbol_runs(symbol, limit_runs=limit_runs)
+        items = _iter_symbol_runs(symbol, model_type=model_type, limit_runs=limit_runs)
         for it in items:
             run_dir: Path = it["run_dir"]
+            mt = str(it.get("model_type") or "unknown")
             manifest = {}
             try:
                 manifest = json.loads(it["manifest_path"].read_text(encoding="utf-8"))
@@ -112,43 +188,68 @@ def api_system_hypotheses_export():
             wr_all = _pick(winrates, "train_all")
             wr_expl = _pick(winrates, "train_exploit")
 
-            # adaptive params stored in manifest by our recent change (compact)
+            gym = data.get("gym_snapshot") if isinstance(data.get("gym_snapshot"), dict) else {}
+            risk = gym.get("risk_management") if isinstance(gym.get("risk_management"), dict) else {}
             adapt = manifest.get("adaptive_params") if isinstance(manifest.get("adaptive_params"), dict) else {}
+
+            # Risk params: prefer adaptive_params (explicitly computed), else gym_snapshot env constants.
+            risk_source = "none"
+            sl_v = None
+            tp_v = None
+            min_hold_v = None
+            vol_thr_v = None
+            if adapt and any(k in adapt for k in ("stop_loss_pct", "take_profit_pct", "min_hold_steps", "volume_threshold")):
+                risk_source = "adaptive_params"
+                sl_v = adapt.get("stop_loss_pct")
+                tp_v = adapt.get("take_profit_pct")
+                min_hold_v = adapt.get("min_hold_steps")
+                vol_thr_v = adapt.get("volume_threshold")
+            elif risk and any(k in risk for k in ("STOP_LOSS_PCT", "TAKE_PROFIT_PCT", "min_hold_steps", "volume_threshold")):
+                risk_source = "gym_snapshot"
+                sl_v = risk.get("STOP_LOSS_PCT")
+                tp_v = risk.get("TAKE_PROFIT_PCT")
+                min_hold_v = risk.get("min_hold_steps")
+                vol_thr_v = risk.get("volume_threshold")
+            trades_roi = data.get("trades_roi") if isinstance(data.get("trades_roi"), list) else []
+            roi_sum = None
+            roi_avg = None
+            try:
+                vals = [float(x) for x in trades_roi if x is not None]
+                if vals:
+                    roi_sum = float(sum(vals))
+                    roi_avg = float(sum(vals) / float(len(vals)))
+            except Exception:
+                roi_sum = None
+                roi_avg = None
+
+            model_file = None
+            try:
+                mp = run_dir / "model.pth"
+                model_file = mp.as_posix() if mp.exists() else None
+            except Exception:
+                model_file = None
 
             row = {
                 "symbol": symbol,
                 "run_id": manifest.get("run_id") or run_dir.name,
                 "created_at": manifest.get("created_at") or data.get("training_date"),
                 "direction": manifest.get("direction") or manifest.get("trained_as") or data.get("trained_as"),
+                "model_file": model_file,
                 # key metrics
                 "winrate_train_all": _safe_float(wr_all),
                 "winrate_train_exploit": _safe_float(wr_expl),
                 "trades_count": int(stats.get("trades_count") or 0),
                 "avg_roi": _safe_float(stats.get("avg_roi")),
+                "roi_sum": _safe_float(roi_sum),
+                "roi_avg": _safe_float(roi_avg),
                 "avg_profit": _safe_float(stats.get("avg_profit")),
                 "avg_loss": _safe_float(stats.get("avg_loss")),
                 "pl_ratio": _safe_float(stats.get("pl_ratio")),
-                # cfg (subset)
-                "batch_size": cfg.get("batch_size"),
-                "memory_size": cfg.get("memory_size"),
-                "hidden_sizes": str(cfg.get("hidden_sizes")),
-                "train_repeats": cfg.get("train_repeats"),
-                "use_amp": cfg.get("use_amp"),
-                "use_torch_compile": cfg.get("use_torch_compile"),
-                "learning_rate": cfg.get("lr") or cfg.get("learning_rate"),
-                "eps_decay_steps": cfg.get("eps_decay_steps"),
-                "dropout_rate": cfg.get("dropout_rate"),
-                # env/risk params (from adaptive)
-                "sl_pct": adapt.get("stop_loss_pct"),
-                "tp_pct": adapt.get("take_profit_pct"),
-                "min_hold": adapt.get("min_hold_steps"),
-                "volume_threshold": adapt.get("volume_threshold"),
-                "risk_calc_source": adapt.get("risk_calc_source"),
-                "atr_rel_med": adapt.get("atr_rel_med"),
-                "returns_std": adapt.get("returns_std"),
-                # platform
-                "gpu_name": meta.get("gpu_name"),
-                "pytorch_version": meta.get("pytorch_version"),
+                # risk params (requested)
+                "sl_pct": _safe_float(sl_v),
+                "tp_pct": _safe_float(tp_v),
+                "min_hold_steps": (int(min_hold_v) if isinstance(min_hold_v, (int, float)) else None),
+                "volume_threshold": _safe_float(vol_thr_v),
             }
             rows.append(row)
 
@@ -161,48 +262,31 @@ def api_system_hypotheses_export():
             w.writerow(r)
         csv_text = buf.getvalue()
 
-        # TXT prompt (short, structured)
-        def _top(items, key, n=10):
-            try:
-                arr = [x for x in items if isinstance(x.get(key), (int, float)) and x.get(key) is not None]
-                arr.sort(key=lambda z: float(z.get(key) or 0.0), reverse=True)
-                return arr[:n]
-            except Exception:
-                return []
-
-        top_wr = _top(rows, "winrate_train_all", 10)
-        top_roi = _top(rows, "avg_roi", 10)
-
+        # TXT prompt (compact: no duplicated top lists; CSV is the source of truth)
         lines = []
         lines.append(f"Symbol: {symbol}")
         lines.append(f"Runs scanned: {len(rows)}")
         lines.append("")
-        lines.append("Goal: propose hypotheses about which settings correlate with higher winrate and avg_roi.")
-        lines.append("Use only the provided columns; suggest next experiments (what to vary) and what to monitor.")
+        lines.append("Task: analyze the CSV (provided separately) and propose hypotheses which settings correlate with better outcome.")
+        lines.append("Primary targets: roi_sum, avg_roi, pl_ratio, winrate_train_all, trades_count.")
+        lines.append("Key knobs: sl_pct, tp_pct, min_hold_steps, volume_threshold.")
         lines.append("")
-        lines.append("Top-10 by winrate_train_all:")
-        for r in top_wr:
-            lines.append(
-                f"- run_id={r.get('run_id')} winrate={r.get('winrate_train_all')} avg_roi={r.get('avg_roi')} "
-                f"batch={r.get('batch_size')} mem={r.get('memory_size')} hs={r.get('hidden_sizes')} repeats={r.get('train_repeats')} "
-                f"amp={r.get('use_amp')} compile={r.get('use_torch_compile')} sl={r.get('sl_pct')} tp={r.get('tp_pct')} src={r.get('risk_calc_source')}"
-            )
-        lines.append("")
-        lines.append("Top-10 by avg_roi:")
-        for r in top_roi:
-            lines.append(
-                f"- run_id={r.get('run_id')} avg_roi={r.get('avg_roi')} winrate={r.get('winrate_train_all')} "
-                f"batch={r.get('batch_size')} mem={r.get('memory_size')} hs={r.get('hidden_sizes')} repeats={r.get('train_repeats')} "
-                f"amp={r.get('use_amp')} compile={r.get('use_torch_compile')} sl={r.get('sl_pct')} tp={r.get('tp_pct')} src={r.get('risk_calc_source')}"
-            )
-        lines.append("")
-        lines.append("Now analyze the CSV and produce:")
-        lines.append("1) 5-10 hypotheses")
-        lines.append("2) suggested next runs (3-5 configs) to validate")
-        lines.append("3) risks/overfitting caveats")
+        lines.append("Output format:")
+        lines.append("1) 5-10 hypotheses (reference specific CSV columns and patterns)")
+        lines.append("2) 3-5 next experiments (exact parameter changes to validate)")
+        lines.append("3) caveats (overfitting, low trades_count, conflicting objectives)")
         prompt_text = "\n".join(lines)
 
-        return jsonify({"success": True, "symbol": symbol, "runs_count": len(rows), "csv": csv_text, "prompt": prompt_text})
+        return jsonify(
+            {
+                "success": True,
+                "symbol": symbol,
+                "model_type": model_type,
+                "runs_count": len(rows),
+                "csv": csv_text,
+                "prompt": prompt_text,
+            }
+        )
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

@@ -59,6 +59,21 @@ def trailing_last_setup():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+@trading_bp.get('/api/trading/atr_1h')
+def api_atr_1h():
+    """Возвращает ATR(1h) для символа и одновременно прогревает Redis-кэш (length берём из app_settings)."""
+    try:
+        sym = (request.args.get('symbol') or '').upper().strip()
+        if not sym:
+            return jsonify({'success': False, 'error': 'symbol is required'}), 400
+        if not re.match(r'^[A-Z]{2,10}USDT$', sym):
+            return jsonify({'success': False, 'error': 'symbol must match [A-Z]{2,10}USDT'}), 400
+        atr_abs, atr_norm, close = get_atr_1h(sym, length=None)
+        return jsonify({'success': True, 'symbol': sym, 'atr_abs': atr_abs, 'atr_norm': atr_norm, 'close': close}), 200
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @trading_bp.post('/api/trading/save_config')
 def save_trading_config():
     """Автосохранение выбора моделей и консенсуса без запуска торговли."""
@@ -805,18 +820,24 @@ def force_trailing_stop():
         pos = getattr(agent, 'current_position', None) or {}
         entry_price = pos.get('entry_price')
         amount = pos.get('amount')
+        try:
+            current_price = float(agent._get_current_price() or 0.0)
+        except Exception:
+            current_price = 0.0
         trailing_now = pos.get('trailingStop') or pos.get('trailing_stop') or pos.get('trailing_stop_price')
         if trailing_now not in (None, '', 0):
             return jsonify({'success': False, 'error': f'trailing already set for {symbol}'}), 409
         if not entry_price or not amount:
             return jsonify({'success': False, 'error': f'no open position for {symbol}'}), 400
+        if current_price <= 0:
+            return jsonify({'success': False, 'error': f'current price not available for {symbol}'}), 400
 
         try:
             trailing_result = setup_trailing_stop_bybit(
                 agent.exchange,
                 symbol,
                 float(amount),
-                float(entry_price),
+                float(current_price),
                 trailing_mode,
                 trailing_activate_mode,
                 trailing_activate_value,
@@ -983,6 +1004,26 @@ def list_trading_agents():
                 atr_trail_activate_pct_v = rc.get(f'trading:atr_trail_activate_pct:{sym}') or rc.get('trading:atr_trail_activate_pct')
                 trailing_activate_mode_v = rc.get(f'trading:trailing_activate_mode:{sym}') or rc.get('trailing_activate_mode')
                 trailing_activate_value_v = rc.get(f'trading:trailing_activate_value:{sym}') or rc.get('trailing_activate_value')
+                # ATR (только из Redis cache; без загрузки рынков/свечей, чтобы не тормозить /api/trading/agents)
+                atr_1h_abs = None
+                try:
+                    try:
+                        from utils.indicators import get_atr_1h_length
+                        _len = int(get_atr_1h_length(default=34))
+                    except Exception:
+                        _len = 34
+                    atr_key = f"atr:1h:{sym}:{_len}:auto"
+                    atr_raw = rc.get(atr_key) if rc else None
+                    if atr_raw:
+                        try:
+                            _s = atr_raw if isinstance(atr_raw, str) else atr_raw.decode("utf-8", errors="ignore")
+                            _d = json.loads(_s) if _s else None
+                            if isinstance(_d, dict) and _d.get("atr_abs") is not None:
+                                atr_1h_abs = float(_d.get("atr_abs"))
+                        except Exception:
+                            atr_1h_abs = None
+                except Exception:
+                    atr_1h_abs = None
                 try:
                     limit_cfg = json.loads(limit_cfg_raw) if limit_cfg_raw else None
                 except Exception:
@@ -1085,6 +1126,7 @@ def list_trading_agents():
                     'atr_trail_activate_pct': (float(str(atr_trail_activate_pct_v)) if atr_trail_activate_pct_v not in (None, '') else None),
                     'trailing_activate_mode': (str(trailing_activate_mode_v).strip() if trailing_activate_mode_v else None),
                     'trailing_activate_value': (float(str(trailing_activate_value_v)) if trailing_activate_value_v not in (None, '') else None),
+                    'atr_1h_abs': (float(atr_1h_abs) if atr_1h_abs not in (None, '') else None),
                     'debug_buy_env': debug_buy,
                     'qgate_maxq': qmax_f,
                     'qgate_gapq': qgap_f,
@@ -1734,7 +1776,7 @@ def trading_manual_buy_bypass_prediction():
         # Вспомогательная функция ATR‑расчёта TP/SL
         def _atr_tp_sl_prices(symbol: str, entry_price: float, k: float, m: float, min_sl: float, side: str):
             try:
-                atr_abs, _, _ = get_atr_1h(symbol, length=21)
+                atr_abs, _, _ = get_atr_1h(symbol, length=None)
             except Exception as _e:
                 raise RuntimeError(f"ATR not available: {_e}")
             k_eff = max(float(k), float(min_sl))
