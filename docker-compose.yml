@@ -176,9 +176,7 @@ services:
       sh -lc "
         chmod +x scripts/wait-for-redis.sh &&
         scripts/wait-for-redis.sh &&
-        echo '🧹 Purge: очищаю очередь train перед стартом celery-train...' &&
-        redis-cli -h redis -p 6379 DEL train >/dev/null 2>&1 || true &&
-        echo '✅ Очередь train очищена, запускаю celery-train' &&
+        python scripts/purge-train-queue.py &&
         exec python -W ignore::DeprecationWarning -m celery -A tasks worker -Q train -P ${CELERY_POOL:-solo} -c ${CELERY_CONCURRENCY:-1} --loglevel=info
       "
   celery-beat:
