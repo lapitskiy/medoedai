@@ -51,11 +51,7 @@ services:
     working_dir: /workspace
     command: >
       sh -c "
-        echo '🧹 Очищаю Redis перед запуском...' &&
-        python utils/redis/clear_redis.py &&
-        echo '🧹 Очищаю старые задачи Celery...' &&
-        python utils/redis/cleanup_celery_tasks.py &&
-        echo '✅ Redis очищен, запускаю Flask...' &&
+        echo '✅ Redis готов, запускаю Flask...' &&
         python main.py
       "
 

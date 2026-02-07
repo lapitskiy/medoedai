@@ -291,6 +291,17 @@
                     lines.push(`Длина эпизода (шагов): ${episodeLength}`);
                 }
                 lines.push(`Устройство: ${gpu}`);
+                // Risk-management параметры обучения (TP/SL/min_hold/volume_threshold)
+                try{
+                    const rm = (result.risk_management && typeof result.risk_management === 'object') ? result.risk_management : null;
+                    if(rm){
+                        const tp = rm.TAKE_PROFIT_PCT != null ? rm.TAKE_PROFIT_PCT : '—';
+                        const sl = rm.STOP_LOSS_PCT != null ? rm.STOP_LOSS_PCT : '—';
+                        const mh = rm.min_hold_steps != null ? rm.min_hold_steps : '—';
+                        const vt = rm.volume_threshold != null ? rm.volume_threshold : '—';
+                        lines.push(`TP: ${tp} | SL: ${sl} | min_hold_steps: ${mh} | volume_threshold: ${vt}`);
+                    }
+                }catch(_){}
                 // Real run config (cfg_snapshot from train_result.pkl) — это фактические параметры прогона
                 try{
                     const cs = (result.cfg_snapshot && typeof result.cfg_snapshot === 'object') ? result.cfg_snapshot : null;

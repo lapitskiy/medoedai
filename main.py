@@ -492,6 +492,11 @@ def get_result_model_info():
                 gym_snapshot = results.get('gym_snapshot', {}) or {}
                 if 'episode_length' in gym_snapshot:
                     info['episode_length'] = gym_snapshot['episode_length']
+
+                # Risk-management параметры из gym_snapshot (TP/SL/min_hold/volume_threshold)
+                risk_snap = gym_snapshot.get('risk_management') if isinstance(gym_snapshot.get('risk_management'), dict) else {}
+                if risk_snap:
+                    info['risk_management'] = risk_snap
                 elif 'cfg_snapshot' in results and isinstance(results['cfg_snapshot'], dict):
                     info['episode_length'] = results['cfg_snapshot'].get('episode_length')
 

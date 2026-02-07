@@ -168,7 +168,7 @@
                         </div>
                     </div>
                     <div class="form-group" style="margin-top:10px;">
-                        <label>Max models to queue (selected subset if grid larger)</label>
+                        <label>Max models to queue (selected subset if grid larger) — <span id="gridTotalCombo" style="color:#2563eb;font-weight:600;">0</span> комбинаций в сетке</label>
                         <input id="gridMaxModels" class="form-control" type="number" min="1" max="100" step="1" value="10">
                     </div>
                     <div id="gridStatus"></div>
@@ -981,8 +981,29 @@ P/L Ratio: ${plr}
             }
         }
 
+        function countGridSteps(fromId, toId, stepId){
+            const f=parseFloat(document.getElementById(fromId)?.value)||0;
+            const t=parseFloat(document.getElementById(toId)?.value)||0;
+            const s=parseFloat(document.getElementById(stepId)?.value)||0;
+            if(s<=0||f===t) return 1;
+            return Math.max(1, Math.round(Math.abs(t-f)/s)+1);
+        }
+        function updateGridComboCount(){
+            const sl=countGridSteps('gridSlFrom','gridSlTo','gridSlStep');
+            const tp=countGridSteps('gridTpFrom','gridTpTo','gridTpStep');
+            const hold=countGridSteps('gridHoldFrom','gridHoldTo','gridHoldStep');
+            const vol=countGridSteps('gridVolFrom','gridVolTo','gridVolStep');
+            const total=sl*tp*hold*vol;
+            const el=document.getElementById('gridTotalCombo');
+            if(el){ el.textContent=total; el.style.color=total>100?'#dc2626':'#2563eb'; }
+        }
+
         // Привязки
         document.addEventListener('DOMContentLoaded', function(){
+            ['gridSlFrom','gridSlTo','gridSlStep','gridTpFrom','gridTpTo','gridTpStep',
+             'gridHoldFrom','gridHoldTo','gridHoldStep','gridVolFrom','gridVolTo','gridVolStep'
+            ].forEach(function(id){ var e=document.getElementById(id); e&&e.addEventListener('input',updateGridComboCount); });
+            updateGridComboCount();
             try{
                 const symSel = document.getElementById('trainSymbolSelect');
                 symSel && symSel.addEventListener('change', function(){

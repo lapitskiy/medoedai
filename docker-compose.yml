@@ -53,10 +53,6 @@ services:
     working_dir: /workspace
     command: >
       sh -c "
-        echo '🧹 Очищаю Redis перед запуском...' &&
-        python -W ignore::DeprecationWarning utils/redis/clear_redis.py &&
-        echo '🧹 Очищаю старые задачи Celery...' &&
-        python -W ignore::DeprecationWarning utils/redis/cleanup_celery_tasks.py &&
         echo '✅ Redis готов, запускаю Flask...' &&
         python -W ignore::DeprecationWarning main.py
       "
@@ -176,7 +172,15 @@ services:
     volumes:
       - .:/workspace
     working_dir: /workspace
-    command: ["celery","-A","tasks.celery_tasks","worker","-Q","train","-P","solo","-c","1","--loglevel=info"]
+    command: >
+      sh -lc "
+        chmod +x scripts/wait-for-redis.sh &&
+        scripts/wait-for-redis.sh &&
+        echo '🧹 Purge: очищаю очередь train перед стартом celery-train...' &&
+        redis-cli -h redis -p 6379 DEL train >/dev/null 2>&1 || true &&
+        echo '✅ Очередь train очищена, запускаю celery-train' &&
+        exec python -W ignore::DeprecationWarning -m celery -A tasks worker -Q train -P ${CELERY_POOL:-solo} -c ${CELERY_CONCURRENCY:-1} --loglevel=info
+      "
   celery-beat:
     build: .
     container_name: celery-beat

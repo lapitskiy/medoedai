@@ -192,35 +192,32 @@ def api_system_hypotheses_export():
             risk = gym.get("risk_management") if isinstance(gym.get("risk_management"), dict) else {}
             adapt = manifest.get("adaptive_params") if isinstance(manifest.get("adaptive_params"), dict) else {}
 
-            # Risk params: prefer adaptive_params (explicitly computed), else gym_snapshot env constants.
+            # Risk params: prefer gym_snapshot (actual per-run values), else adaptive_params as fallback.
             risk_source = "none"
             sl_v = None
             tp_v = None
             min_hold_v = None
             vol_thr_v = None
-            if adapt and any(k in adapt for k in ("stop_loss_pct", "take_profit_pct", "min_hold_steps", "volume_threshold")):
-                risk_source = "adaptive_params"
-                sl_v = adapt.get("stop_loss_pct")
-                tp_v = adapt.get("take_profit_pct")
-                min_hold_v = adapt.get("min_hold_steps")
-                vol_thr_v = adapt.get("volume_threshold")
-            elif risk and any(k in risk for k in ("STOP_LOSS_PCT", "TAKE_PROFIT_PCT", "min_hold_steps", "volume_threshold")):
+            if risk and any(k in risk for k in ("STOP_LOSS_PCT", "TAKE_PROFIT_PCT", "min_hold_steps", "volume_threshold")):
                 risk_source = "gym_snapshot"
                 sl_v = risk.get("STOP_LOSS_PCT")
                 tp_v = risk.get("TAKE_PROFIT_PCT")
                 min_hold_v = risk.get("min_hold_steps")
                 vol_thr_v = risk.get("volume_threshold")
+            elif adapt and any(k in adapt for k in ("stop_loss_pct", "take_profit_pct", "min_hold_steps", "volume_threshold")):
+                risk_source = "adaptive_params"
+                sl_v = adapt.get("stop_loss_pct")
+                tp_v = adapt.get("take_profit_pct")
+                min_hold_v = adapt.get("min_hold_steps")
+                vol_thr_v = adapt.get("volume_threshold")
             trades_roi = data.get("trades_roi") if isinstance(data.get("trades_roi"), list) else []
             roi_sum = None
-            roi_avg = None
             try:
                 vals = [float(x) for x in trades_roi if x is not None]
                 if vals:
                     roi_sum = float(sum(vals))
-                    roi_avg = float(sum(vals) / float(len(vals)))
             except Exception:
                 roi_sum = None
-                roi_avg = None
 
             model_file = None
             try:
@@ -230,33 +227,71 @@ def api_system_hypotheses_export():
                 model_file = None
 
             row = {
-                "symbol": symbol,
                 "run_id": manifest.get("run_id") or run_dir.name,
-                "created_at": manifest.get("created_at") or data.get("training_date"),
-                "direction": manifest.get("direction") or manifest.get("trained_as") or data.get("trained_as"),
-                "model_file": model_file,
-                # key metrics
-                "winrate_train_all": _safe_float(wr_all),
-                "winrate_train_exploit": _safe_float(wr_expl),
-                "trades_count": int(stats.get("trades_count") or 0),
-                "avg_roi": _safe_float(stats.get("avg_roi")),
-                "roi_sum": _safe_float(roi_sum),
-                "roi_avg": _safe_float(roi_avg),
-                "avg_profit": _safe_float(stats.get("avg_profit")),
-                "avg_loss": _safe_float(stats.get("avg_loss")),
-                "pl_ratio": _safe_float(stats.get("pl_ratio")),
-                # risk params (requested)
+                # risk knobs
                 "sl_pct": _safe_float(sl_v),
                 "tp_pct": _safe_float(tp_v),
                 "min_hold_steps": (int(min_hold_v) if isinstance(min_hold_v, (int, float)) else None),
                 "volume_threshold": _safe_float(vol_thr_v),
+                # outcome metrics
+                "roi_sum": _safe_float(roi_sum),
+                "avg_roi": _safe_float(stats.get("avg_roi")),
+                "pl_ratio": _safe_float(stats.get("pl_ratio")),
+                "winrate_train_all": _safe_float(wr_all),
+                "trades_count": int(stats.get("trades_count") or 0),
+                "avg_profit": _safe_float(stats.get("avg_profit")),
+                "avg_loss": _safe_float(stats.get("avg_loss")),
             }
+
+            # sell_types_total → store as percents (agent/stop_loss/take_profit/timeout/trailing)
+            try:
+                st = data.get("sell_types_total") if isinstance(data.get("sell_types_total"), dict) else {}
+                total = float(sum(float(v) for v in st.values() if isinstance(v, (int, float))))
+                if total > 0:
+                    row["sell_agent_pct"] = float(st.get("agent", 0) or 0) / total
+                    row["sell_stop_loss_pct"] = float(st.get("stop_loss", 0) or 0) / total
+                    row["sell_take_profit_pct"] = float(st.get("take_profit", 0) or 0) / total
+                    row["sell_timeout_pct"] = float(st.get("timeout", 0) or 0) / total
+                else:
+                    row["sell_agent_pct"] = None
+                    row["sell_stop_loss_pct"] = None
+                    row["sell_take_profit_pct"] = None
+                    row["sell_timeout_pct"] = None
+            except Exception:
+                row["sell_agent_pct"] = None
+                row["sell_stop_loss_pct"] = None
+                row["sell_take_profit_pct"] = None
+                row["sell_timeout_pct"] = None
             rows.append(row)
 
         # CSV
         buf = io.StringIO()
-        fieldnames = sorted(set(k for r in rows for k in r.keys()))
-        w = csv.DictWriter(buf, fieldnames=fieldnames)
+        # CSV columns: keep stable order (by importance). Any unknown fields go to the end.
+        preferred = [
+            "run_id",
+            # risk knobs
+            "sl_pct",
+            "tp_pct",
+            "min_hold_steps",
+            "volume_threshold",
+            # outcome
+            "roi_sum",
+            "avg_roi",
+            "pl_ratio",
+            "winrate_train_all",
+            "trades_count",
+            "avg_profit",
+            "avg_loss",
+            # sell composition
+            "sell_agent_pct",
+            "sell_stop_loss_pct",
+            "sell_take_profit_pct",
+            "sell_timeout_pct",
+        ]
+        all_fields = set(k for r in rows for k in r.keys())
+        tail = sorted([k for k in all_fields if k not in preferred])
+        fieldnames = [k for k in preferred if k in all_fields] + tail
+        w = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
         w.writeheader()
         for r in rows:
             w.writerow(r)
