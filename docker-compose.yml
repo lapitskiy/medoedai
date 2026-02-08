@@ -90,7 +90,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /workspace
     # Исключаем очередь train из общего воркера, чтобы не конкурировать за CPU
-    command: ["sh","-lc","python -W ignore::DeprecationWarning -m celery -A tasks worker -Q celery -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-6} --loglevel=info"]
+    command: ["sh","-lc","python -c \"from utils.redis_utils import get_redis_client; rc=get_redis_client(); [rc.delete(k) for k in rc.keys('celery:train:xgb:*')]\" 2>/dev/null; python -W ignore::DeprecationWarning -m celery -A tasks worker -Q celery -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-6} --loglevel=info"]
     # CPU-only воркер: GPU не требуется
 
   # Специализированный воркер для торговли

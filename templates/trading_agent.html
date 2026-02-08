@@ -1718,6 +1718,10 @@
                             const qgateT2 = prediction.market_conditions && prediction.market_conditions.qgate_T2;
                             const qgateMaxQ = prediction.market_conditions && prediction.market_conditions.qgate_maxQ;
                             const qgateGapQ = prediction.market_conditions && prediction.market_conditions.qgate_gapQ;
+                            // Проверяем cooldown-блокировку (SL escalation)
+                            const mc = prediction.market_conditions || {};
+                            const cooldownGate = mc.postexit_cooldown_gate;
+                            const isCooldownBlocked = cooldownGate && cooldownGate.blocked;
                             const gigachatText = prediction.market_conditions && prediction.market_conditions.gigachat_text;
                             const gigachatOk = prediction.market_conditions && prediction.market_conditions.gigachat_ok;
                             const gigachatLatency = prediction.market_conditions && prediction.market_conditions.gigachat_latency_ms;
@@ -1725,11 +1729,12 @@
                             const gigachatDecision = prediction.market_conditions && prediction.market_conditions.gigachat_decision;
                             const gigachatReason = prediction.market_conditions && prediction.market_conditions.gigachat_reason;
                             
+                            const borderColor = isCooldownBlocked ? '#e74c3c' : (isQgateFiltered ? '#ffc107' : (actionClass === 'buy' ? '#28a745' : actionClass === 'sell' ? '#dc3545' : '#6c757d'));
                             predictionsHTML += `
-                                <div class="trade-item" style="border-left: 4px solid ${isQgateFiltered ? '#ffc107' : (actionClass === 'buy' ? '#28a745' : actionClass === 'sell' ? '#dc3545' : '#6c757d')};">
+                                <div class="trade-item" style="border-left: 4px solid ${borderColor};">
                                     <div class="trade-header">
                                         <span class="trade-action ${actionClass}">${prediction.action.toUpperCase()}</span>
-                                        ${isQgateFiltered ? '<span class="trade-confidence warning">🚫 Q-gate отфильтровано</span>' : `<span class="trade-confidence ${confidenceClass}">Уверенность: ${(prediction.confidence * 100).toFixed(1)}%</span>`}
+                                        ${isCooldownBlocked ? '<span class="trade-confidence" style="color:#e74c3c;font-weight:700;">⏸️ SL Cooldown</span>' : (isQgateFiltered ? '<span class="trade-confidence warning">🚫 Q-gate отфильтровано</span>' : `<span class="trade-confidence ${confidenceClass}">Уверенность: ${(prediction.confidence * 100).toFixed(1)}%</span>`)}
                                         <span>${predictionTime}</span>
                                     </div>
                                     <div class="trade-details">
@@ -1764,7 +1769,21 @@
                                         </div>
                                     </div>
                                     ` : ''}
-                                    ${prediction.market_conditions && Object.keys(prediction.market_conditions).length > 0 && !isQgateFiltered ? `
+                                    ${isCooldownBlocked ? `
+                                    <div style="margin-top: 10px; padding: 10px; background: #fdecea; border: 1px solid #f5c6cb; border-radius: 5px; font-size: 12px;">
+                                        <strong>⏸️ SL Cooldown — вход заблокирован</strong><br>
+                                        <div style="margin-top:6px; color:#721c24;">
+                                            Серия стоп-лоссов: <strong>${cooldownGate.sl_streak || '?'}</strong> подряд.
+                                            Пауза: <strong>${cooldownGate.cooldown_candles || '?'}</strong> свечей
+                                            (≈${cooldownGate.hours_left || '?'} ч осталось)
+                                        </div>
+                                        <div style="margin-top:6px; color:#555;">
+                                            Причина выхода: <strong>${cooldownGate.reason || '?'}</strong>,
+                                            свечей до разблокировки: <strong>${cooldownGate.candles_left || '?'}</strong>
+                                        </div>
+                                    </div>
+                                    ` : ''}
+                                    ${prediction.market_conditions && Object.keys(prediction.market_conditions).length > 0 && !isQgateFiltered && !isCooldownBlocked ? `
                                     <div style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px; font-size: 12px;">
                                         <strong>Условия рынка:</strong><br>
                                         ${Object.entries(prediction.market_conditions)

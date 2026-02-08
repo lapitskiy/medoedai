@@ -59,36 +59,41 @@ class XgbTrainer:
         w = inv[y_tr]
         w = (w / np.mean(w)) if np.mean(w) > 0 else None
 
+        # scale_pos_weight: auto (-1) = count_neg/count_pos
+        spw = float(self.cfg.scale_pos_weight)
+        if spw < 0 and is_binary:
+            spw = float(counts[0]) / max(float(counts[1]), 1.0)
+
+        common_params = dict(
+            n_estimators=int(self.cfg.n_estimators),
+            max_depth=int(self.cfg.max_depth),
+            learning_rate=float(self.cfg.learning_rate),
+            subsample=float(self.cfg.subsample),
+            colsample_bytree=float(self.cfg.colsample_bytree),
+            reg_lambda=float(self.cfg.reg_lambda),
+            min_child_weight=float(self.cfg.min_child_weight),
+            gamma=float(self.cfg.gamma),
+            random_state=int(self.cfg.random_state),
+            n_jobs=int(self.cfg.n_jobs),
+            tree_method="hist",
+        )
+        es = int(self.cfg.early_stopping_rounds)
+        if es > 0:
+            common_params["early_stopping_rounds"] = es
+
         if is_binary:
             model = xgb.XGBClassifier(
                 objective="binary:logistic",
-                n_estimators=int(self.cfg.n_estimators),
-                max_depth=int(self.cfg.max_depth),
-                learning_rate=float(self.cfg.learning_rate),
-                subsample=float(self.cfg.subsample),
-                colsample_bytree=float(self.cfg.colsample_bytree),
-                reg_lambda=float(self.cfg.reg_lambda),
-                min_child_weight=float(self.cfg.min_child_weight),
-                random_state=int(self.cfg.random_state),
-                n_jobs=int(self.cfg.n_jobs),
-                tree_method="hist",
-                eval_metric="logloss",
+                eval_metric="aucpr",
+                scale_pos_weight=spw,
+                **common_params,
             )
         else:
             model = xgb.XGBClassifier(
                 objective="multi:softprob",
                 num_class=3,
-                n_estimators=int(self.cfg.n_estimators),
-                max_depth=int(self.cfg.max_depth),
-                learning_rate=float(self.cfg.learning_rate),
-                subsample=float(self.cfg.subsample),
-                colsample_bytree=float(self.cfg.colsample_bytree),
-                reg_lambda=float(self.cfg.reg_lambda),
-                min_child_weight=float(self.cfg.min_child_weight),
-                random_state=int(self.cfg.random_state),
-                n_jobs=int(self.cfg.n_jobs),
-                tree_method="hist",
                 eval_metric="mlogloss",
+                **common_params,
             )
 
         model.fit(X_tr, y_tr, sample_weight=w, eval_set=[(X_va, y_va)], verbose=False)

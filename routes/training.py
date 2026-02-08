@@ -2,7 +2,7 @@ from flask import Blueprint, jsonify, request, redirect, url_for, current_app as
 from celery.result import AsyncResult
 from tasks.celery_tasks import celery, train_dqn_multi_crypto, train_dqn_symbol
 from tasks.sac_tasks import train_sac_symbol
-from tasks.xgb_tasks import train_xgb_symbol, train_xgb_grid, train_xgb_grid_entry_exit
+from tasks.xgb_tasks import train_xgb_symbol, train_xgb_grid, train_xgb_grid_entry_exit, train_xgb_grid_full
 from utils.redis_utils import get_redis_client
 import os
 import logging
@@ -652,6 +652,53 @@ def train_xgb_grid_task_route():
     if wants_json:
         return jsonify({"success": True, "task_id": task.id, "symbol": symbol, "task": task_name, "direction": direction})
     return redirect(url_for("index"))
+
+
+@training_bp.route('/train_xgb_grid_full', methods=['POST'])
+def train_xgb_grid_full_route():
+    """Full hyper-parameter grid: labeling + model params."""
+    data = request.get_json(silent=True) or {}
+
+    def _get(key, cast=None):
+        v = data.get(key)
+        if v is None or v == '':
+            return None
+        if cast:
+            return cast(v)
+        return v
+
+    task = train_xgb_grid_full.apply_async(kwargs={
+        'symbol': _get('symbol') or 'BTCUSDT',
+        'direction': _get('direction') or 'long',
+        'task': _get('task') or 'entry_long',
+        'limit_candles': _get('limit_candles', int),
+        'horizon_steps_list': data.get('horizon_steps_list'),
+        'threshold_list': data.get('threshold_list'),
+        'max_hold_steps_list': data.get('max_hold_steps_list'),
+        'min_profit_list': data.get('min_profit_list'),
+        'fee_bps_list': data.get('fee_bps_list'),
+        'label_delta_list': data.get('label_delta_list'),
+        'max_depth_list': data.get('max_depth_list'),
+        'learning_rate_list': data.get('learning_rate_list'),
+        'n_estimators_list': data.get('n_estimators_list'),
+        'subsample_list': data.get('subsample_list'),
+        'colsample_bytree_list': data.get('colsample_bytree_list'),
+        'reg_lambda_list': data.get('reg_lambda_list'),
+        'min_child_weight_list': data.get('min_child_weight_list'),
+        'gamma_list': data.get('gamma_list'),
+        'scale_pos_weight_list': data.get('scale_pos_weight_list'),
+        'early_stopping_rounds': _get('early_stopping_rounds', int) or 50,
+        'keep_top_n': _get('keep_top_n', int) or 20,
+    }, queue='celery')
+
+    try:
+        redis_client.lrem("ui:tasks", 0, task.id)
+        redis_client.lpush("ui:tasks", task.id)
+        redis_client.ltrim("ui:tasks", 0, 49)
+    except Exception:
+        pass
+
+    return jsonify({"success": True, "task_id": task.id, "symbol": data.get('symbol'), "task": data.get('task')})
 
 
 @training_bp.route('/continue_training', methods=['POST'])

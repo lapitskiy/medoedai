@@ -691,6 +691,7 @@ def ensure_risk_orders(self, symbol: str):
                     rc.set(pos_key, "1")
                     rc.set(f"trading:pos_entry_price:{symbol}", str(entry_price))
                     rc.set(f"trading:pos_type:{symbol}", str(ptype or ''))
+                    rc.set(f"trading:pos_entry_ts:{symbol}", str(int(_last_closed_5m_ts_ms() or 0)))
                 except Exception:
                     pass
             else:
@@ -734,6 +735,16 @@ def ensure_risk_orders(self, symbol: str):
                             rc.setex(f"trading:last_exit_reason:{symbol}", 86400, str(reason))
                             if oid:
                                 rc.setex(f"trading:last_exit_order_id:{symbol}", 86400, str(oid))
+                            # SL streak escalation: increment on stop_loss, reset on TP/trailing
+                            try:
+                                if str(reason).strip().lower() == 'stop_loss':
+                                    _streak = int(rc.get(f"trading:sl_streak:{symbol}") or 0) + 1
+                                    rc.setex(f"trading:sl_streak:{symbol}", 172800, str(_streak))
+                                    logger.warning("[sl_streak] symbol=%s streak=%d", symbol, _streak)
+                                else:
+                                    rc.delete(f"trading:sl_streak:{symbol}")
+                            except Exception:
+                                pass
                         except Exception:
                             pass
                         # Persist to DB trades so /agent/<symbol> -> "История торговли" shows this exit.
@@ -750,6 +761,17 @@ def ensure_risk_orders(self, symbol: str):
                                 ptype_prev = str(rc.get(f"trading:pos_type:{symbol}") or '').strip().lower()
                             except Exception:
                                 ptype_prev = None
+                            entry_ts_ms = None
+                            try:
+                                raw_ets = rc.get(f"trading:pos_entry_ts:{symbol}")
+                                entry_ts_ms = int(raw_ets) if raw_ets and str(raw_ets).strip() not in ('', '0') else None
+                            except Exception:
+                                entry_ts_ms = None
+                            bal_after = None
+                            try:
+                                bal_after = agent._get_current_balance()
+                            except Exception:
+                                pass
 
                             side = str(evt.get('side') or '').lower()
                             action = side if side in ('buy', 'sell') else 'sell'
@@ -764,6 +786,7 @@ def ensure_risk_orders(self, symbol: str):
                                         pnl = (ep - px) * qty
                             except Exception:
                                 pnl = None
+                            bal_before = (bal_after - pnl) if (bal_after is not None and pnl is not None) else None
                             create_trade_record(
                                 symbol_name=symbol,
                                 action=action,
@@ -771,6 +794,7 @@ def ensure_risk_orders(self, symbol: str):
                                 quantity=max(0.0, qty),
                                 price=max(0.0, px),
                                 model_prediction=f"exit:{reason}",
+                                current_balance=bal_after,
                                 position_pnl=pnl,
                                 exchange_order_id=str(oid) if oid else None,
                                 error_message=json.dumps({
@@ -778,7 +802,10 @@ def ensure_risk_orders(self, symbol: str):
                                     'exit_ts_ms': int(now_bucket_ts),
                                     'exit_side': action,
                                     'entry_price': ep,
+                                    'entry_ts_ms': entry_ts_ms,
                                     'pos_type_prev': ptype_prev,
+                                    'bal_before': bal_before,
+                                    'bal_after': bal_after,
                                 }, ensure_ascii=False),
                                 is_successful=True
                             )
@@ -2080,7 +2107,31 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                             pass
                         return int(default_val)
 
-                    cooldown_candles = _pick_int('trading:postexit_cooldown_candles', 5)
+                    # --- SL streak escalation: чтение ступеней из DB (app_settings) ---
+                    # scope=trading, group=sl_escalation, keys: SL_COOLDOWN_1..SL_COOLDOWN_4
+                    sl_escalation_steps = [48, 96, 192, 288]  # defaults (candles at 5min)
+                    try:
+                        from utils.settings_store import get_setting_value as _gsv_esc
+                        for _ei in range(4):
+                            _ev = _gsv_esc('trading', 'sl_escalation', f'SL_COOLDOWN_{_ei+1}')
+                            if _ev is not None and str(_ev).strip() != '':
+                                sl_escalation_steps[_ei] = int(float(_ev))
+                    except Exception:
+                        pass
+
+                    # Определяем streak и выбираем cooldown
+                    sl_streak = 0
+                    try:
+                        _streak_raw = rc.get(f"trading:sl_streak:{sym0}")
+                        sl_streak = int(_streak_raw) if _streak_raw is not None and str(_streak_raw).strip() != '' else 0
+                    except Exception:
+                        sl_streak = 0
+
+                    if ex_reason == 'stop_loss' and sl_streak >= 1:
+                        idx_esc = min(sl_streak - 1, len(sl_escalation_steps) - 1)
+                        cooldown_candles = int(sl_escalation_steps[idx_esc])
+                    else:
+                        cooldown_candles = _pick_int('trading:postexit_cooldown_candles', 48)
                     boost_candles = _pick_int('trading:postexit_boost_candles', 10)
 
                     # boosted thresholds (absolute) from DB/Redis; fallback: multipliers
@@ -2120,6 +2171,8 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         'boost_candles': int(boost_candles),
                         'boost_T1': post_T1,
                         'boost_T2': post_T2,
+                        'sl_streak': int(sl_streak),
+                        'sl_escalation_steps': list(sl_escalation_steps),
                     }
                     # Диагностика: что пришло из Redis (сырьё) + ISO время для UI/логов
                     try:
@@ -2397,11 +2450,21 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 cooldown = int(pe.get('cooldown_candles')) if pe.get('cooldown_candles') is not None else None
                 reason = str(pe.get('exit_reason') or '').strip().lower()
                 if candles_since is not None and cooldown is not None and candles_since < cooldown and reason in ('stop_loss', 'take_profit', 'trailing'):
+                    _sl_streak_val = int(pe.get('sl_streak') or 0)
+                    _hours_left = round((cooldown - candles_since) * 5 / 60, 1)
                     pred_json['decision_before_postexit_cooldown'] = str(decision)
-                    pred_json['postexit_cooldown_gate'] = {'blocked': True, 'candles_left': int(cooldown - candles_since), 'reason': reason}
+                    pred_json['postexit_cooldown_gate'] = {
+                        'blocked': True,
+                        'candles_left': int(cooldown - candles_since),
+                        'hours_left': _hours_left,
+                        'cooldown_candles': int(cooldown),
+                        'reason': reason,
+                        'sl_streak': _sl_streak_val,
+                    }
                     decision = 'hold'
                     try:
-                        logger.warning("[postexit_cooldown] symbol=%s blocked BUY reason=%s candles_since=%s cooldown=%s", symbol, reason, candles_since, cooldown)
+                        logger.warning("[postexit_cooldown] symbol=%s blocked BUY reason=%s candles_since=%s cooldown=%s streak=%s hours_left=%s",
+                                       symbol, reason, candles_since, cooldown, _sl_streak_val, _hours_left)
                     except Exception:
                         pass
         except Exception:

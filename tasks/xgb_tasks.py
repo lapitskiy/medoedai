@@ -716,3 +716,211 @@ def train_xgb_grid_entry_exit(
         except Exception:
             pass
 
+
+# ---------------------------------------------------------------------------
+# Full hyper-parameter grid: labeling + model params
+# ---------------------------------------------------------------------------
+
+def _parse_list(raw, cast=float) -> list:
+    """Parse comma-separated string or list into typed list."""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [cast(v) for v in raw]
+    if isinstance(raw, str):
+        return [cast(v.strip()) for v in raw.split(",") if v.strip()]
+    return [cast(raw)]
+
+
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={"max_retries": 0}, queue="celery")
+def train_xgb_grid_full(
+    self,
+    symbol: str,
+    direction: str = "long",
+    task: str = "entry_long",
+    limit_candles: int | None = None,
+    # labeling ranges (lists)
+    horizon_steps_list: list | str | None = None,
+    threshold_list: list | str | None = None,
+    max_hold_steps_list: list | str | None = None,
+    min_profit_list: list | str | None = None,
+    fee_bps_list: list | str | None = None,
+    label_delta_list: list | str | None = None,
+    # model hyper-param ranges (lists)
+    max_depth_list: list | str | None = None,
+    learning_rate_list: list | str | None = None,
+    n_estimators_list: list | str | None = None,
+    subsample_list: list | str | None = None,
+    colsample_bytree_list: list | str | None = None,
+    reg_lambda_list: list | str | None = None,
+    min_child_weight_list: list | str | None = None,
+    gamma_list: list | str | None = None,
+    scale_pos_weight_list: list | str | None = None,
+    early_stopping_rounds: int = 50,
+    keep_top_n: int = 20,
+) -> Dict[str, Any]:
+    """Full grid over BOTH labeling and model hyper-params. Saves top-N runs."""
+    import itertools
+    import numpy as np  # noqa: F811
+
+    symbol = (symbol or "BTCUSDT").upper()
+    direction = (direction or "long").strip().lower()
+    task_name = (task or "entry_long").strip().lower()
+    rc = get_redis_client()
+    logs: List[str] = []
+    running_key = f"celery:train:xgb:gridfull:{symbol}:{task_name}"
+
+    def push_log(msg: str) -> None:
+        ts = datetime.utcnow().strftime("%H:%M:%S")
+        entry = f"[{ts}] {msg}"
+        logs.append(entry)
+        self.update_state(state="PROGRESS", meta={"logs": list(logs), "symbol": symbol, "task": task_name})
+
+    try:
+        if rc.exists(running_key):
+            return {"success": False, "error": f"XGB grid-full for {symbol}/{task_name} already running"}
+        rc.setex(running_key, 12 * 3600, getattr(getattr(self, "request", None), "id", "1"))
+    except Exception:
+        pass
+
+    try:
+        # --- defaults ---
+        is_binary = task_name.startswith("entry") or task_name.startswith("exit")
+
+        hs_list = _parse_list(horizon_steps_list, int) or [12]
+        thr_list = _parse_list(threshold_list, float) or [0.002]
+        mh_list = _parse_list(max_hold_steps_list, int) or [48]
+        mp_list = _parse_list(min_profit_list, float) or [0.0]
+        fb_list = _parse_list(fee_bps_list, float) or [6.0]
+        ld_list = _parse_list(label_delta_list, float) or [0.0005]
+
+        md_list = _parse_list(max_depth_list, int) or [6]
+        lr_list = _parse_list(learning_rate_list, float) or [0.05]
+        ne_list = _parse_list(n_estimators_list, int) or [600]
+        ss_list = _parse_list(subsample_list, float) or [0.9]
+        cb_list = _parse_list(colsample_bytree_list, float) or [0.9]
+        rl_list = _parse_list(reg_lambda_list, float) or [1.0]
+        mcw_list = _parse_list(min_child_weight_list, float) or [1.0]
+        gm_list = _parse_list(gamma_list, float) or [0.0]
+        spw_list = _parse_list(scale_pos_weight_list, float) or [1.0]
+
+        # If task is directional, labeling grid uses horizon/threshold; entry/exit uses max_hold/min_profit/fee/delta.
+        if task_name == "directional":
+            label_combos = list(itertools.product(hs_list, thr_list))
+            label_keys = ("horizon_steps", "threshold")
+        else:
+            label_combos = list(itertools.product(mh_list, mp_list, fb_list, ld_list))
+            label_keys = ("max_hold_steps", "min_profit", "fee_bps", "label_delta")
+
+        model_combos = list(itertools.product(md_list, lr_list, ne_list, ss_list, cb_list, rl_list, mcw_list, gm_list, spw_list))
+        model_keys = ("max_depth", "learning_rate", "n_estimators", "subsample", "colsample_bytree", "reg_lambda", "min_child_weight", "gamma", "scale_pos_weight")
+
+        total = len(label_combos) * len(model_combos)
+        push_log(f"📊 Grid-full: label_combos={len(label_combos)} × model_combos={len(model_combos)} = {total} runs")
+
+        limit_candles = int(limit_candles) if limit_candles is not None else 100000
+        push_log(f"📥 Loading {limit_candles} 5m candles…")
+        df_5min = db_get_or_fetch_ohlcv(symbol_name=symbol, timeframe="5m", limit_candles=limit_candles, exchange_id="bybit")
+        if df_5min is None or df_5min.empty:
+            return {"success": False, "error": f"No candles for {symbol}"}
+        dfs = _build_dfs_from_5m(df_5min)
+
+        grid_id = f"gridfull-{str(uuid.uuid4())[:6].lower()}"
+        results: List[Dict[str, Any]] = []
+        done = 0
+
+        for lc in label_combos:
+            lc_dict = dict(zip(label_keys, lc))
+            for mc in model_combos:
+                mc_dict = dict(zip(model_keys, mc))
+                cfg = XgbConfig(direction=direction)
+                cfg.task = task_name
+                cfg.early_stopping_rounds = int(early_stopping_rounds)
+                cfg.n_jobs = 2  # lower for grid parallelism
+                # labeling params
+                if task_name == "directional":
+                    cfg.horizon_steps = int(lc_dict["horizon_steps"])
+                    cfg.threshold = float(lc_dict["threshold"])
+                else:
+                    cfg.max_hold_steps = int(lc_dict["max_hold_steps"])
+                    cfg.min_profit = float(lc_dict["min_profit"])
+                    cfg.fee_bps = float(lc_dict["fee_bps"])
+                    cfg.label_delta = float(lc_dict["label_delta"])
+                # model params
+                cfg.max_depth = int(mc_dict["max_depth"])
+                cfg.learning_rate = float(mc_dict["learning_rate"])
+                cfg.n_estimators = int(mc_dict["n_estimators"])
+                cfg.subsample = float(mc_dict["subsample"])
+                cfg.colsample_bytree = float(mc_dict["colsample_bytree"])
+                cfg.reg_lambda = float(mc_dict["reg_lambda"])
+                cfg.min_child_weight = float(mc_dict["min_child_weight"])
+                cfg.gamma = float(mc_dict["gamma"])
+                cfg.scale_pos_weight = float(mc_dict["scale_pos_weight"])
+
+                try:
+                    trainer = XgbTrainer(cfg)
+                    r = trainer.train(symbol=symbol, dfs=dfs, result_root="result")
+                    try:
+                        if isinstance(r, dict) and r.get("result_dir"):
+                            _safe_patch_manifest(str(r["result_dir"]), {"source": "grid_full", "grid_id": grid_id})
+                    except Exception:
+                        pass
+                    m = r.get("metrics") if isinstance(r.get("metrics"), dict) else {}
+                    # Score: f1(1) for binary, f1_buy_sell for directional
+                    if is_binary:
+                        f1v = m.get("f1_val")
+                        score = float(f1v[1]) if isinstance(f1v, list) and len(f1v) > 1 else float(m.get("val_acc", 0.0))
+                    else:
+                        score = float(m.get("f1_buy_sell_val") if m.get("f1_buy_sell_val") is not None else m.get("val_acc", 0.0))
+                    item = {**lc_dict, **mc_dict, "score": score, "metrics": m,
+                            "run_name": r.get("run_name"), "result_dir": r.get("result_dir")}
+                    results.append(item)
+                except Exception as exc:
+                    push_log(f"⚠ Error: {exc}")
+
+                done += 1
+                if done % 10 == 0 or done == total:
+                    push_log(f"⏳ {done}/{total} done")
+
+        # Sort by score desc
+        results.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+
+        # Cleanup: keep only top-N run dirs
+        keep_dirs = set()
+        for it in results[:max(1, int(keep_top_n))]:
+            rd = str(it.get("result_dir") or "").strip()
+            if rd:
+                keep_dirs.add(rd)
+        deleted = 0
+        for it in results:
+            rd = str(it.get("result_dir") or "").strip()
+            if not rd or rd in keep_dirs:
+                continue
+            if _safe_rmtree(rd):
+                deleted += 1
+        if deleted:
+            push_log(f"🧹 Cleanup: kept top-{keep_top_n}, deleted {deleted} runs")
+
+        # Save grid results
+        sym_code = (symbol or "").upper().replace("USDT", "").replace("USD", "").replace("USDC", "").replace("BUSD", "").replace("USDP", "")
+        grid_dir = os.path.join("result", "xgb", sym_code or "UNKNOWN", "grids", grid_id)
+        os.makedirs(grid_dir, exist_ok=True)
+        _atomic_write_json(os.path.join(grid_dir, "grid_results.json"), {
+            "symbol": symbol, "task": task_name, "direction": direction,
+            "total_runs": total, "results": results[:keep_top_n],
+            "best": results[0] if results else None,
+        })
+
+        best = results[0] if results else None
+        push_log(f"🏁 Best score={best['score']:.4f}" if best else "🏁 No results")
+
+        out = {"success": True, "symbol": symbol, "task": task_name, "grid_id": grid_id,
+               "total_runs": total, "best": best, "grid_dir": grid_dir}
+        self.update_state(state="SUCCESS", meta={"logs": list(logs), "symbol": symbol, "task": task_name, "result": out})
+        return out
+    finally:
+        try:
+            rc.delete(running_key)
+        except Exception:
+            pass
+

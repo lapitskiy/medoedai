@@ -2,137 +2,98 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <title>Результаты торговли</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Результаты сделок</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
-    h2 { margin: 0 0 12px 0; }
-    .toolbar { margin: 8px 0 12px; display: flex; gap: 12px; align-items: center; }
-    label { font-size: 13px; color: #333; }
-    input, select, button { font-size: 13px; padding: 6px 8px; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { border: 1px solid #e5e5e5; padding: 6px 8px; font-size: 13px; }
-    th { background: #f7f7f7; text-align: left; position: sticky; top: 0; }
-    .pill { padding: 2px 6px; border-radius: 12px; background: #eef2ff; color: #223; font-weight: 600; }
-    .meta { color: #666; font-size: 12px; }
-    .wrap { white-space: nowrap; }
-    .balances { margin: 6px 0 10px; padding: 8px 10px; background:#fafafa; border:1px solid #eee; border-radius:8px; }
+    body{font-family:system-ui,sans-serif;margin:16px}
+    h2{margin:0 0 12px}
+    .toolbar{margin:8px 0 12px;display:flex;gap:12px;align-items:center}
+    label,input,select,button{font-size:13px}
+    input,select,button{padding:6px 8px}
+    table{border-collapse:collapse;width:100%}
+    th,td{border:1px solid #e5e5e5;padding:6px 8px;font-size:13px}
+    th{background:#f7f7f7;text-align:left;position:sticky;top:0}
+    .pos{color:#16a34a;font-weight:600} .neg{color:#dc2626;font-weight:600}
+    .wrap{white-space:nowrap}
+    .balances{margin:6px 0 10px;padding:8px 10px;background:#fafafa;border:1px solid #eee;border-radius:8px;font-size:12px}
+    .summary{margin:6px 0;font-size:13px;font-weight:600}
+    .side-short{color:#e065a0} .side-long{color:#3b82f6}
   </style>
   <script>
-    function fmtMoney(v) {
-      if (v === null || v === undefined || v === '') return '—';
-      const n = Number(v);
-      if (!isFinite(n)) return '—';
-      return n.toFixed(2);
+    function fmt(v,d){if(v==null)return'—';return Number(v).toFixed(d??2)}
+    function fmtDt(s){if(!s)return'—';const d=new Date(s);const dd=String(d.getDate()).padStart(2,'0');const mm=String(d.getMonth()+1).padStart(2,'0');const hh=String(d.getHours()).padStart(2,'0');const mi=String(d.getMinutes()).padStart(2,'0');return`${dd}.${mm} ${hh}:${mi}`}
+    function cls(v){return v>0?'pos':v<0?'neg':''}
+    function balStr(b,a){
+      if(b==null&&a==null)return'—';
+      const bs=b!=null?fmt(b):'?', as_=a!=null?fmt(a):'?';
+      const arrow=(b!=null&&a!=null)?(a>b?' ↑':a<b?' ↓':' →'):'';
+      const c=(b!=null&&a!=null)?(a>=b?'pos':'neg'):'';
+      return `<span class="${c}">${bs}/${as_}${arrow}</span>`;
     }
-    async function loadBalances() {
-      const el = document.getElementById('balances');
-      if (!el) return;
-      el.textContent = 'Баланс: загружаю...';
-      try {
-        const r = await fetch('/api/trading/accounts_balances');
-        const j = await r.json();
-        if (!j.success) {
-          el.textContent = `Баланс: ошибка (${j.error||'unknown'})`;
-          return;
-        }
-        const accs = Array.isArray(j.accounts) ? j.accounts : [];
-        if (accs.length === 0) {
-          el.textContent = 'Баланс: в БД нет Bybit API аккаунтов (BYBIT_<id>_API_KEY/SECRET_KEY).';
-          return;
-        }
-        const parts = accs.map(a=>{
-          const id = a.account_id;
-          const label = a.label || `Account ${id}`;
-          if (a.error) return `BYBIT_${id} (${label}): error`;
-          return `BYBIT_${id} (${label}): USDT_free=${fmtMoney(a.usdt_free)} / total=${fmtMoney(a.usdt_total)}`;
-        });
-        el.textContent = parts.join(' | ') + (j.ts ? ` (ts=${j.ts})` : '');
-      } catch (e) {
-        el.textContent = `Баланс: ошибка (${e})`;
-      }
+    async function loadBalances(){
+      const el=document.getElementById('balances'); el.textContent='Баланс: загружаю...';
+      try{const r=await fetch('/api/trading/accounts_balances');const j=await r.json();
+        if(!j.success){el.textContent='Баланс: ошибка';return}
+        const accs=j.accounts||[];
+        el.textContent=accs.map(a=>`BYBIT_${a.account_id} (${a.label||'?'}): free=${fmt(a.usdt_free)} total=${fmt(a.usdt_total)}`).join(' | ')||'Нет аккаунтов';
+      }catch(e){el.textContent='Баланс: ошибка'}
     }
-    async function loadResults() {
-      const sym = document.getElementById('f-symbol').value;
-      const r = await fetch('/api/trading/latest_results' + (sym? ('?symbol='+encodeURIComponent(sym)) : ''));
-      const j = await r.json();
-      const tb = document.querySelector('#tbl tbody');
-      tb.innerHTML = '';
-      if (!j.success) {
-        tb.innerHTML = `<tr><td colspan="7">Ошибка: ${j.error||'unknown'}</td></tr>`;
-        return;
-      }
-      const rows = j.latest_results || [];
-      for (const it of rows) {
-        const ts = it.timestamp || '';
-        const sym = (Array.isArray(it.symbols) && it.symbols[0]) || (it.symbol || '');
-        const decision = it.decision || '';
-        const exit_mode = it.exit_mode || '';
-        const tr = it.trade_result || {};
-        const meta = JSON.stringify(tr);
-        const exec = (it.consensus && it.consensus.exec_mode) || (it.execution_mode || '—');
-        const row = document.createElement('tr');
-        row.innerHTML = `
-          <td class="wrap">${ts}</td>
-          <td>${sym}</td>
-          <td><span class="pill">${decision}</span></td>
-          <td>${exec}</td>
-          <td>${exit_mode||'—'}</td>
-          <td class="meta">${meta}</td>
-        `;
+    async function loadTrades(){
+      const sym=document.getElementById('f-symbol').value;
+      const url='/api/trading/trade_history'+(sym?'?symbol='+encodeURIComponent(sym):'');
+      const r=await fetch(url);const j=await r.json();
+      const tb=document.querySelector('#tbl tbody');tb.innerHTML='';
+      const sum=document.getElementById('summary');
+      if(!j.success){tb.innerHTML=`<tr><td colspan="10">Ошибка: ${j.error||'?'}</td></tr>`;sum.textContent='';return}
+      const trades=j.trades||[];
+      let totalPnl=0,wins=0,losses=0;
+      for(const t of trades){
+        if(t.pnl!=null){totalPnl+=t.pnl;if(t.pnl>0)wins++;else losses++;}
+        const row=document.createElement('tr');
+        const sideC=t.side==='short'?'side-short':'side-long';
+        row.innerHTML=`
+          <td>${t.symbol||''}</td>
+          <td class="${sideC}">${t.side||'long'}</td>
+          <td class="wrap">${fmtDt(t.entry_time)}</td>
+          <td>${fmt(t.entry_price,4)}</td>
+          <td class="wrap">${fmtDt(t.exit_time)}</td>
+          <td>${fmt(t.exit_price,4)}</td>
+          <td class="${cls(t.pnl)}">${fmt(t.pnl,2)}</td>
+          <td class="${cls(t.pnl_pct)}">${fmt(t.pnl_pct,2)}%</td>
+          <td>${balStr(t.bal_before,t.bal_after)}</td>
+          <td>${t.exit_reason||'—'}</td>`;
         tb.appendChild(row);
       }
+      const wr=wins+losses>0?((wins/(wins+losses))*100).toFixed(1):'—';
+      sum.textContent=`Всего: ${trades.length} | Win: ${wins} | Loss: ${losses} | WR: ${wr}% | PnL: ${fmt(totalPnl,2)} USDT`;
     }
-    async function loadSymbols() {
-      const sel = document.getElementById('f-symbol');
-      sel.innerHTML = '';
-      const makeOpt = (v, t) => { const o=document.createElement('option'); o.value=v; o.textContent=t; return o; };
-      sel.appendChild(makeOpt('', 'Все'));
-      try {
-        const resp = await fetch('/api/trading/status_all');
-        const data = await resp.json();
-        const set = new Set();
-        const agents = Array.isArray(data.active_agents) ? data.active_agents : [];
-        agents.forEach(a=>{ if(a && a.symbol) set.add(String(a.symbol).toUpperCase()); });
-        // Фолбэк по дефолтным символам, если активных нет
-        if (set.size === 0) ['BTCUSDT','ETHUSDT','SOLUSDT','TONUSDT','ADAUSDT','BNBUSDT','XRPUSDT'].forEach(s=>set.add(s));
-        Array.from(set).sort().forEach(s=> sel.appendChild(makeOpt(s, s)));
-      } catch (_) {
-        ['BTCUSDT','ETHUSDT','SOLUSDT','TONUSDT','ADAUSDT','BNBUSDT','XRPUSDT'].forEach(s=> sel.appendChild(makeOpt(s, s)));
-      }
+    async function loadSymbols(){
+      const sel=document.getElementById('f-symbol');sel.innerHTML='';
+      const o=document.createElement('option');o.value='';o.textContent='Все';sel.appendChild(o);
+      try{const r=await fetch('/api/trading/status_all');const d=await r.json();
+        const s=new Set();(d.active_agents||[]).forEach(a=>{if(a&&a.symbol)s.add(a.symbol.toUpperCase())});
+        Array.from(s).sort().forEach(v=>{const op=document.createElement('option');op.value=v;op.textContent=v;sel.appendChild(op)});
+      }catch(_){}
     }
-    window.addEventListener('DOMContentLoaded', async ()=>{
-      await loadSymbols();
-      loadBalances();
-      document.getElementById('btn-load').addEventListener('click', loadResults);
-      loadResults();
-      setInterval(loadBalances, 15000);
+    window.addEventListener('DOMContentLoaded',async()=>{
+      await loadSymbols();loadBalances();
+      document.getElementById('btn-load').addEventListener('click',loadTrades);
+      loadTrades(); setInterval(loadBalances,15000);
     });
   </script>
 </head>
 <body>
-  <h2>Результаты торговли</h2>
-  <div id="balances" class="balances meta">Баланс: —</div>
+  <h2>Результаты сделок</h2>
+  <div id="balances" class="balances">Баланс: —</div>
+  <div id="summary" class="summary"></div>
   <div class="toolbar">
-    <label>Символ: 
-      <select id="f-symbol"></select>
-    </label>
+    <label>Символ:<select id="f-symbol"></select></label>
     <button id="btn-load">Загрузить</button>
   </div>
-  <table id="tbl">
-    <thead>
-      <tr>
-        <th>Время</th>
-        <th>Символ</th>
-        <th>Decision</th>
-        <th>Exec mode</th>
-        <th>Exit mode</th>
-        <th>Итог</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
+  <table id="tbl"><thead><tr>
+    <th>Символ</th><th>Side</th><th>Вход</th><th>Цена входа</th>
+    <th>Выход</th><th>Цена выхода</th>
+    <th>PnL</th><th>PnL%</th><th>Счёт до/после</th><th>Причина</th>
+  </tr></thead><tbody></tbody></table>
 </body>
 </html>
-
-

@@ -32,6 +32,9 @@ class XgbConfig:
     colsample_bytree: float = 0.9
     reg_lambda: float = 1.0
     min_child_weight: float = 1.0
+    gamma: float = 0.0
+    scale_pos_weight: float = 1.0   # auto=-1 → count_neg/count_pos; 1.0=off
+    early_stopping_rounds: int = 0  # 0 = disabled
 
     # Runtime
     random_state: int = 42

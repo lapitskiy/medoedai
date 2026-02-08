@@ -103,6 +103,173 @@
 
                     <div id="xgbStatus"></div>
                 </div>
+
+                <!-- ========== FULL GRID SEARCH ========== -->
+                <div class="section" id="xgb-grid-full" style="margin-top:24px;">
+                    <h2>🧪 XGB Full Grid Search (labeling + model hyper-params)</h2>
+                    <p class="muted">Перебор всех комбинаций. Каждое обучение ~1-3 мин. Queue: <code>celery</code> (не мешает DQN на <code>train</code>).</p>
+
+                    <div class="statistics-grid" style="grid-template-columns: repeat(3, 1fr); gap:10px;">
+                        <div class="form-group">
+                            <label>Символ</label>
+                            <select id="gfSymbol" class="form-control">
+                                <option value="BTCUSDT">BTC</option>
+                                <option value="TONUSDT">TON</option>
+                                <option value="ETHUSDT">ETH</option>
+                                <option value="SOLUSDT">SOL</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Task</label>
+                            <select id="gfTask" class="form-control" onchange="gfUpdateLabels()">
+                                <option value="entry_long" selected>entry_long</option>
+                                <option value="exit_long">exit_long</option>
+                                <option value="entry_short">entry_short</option>
+                                <option value="exit_short">exit_short</option>
+                                <option value="directional">directional</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Direction</label>
+                            <select id="gfDirection" class="form-control">
+                                <option value="long" selected>Long</option>
+                                <option value="short">Short</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="statistics-grid" style="grid-template-columns: repeat(3, 1fr); gap:10px;">
+                        <div class="form-group">
+                            <label>limit_candles (5m)</label>
+                            <input id="gfLimitCandles" class="form-control" type="number" min="5000" step="5000" value="100000">
+                        </div>
+                        <div class="form-group">
+                            <label>early_stopping_rounds</label>
+                            <input id="gfEarlyStopping" class="form-control" type="number" min="0" step="10" value="50">
+                        </div>
+                        <div class="form-group">
+                            <label>keep_top_n (сохранить лучших)</label>
+                            <input id="gfKeepTopN" class="form-control" type="number" min="1" step="1" value="20">
+                        </div>
+                    </div>
+
+                    <h3 style="margin-top:14px;">📐 Labeling params (from / to / step)</h3>
+                    <div id="gfLabelDirectional" style="display:none;">
+                        <div class="statistics-grid" style="grid-template-columns: repeat(2, 1fr); gap:10px;">
+                            <div class="form-group">
+                                <label>horizon_steps</label>
+                                <input id="gfHsFrom" class="form-control gf-range" type="number" step="1" value="12" placeholder="from">
+                                <input id="gfHsTo" class="form-control gf-range" type="number" step="1" value="48" placeholder="to" style="margin-top:4px;">
+                                <input id="gfHsStep" class="form-control gf-range" type="number" step="1" value="12" placeholder="step" style="margin-top:4px;">
+                            </div>
+                            <div class="form-group">
+                                <label>threshold, % (0.2 = 0.002)</label>
+                                <input id="gfThrFrom" class="form-control gf-range" type="number" step="0.01" value="0.10" placeholder="from">
+                                <input id="gfThrTo" class="form-control gf-range" type="number" step="0.01" value="0.40" placeholder="to" style="margin-top:4px;">
+                                <input id="gfThrStep" class="form-control gf-range" type="number" step="0.01" value="0.10" placeholder="step" style="margin-top:4px;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="gfLabelEntry">
+                        <div class="statistics-grid" style="grid-template-columns: repeat(4, 1fr); gap:10px;">
+                            <div class="form-group">
+                                <label>max_hold_steps</label>
+                                <input id="gfMhFrom" class="form-control gf-range" type="number" step="1" value="48" placeholder="from">
+                                <input id="gfMhTo" class="form-control gf-range" type="number" step="1" value="96" placeholder="to" style="margin-top:4px;">
+                                <input id="gfMhStep" class="form-control gf-range" type="number" step="1" value="48" placeholder="step" style="margin-top:4px;">
+                            </div>
+                            <div class="form-group">
+                                <label>min_profit, % (0.25 = 0.0025)</label>
+                                <input id="gfMpFrom" class="form-control gf-range" type="number" step="0.01" value="0.00" placeholder="from">
+                                <input id="gfMpTo" class="form-control gf-range" type="number" step="0.01" value="0.50" placeholder="to" style="margin-top:4px;">
+                                <input id="gfMpStep" class="form-control gf-range" type="number" step="0.01" value="0.25" placeholder="step" style="margin-top:4px;">
+                            </div>
+                            <div class="form-group">
+                                <label>fee, % (0.06 = 6bps)</label>
+                                <input id="gfFeeFrom" class="form-control gf-range" type="number" step="0.01" value="0.06" placeholder="from">
+                                <input id="gfFeeTo" class="form-control gf-range" type="number" step="0.01" value="0.06" placeholder="to" style="margin-top:4px;">
+                                <input id="gfFeeStep" class="form-control gf-range" type="number" step="0.01" value="0.01" placeholder="step" style="margin-top:4px;">
+                            </div>
+                            <div class="form-group">
+                                <label>label_delta, %</label>
+                                <input id="gfLdFrom" class="form-control gf-range" type="number" step="0.01" value="0.05" placeholder="from">
+                                <input id="gfLdTo" class="form-control gf-range" type="number" step="0.01" value="0.05" placeholder="to" style="margin-top:4px;">
+                                <input id="gfLdStep" class="form-control gf-range" type="number" step="0.01" value="0.01" placeholder="step" style="margin-top:4px;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <h3 style="margin-top:14px;">⚙️ Model hyper-params (from / to / step)</h3>
+                    <div class="statistics-grid" style="grid-template-columns: repeat(3, 1fr); gap:10px;">
+                        <div class="form-group">
+                            <label>max_depth</label>
+                            <input id="gfMdFrom" class="form-control gf-range" type="number" step="1" value="4" placeholder="from">
+                            <input id="gfMdTo" class="form-control gf-range" type="number" step="1" value="8" placeholder="to" style="margin-top:4px;">
+                            <input id="gfMdStep" class="form-control gf-range" type="number" step="1" value="2" placeholder="step" style="margin-top:4px;">
+                        </div>
+                        <div class="form-group">
+                            <label>learning_rate</label>
+                            <input id="gfLrFrom" class="form-control gf-range" type="number" step="0.001" value="0.01" placeholder="from">
+                            <input id="gfLrTo" class="form-control gf-range" type="number" step="0.001" value="0.10" placeholder="to" style="margin-top:4px;">
+                            <input id="gfLrStep" class="form-control gf-range" type="number" step="0.001" value="0.03" placeholder="step" style="margin-top:4px;">
+                        </div>
+                        <div class="form-group">
+                            <label>n_estimators</label>
+                            <input id="gfNeFrom" class="form-control gf-range" type="number" step="100" value="400" placeholder="from">
+                            <input id="gfNeTo" class="form-control gf-range" type="number" step="100" value="800" placeholder="to" style="margin-top:4px;">
+                            <input id="gfNeStep" class="form-control gf-range" type="number" step="100" value="200" placeholder="step" style="margin-top:4px;">
+                        </div>
+                    </div>
+                    <div class="statistics-grid" style="grid-template-columns: repeat(3, 1fr); gap:10px;">
+                        <div class="form-group">
+                            <label>subsample</label>
+                            <input id="gfSsFrom" class="form-control gf-range" type="number" step="0.05" value="0.7" placeholder="from">
+                            <input id="gfSsTo" class="form-control gf-range" type="number" step="0.05" value="0.9" placeholder="to" style="margin-top:4px;">
+                            <input id="gfSsStep" class="form-control gf-range" type="number" step="0.05" value="0.1" placeholder="step" style="margin-top:4px;">
+                        </div>
+                        <div class="form-group">
+                            <label>colsample_bytree</label>
+                            <input id="gfCbFrom" class="form-control gf-range" type="number" step="0.05" value="0.7" placeholder="from">
+                            <input id="gfCbTo" class="form-control gf-range" type="number" step="0.05" value="0.9" placeholder="to" style="margin-top:4px;">
+                            <input id="gfCbStep" class="form-control gf-range" type="number" step="0.05" value="0.1" placeholder="step" style="margin-top:4px;">
+                        </div>
+                        <div class="form-group">
+                            <label>reg_lambda</label>
+                            <input id="gfRlFrom" class="form-control gf-range" type="number" step="0.5" value="1.0" placeholder="from">
+                            <input id="gfRlTo" class="form-control gf-range" type="number" step="0.5" value="5.0" placeholder="to" style="margin-top:4px;">
+                            <input id="gfRlStep" class="form-control gf-range" type="number" step="0.5" value="2.0" placeholder="step" style="margin-top:4px;">
+                        </div>
+                    </div>
+                    <div class="statistics-grid" style="grid-template-columns: repeat(3, 1fr); gap:10px;">
+                        <div class="form-group">
+                            <label>min_child_weight</label>
+                            <input id="gfMcwFrom" class="form-control gf-range" type="number" step="1" value="1" placeholder="from">
+                            <input id="gfMcwTo" class="form-control gf-range" type="number" step="1" value="5" placeholder="to" style="margin-top:4px;">
+                            <input id="gfMcwStep" class="form-control gf-range" type="number" step="1" value="2" placeholder="step" style="margin-top:4px;">
+                        </div>
+                        <div class="form-group">
+                            <label>gamma</label>
+                            <input id="gfGmFrom" class="form-control gf-range" type="number" step="0.1" value="0.0" placeholder="from">
+                            <input id="gfGmTo" class="form-control gf-range" type="number" step="0.1" value="0.5" placeholder="to" style="margin-top:4px;">
+                            <input id="gfGmStep" class="form-control gf-range" type="number" step="0.1" value="0.5" placeholder="step" style="margin-top:4px;">
+                        </div>
+                        <div class="form-group">
+                            <label>scale_pos_weight (-1=auto)</label>
+                            <input id="gfSpwFrom" class="form-control gf-range" type="number" step="0.5" value="-1" placeholder="from">
+                            <input id="gfSpwTo" class="form-control gf-range" type="number" step="0.5" value="1" placeholder="to" style="margin-top:4px;">
+                            <input id="gfSpwStep" class="form-control gf-range" type="number" step="0.5" value="2" placeholder="step" style="margin-top:4px;">
+                        </div>
+                    </div>
+
+                    <div style="margin-top:10px;">
+                        <span style="font-weight:600; color:#2563eb;" id="gfTotalCombo">0</span> комбинаций
+                    </div>
+                    <div class="button-group" style="margin-top:10px;">
+                        <button class="btn btn-primary" onclick="startXgbGridFull()">🚀 Запустить Full Grid</button>
+                    </div>
+                    <div id="gfStatus"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -143,6 +310,101 @@
                 }
             } catch (e) {
                 statusDiv.innerHTML = '<div class="status error">❌ Ошибка запуска XGB: ' + (e && e.message ? e.message : e) + '</div>';
+            }
+        }
+
+        /* ===== Full Grid helpers ===== */
+        function gfRange(fromId, toId, stepId) {
+            const f = parseFloat(document.getElementById(fromId).value);
+            const t = parseFloat(document.getElementById(toId).value);
+            const s = parseFloat(document.getElementById(stepId).value);
+            if (isNaN(f)) return [];
+            if (isNaN(t) || t <= f || isNaN(s) || s <= 0) return [f];
+            const arr = [];
+            for (let v = f; v <= t + s * 0.001; v += s) arr.push(Math.round(v * 1e8) / 1e8);
+            return arr;
+        }
+
+        function gfUpdateLabels() {
+            const task = document.getElementById('gfTask').value;
+            document.getElementById('gfLabelDirectional').style.display = task === 'directional' ? '' : 'none';
+            document.getElementById('gfLabelEntry').style.display = task !== 'directional' ? '' : 'none';
+            gfCalcCombo();
+        }
+
+        function gfCalcCombo() {
+            const task = document.getElementById('gfTask').value;
+            let labelN = 1;
+            if (task === 'directional') {
+                labelN = gfRange('gfHsFrom','gfHsTo','gfHsStep').length * gfRange('gfThrFrom','gfThrTo','gfThrStep').length;
+            } else {
+                labelN = gfRange('gfMhFrom','gfMhTo','gfMhStep').length * gfRange('gfMpFrom','gfMpTo','gfMpStep').length
+                       * gfRange('gfFeeFrom','gfFeeTo','gfFeeStep').length * gfRange('gfLdFrom','gfLdTo','gfLdStep').length;
+            }
+            const modelN = gfRange('gfMdFrom','gfMdTo','gfMdStep').length
+                         * gfRange('gfLrFrom','gfLrTo','gfLrStep').length
+                         * gfRange('gfNeFrom','gfNeTo','gfNeStep').length
+                         * gfRange('gfSsFrom','gfSsTo','gfSsStep').length
+                         * gfRange('gfCbFrom','gfCbTo','gfCbStep').length
+                         * gfRange('gfRlFrom','gfRlTo','gfRlStep').length
+                         * gfRange('gfMcwFrom','gfMcwTo','gfMcwStep').length
+                         * gfRange('gfGmFrom','gfGmTo','gfGmStep').length
+                         * gfRange('gfSpwFrom','gfSpwTo','gfSpwStep').length;
+            document.getElementById('gfTotalCombo').textContent = labelN * modelN;
+        }
+
+        // recalc on any input change
+        document.querySelectorAll('.gf-range').forEach(el => el.addEventListener('input', gfCalcCombo));
+        setTimeout(gfUpdateLabels, 100);
+
+        async function startXgbGridFull() {
+            const statusDiv = document.getElementById('gfStatus');
+            const task = document.getElementById('gfTask').value;
+            const payload = {
+                symbol: document.getElementById('gfSymbol').value,
+                direction: document.getElementById('gfDirection').value,
+                task: task,
+                limit_candles: parseInt(document.getElementById('gfLimitCandles').value) || 100000,
+                early_stopping_rounds: parseInt(document.getElementById('gfEarlyStopping').value) || 50,
+                keep_top_n: parseInt(document.getElementById('gfKeepTopN').value) || 20,
+            };
+            // labeling
+            if (task === 'directional') {
+                payload.horizon_steps_list = gfRange('gfHsFrom','gfHsTo','gfHsStep');
+                payload.threshold_list = gfRange('gfThrFrom','gfThrTo','gfThrStep').map(v => v / 100);
+            } else {
+                payload.max_hold_steps_list = gfRange('gfMhFrom','gfMhTo','gfMhStep').map(v => Math.round(v));
+                payload.min_profit_list = gfRange('gfMpFrom','gfMpTo','gfMpStep').map(v => v / 100);
+                payload.fee_bps_list = gfRange('gfFeeFrom','gfFeeTo','gfFeeStep').map(v => v * 100);
+                payload.label_delta_list = gfRange('gfLdFrom','gfLdTo','gfLdStep').map(v => v / 100);
+            }
+            // model
+            payload.max_depth_list = gfRange('gfMdFrom','gfMdTo','gfMdStep').map(v => Math.round(v));
+            payload.learning_rate_list = gfRange('gfLrFrom','gfLrTo','gfLrStep');
+            payload.n_estimators_list = gfRange('gfNeFrom','gfNeTo','gfNeStep').map(v => Math.round(v));
+            payload.subsample_list = gfRange('gfSsFrom','gfSsTo','gfSsStep');
+            payload.colsample_bytree_list = gfRange('gfCbFrom','gfCbTo','gfCbStep');
+            payload.reg_lambda_list = gfRange('gfRlFrom','gfRlTo','gfRlStep');
+            payload.min_child_weight_list = gfRange('gfMcwFrom','gfMcwTo','gfMcwStep');
+            payload.gamma_list = gfRange('gfGmFrom','gfGmTo','gfGmStep');
+            payload.scale_pos_weight_list = gfRange('gfSpwFrom','gfSpwTo','gfSpwStep');
+
+            const total = parseInt(document.getElementById('gfTotalCombo').textContent) || 0;
+            statusDiv.innerHTML = '<div class="status info">⏳ Запуск Full Grid: ' + total + ' комбинаций…</div>';
+            try {
+                const resp = await fetch('/training/train_xgb_grid_full', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json().catch(() => null);
+                if (data && data.success) {
+                    statusDiv.innerHTML = '<div class="status success">✅ Grid запущен (celery: ' + data.task_id + '). ' + total + ' комбинаций. DQN не затрагивается.</div>';
+                } else {
+                    statusDiv.innerHTML = '<div class="status error">❌ ' + (data && data.error ? data.error : 'Ошибка') + '</div>';
+                }
+            } catch (e) {
+                statusDiv.innerHTML = '<div class="status error">❌ ' + (e.message || e) + '</div>';
             }
         }
 

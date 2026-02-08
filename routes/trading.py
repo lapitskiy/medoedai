@@ -1398,6 +1398,92 @@ def trading_latest_results():
         logging.error(f"Ошибка получения последних результатов: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@trading_bp.get('/api/trading/trade_history')
+def trading_trade_history():
+    """Закрытые round-trip сделки из БД (каждый executed trade = завершённая позиция)"""
+    try:
+        from orm.database import get_db_session
+        from orm.models import Trade, Symbol
+        from sqlalchemy.orm import joinedload
+        from datetime import datetime as _dt
+
+        sym_filter = (request.args.get('symbol') or '').strip().upper()
+        limit = min(int(request.args.get('limit') or 200), 1000)
+
+        session = get_db_session()
+        try:
+            q = session.query(Trade).options(joinedload(Trade.symbol)).filter(
+                Trade.status == 'executed', Trade.is_successful == True
+            )
+            if sym_filter:
+                sub = session.query(Symbol.id).filter(Symbol.name == sym_filter).scalar()
+                if sub:
+                    q = q.filter(Trade.symbol_id == sub)
+                else:
+                    return jsonify({'success': True, 'trades': [], 'total': 0}), 200
+            rows = q.order_by(Trade.executed_at.desc()).limit(limit).all()
+        finally:
+            session.close()
+
+        trades_out = []
+        for r in rows:
+            sym = r.symbol.name if r.symbol else '?'
+            meta = {}
+            if r.error_message:
+                try:
+                    meta = json.loads(r.error_message)
+                except Exception:
+                    pass
+            entry_price = meta.get('entry_price')
+            pos_type = meta.get('pos_type_prev') or ''
+            exit_reason = meta.get('exit_reason') or (r.model_prediction or '').replace('exit:', '')
+            bal_before = meta.get('bal_before')
+            bal_after = meta.get('bal_after') or r.current_balance
+            # entry time from meta or approximate
+            entry_time = None
+            entry_ts_ms = meta.get('entry_ts_ms')
+            if entry_ts_ms:
+                try:
+                    entry_time = _dt.utcfromtimestamp(int(entry_ts_ms) / 1000).isoformat()
+                except Exception:
+                    pass
+            exit_time = (r.executed_at or r.created_at).isoformat() if r.executed_at or r.created_at else None
+            pnl = r.position_pnl
+            # pnl_pct
+            pnl_pct = None
+            if entry_price and r.price and entry_price > 0:
+                if pos_type == 'short':
+                    pnl_pct = round((entry_price / r.price - 1) * 100, 3)
+                else:
+                    pnl_pct = round((r.price / entry_price - 1) * 100, 3)
+            # duration
+            dur = None
+            if entry_ts_ms and r.executed_at:
+                try:
+                    dur = round((r.executed_at.timestamp() - int(entry_ts_ms) / 1000) / 60, 1)
+                except Exception:
+                    pass
+            trades_out.append({
+                'symbol': sym,
+                'side': pos_type or 'long',
+                'entry_price': entry_price,
+                'exit_price': r.price,
+                'quantity': r.quantity,
+                'entry_time': entry_time,
+                'exit_time': exit_time,
+                'pnl': round(pnl, 4) if pnl is not None else None,
+                'pnl_pct': pnl_pct,
+                'exit_reason': exit_reason,
+                'bal_before': round(bal_before, 2) if bal_before is not None else None,
+                'bal_after': round(bal_after, 2) if bal_after is not None else None,
+                'duration_min': dur,
+            })
+
+        return jsonify({'success': True, 'trades': trades_out, 'total': len(trades_out)}), 200
+    except Exception as e:
+        logging.error(f"trade_history error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @trading_bp.get('/api/trading/accounts_balances')
 def trading_accounts_balances():
     """Баланс по всем Bybit API аккаунтам из БД (UNIFIED/derivatives), чтобы диагностировать 'USDT_free'."""
