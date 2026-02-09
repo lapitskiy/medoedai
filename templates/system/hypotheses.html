@@ -26,9 +26,10 @@
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
             <label>Model type:
               <select id="modelType" class="form-control" style="width:140px;">
-                <option value="all" selected>ALL</option>
+                <option value="all" selected>ALL (DQN/SAC)</option>
                 <option value="dqn">DQN</option>
                 <option value="sac">SAC</option>
+                <option value="xgb">XGB</option>
               </select>
             </label>
             <label>Token:
@@ -38,6 +39,9 @@
               <input id="limitRuns" class="form-control" style="width:120px;" value="200">
             </label>
             <button class="btn btn-info" id="genBtn">Сгенерировать</button>
+            <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;cursor:pointer;">
+              <input type="checkbox" id="removeDupCols" checked> Убрать дубликаты
+            </label>
             <button class="btn btn-secondary" id="dlCsvBtn" disabled>Скачать CSV</button>
             <button class="btn btn-secondary" id="dlTxtBtn" disabled>Скачать TXT</button>
           </div>
@@ -61,6 +65,23 @@
     const promptOut = document.getElementById('promptOut');
     let _csvText = '';
     let _txtText = '';
+
+    function stripConstCols(csv){
+      if(!csv) return csv;
+      const lines = csv.trim().split('\n');
+      if(lines.length < 3) return csv; // header + min 2 rows needed
+      const header = lines[0].split(',');
+      const rows = lines.slice(1).map(l=>l.split(','));
+      const keep = [];
+      for(let i=0;i<header.length;i++){
+        const vals = new Set(rows.map(r=>(r[i]||'').trim()));
+        if(vals.size > 1) keep.push(i);
+      }
+      if(keep.length === header.length) return csv;
+      const hdr2 = keep.map(i=>header[i]).join(',');
+      const rows2 = rows.map(r=>keep.map(i=>r[i]).join(','));
+      return [hdr2, ...rows2].join('\n');
+    }
 
     async function loadSymbols(){
       const mt = document.getElementById('modelType')?.value || 'all';
@@ -93,10 +114,12 @@
         const sym = document.getElementById('symbol')?.value || '';
         const mt = document.getElementById('modelType')?.value || 'all';
         const lim = document.getElementById('limitRuns')?.value || '200';
-        const resp = await fetch(`/api/system/hypotheses_export?symbol=${encodeURIComponent(sym)}&model_type=${encodeURIComponent(mt)}&limit_runs=${encodeURIComponent(lim)}`);
+        const ep = mt === 'xgb' ? '/api/system/hypotheses_export_xgb' : '/api/system/hypotheses_export';
+        const resp = await fetch(`${ep}?symbol=${encodeURIComponent(sym)}&limit_runs=${encodeURIComponent(lim)}&model_type=${encodeURIComponent(mt)}`);
         const data = await resp.json();
         if(!data.success){ setStatus('error', data.error || 'Ошибка'); return; }
-        _csvText = data.csv || '';
+        const removeDup = document.getElementById('removeDupCols')?.checked;
+        _csvText = removeDup ? stripConstCols(data.csv || '') : (data.csv || '');
         _txtText = data.prompt || '';
         promptOut.value = _txtText;
         dlCsv.disabled = !_csvText;
@@ -110,11 +133,13 @@
     });
     dlCsv?.addEventListener('click', ()=>{
       const sym = (document.getElementById('symbol')?.value || 'symbol').toUpperCase();
-      download(`hypotheses_${sym}.csv`, _csvText, 'text/csv');
+      const mt = (document.getElementById('modelType')?.value || 'all').toLowerCase();
+      download(`hypotheses_${mt}_${sym}.csv`, _csvText, 'text/csv');
     });
     dlTxt?.addEventListener('click', ()=>{
       const sym = (document.getElementById('symbol')?.value || 'symbol').toUpperCase();
-      download(`hypotheses_${sym}.txt`, _txtText, 'text/plain');
+      const mt = (document.getElementById('modelType')?.value || 'all').toLowerCase();
+      download(`hypotheses_${mt}_${sym}.txt`, _txtText, 'text/plain');
     });
 
     document.addEventListener('DOMContentLoaded', async ()=>{

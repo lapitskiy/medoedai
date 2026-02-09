@@ -117,9 +117,9 @@ def _iter_symbol_runs(symbol: str, model_type: str = "all", limit_runs: int = 20
 @system_models_bp.get("/api/system/hypotheses_symbols")
 def api_system_hypotheses_symbols():
     """
-    Lists available symbols for hypotheses page (from result/dqn and result/sac).
+    Lists available symbols for hypotheses page (from result/dqn, result/sac, result/xgb).
     Query:
-      - model_type: all|dqn|sac (default all)
+      - model_type: all|dqn|sac|xgb (default all)
     """
     try:
         mt = (request.args.get("model_type") or "all").strip().lower()
@@ -132,6 +132,12 @@ def api_system_hypotheses_symbols():
                         out.add(p.name.upper())
         if mt in ("all", "sac"):
             base = Path("result") / "sac"
+            if base.exists():
+                for p in base.iterdir():
+                    if p.is_dir() and (p / "runs").exists():
+                        out.add(p.name.upper())
+        if mt == "xgb":
+            base = Path("result") / "xgb"
             if base.exists():
                 for p in base.iterdir():
                     if p.is_dir() and (p / "runs").exists():
@@ -322,6 +328,155 @@ def api_system_hypotheses_export():
                 "prompt": prompt_text,
             }
         )
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@system_models_bp.get("/api/system/hypotheses_export_xgb")
+def api_system_hypotheses_export_xgb():
+    """
+    Экспорт XGB runs для генерации гипотез.
+    Отдельный endpoint, чтобы не смешивать с DQN/SAC.
+    """
+    try:
+        symbol = (request.args.get("symbol") or "").strip().upper()
+        if not symbol:
+            return jsonify({"success": False, "error": "symbol is required"}), 400
+        try:
+            limit_runs = int(request.args.get("limit_runs") or "500")
+        except Exception:
+            limit_runs = 500
+
+        sym_dir = _symbol_to_dir_name(symbol)
+        base = Path("result") / "xgb" / sym_dir / "runs"
+        if not base.exists():
+            return jsonify({"success": False, "error": f"No XGB runs for {symbol}"}), 404
+
+        items = []
+        for rd in base.iterdir():
+            if not rd.is_dir():
+                continue
+            manifest_p = rd / "manifest.json"
+            metrics_p = rd / "metrics.json"
+            meta_p = rd / "meta.json"
+            if not manifest_p.exists() or not metrics_p.exists():
+                continue
+            try:
+                mtime = float(rd.stat().st_mtime)
+            except Exception:
+                mtime = 0.0
+            items.append({"run_dir": rd, "manifest_p": manifest_p, "metrics_p": metrics_p, "meta_p": meta_p, "mtime": mtime})
+
+        items.sort(key=lambda x: x["mtime"], reverse=True)
+        items = items[:limit_runs]
+
+        rows = []
+        for it in items:
+            manifest = {}
+            metrics = {}
+            meta = {}
+            try:
+                manifest = json.loads(it["manifest_p"].read_text(encoding="utf-8"))
+            except Exception:
+                pass
+            try:
+                metrics = json.loads(it["metrics_p"].read_text(encoding="utf-8"))
+            except Exception:
+                pass
+            try:
+                if it["meta_p"].exists():
+                    meta = json.loads(it["meta_p"].read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+            cfg = meta.get("cfg_snapshot") if isinstance(meta.get("cfg_snapshot"), dict) else {}
+
+            # f1_val is a list: [hold, buy, sell] or [hold, enter]
+            f1v = metrics.get("f1_val")
+            f1_1 = None
+            prec_1 = None
+            recall_1 = None
+            if isinstance(f1v, list) and len(f1v) > 1:
+                f1_1 = _safe_float(f1v[1])
+            pv = metrics.get("precision_val")
+            if isinstance(pv, list) and len(pv) > 1:
+                prec_1 = _safe_float(pv[1])
+            rv = metrics.get("recall_val")
+            if isinstance(rv, list) and len(rv) > 1:
+                recall_1 = _safe_float(rv[1])
+
+            row = {
+                "run_id": manifest.get("run_name") or it["run_dir"].name,
+                # labeling params
+                "horizon_steps": cfg.get("horizon_steps"),
+                "threshold": _safe_float(cfg.get("threshold")),
+                "max_hold_steps": cfg.get("max_hold_steps"),
+                "min_profit": _safe_float(cfg.get("min_profit")),
+                "label_delta": _safe_float(cfg.get("label_delta")),
+                # model hyperparams
+                "max_depth": cfg.get("max_depth"),
+                "learning_rate": _safe_float(cfg.get("learning_rate")),
+                "n_estimators": cfg.get("n_estimators"),
+                "subsample": _safe_float(cfg.get("subsample")),
+                "colsample_bytree": _safe_float(cfg.get("colsample_bytree")),
+                "reg_lambda": _safe_float(cfg.get("reg_lambda")),
+                "min_child_weight": _safe_float(cfg.get("min_child_weight")),
+                "gamma": _safe_float(cfg.get("gamma")),
+                "scale_pos_weight": _safe_float(cfg.get("scale_pos_weight")),
+                # metrics
+                "val_acc": _safe_float(metrics.get("val_acc")),
+                "f1_buy_sell": _safe_float(metrics.get("f1_buy_sell_val")),
+                "f1_1": f1_1,
+                "prec_1": prec_1,
+                "recall_1": recall_1,
+                "y_non_hold": _safe_float(metrics.get("y_non_hold_rate_val")),
+                "pred_non_hold": _safe_float(metrics.get("pred_non_hold_rate_val")),
+                "train_rows": metrics.get("train_rows"),
+                "val_rows": metrics.get("val_rows"),
+            }
+            rows.append(row)
+
+        # CSV
+        buf = io.StringIO()
+        preferred = [
+            "run_id",
+            "horizon_steps", "threshold", "max_hold_steps", "min_profit", "label_delta",
+            "max_depth", "learning_rate", "n_estimators", "subsample", "colsample_bytree",
+            "reg_lambda", "min_child_weight", "gamma", "scale_pos_weight",
+            "val_acc", "f1_buy_sell", "f1_1", "prec_1", "recall_1",
+            "y_non_hold", "pred_non_hold", "train_rows", "val_rows",
+        ]
+        all_fields = set(k for r in rows for k in r.keys())
+        tail = sorted([k for k in all_fields if k not in preferred])
+        fieldnames = [k for k in preferred if k in all_fields] + tail
+        w = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+        csv_text = buf.getvalue()
+
+        # TXT prompt
+        lines = [
+            f"Symbol: {symbol}",
+            f"Model: XGBoost",
+            f"Runs scanned: {len(rows)}",
+            "",
+            "Task: analyze the CSV and propose hypotheses which XGB settings correlate with better prediction quality.",
+            "Primary targets: f1_1 (F1 class=1), prec_1, recall_1, val_acc.",
+            "Key labeling knobs: max_hold_steps, min_profit, threshold, fee_bps.",
+            "Key model knobs: max_depth, learning_rate, n_estimators, subsample, colsample_bytree, reg_lambda, min_child_weight, gamma, scale_pos_weight.",
+            "",
+            "Output format:",
+            "1) 5-10 hypotheses (reference specific CSV columns and patterns)",
+            "2) 3-5 next experiments (exact parameter changes to validate)",
+            "3) caveats (overfitting, class imbalance, y_non_hold vs pred_non_hold mismatch)",
+        ]
+        prompt_text = "\n".join(lines)
+
+        return jsonify({
+            "success": True, "symbol": symbol, "model_type": "xgb",
+            "runs_count": len(rows), "csv": csv_text, "prompt": prompt_text,
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

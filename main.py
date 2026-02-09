@@ -30,6 +30,7 @@ from routes.atr import atr_bp
 from routes.llm import llm_bp
 from utils.redis_utils import get_redis_client, clear_redis_on_startup
 from routes.system_models import system_models_bp
+from routes.stock_models import stock_models_bp
 
 """get_redis_client берём из utils.redis_utils"""
 
@@ -89,6 +90,7 @@ app.register_blueprint(xgb_bp)
 app.register_blueprint(analytics_bp)
 app.register_blueprint(atr_bp)
 app.register_blueprint(llm_bp)
+app.register_blueprint(stock_models_bp)
 from routes.trade_optimizer import trade_opt_bp
 app.register_blueprint(trade_opt_bp)
 

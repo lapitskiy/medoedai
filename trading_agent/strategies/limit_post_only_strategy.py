@@ -471,10 +471,21 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
         try:
             # На Bybit edit_order часто игнорируется без полного набора параметров; используем отмену и повторную постановку
             if cur.exchange_order_id:
+                old_oid = cur.exchange_order_id
                 try:
-                    self.gateway.cancel_order(cur.symbol, cur.exchange_order_id)
+                    self.gateway.cancel_order(cur.symbol, old_oid)
                 except Exception:
-                    pass
+                    # cancel мог упасть потому что ордер уже filled — проверяем
+                    try:
+                        st = self.gateway.get_order_status(cur.symbol, old_oid) or {}
+                        status = str(st.get('status') or '').lower()
+                        if status in ('closed', 'filled', 'done'):
+                            self.store.set_state(cur.intent_id, IntentState.FILLED)
+                            self.store.remove_pending(cur.symbol, cur.intent_id)
+                            self._log.info(f"[LimitPO] filled during requote: id={cur.intent_id} symbol={cur.symbol}")
+                            return
+                    except Exception:
+                        pass
                 cur.exchange_order_id = None
 
             # Guard: если цена ушла и на BUY не хватает свободного USDT, уменьшаем qty_remaining до доступного.

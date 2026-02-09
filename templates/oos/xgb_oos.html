@@ -14,6 +14,11 @@
         .row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
         .row .form-group { margin:0; }
         pre { white-space: pre-wrap; word-break: break-word; }
+        .tbl { width:100%; border-collapse:collapse; font-size:12px; }
+        .tbl th,.tbl td { padding:5px 6px; text-align:left; border-bottom:1px solid #e5e7eb; white-space:nowrap; }
+        .tbl th { background:#f5f7fb; font-weight:600; position:sticky; top:0; }
+        .tbl tr:hover { background:#f0f4ff; }
+        .tbl .sel { width:30px; text-align:center; }
     </style>
 </head>
 <body>
@@ -24,18 +29,19 @@
         <div class="main-content">
             <div class="header">
                 <h1>📈 XGB OOS</h1>
-                <p>OOS-оценка XGB run на последних N днях свечей (метрики классификации).</p>
+                <p>OOS-оценка XGB run на последних N днях свечей. Список всех моделей с удалением.</p>
             </div>
 
             <div class="content">
                 <a href="/" class="back-link">← Вернуться на главную</a>
 
+                <!-- OOS launch -->
                 <div class="section">
                     <div class="grid">
                         <div class="card">
-                            <h2 style="margin-top:0;">⚙️ Запуск</h2>
+                            <h2 style="margin-top:0;">⚙️ Запуск OOS</h2>
                             <div class="row">
-                                <div class="form-group" style="min-width: 420px;">
+                                <div class="form-group" style="min-width:420px;">
                                     <label>Выбери XGB run</label>
                                     <select id="xgbRunSelect" class="form-control">
                                         {% for r in xgb_runs %}
@@ -45,7 +51,7 @@
                                         {% endfor %}
                                     </select>
                                 </div>
-                                <div class="form-group" style="min-width: 160px;">
+                                <div class="form-group" style="min-width:160px;">
                                     <label>Days</label>
                                     <input id="xgbOosDays" class="form-control" type="number" min="1" max="365" step="1" value="30">
                                 </div>
@@ -53,7 +59,7 @@
                                     <button class="btn btn-info" onclick="startXgbOos()">▶️ Run XGB OOS</button>
                                 </div>
                             </div>
-                            <div id="xgbOosStatus" class="status info" style="display:none; margin-top:10px; white-space: pre-wrap;"></div>
+                            <div id="xgbOosStatus" class="status info" style="display:none; margin-top:10px; white-space:pre-wrap;"></div>
                         </div>
 
                         <div class="card">
@@ -62,6 +68,76 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Runs list -->
+                <div class="section">
+                    <h2>🗂️ Все XGB run'ы</h2>
+                    <div style="margin-bottom:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <button class="btn btn-danger" id="btnDeleteSelected" onclick="deleteSelectedRuns()">🗑️ Удалить выбранные</button>
+                        <span id="selectedInfo" class="mono" style="color:#6b7280;">Выбрано: 0</span>
+                    </div>
+                    <div id="xgbDeleteStatus" class="status info" style="display:none; margin-bottom:10px; white-space:pre-wrap;"></div>
+
+                    {% if not xgb_runs %}
+                        <div class="status info">Нет XGB run'ов.</div>
+                    {% else %}
+                    <div style="overflow-x:auto; max-height:70vh; overflow-y:auto;">
+                        <table class="tbl">
+                            <thead>
+                                <tr>
+                                    <th class="sel"><input type="checkbox" id="cbAll" onchange="toggleAll(this)"></th>
+                                    <th>Symbol</th>
+                                    <th>Run</th>
+                                    <th>Task</th>
+                                    <th>Dir</th>
+                                    <th>Source</th>
+                                    <th>H</th>
+                                    <th>Thr</th>
+                                    <th>max_hold</th>
+                                    <th>min_profit%</th>
+                                    <th>val_acc</th>
+                                    <th>f1_buy_sell</th>
+                                    <th>f1(1)</th>
+                                    <th>prec(1)</th>
+                                    <th>recall(1)</th>
+                                    <th>y_non_hold</th>
+                                    <th>pred_non_hold</th>
+                                    <th>Path</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for r in xgb_runs %}
+                                {% set m = r.metrics or {} %}
+                                {% set c = r.cfg or {} %}
+                                {% set f1v = m.get('f1_val') %}
+                                {% set pv = m.get('precision_val') %}
+                                {% set rv = m.get('recall_val') %}
+                                <tr>
+                                    <td class="sel"><input type="checkbox" class="cb-run" value="{{ r.result_dir }}" onchange="updateSelectedCount()"></td>
+                                    <td>{{ r.symbol }}</td>
+                                    <td>{{ r.run_name }}</td>
+                                    <td>{{ r.task }}</td>
+                                    <td>{{ r.direction }}</td>
+                                    <td>{{ r.source }}</td>
+                                    <td>{{ c.get('horizon_steps','') }}</td>
+                                    <td>{{ c.get('threshold','') }}</td>
+                                    <td>{{ c.get('max_hold_steps','') }}</td>
+                                    <td>{{ '%0.2f'|format(c.get('min_profit',0)*100) if c.get('min_profit') is not none else '' }}</td>
+                                    <td>{{ '%0.5f'|format(m.val_acc) if m.val_acc is defined and m.val_acc is not none else '' }}</td>
+                                    <td>{{ '%0.4f'|format(m.f1_buy_sell_val) if m.f1_buy_sell_val is defined and m.f1_buy_sell_val is not none else '' }}</td>
+                                    <td>{{ '%0.4f'|format(f1v[1]) if f1v and f1v|length > 1 else '' }}</td>
+                                    <td>{{ '%0.4f'|format(pv[1]) if pv and pv|length > 1 else '' }}</td>
+                                    <td>{{ '%0.4f'|format(rv[1]) if rv and rv|length > 1 else '' }}</td>
+                                    <td>{{ '%0.4f'|format(m.y_non_hold_rate_val) if m.y_non_hold_rate_val is defined and m.y_non_hold_rate_val is not none else '' }}</td>
+                                    <td>{{ '%0.4f'|format(m.pred_non_hold_rate_val) if m.pred_non_hold_rate_val is defined and m.pred_non_hold_rate_val is not none else '' }}</td>
+                                    <td class="mono" style="font-size:10px;">{{ r.result_dir }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% endif %}
+                </div>
             </div>
         </div>
     </div>
@@ -69,6 +145,43 @@
     <script>
         function toggleSidebar(){ document.body.classList.toggle('sidebar-open'); }
 
+        /* ---------- selection ---------- */
+        function toggleAll(el){
+            document.querySelectorAll('.cb-run').forEach(cb=>{ cb.checked=el.checked; });
+            updateSelectedCount();
+        }
+        function updateSelectedCount(){
+            const n = document.querySelectorAll('.cb-run:checked').length;
+            const info = document.getElementById('selectedInfo');
+            if(info) info.textContent = 'Выбрано: '+n;
+        }
+
+        /* ---------- delete ---------- */
+        async function deleteSelectedRuns(){
+            const paths = [...document.querySelectorAll('.cb-run:checked')].map(c=>c.value);
+            if(!paths.length){ alert('Ничего не выбрано'); return; }
+            if(!confirm('Удалить '+paths.length+' run(ов)?')) return;
+            const st = document.getElementById('xgbDeleteStatus');
+            if(st){ st.style.display='block'; st.className='status info'; st.textContent='Удаляю…'; }
+            try{
+                const resp = await fetch('/xgb_oos_delete_runs', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json','Accept':'application/json'},
+                    body: JSON.stringify({paths})
+                });
+                const d = await resp.json();
+                if(d.success){
+                    if(st){ st.className='status success'; st.textContent='Удалено: '+d.deleted_count; }
+                    setTimeout(()=>location.reload(), 600);
+                }else{
+                    if(st){ st.className='status error'; st.textContent='Ошибка: '+(d.error||'unknown'); }
+                }
+            }catch(e){
+                if(st){ st.className='status error'; st.textContent='Ошибка: '+e.message; }
+            }
+        }
+
+        /* ---------- OOS ---------- */
         function _showStatus(msg, cls){
             const el = document.getElementById('xgbOosStatus');
             if(!el) return;
@@ -145,4 +258,3 @@
     </script>
 </body>
 </html>
-

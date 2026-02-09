@@ -357,8 +357,8 @@ def train_dqn_grid_route():
             max_models = int(data.get('max_models'))
         except Exception:
             max_models = 10
-        if max_models <= 0 or max_models > 100:
-            return jsonify({"success": False, "error": "max_models must be 1..100"}), 400
+        if max_models <= 0 or max_models > 500:
+            return jsonify({"success": False, "error": "max_models must be 1..500"}), 400
 
         sl_list = _frange("SL", sl_from, sl_to, sl_step)
         tp_list = _frange("TP", tp_from, tp_to, tp_step)
@@ -371,8 +371,8 @@ def train_dqn_grid_route():
         total = len(sl_list) * len(tp_list) * len(mh_list) * len(vt_list)
         if total <= 0:
             return jsonify({"success": False, "error": "empty grid"}), 400
-        if total > 100:
-            return jsonify({"success": False, "error": f"grid too large: {total} (>100)"}), 400
+        if total > 500:
+            return jsonify({"success": False, "error": f"grid too large: {total} (>500)"}), 400
 
         # select subset deterministically if needed
         combos = []

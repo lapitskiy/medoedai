@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📈 Акции РФ — DQN</title>
+</head>
+<body>
+    {% include 'include/_sidebar.html' %}
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <div class="container">
+        <div class="main-content">
+            <div class="header">
+                <h1>📈 Обучение DQN — Акции РФ</h1>
+                <p>T-Invest API (Тинькофф Инвестиции) · Отдельный pipeline от крипты</p>
+            </div>
+
+            <div class="content">
+                <a href="/models" class="back-link">← DQN Крипто</a>
+
+                <!-- Секция обучения -->
+                <div class="section" id="training-stock">
+                    <h2>🎯 Запуск обучения</h2>
+
+                    <div class="form-group">
+                        <label>Тикер</label>
+                        <select id="stockTickerSelect" class="form-control">
+                            <option value="">Загрузка...</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Эпизоды</label>
+                        <input id="stockEpisodes" class="form-control" type="number" min="1" value="500">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Длина эпизода (свечей 5m)</label>
+                        <input id="stockEpisodeLength" class="form-control" type="number" min="100" value="2000">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Seed (опционально)</label>
+                        <input id="stockSeed" class="form-control" type="number" placeholder="42">
+                    </div>
+
+                    <div class="button-group">
+                        <button id="btnTrainStock" class="btn btn-success" onclick="trainStock()">🚀 Запустить обучение</button>
+                    </div>
+
+                    <div id="stockStatus" class="status" style="display:none; margin-top:16px;"></div>
+                </div>
+
+                <!-- Активные задачи -->
+                <div class="section" id="active-tasks-stock">
+                    <h2>📋 Активные задачи</h2>
+                    <div id="stockTasksList" style="font-family:monospace; font-size:13px;">Нет активных задач</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+// --- Load tickers ---
+(async()=>{
+    try{
+        const r = await fetch('/api/stock/tickers');
+        const d = await r.json();
+        const sel = document.getElementById('stockTickerSelect');
+        sel.innerHTML = '';
+        (d.tickers||[]).forEach(t=>{
+            const o = document.createElement('option');
+            o.value = t.ticker;
+            o.textContent = `${t.ticker} — ${t.name}`;
+            sel.appendChild(o);
+        });
+    }catch(e){ console.error(e); }
+})();
+
+// --- Train ---
+let activeTasks = {};
+async function trainStock(){
+    const ticker = document.getElementById('stockTickerSelect').value;
+    if(!ticker){ alert('Выберите тикер'); return; }
+    const episodes = parseInt(document.getElementById('stockEpisodes').value)||500;
+    const epLen = parseInt(document.getElementById('stockEpisodeLength').value)||2000;
+    const seedVal = document.getElementById('stockSeed').value;
+    const seed = seedVal ? parseInt(seedVal) : null;
+
+    const st = document.getElementById('stockStatus');
+    st.style.display = 'block';
+    st.className = 'status info';
+    st.textContent = `⏳ Отправка задачи ${ticker}...`;
+
+    try{
+        const r = await fetch('/api/stock/train', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ticker, episodes, episode_length:epLen, seed})
+        });
+        const d = await r.json();
+        if(d.success){
+            st.className = 'status success';
+            st.textContent = `✅ Задача создана: ${d.task_id}`;
+            activeTasks[d.task_id] = {ticker, startedAt: new Date()};
+            pollTask(d.task_id);
+        }else{
+            st.className = 'status error';
+            st.textContent = `❌ ${d.error}`;
+        }
+    }catch(e){
+        st.className = 'status error';
+        st.textContent = `❌ Ошибка: ${e}`;
+    }
+}
+
+function pollTask(taskId){
+    const interval = setInterval(async()=>{
+        try{
+            const r = await fetch(`/api/stock/task_status/${taskId}`);
+            const d = await r.json();
+            renderTasks();
+            if(['SUCCESS','FAILURE','REVOKED'].includes(d.state)){
+                clearInterval(interval);
+                delete activeTasks[taskId];
+                renderTasks();
+                const st = document.getElementById('stockStatus');
+                if(d.state==='SUCCESS'){
+                    st.className='status success';
+                    st.textContent=`✅ Завершено: ${JSON.stringify(d.result)}`;
+                }else{
+                    st.className='status error';
+                    st.textContent=`❌ ${d.state}: ${JSON.stringify(d.result)}`;
+                }
+            }
+        }catch(e){ console.error(e); }
+    }, 5000);
+}
+
+function renderTasks(){
+    const el = document.getElementById('stockTasksList');
+    const keys = Object.keys(activeTasks);
+    if(!keys.length){ el.textContent = 'Нет активных задач'; return; }
+    el.innerHTML = keys.map(id=>{
+        const t = activeTasks[id];
+        return `<div style="padding:4px 0">🔄 <b>${t.ticker}</b> — ${id.slice(0,8)}… (с ${t.startedAt.toLocaleTimeString()})</div>`;
+    }).join('');
+}
+</script>
+</body>
+</html>

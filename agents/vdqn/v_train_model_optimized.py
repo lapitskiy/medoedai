@@ -739,6 +739,7 @@ def train_model_optimized(
     episode_length: Optional[int] = None,
     direction: str = 'long',
     env_overrides: Optional[Dict] = None,
+    env_class_override: Optional[str] = None,
 ) -> str:
     """
     Оптимизированная функция тренировки модели без pandas в hot-path
@@ -884,7 +885,19 @@ def train_model_optimized(
                     gym_cfg.use_state_action_mask = bool(v_glob)
             except Exception:
                 pass
-            if (direction or 'long') == 'short':
+            if env_class_override == 'stock':
+                from envs.stock_trading_env import StockTradingEnv, StockGymConfig
+                stock_cfg = StockGymConfig(
+                    episode_length=episode_length or 2000,
+                    lookback_window=override.get('gym_config', {}).get('lookback_window', 144) if override else 144,
+                )
+                base_env = StockTradingEnv(
+                    dfs=dfs, cfg=stock_cfg,
+                    lookback_window=stock_cfg.lookback_window,
+                    indicators_config=indicators_config,
+                    episode_length=stock_cfg.episode_length,
+                )
+            elif (direction or 'long') == 'short':
                 base_env = CryptoTradingEnvShort(
                     dfs=dfs,
                     cfg=gym_cfg,

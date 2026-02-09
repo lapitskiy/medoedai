@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -27,7 +28,7 @@ def _safe_read_json(path: Path) -> Dict[str, Any]:
 
 def _scan_xgb_runs() -> List[Dict[str, Any]]:
     """
-    Сканирует result/xgb/*/runs/* и возвращает список запусков для выбора в UI.
+    Сканирует result/xgb/*/runs/* и возвращает список запусков с метриками.
     """
     base = Path("result") / "xgb"
     out: List[Dict[str, Any]] = []
@@ -44,13 +45,13 @@ def _scan_xgb_runs() -> List[Dict[str, Any]]:
                 continue
             manifest = _safe_read_json(run_dir / "manifest.json")
             meta = _safe_read_json(run_dir / "meta.json")
+            metrics = _safe_read_json(run_dir / "metrics.json")
             cfg = meta.get("cfg_snapshot") if isinstance(meta.get("cfg_snapshot"), dict) else {}
             try:
                 mtime = float(run_dir.stat().st_mtime)
             except Exception:
                 mtime = 0.0
 
-            # Model path is stored in manifest for XGB
             model_path = str(manifest.get("model_path") or (run_dir / "model.json"))
             out.append(
                 {
@@ -63,6 +64,8 @@ def _scan_xgb_runs() -> List[Dict[str, Any]]:
                     "result_dir": str(run_dir),
                     "model_path": model_path,
                     "mtime": mtime,
+                    "metrics": metrics,
+                    "cfg": cfg,
                 }
             )
     out.sort(key=lambda r: float(r.get("mtime") or 0.0), reverse=True)
@@ -118,4 +121,36 @@ def xgb_oos_test_status():
         return jsonify(resp)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@xgb_oos_bp.post("/xgb_oos_delete_runs")
+def xgb_oos_delete_runs():
+    """Удаляет выбранные XGB run директории."""
+    data = request.get_json(silent=True) or {}
+    paths = data.get("paths") if isinstance(data, dict) else None
+    if not isinstance(paths, list) or not paths:
+        return jsonify({"success": False, "error": "paths[] required"}), 400
+
+    base = (Path("result") / "xgb").resolve()
+    deleted: List[str] = []
+    errors: List[Dict[str, Any]] = []
+
+    for p in paths:
+        try:
+            raw = str(p or "").strip()
+            if not raw:
+                continue
+            target = Path(raw).resolve()
+            if base not in target.parents:
+                raise ValueError("path outside result/xgb")
+            if target.name == "runs" or target.parent.name != "runs":
+                raise ValueError("not a run directory")
+            if not target.exists() or not target.is_dir():
+                raise ValueError("not found")
+            shutil.rmtree(target)
+            deleted.append(str(target))
+        except Exception as e:
+            errors.append({"path": str(p), "error": str(e)})
+
+    return jsonify({"success": True, "deleted": deleted, "errors": errors, "deleted_count": len(deleted)})
 
