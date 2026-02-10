@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any, Dict, Tuple, List
+from typing import Any, Dict, Tuple, List, Optional
 
 import numpy as np
 
@@ -104,7 +104,9 @@ def _build_trade_features_short(closes: np.ndarray, entry_idx: int, t: int) -> T
     return pnl, mfe, mae, float(t - entry_idx)
 
 
-def build_xgb_dataset(dfs: Dict[str, Any], cfg: XgbConfig) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+def build_xgb_dataset(
+    dfs: Dict[str, Any], cfg: XgbConfig
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any], Dict[str, Any]]:
     """
     Builds dataset depending on cfg.task.
     - directional: y in {0,1,2} = {hold,buy,sell}
@@ -112,6 +114,7 @@ def build_xgb_dataset(dfs: Dict[str, Any], cfg: XgbConfig) -> Tuple[np.ndarray, 
     """
     X_base, closes = _build_base_features(dfs)
     task = (cfg.task or "directional").strip().lower()
+    aux: Dict[str, Any] = {"closes_mode": "timeseries", "closes": closes}
 
     # Directional (legacy)
     if task == "directional":
@@ -137,7 +140,7 @@ def build_xgb_dataset(dfs: Dict[str, Any], cfg: XgbConfig) -> Tuple[np.ndarray, 
             "label_mapping": {"0": "hold", "1": "buy", "2": "sell"},
             "cfg_snapshot": asdict(cfg),
         }
-        return X_base, y, meta
+        return X_base, y, meta, aux
 
     # Position-aware entry/exit (binary)
     fee_frac = _fee_to_fraction(cfg.fee_bps)
@@ -171,7 +174,9 @@ def build_xgb_dataset(dfs: Dict[str, Any], cfg: XgbConfig) -> Tuple[np.ndarray, 
             "label_mapping": {"0": "hold", "1": "enter"},
             "cfg_snapshot": asdict(cfg),
         }
-        return X, y, meta
+        aux_entry = dict(aux)
+        aux_entry.update({"fee_frac": fee_frac, "max_hold_steps": max_hold, "position_side": ("long" if is_long else "short")})
+        return X, y, meta, aux_entry
 
     # Exit dataset: simulate many trades opened at sampled entry points and label "exit now" near best future
     if is_exit:
@@ -215,8 +220,9 @@ def build_xgb_dataset(dfs: Dict[str, Any], cfg: XgbConfig) -> Tuple[np.ndarray, 
             "label_mapping": {"0": "hold", "1": "exit"},
             "cfg_snapshot": asdict(cfg),
         }
-        return X, y, meta
+        aux_exit = {"closes_mode": "exit_rows", "fee_frac": fee_frac, "max_hold_steps": max_hold, "position_side": ("long" if is_long else "short")}
+        return X, y, meta, aux_exit
 
     # Fallback to directional
-    return X_base, np.zeros((len(closes),), dtype=np.int64), {"cfg_snapshot": asdict(cfg)}
+    return X_base, np.zeros((len(closes),), dtype=np.int64), {"cfg_snapshot": asdict(cfg)}, aux
 

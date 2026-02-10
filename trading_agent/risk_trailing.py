@@ -16,6 +16,7 @@ def setup_trailing_stop_bybit(
     activate_value: Optional[float],
     atr_trail_k: float,
     get_atr_1h_func=None,
+    side: str = "long",
 ) -> Dict[str, Any]:
     """
     Создаёт биржевой trailing-stop на Bybit, опираясь на ATR.
@@ -50,14 +51,23 @@ def setup_trailing_stop_bybit(
     if trailing_dist <= 0:
         raise RuntimeError("Invalid trailing distance computed from ATR")
 
-    # Цена активации
+    # Цена активации (для short — цена должна быть ниже entry)
+    # Если activate_value == 0 — не передаём activePrice, trailing активируется сразу
     active_price = None
+    is_short = str(side).strip().lower() == "short"
     act_mode = (activate_mode or "percent").strip().lower()
     act_value = activate_value if activate_value is not None else 0.5
-    if act_mode == "atr":
-        active_price = entry_price + float(act_value) * atr_abs
-    else:  # percent
-        active_price = entry_price * (1.0 + float(act_value) / 100.0)
+    if float(act_value) > 0:
+        if act_mode == "atr":
+            if is_short:
+                active_price = entry_price - float(act_value) * atr_abs
+            else:
+                active_price = entry_price + float(act_value) * atr_abs
+        else:  # percent
+            if is_short:
+                active_price = entry_price * (1.0 - float(act_value) / 100.0)
+            else:
+                active_price = entry_price * (1.0 + float(act_value) / 100.0)
 
     # Нормализуем цены под tickSize
     try:

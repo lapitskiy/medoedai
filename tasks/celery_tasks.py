@@ -202,6 +202,7 @@ def train_dqn_symbol(
     train_encoder: bool = False,
     direction: str = 'long',
     env_overrides: dict | None = None,
+    cfg_overrides: dict | None = None,
 ):
     """Обучение DQN для одного символа (BTCUSDT/ETHUSDT/...)
 
@@ -248,13 +249,29 @@ def train_dqn_symbol(
             except Exception:
                 return "rm:-"
 
+        def _cfg_tag(overrides: dict | None) -> str:
+            try:
+                if not isinstance(overrides, dict) or not overrides:
+                    return "cfg:-"
+                # Keep tag short but deterministic for dedup
+                bs = overrides.get("batch_size")
+                ms = overrides.get("memory_size")
+                hs = overrides.get("hidden_sizes")
+                dec = overrides.get("eps_decay_steps")
+                lr = overrides.get("lr")
+                tr = overrides.get("train_repeats")
+                return f"cfg:bs={_fmt_f(bs)}:ms={_fmt_f(ms)}:hs={str(hs)}:dec={_fmt_f(dec)}:lr={_fmt_f(lr)}:tr={_fmt_f(tr)}"
+            except Exception:
+                return "cfg:-"
+
         _engine = (engine or '').lower()
         _enc = (encoder_id or '-')
         _train_enc = 1 if train_encoder else 0
         _eps = episodes if (episodes is not None) else 'env'
         _ep_len = episode_length if (episode_length is not None) else 'cfg'
         _rm = _rm_tag(env_overrides)
-        _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}"
+        _cfg = _cfg_tag(cfg_overrides)
+        _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}|{_cfg}"
         _finished_key = f"celery:train:finished:{_biz_key}"
         _queued_key = f"celery:train:queued:{_biz_key}"
         _running_key_biz = f"celery:train:running:{_biz_key}"
@@ -430,8 +447,35 @@ def train_dqn_symbol(
             )
             return {"message": f"Tianshou run saved to {run_dir}"}
         else:
+            cfg_obj = None
+            if isinstance(cfg_overrides, dict) and cfg_overrides:
+                try:
+                    from agents.vdqn.cfg.vconfig import vDqnConfig  # local import
+                    cfg_obj = vDqnConfig()
+                    for k, v in cfg_overrides.items():
+                        if not hasattr(cfg_obj, k):
+                            continue
+                        if k in ("batch_size", "memory_size", "eps_decay_steps", "target_update_freq", "train_repeats"):
+                            setattr(cfg_obj, k, int(v))
+                        elif k in ("lr", "dropout_rate"):
+                            setattr(cfg_obj, k, float(v))
+                        elif k in ("use_amp", "use_gpu_storage", "use_torch_compile"):
+                            setattr(cfg_obj, k, bool(v))
+                        elif k == "hidden_sizes":
+                            if isinstance(v, (list, tuple)) and all(isinstance(x, (int, float)) for x in v):
+                                setattr(cfg_obj, k, tuple(int(x) for x in v))
+                            else:
+                                raise ValueError("hidden_sizes must be list/tuple of ints")
+                        else:
+                            # allow setting other scalar attrs if type is safe
+                            if isinstance(v, (int, float, bool, str, type(None))):
+                                setattr(cfg_obj, k, v)
+                except Exception as _cfg_err:
+                    raise ValueError(f"bad cfg_overrides: {_cfg_err}")
+
             result = train_model_optimized(
                 dfs=dfs,
+                cfg=cfg_obj,
                 episodes=episodes,
                 load_model_path=load_model_path,
                 load_buffer_path=load_buffer_path,

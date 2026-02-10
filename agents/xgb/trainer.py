@@ -43,7 +43,7 @@ class XgbTrainer:
                 "xgboost is not installed in the runtime. Install it inside the container (pip install xgboost)."
             ) from e
 
-        X, y, meta = build_xgb_dataset(dfs, self.cfg)
+        X, y, meta, aux = build_xgb_dataset(dfs, self.cfg)
         task = (self.cfg.task or "directional").strip().lower()
         is_binary = task.startswith("entry") or task.startswith("exit")
         n = len(y)
@@ -103,6 +103,118 @@ class XgbTrainer:
         acc = float(np.mean(pred == y_va)) if len(y_va) else 0.0
         pred = pred.astype(np.int64, copy=False) if hasattr(pred, "astype") else pred
 
+        # ------------------------------------------------------------------
+        # Proxy-PnL (cheap, deterministic) on validation slice
+        # ------------------------------------------------------------------
+        proxy_pnl: Dict[str, Any] = {"enabled": True, "task": task}
+        try:
+            fee_frac = float(getattr(self.cfg, "fee_bps", 0.0) or 0.0) / 10000.0
+        except Exception:
+            fee_frac = 0.0
+        try:
+            if len(y_va) == 0:
+                proxy_pnl.update({"enabled": False, "reason": "empty_val"})
+            elif task == "directional":
+                closes = aux.get("closes")
+                H = int(getattr(self.cfg, "horizon_steps", 0) or 0)
+                if not isinstance(closes, np.ndarray) or closes.ndim != 1 or H <= 0:
+                    proxy_pnl.update({"enabled": False, "reason": "no_closes_or_bad_horizon"})
+                else:
+                    # val slice indices in original time-series
+                    idx = np.arange(train_n, n, dtype=np.int64)
+                    # need future close available
+                    ok = (idx + H) < len(closes)
+                    idx = idx[ok]
+                    if len(idx) == 0:
+                        proxy_pnl.update({"enabled": False, "reason": "no_future_in_val"})
+                    else:
+                        c0 = closes[idx]
+                        c1 = closes[idx + H]
+                        ret = (c1 - c0) / np.maximum(c0, 1e-12)
+                        pv = pred[: len(idx)]
+                        pos = np.where(pv == 1, 1.0, np.where(pv == 2, -1.0, 0.0))
+                        traded = np.abs(pos) > 0
+                        pnl = pos * ret - (fee_frac * traded.astype(np.float64))
+                        trades = int(np.sum(traded))
+                        pnl_sum = float(np.sum(pnl))
+                        proxy_pnl.update(
+                            {
+                                "trades": trades,
+                                "pnl_sum": pnl_sum,
+                                "pnl_mean_per_bar": float(np.mean(pnl)) if len(pnl) else 0.0,
+                                "pnl_mean_per_trade": float(pnl_sum / trades) if trades else 0.0,
+                                "fee_frac": fee_frac,
+                                "horizon_steps": H,
+                            }
+                        )
+            elif task.startswith("entry"):
+                closes = aux.get("closes")
+                mh = int(getattr(self.cfg, "max_hold_steps", 0) or 0)
+                side = "long" if task.endswith("long") else "short"
+                if not isinstance(closes, np.ndarray) or closes.ndim != 1 or mh <= 0:
+                    proxy_pnl.update({"enabled": False, "reason": "no_closes_or_bad_max_hold"})
+                else:
+                    # val indices in original series
+                    idx_all = np.arange(train_n, n, dtype=np.int64)
+                    # only where model predicts enter
+                    idx = idx_all[pred == 1]
+                    # match labeling window: require full [t+1 .. t+mh] to exist
+                    idx = idx[(idx + mh + 1) < len(closes)]
+                    pnls: list[float] = []
+                    for t in idx.tolist():
+                        end = min(len(closes) - 1, int(t) + mh)
+                        if end <= t:
+                            continue
+                        entry = float(closes[int(t)])
+                        if entry <= 0:
+                            continue
+                        window = closes[int(t) + 1 : end + 1]
+                        if len(window) == 0:
+                            continue
+                        if side == "long":
+                            best_exit = float(np.max(window))
+                            pnl = (best_exit - entry) / entry - fee_frac
+                        else:
+                            best_exit = float(np.min(window))
+                            pnl = (entry - best_exit) / entry - fee_frac
+                        pnls.append(float(pnl))
+                    trades = int(len(pnls))
+                    pnl_sum = float(np.sum(pnls)) if pnls else 0.0
+                    proxy_pnl.update(
+                        {
+                            "trades": trades,
+                            "pnl_sum": pnl_sum,
+                            "pnl_mean_per_trade": float(pnl_sum / trades) if trades else 0.0,
+                            "fee_frac": fee_frac,
+                            "max_hold_steps": mh,
+                            "position_side": side,
+                        }
+                    )
+            elif task.startswith("exit"):
+                # For exit rows, we don't have per-trade grouping; use pnl_fee feature as proxy.
+                # Last 4 features are [age_norm, pnl_fee, mfe, mae].
+                if X_va.shape[1] < 4:
+                    proxy_pnl.update({"enabled": False, "reason": "bad_feature_dim"})
+                else:
+                    pnl_fee = X_va[:, -3].astype(np.float64, copy=False)
+                    traded = pred == 1
+                    pnls = pnl_fee[traded]
+                    trades = int(pnls.shape[0])
+                    pnl_sum = float(np.sum(pnls)) if trades else 0.0
+                    proxy_pnl.update(
+                        {
+                            "trades": trades,
+                            "pnl_sum": pnl_sum,
+                            "pnl_mean_per_trade": float(pnl_sum / trades) if trades else 0.0,
+                            "fee_frac": fee_frac,
+                            "note": "exit_task_proxy_uses_pnl_fee_feature_no_trade_grouping",
+                        }
+                    )
+            else:
+                proxy_pnl.update({"enabled": False, "reason": "unknown_task"})
+        except Exception as _e:
+            proxy_pnl.update({"enabled": False, "reason": f"error:{_e}"})
+
         # Class distribution (train/val)
         y_counts_train = np.bincount(y_tr.astype(np.int64, copy=False), minlength=num_classes).astype(int).tolist()
         y_counts_val = np.bincount(y_va.astype(np.int64, copy=False), minlength=num_classes).astype(int).tolist()
@@ -152,6 +264,7 @@ class XgbTrainer:
             "task": task,
             "y_non_hold_rate_val": y_non_hold_rate_val,
             "pred_non_hold_rate_val": pred_non_hold_rate_val,
+            "proxy_pnl_val": proxy_pnl,
         }
         manifest = {
             "symbol": symbol,
@@ -163,6 +276,11 @@ class XgbTrainer:
             "model_path": model_path,
             "metrics_path": os.path.join(run_dir, "metrics.json"),
             "meta_path": os.path.join(run_dir, "meta.json"),
+            "proxy_pnl_val": {
+                "enabled": bool(proxy_pnl.get("enabled")),
+                "pnl_sum": proxy_pnl.get("pnl_sum"),
+                "trades": proxy_pnl.get("trades"),
+            },
         }
         _atomic_write_json(manifest["metrics_path"], metrics)
         _atomic_write_json(manifest["meta_path"], meta)

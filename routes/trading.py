@@ -832,6 +832,7 @@ def force_trailing_stop():
         if current_price <= 0:
             return jsonify({'success': False, 'error': f'current price not available for {symbol}'}), 400
 
+        pos_side = str(pos.get('type') or 'long').strip().lower()
         try:
             trailing_result = setup_trailing_stop_bybit(
                 agent.exchange,
@@ -842,6 +843,7 @@ def force_trailing_stop():
                 trailing_activate_mode,
                 trailing_activate_value,
                 float(atr_trail_mult),
+                side=pos_side,
             )
         except Exception as e_trail:
             try:

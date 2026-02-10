@@ -233,12 +233,29 @@ def api_system_hypotheses_export():
                 model_file = None
 
             row = {
+                "model_type": mt,
                 "run_id": manifest.get("run_id") or run_dir.name,
+                "direction": manifest.get("direction") or manifest.get("trained_as"),
                 # risk knobs
                 "sl_pct": _safe_float(sl_v),
                 "tp_pct": _safe_float(tp_v),
                 "min_hold_steps": (int(min_hold_v) if isinstance(min_hold_v, (int, float)) else None),
                 "volume_threshold": _safe_float(vol_thr_v),
+                # DQN/SAC hyperparams (from cfg_snapshot in train_result.pkl)
+                "cfg_lr": _safe_float(cfg.get("lr")),
+                "cfg_batch_size": (int(cfg.get("batch_size")) if isinstance(cfg.get("batch_size"), (int, float)) else None),
+                "cfg_memory_size": (int(cfg.get("memory_size")) if isinstance(cfg.get("memory_size"), (int, float)) else None),
+                "cfg_hidden_sizes": (
+                    ",".join(str(int(x)) for x in cfg.get("hidden_sizes"))
+                    if isinstance(cfg.get("hidden_sizes"), (list, tuple)) and cfg.get("hidden_sizes")
+                    else None
+                ),
+                "cfg_train_repeats": (int(cfg.get("train_repeats")) if isinstance(cfg.get("train_repeats"), (int, float)) else None),
+                "cfg_use_amp": (bool(cfg.get("use_amp")) if cfg.get("use_amp") is not None else None),
+                "cfg_use_gpu_storage": (bool(cfg.get("use_gpu_storage")) if cfg.get("use_gpu_storage") is not None else None),
+                "cfg_use_torch_compile": (bool(cfg.get("use_torch_compile")) if cfg.get("use_torch_compile") is not None else None),
+                "cfg_eps_decay_steps": (int(cfg.get("eps_decay_steps")) if isinstance(cfg.get("eps_decay_steps"), (int, float)) else None),
+                "cfg_dropout_rate": _safe_float(cfg.get("dropout_rate")),
                 # outcome metrics
                 "roi_sum": _safe_float(roi_sum),
                 "avg_roi": _safe_float(stats.get("avg_roi")),
@@ -274,12 +291,25 @@ def api_system_hypotheses_export():
         buf = io.StringIO()
         # CSV columns: keep stable order (by importance). Any unknown fields go to the end.
         preferred = [
+            "model_type",
             "run_id",
+            "direction",
             # risk knobs
             "sl_pct",
             "tp_pct",
             "min_hold_steps",
             "volume_threshold",
+            # cfg hyperparams
+            "cfg_lr",
+            "cfg_batch_size",
+            "cfg_memory_size",
+            "cfg_hidden_sizes",
+            "cfg_train_repeats",
+            "cfg_use_amp",
+            "cfg_use_gpu_storage",
+            "cfg_use_torch_compile",
+            "cfg_eps_decay_steps",
+            "cfg_dropout_rate",
             # outcome
             "roi_sum",
             "avg_roi",
@@ -405,6 +435,15 @@ def api_system_hypotheses_export_xgb():
             if isinstance(rv, list) and len(rv) > 1:
                 recall_1 = _safe_float(rv[1])
 
+            proxy = metrics.get("proxy_pnl_val") if isinstance(metrics.get("proxy_pnl_val"), dict) else {}
+            proxy_sum = _safe_float(proxy.get("pnl_sum"))
+            proxy_trades = None
+            try:
+                proxy_trades = int(proxy.get("trades")) if proxy.get("trades") is not None else None
+            except Exception:
+                proxy_trades = None
+            proxy_mean_trade = _safe_float(proxy.get("pnl_mean_per_trade"))
+
             row = {
                 "run_id": manifest.get("run_name") or it["run_dir"].name,
                 # labeling params
@@ -431,6 +470,9 @@ def api_system_hypotheses_export_xgb():
                 "recall_1": recall_1,
                 "y_non_hold": _safe_float(metrics.get("y_non_hold_rate_val")),
                 "pred_non_hold": _safe_float(metrics.get("pred_non_hold_rate_val")),
+                "proxy_pnl_sum": proxy_sum,
+                "proxy_pnl_mean_trade": proxy_mean_trade,
+                "proxy_pnl_trades": proxy_trades,
                 "train_rows": metrics.get("train_rows"),
                 "val_rows": metrics.get("val_rows"),
             }
@@ -445,6 +487,7 @@ def api_system_hypotheses_export_xgb():
             "reg_lambda", "min_child_weight", "gamma", "scale_pos_weight",
             "val_acc", "f1_buy_sell", "f1_1", "prec_1", "recall_1",
             "y_non_hold", "pred_non_hold", "train_rows", "val_rows",
+            "proxy_pnl_sum", "proxy_pnl_mean_trade", "proxy_pnl_trades",
         ]
         all_fields = set(k for r in rows for k in r.keys())
         tail = sorted([k for k in all_fields if k not in preferred])

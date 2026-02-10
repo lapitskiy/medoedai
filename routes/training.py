@@ -6,6 +6,7 @@ from tasks.xgb_tasks import train_xgb_symbol, train_xgb_grid, train_xgb_grid_ent
 from utils.redis_utils import get_redis_client
 import os
 import logging
+import itertools
 from pathlib import Path as _Path
 
 # Инициализируем Redis клиент
@@ -169,6 +170,10 @@ def train_dqn_symbol_route():
     engine = (data.get('engine') or request.args.get('engine') or 'ts').lower()
     # Optional: env_overrides (grid etc)
     env_overrides = data.get('env_overrides') if isinstance(data, dict) else None
+    # Optional: cfg_overrides (DQN hyperparams overrides)
+    cfg_overrides = data.get('cfg_overrides') if isinstance(data, dict) else None
+    if cfg_overrides is not None and not isinstance(cfg_overrides, dict):
+        return jsonify({"success": False, "error": "cfg_overrides must be object"}), 400
     # force=1 отключает дедупликацию queued/running/finished для этого запроса
     force_raw = (data.get('force') if isinstance(data, dict) else None)
     if force_raw is None:
@@ -205,13 +210,29 @@ def train_dqn_symbol_route():
             except Exception:
                 return "rm:-"
 
+        def _cfg_tag(overrides: dict | None) -> str:
+            try:
+                if not isinstance(overrides, dict) or not overrides:
+                    return "cfg:-"
+                # Keep it short; actual parsing/validation in Celery worker
+                bs = overrides.get("batch_size")
+                ms = overrides.get("memory_size")
+                hs = overrides.get("hidden_sizes")
+                dec = overrides.get("eps_decay_steps")
+                lr = overrides.get("lr")
+                tr = overrides.get("train_repeats")
+                return f"cfg:bs={_fmt_f(bs)}:ms={_fmt_f(ms)}:hs={str(hs)}:dec={_fmt_f(dec)}:lr={_fmt_f(lr)}:tr={_fmt_f(tr)}"
+            except Exception:
+                return "cfg:-"
+
         _engine = (engine or '').lower()
         _enc = (encoder_id or '-')
         _train_enc = 1 if train_encoder else 0
         _eps = episodes if (episodes is not None) else 'env'
         _ep_len = episode_length if (episode_length is not None) else 'cfg'
         _rm = _rm_tag(env_overrides)
-        _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}"
+        _cfg = _cfg_tag(cfg_overrides)
+        _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}|{_cfg}"
         _queued_key = f"celery:train:queued:{_biz_key}"
         _running_key_biz = f"celery:train:running:{_biz_key}"
         _finished_key = f"celery:train:finished:{_biz_key}"
@@ -227,7 +248,21 @@ def train_dqn_symbol_route():
     except Exception:
         pass
 
-    task = train_dqn_symbol.apply_async(kwargs={'symbol': symbol, 'episodes': episodes, 'seed': seed, 'episode_length': episode_length, 'engine': engine, 'encoder_id': encoder_id, 'train_encoder': train_encoder, 'direction': direction, 'env_overrides': env_overrides}, queue="train")
+    task = train_dqn_symbol.apply_async(
+        kwargs={
+            'symbol': symbol,
+            'episodes': episodes,
+            'seed': seed,
+            'episode_length': episode_length,
+            'engine': engine,
+            'encoder_id': encoder_id,
+            'train_encoder': train_encoder,
+            'direction': direction,
+            'env_overrides': env_overrides,
+            'cfg_overrides': cfg_overrides,
+        },
+        queue="train",
+    )
     logger.info(f"/train_dqn_symbol queued symbol={symbol} queue=train task_id={task.id}")
     # Сохраняем task_id для отображения на главной и отметку per-symbol
     try:
@@ -247,7 +282,8 @@ def train_dqn_symbol_route():
             _eps = episodes if (episodes is not None) else 'env'
             _ep_len = episode_length if (episode_length is not None) else 'cfg'
             _rm = _rm_tag(env_overrides)
-            _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}"
+            _cfg = _cfg_tag(cfg_overrides)
+            _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}|{_cfg}"
             redis_client.setex(f"celery:train:queued:{_biz_key}", max(30, _ttl), task.id)
         except Exception:
             pass
@@ -263,13 +299,14 @@ def train_dqn_symbol_route():
             "episodes": episodes,
             "seed": seed,
             "env_overrides": env_overrides,
+            "cfg_overrides": cfg_overrides,
         })
     return redirect(url_for("index"))
 
 
 @training_bp.post('/train_dqn_grid')
 def train_dqn_grid_route():
-    """Ставит в очередь несколько DQN-обучений (grid) с env_overrides поверх GLOBAL_OVERRIDES."""
+    """Ставит в очередь несколько DQN-обучений (grid) с env_overrides поверх GLOBAL_OVERRIDES + optional cfg_overrides."""
     try:
         data = request.get_json(silent=True) or {}
         symbol = (data.get('symbol') or '').strip().upper()
@@ -308,17 +345,51 @@ def train_dqn_grid_route():
         if not isinstance(grid, dict):
             return jsonify({"success": False, "error": "grid must be object"}), 400
 
-        def _float(v, name):
-            try:
-                return float(v)
-            except Exception:
-                raise ValueError(f"{name} must be float")
-
         def _int(v, name):
             try:
                 return int(v)
             except Exception:
                 raise ValueError(f"{name} must be int")
+
+        def _irange(name: str, a: int, b: int, step: int, max_n=2000) -> list[int]:
+            if step <= 0:
+                raise ValueError(f"{name}: step must be > 0 (got {step})")
+            if b < a:
+                raise ValueError(f"{name}: to must be >= from (from={a}, to={b})")
+            out = []
+            x = int(a)
+            for _ in range(max_n):
+                if x > int(b):
+                    break
+                out.append(int(x))
+                x += int(step)
+            if not out:
+                raise ValueError(f"{name}: empty range (from={a}, to={b}, step={step})")
+            return out
+
+        def _parse_csv_ints(v, name: str) -> list[int]:
+            if v is None:
+                raise ValueError(f"{name} is required")
+            if isinstance(v, (int, float)):
+                return [int(v)]
+            if not isinstance(v, str):
+                raise ValueError(f"{name} must be CSV string")
+            parts = [p.strip() for p in v.replace(';', ',').split(',') if p.strip()]
+            if not parts:
+                raise ValueError(f"{name} must be non-empty CSV")
+            out = []
+            for p in parts:
+                try:
+                    out.append(int(p))
+                except Exception:
+                    raise ValueError(f"{name} must be CSV of ints")
+            return out
+
+        def _float(v, name):
+            try:
+                return float(v)
+            except Exception:
+                raise ValueError(f"{name} must be float")
 
         def _frange(name: str, a, b, step, max_n=200):
             if step <= 0:
@@ -353,6 +424,41 @@ def train_dqn_grid_route():
         except ValueError as ve:
             return jsonify({"success": False, "error": str(ve)}), 400
 
+        # DQN hyperparams ranges (cfg_overrides) — required keys
+        try:
+            bs_from = _int(grid.get('batch_from'), 'batch_from')
+            bs_to = _int(grid.get('batch_to'), 'batch_to')
+            bs_step = _int(grid.get('batch_step'), 'batch_step')
+            mem_from = _int(grid.get('mem_from'), 'mem_from')
+            mem_to = _int(grid.get('mem_to'), 'mem_to')
+            mem_step = _int(grid.get('mem_step'), 'mem_step')
+            dec_from = _int(grid.get('eps_decay_from'), 'eps_decay_from')
+            dec_to = _int(grid.get('eps_decay_to'), 'eps_decay_to')
+            dec_step = _int(grid.get('eps_decay_step'), 'eps_decay_step')
+            h_from = _parse_csv_ints(grid.get('hidden_from'), 'hidden_from')
+            h_to = _parse_csv_ints(grid.get('hidden_to'), 'hidden_to')
+            h_step = _parse_csv_ints(grid.get('hidden_step'), 'hidden_step')
+            if not (len(h_from) == len(h_to) == len(h_step)):
+                return jsonify({"success": False, "error": "hidden_from/hidden_to/hidden_step must have same length"}), 400
+        except ValueError as ve:
+            return jsonify({"success": False, "error": str(ve)}), 400
+
+        try:
+            batch_sizes = _irange("batch_size", bs_from, bs_to, bs_step, max_n=200)
+            memory_sizes = _irange("memory_size", mem_from, mem_to, mem_step, max_n=400)
+            eps_decay_steps_list = _irange("eps_decay_steps", dec_from, dec_to, dec_step, max_n=400)
+        except ValueError as ve:
+            return jsonify({"success": False, "error": str(ve)}), 400
+
+        # hidden sizes per-layer ranges -> cartesian product -> tuples
+        try:
+            layer_lists = []
+            for i in range(len(h_from)):
+                layer_lists.append(_irange(f"hidden[{i}]", int(h_from[i]), int(h_to[i]), int(h_step[i]), max_n=50))
+            hidden_sizes_list = [tuple(int(x) for x in combo) for combo in itertools.product(*layer_lists)]
+        except ValueError as ve:
+            return jsonify({"success": False, "error": str(ve)}), 400
+
         try:
             max_models = int(data.get('max_models'))
         except Exception:
@@ -368,7 +474,7 @@ def train_dqn_grid_route():
         vt_list = _frange("volume_threshold", vt_from, vt_to, vt_step)
 
         # cartesian size
-        total = len(sl_list) * len(tp_list) * len(mh_list) * len(vt_list)
+        total = len(sl_list) * len(tp_list) * len(mh_list) * len(vt_list) * len(batch_sizes) * len(memory_sizes) * len(hidden_sizes_list) * len(eps_decay_steps_list)
         if total <= 0:
             return jsonify({"success": False, "error": "empty grid"}), 400
         if total > 500:
@@ -380,7 +486,21 @@ def train_dqn_grid_route():
             for tp in tp_list:
                 for mh in mh_list:
                     for vt in vt_list:
-                        combos.append({"STOP_LOSS_PCT": sl, "TAKE_PROFIT_PCT": tp, "min_hold_steps": mh, "volume_threshold": vt})
+                        for bs in batch_sizes:
+                            for ms in memory_sizes:
+                                for hs in hidden_sizes_list:
+                                    for dec in eps_decay_steps_list:
+                                        rm = {"STOP_LOSS_PCT": sl, "TAKE_PROFIT_PCT": tp, "min_hold_steps": mh, "volume_threshold": vt}
+                                        cfg_ov = {}
+                                        if bs is not None:
+                                            cfg_ov["batch_size"] = int(bs)
+                                        if ms is not None:
+                                            cfg_ov["memory_size"] = int(ms)
+                                        if hs is not None:
+                                            cfg_ov["hidden_sizes"] = list(hs)
+                                        if dec is not None:
+                                            cfg_ov["eps_decay_steps"] = int(dec)
+                                        combos.append({"risk_management": rm, "cfg_overrides": (cfg_ov or None)})
         selected = combos
         if len(combos) > max_models:
             idxs = []
@@ -391,7 +511,8 @@ def train_dqn_grid_route():
         # queue tasks
         queued = []
         for i, rm in enumerate(selected):
-            env_overrides = {"risk_management": rm}
+            env_overrides = {"risk_management": rm.get("risk_management")}
+            cfg_overrides = rm.get("cfg_overrides")
             seed_i = int(seed_base) + int(i)
             task = train_dqn_symbol.apply_async(
                 kwargs={
@@ -404,10 +525,11 @@ def train_dqn_grid_route():
                     "train_encoder": bool(train_encoder),
                     "direction": direction,
                     "env_overrides": env_overrides,
+                    "cfg_overrides": cfg_overrides,
                 },
                 queue="train",
             )
-            queued.append({"i": i, "task_id": task.id, "seed": seed_i, "risk_management": rm})
+            queued.append({"i": i, "task_id": task.id, "seed": seed_i, "risk_management": env_overrides.get("risk_management"), "cfg_overrides": cfg_overrides})
             try:
                 redis_client.lrem("ui:tasks", 0, task.id)
                 redis_client.lpush("ui:tasks", task.id)
@@ -427,10 +549,19 @@ def train_dqn_grid_route():
                         return str(v)
                     s = f"{float(v):.6f}".rstrip('0').rstrip('.')
                     return s if s else "0"
-                _rm = f"rm:{_fmt_f(rm.get('STOP_LOSS_PCT'))}:{_fmt_f(rm.get('TAKE_PROFIT_PCT'))}:{_fmt_f(rm.get('min_hold_steps'))}:{_fmt_f(rm.get('volume_threshold'))}"
+                _rm_obj = env_overrides.get("risk_management") if isinstance(env_overrides, dict) else None
+                _rm = "rm:-"
+                if isinstance(_rm_obj, dict):
+                    _rm = f"rm:{_fmt_f(_rm_obj.get('STOP_LOSS_PCT'))}:{_fmt_f(_rm_obj.get('TAKE_PROFIT_PCT'))}:{_fmt_f(_rm_obj.get('min_hold_steps'))}:{_fmt_f(_rm_obj.get('volume_threshold'))}"
+                _cfg = "cfg:-"
+                try:
+                    if isinstance(cfg_overrides, dict) and cfg_overrides:
+                        _cfg = f"cfg:bs={_fmt_f(cfg_overrides.get('batch_size'))}:ms={_fmt_f(cfg_overrides.get('memory_size'))}:hs={str(cfg_overrides.get('hidden_sizes'))}:dec={_fmt_f(cfg_overrides.get('eps_decay_steps'))}"
+                except Exception:
+                    _cfg = "cfg:-"
                 _enc = (encoder_id or '-')
                 _train_enc = 1 if train_encoder else 0
-                _biz_key = f"{symbol}|{engine}|{_enc}|{_train_enc}|{episodes}|{episode_length}|{direction}|{_rm}"
+                _biz_key = f"{symbol}|{engine}|{_enc}|{_train_enc}|{episodes}|{episode_length}|{direction}|{_rm}|{_cfg}"
                 redis_client.setex(f"celery:train:queued:{_biz_key}", max(30, _ttl), task.id)
             except Exception:
                 pass

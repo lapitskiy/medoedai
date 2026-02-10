@@ -52,6 +52,7 @@ class HyperparameterOptimizer:
             {'eps_decay_steps': 750_000},
             {'eps_decay_steps': 1_500_000},
             {'eps_decay_steps': 2_000_000},
+            {'eps_decay_steps': 2_500_000},
             
             # Batch size
             {'batch_size': 32},

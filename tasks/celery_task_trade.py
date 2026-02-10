@@ -1135,6 +1135,7 @@ def ensure_risk_orders(self, symbol: str):
                         trailing_activate_mode,
                         trailing_activate_value,
                         float(atr_trail_mult) if atr_trail_mult is not None else 1.0,
+                        side="short" if not is_long else "long",
                     )
                     try:
                         resp = trailing_result.get('response') if isinstance(trailing_result, dict) else None

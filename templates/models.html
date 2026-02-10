@@ -140,7 +140,7 @@
 
                 <!-- Подпункт: DQN Grid (использует те же episodes/episode_length/direction/seed/encoder сверху) -->
                 <div id="training-grid" style="margin-top:14px; padding-top:12px; border-top:1px solid #e5e7eb;">
-                    <div class="muted" style="margin-bottom:6px;"><b>🧪 DQN Grid (risk_management)</b> — запустит несколько обучений с разными SL/TP/min_hold/volume (поверх <code>GLOBAL_OVERRIDES</code>)</div>
+                    <div class="muted" style="margin-bottom:6px;"><b>🧪 DQN Grid</b> — перебор risk_management + (опционально) DQN hyperparams</div>
                     <div class="statistics-grid" style="grid-template-columns: repeat(4, 1fr); gap:10px;">
                         <div class="form-group">
                             <label>SL (отриц.), from (более отриц.) / to (менее отриц.) / step</label>
@@ -165,6 +165,32 @@
                             <input id="gridVolFrom" class="form-control" type="number" step="0.0001" value="0.002">
                             <input id="gridVolTo" class="form-control" type="number" step="0.0001" value="0.004" style="margin-top:6px;">
                             <input id="gridVolStep" class="form-control" type="number" step="0.0001" value="0.001" style="margin-top:6px;">
+                        </div>
+                    </div>
+                    <div class="statistics-grid" style="grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:10px;">
+                        <div class="form-group">
+                            <label>batch_size from / to / step</label>
+                            <input id="gridBatchFrom" class="form-control" type="number" step="1" value="192">
+                            <input id="gridBatchTo" class="form-control" type="number" step="1" value="192" style="margin-top:6px;">
+                            <input id="gridBatchStep" class="form-control" type="number" step="1" value="64" style="margin-top:6px;">
+                        </div>
+                        <div class="form-group">
+                            <label>memory_size from / to / step</label>
+                            <input id="gridMemFrom" class="form-control" type="number" step="1" value="100000">
+                            <input id="gridMemTo" class="form-control" type="number" step="1" value="100000" style="margin-top:6px;">
+                            <input id="gridMemStep" class="form-control" type="number" step="1" value="50000" style="margin-top:6px;">
+                        </div>
+                        <div class="form-group">
+                            <label>hidden_sizes from / to / step (CSV per-layer)</label>
+                            <input id="gridHiddenFrom" class="form-control" type="text" value="384,256,192" placeholder="например: 384,256,192">
+                            <input id="gridHiddenTo" class="form-control" type="text" value="384,256,192" placeholder="например: 512,384,256" style="margin-top:6px;">
+                            <input id="gridHiddenStep" class="form-control" type="text" value="64,64,32" placeholder="например: 64,64,32" style="margin-top:6px;">
+                        </div>
+                        <div class="form-group">
+                            <label>eps_decay_steps from / to / step</label>
+                            <input id="gridEpsDecayFrom" class="form-control" type="number" step="1" value="2500000">
+                            <input id="gridEpsDecayTo" class="form-control" type="number" step="1" value="2500000" style="margin-top:6px;">
+                            <input id="gridEpsDecayStep" class="form-control" type="number" step="1" value="250000" style="margin-top:6px;">
                         </div>
                     </div>
                     <div class="form-group" style="margin-top:10px;">
@@ -929,6 +955,18 @@ P/L Ratio: ${plr}
                 vol_from: document.getElementById('gridVolFrom')?.value,
                 vol_to: document.getElementById('gridVolTo')?.value,
                 vol_step: document.getElementById('gridVolStep')?.value,
+                batch_from: document.getElementById('gridBatchFrom')?.value,
+                batch_to: document.getElementById('gridBatchTo')?.value,
+                batch_step: document.getElementById('gridBatchStep')?.value,
+                mem_from: document.getElementById('gridMemFrom')?.value,
+                mem_to: document.getElementById('gridMemTo')?.value,
+                mem_step: document.getElementById('gridMemStep')?.value,
+                hidden_from: (document.getElementById('gridHiddenFrom')?.value || '').trim(),
+                hidden_to: (document.getElementById('gridHiddenTo')?.value || '').trim(),
+                hidden_step: (document.getElementById('gridHiddenStep')?.value || '').trim(),
+                eps_decay_from: document.getElementById('gridEpsDecayFrom')?.value,
+                eps_decay_to: document.getElementById('gridEpsDecayTo')?.value,
+                eps_decay_step: document.getElementById('gridEpsDecayStep')?.value,
             };
 
             if(statusDiv) statusDiv.innerHTML = '<div class="status info">⏳ Grid: постановка задач в очередь...</div>';
@@ -960,13 +998,15 @@ P/L Ratio: ${plr}
                         lines.push('');
                         (data.queued || []).forEach((q)=>{
                             const rm = q.risk_management || {};
+                            const cfg = q.cfg_overrides || {};
                             lines.push(
                                 '#' + q.i + ' task=' + q.task_id +
                                 ' seed=' + q.seed +
                                 ' SL=' + rm.STOP_LOSS_PCT +
                                 ' TP=' + rm.TAKE_PROFIT_PCT +
                                 ' hold=' + rm.min_hold_steps +
-                                ' vol=' + rm.volume_threshold
+                                ' vol=' + rm.volume_threshold +
+                                (Object.keys(cfg).length ? (' | cfg=' + JSON.stringify(cfg)) : '')
                             );
                         });
                         previewDiv.textContent = lines.join('\n');
@@ -988,12 +1028,43 @@ P/L Ratio: ${plr}
             if(s<=0||f===t) return 1;
             return Math.max(1, Math.round(Math.abs(t-f)/s)+1);
         }
+        function countGridStepsInt(fromId, toId, stepId){
+            const f=parseInt(document.getElementById(fromId)?.value)||0;
+            const t=parseInt(document.getElementById(toId)?.value)||0;
+            const s=parseInt(document.getElementById(stepId)?.value)||0;
+            if(s<=0||f===t) return 1;
+            return Math.max(1, Math.floor(Math.abs(t-f)/s)+1);
+        }
+        function parseCsvInts(s){
+            const raw = String(s||'').trim();
+            if(!raw) return [];
+            return raw.split(',').map(x=>x.trim()).filter(Boolean).map(x=>parseInt(x,10)).filter(x=>Number.isFinite(x));
+        }
+        function countHiddenRange(){
+            const a = parseCsvInts(document.getElementById('gridHiddenFrom')?.value);
+            const b = parseCsvInts(document.getElementById('gridHiddenTo')?.value);
+            const st = parseCsvInts(document.getElementById('gridHiddenStep')?.value);
+            if(!a.length || !b.length || !st.length) return 1;
+            if(a.length !== b.length || a.length !== st.length) return 1;
+            let total = 1;
+            for(let i=0;i<a.length;i++){
+                const f=a[i], t=b[i], s=st[i];
+                if(!Number.isFinite(f) || !Number.isFinite(t) || !Number.isFinite(s) || s<=0) return 1;
+                if(f===t){ total *= 1; continue; }
+                total *= (Math.floor(Math.abs(t-f)/s)+1);
+            }
+            return Math.max(1, total);
+        }
         function updateGridComboCount(){
             const sl=countGridSteps('gridSlFrom','gridSlTo','gridSlStep');
             const tp=countGridSteps('gridTpFrom','gridTpTo','gridTpStep');
             const hold=countGridSteps('gridHoldFrom','gridHoldTo','gridHoldStep');
             const vol=countGridSteps('gridVolFrom','gridVolTo','gridVolStep');
-            const total=sl*tp*hold*vol;
+            const bs = countGridStepsInt('gridBatchFrom','gridBatchTo','gridBatchStep');
+            const ms = countGridStepsInt('gridMemFrom','gridMemTo','gridMemStep');
+            const dec = countGridStepsInt('gridEpsDecayFrom','gridEpsDecayTo','gridEpsDecayStep');
+            const hs = countHiddenRange();
+            const total=sl*tp*hold*vol*bs*ms*hs*dec;
             const el=document.getElementById('gridTotalCombo');
             if(el){ el.textContent=total; el.style.color=total>500?'#dc2626':'#2563eb'; }
         }
@@ -1001,7 +1072,9 @@ P/L Ratio: ${plr}
         // Привязки
         document.addEventListener('DOMContentLoaded', function(){
             ['gridSlFrom','gridSlTo','gridSlStep','gridTpFrom','gridTpTo','gridTpStep',
-             'gridHoldFrom','gridHoldTo','gridHoldStep','gridVolFrom','gridVolTo','gridVolStep'
+             'gridHoldFrom','gridHoldTo','gridHoldStep','gridVolFrom','gridVolTo','gridVolStep',
+             'gridBatchFrom','gridBatchTo','gridBatchStep','gridMemFrom','gridMemTo','gridMemStep',
+             'gridHiddenFrom','gridHiddenTo','gridHiddenStep','gridEpsDecayFrom','gridEpsDecayTo','gridEpsDecayStep'
             ].forEach(function(id){ var e=document.getElementById(id); e&&e.addEventListener('input',updateGridComboCount); });
             updateGridComboCount();
             try{

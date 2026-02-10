@@ -170,7 +170,7 @@ def run_xgb_oos_test(self, result_dir: str, days: int = 30, ts: str | None = Non
     df_5min_oos.reset_index(drop=False, inplace=True)
     dfs = {"df_5min": df_5min_oos, "df_15min": df_15min, "df_1h": df_1h}
 
-    X, y, meta2 = build_xgb_dataset(dfs, cfg)
+    X, y, meta2, _aux = build_xgb_dataset(dfs, cfg)
     if X is None or len(y) == 0:
         return {"success": False, "error": "Empty dataset for OOS"}
 
