@@ -6,7 +6,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1
 
 # Python 3.11 + pip + компилятор для torch.compile (gcc) и ninja + Python.h headers
-RUN apt-get update && apt-get install -y python3.11 python3.11-venv python3.11-distutils python3.11-dev curl git build-essential ninja-build && \
+RUN rm -rf /var/lib/apt/lists/* && \
+    apt-get clean && \
+    apt-get update && \
+    apt-get install -y python3.11 python3.11-venv python3.11-distutils python3.11-dev curl git build-essential ninja-build && \
     curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
     python3.11 /tmp/get-pip.py && rm -f /tmp/get-pip.py && \
     ln -sf /usr/bin/python3.11 /usr/local/bin/python
