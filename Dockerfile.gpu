@@ -26,8 +26,9 @@ RUN python -m pip install --upgrade pip && \
 COPY requirementsGPU.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
 
-# tinkoff-investments: PyPI в карантине, ставим через GitHub
-RUN python -m pip install --no-cache-dir "git+https://github.com/RussianInvestments/invest-python.git"
+# tinkoff-investments: PyPI в карантине, ставим из официального Tinkoff/invest-python (SDK для investAPI)
+RUN python -m pip install --no-cache-dir --no-deps "git+https://github.com/Tinkoff/invest-python.git" && \
+    python -m pip install --no-cache-dir deprecation
 
 # Копируем проект
 COPY . /workspace
