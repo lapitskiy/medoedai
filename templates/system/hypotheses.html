@@ -66,20 +66,32 @@
     let _csvText = '';
     let _txtText = '';
 
+    function csvSplitRow(line){
+      const out=[];let cur='',inQ=false;
+      for(let i=0;i<line.length;i++){
+        const c=line[i];
+        if(inQ){if(c==='"'){if(i+1<line.length&&line[i+1]==='"'){cur+='"';i++;}else inQ=false;}else cur+=c;}
+        else{if(c==='"')inQ=true;else if(c===','){out.push(cur);cur='';}else cur+=c;}
+      }
+      out.push(cur);return out;
+    }
+    function csvJoinRow(fields){
+      return fields.map(f=>(f!=null&&String(f).includes(','))?'"'+String(f).replace(/"/g,'""')+'"':String(f??'')).join(',');
+    }
     function stripConstCols(csv){
       if(!csv) return csv;
       const lines = csv.trim().split('\n');
-      if(lines.length < 3) return csv; // header + min 2 rows needed
-      const header = lines[0].split(',');
-      const rows = lines.slice(1).map(l=>l.split(','));
+      if(lines.length < 3) return csv;
+      const header = csvSplitRow(lines[0]);
+      const rows = lines.slice(1).map(l=>csvSplitRow(l));
       const keep = [];
       for(let i=0;i<header.length;i++){
         const vals = new Set(rows.map(r=>(r[i]||'').trim()));
         if(vals.size > 1) keep.push(i);
       }
       if(keep.length === header.length) return csv;
-      const hdr2 = keep.map(i=>header[i]).join(',');
-      const rows2 = rows.map(r=>keep.map(i=>r[i]).join(','));
+      const hdr2 = csvJoinRow(keep.map(i=>header[i]));
+      const rows2 = rows.map(r=>csvJoinRow(keep.map(i=>r[i])));
       return [hdr2, ...rows2].join('\n');
     }
 

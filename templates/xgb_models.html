@@ -203,12 +203,6 @@
                                 <input id="gfFeeTo" class="form-control gf-range" type="number" step="0.01" value="0.06" placeholder="to" style="margin-top:4px;">
                                 <input id="gfFeeStep" class="form-control gf-range" type="number" step="0.01" value="0.01" placeholder="step" style="margin-top:4px;">
                             </div>
-                            <div class="form-group">
-                                <label>label_delta, %</label>
-                                <input id="gfLdFrom" class="form-control gf-range" type="number" step="0.01" value="0.05" placeholder="from">
-                                <input id="gfLdTo" class="form-control gf-range" type="number" step="0.01" value="0.05" placeholder="to" style="margin-top:4px;">
-                                <input id="gfLdStep" class="form-control gf-range" type="number" step="0.01" value="0.01" placeholder="step" style="margin-top:4px;">
-                            </div>
                         </div>
                     </div>
 
@@ -353,7 +347,7 @@
                 labelN = gfRange('gfHsFrom2','gfHsTo2','gfHsStep2').length
                        * gfRange('gfThrFrom2','gfThrTo2','gfThrStep2').length
                        * gfRange('gfMhFrom','gfMhTo','gfMhStep').length * gfRange('gfMpFrom','gfMpTo','gfMpStep').length
-                       * gfRange('gfFeeFrom','gfFeeTo','gfFeeStep').length * gfRange('gfLdFrom','gfLdTo','gfLdStep').length;
+                       * gfRange('gfFeeFrom','gfFeeTo','gfFeeStep').length;
             }
             const modelN = gfRange('gfMdFrom','gfMdTo','gfMdStep').length
                          * gfRange('gfLrFrom','gfLrTo','gfLrStep').length
@@ -374,7 +368,7 @@
             'gfHsFrom2','gfHsTo2','gfHsStep2',
             'gfThrFrom2','gfThrTo2','gfThrStep2',
             'gfMhFrom','gfMhTo','gfMhStep','gfMpFrom','gfMpTo','gfMpStep',
-            'gfFeeFrom','gfFeeTo','gfFeeStep','gfLdFrom','gfLdTo','gfLdStep',
+            'gfFeeFrom','gfFeeTo','gfFeeStep',
             'gfMdFrom','gfMdTo','gfMdStep','gfLrFrom','gfLrTo','gfLrStep',
             'gfNeFrom','gfNeTo','gfNeStep','gfSsFrom','gfSsTo','gfSsStep',
             'gfCbFrom','gfCbTo','gfCbStep','gfRlFrom','gfRlTo','gfRlStep',
@@ -423,7 +417,6 @@
                 payload.max_hold_steps_list = gfRange('gfMhFrom','gfMhTo','gfMhStep').map(v => Math.round(v));
                 payload.min_profit_list = gfRange('gfMpFrom','gfMpTo','gfMpStep').map(v => v / 100);
                 payload.fee_bps_list = gfRange('gfFeeFrom','gfFeeTo','gfFeeStep').map(v => v * 100);
-                payload.label_delta_list = gfRange('gfLdFrom','gfLdTo','gfLdStep').map(v => v / 100);
             }
             // model
             payload.max_depth_list = gfRange('gfMdFrom','gfMdTo','gfMdStep').map(v => Math.round(v));
@@ -470,8 +463,7 @@
             try {
                 const fee_bps = (parseFloat(feePct) || 0.0) * 100.0; // % -> bps
                 const min_profit = (parseFloat(minProfitPct) || 0.0) / 100.0;
-                const label_delta = (parseFloat(labelDeltaPct) || 0.0) / 100.0;
-                const payload = { symbol, task, direction, limit_candles_final: limitFinal, limit_candles_quick: limitQuick, max_hold_steps: maxHold, fee_bps, min_profit, label_delta };
+                const payload = { symbol, task, direction, limit_candles_final: limitFinal, limit_candles_quick: limitQuick, max_hold_steps: maxHold, fee_bps, min_profit };
                 const resp = await fetch('/training/train_xgb_grid_task', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },

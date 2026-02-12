@@ -92,8 +92,10 @@ class GymConfig:
     use_atr_stop: bool = True        # Включить ATR-стопы (SL/TP/Trailing)
     atr_sl_mult: float = 1.5         # K для SL по ATR
     atr_tp_mult: float | None = None # K для TP по ATR (None = отключен)
-    atr_trail_mult: float = 1.0      # K для trailing по ATR (от пика/дна)
+    atr_trail_mult: float = 1.5      # K для trailing по ATR (от пика/дна) — ATR * mult = порог
     atr_min_sl_mult: float = 1.0     # Минимальный множитель для SL (ограничение снизу)
+    trailing_activation: float = 0.0  # % профита от входа для активации trailing (0 = сразу)
+    use_fixed_tp: bool = False         # Включить фиксированный TP (False = только trailing)
 
  
      

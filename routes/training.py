@@ -421,6 +421,9 @@ def train_dqn_grid_route():
             vt_from = _float(grid.get('vol_from'), 'vol_from')
             vt_to = _float(grid.get('vol_to'), 'vol_to')
             vt_step = _float(grid.get('vol_step'), 'vol_step')
+            trail_from = _float(grid.get('trail_from', '1.5'), 'trail_from')
+            trail_to = _float(grid.get('trail_to', '1.5'), 'trail_to')
+            trail_step = _float(grid.get('trail_step', '0.5'), 'trail_step')
         except ValueError as ve:
             return jsonify({"success": False, "error": str(ve)}), 400
 
@@ -472,9 +475,10 @@ def train_dqn_grid_route():
         if not mh_list:
             return jsonify({"success": False, "error": "min_hold range invalid"}), 400
         vt_list = _frange("volume_threshold", vt_from, vt_to, vt_step)
+        trail_list = _frange("atr_trail_mult", trail_from, trail_to, trail_step)
 
         # cartesian size
-        total = len(sl_list) * len(tp_list) * len(mh_list) * len(vt_list) * len(batch_sizes) * len(memory_sizes) * len(hidden_sizes_list) * len(eps_decay_steps_list)
+        total = len(sl_list) * len(tp_list) * len(mh_list) * len(vt_list) * len(trail_list) * len(batch_sizes) * len(memory_sizes) * len(hidden_sizes_list) * len(eps_decay_steps_list)
         if total <= 0:
             return jsonify({"success": False, "error": "empty grid"}), 400
         if total > 500:
@@ -486,11 +490,12 @@ def train_dqn_grid_route():
             for tp in tp_list:
                 for mh in mh_list:
                     for vt in vt_list:
+                      for tr in trail_list:
                         for bs in batch_sizes:
                             for ms in memory_sizes:
                                 for hs in hidden_sizes_list:
                                     for dec in eps_decay_steps_list:
-                                        rm = {"STOP_LOSS_PCT": sl, "TAKE_PROFIT_PCT": tp, "min_hold_steps": mh, "volume_threshold": vt}
+                                        rm = {"STOP_LOSS_PCT": sl, "TAKE_PROFIT_PCT": tp, "min_hold_steps": mh, "volume_threshold": vt, "atr_trail_mult": tr}
                                         cfg_ov = {}
                                         if bs is not None:
                                             cfg_ov["batch_size"] = int(bs)
@@ -552,7 +557,7 @@ def train_dqn_grid_route():
                 _rm_obj = env_overrides.get("risk_management") if isinstance(env_overrides, dict) else None
                 _rm = "rm:-"
                 if isinstance(_rm_obj, dict):
-                    _rm = f"rm:{_fmt_f(_rm_obj.get('STOP_LOSS_PCT'))}:{_fmt_f(_rm_obj.get('TAKE_PROFIT_PCT'))}:{_fmt_f(_rm_obj.get('min_hold_steps'))}:{_fmt_f(_rm_obj.get('volume_threshold'))}"
+                    _rm = f"rm:{_fmt_f(_rm_obj.get('STOP_LOSS_PCT'))}:{_fmt_f(_rm_obj.get('TAKE_PROFIT_PCT'))}:{_fmt_f(_rm_obj.get('min_hold_steps'))}:{_fmt_f(_rm_obj.get('volume_threshold'))}:{_fmt_f(_rm_obj.get('atr_trail_mult'))}"
                 _cfg = "cfg:-"
                 try:
                     if isinstance(cfg_overrides, dict) and cfg_overrides:
@@ -725,7 +730,6 @@ def train_xgb_grid_task_route():
     fee_bps = data.get('fee_bps') or request.form.get('fee_bps')
     max_hold_steps = data.get('max_hold_steps') or request.form.get('max_hold_steps')
     min_profit = data.get('min_profit') or request.form.get('min_profit')
-    label_delta = data.get('label_delta') or request.form.get('label_delta')
     try:
         limit_final = int(limit_final) if limit_final not in (None, '') else None
     except Exception:
@@ -746,10 +750,6 @@ def train_xgb_grid_task_route():
         min_profit = float(min_profit) if min_profit not in (None, '') else None
     except Exception:
         min_profit = None
-    try:
-        label_delta = float(label_delta) if label_delta not in (None, '') else None
-    except Exception:
-        label_delta = None
 
     if task_name == 'directional':
         task = train_xgb_grid.apply_async(kwargs={
@@ -769,7 +769,6 @@ def train_xgb_grid_task_route():
             'base_max_hold_steps': max_hold_steps,
             'base_fee_bps': fee_bps,
             'base_min_profit': min_profit,
-            'base_label_delta': label_delta,
         }, queue='celery')
 
     try:
@@ -808,7 +807,6 @@ def train_xgb_grid_full_route():
         'max_hold_steps_list': data.get('max_hold_steps_list'),
         'min_profit_list': data.get('min_profit_list'),
         'fee_bps_list': data.get('fee_bps_list'),
-        'label_delta_list': data.get('label_delta_list'),
         'max_depth_list': data.get('max_depth_list'),
         'learning_rate_list': data.get('learning_rate_list'),
         'n_estimators_list': data.get('n_estimators_list'),

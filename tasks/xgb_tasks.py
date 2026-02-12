@@ -475,7 +475,6 @@ def train_xgb_grid_entry_exit(
     base_max_hold_steps: int | None = None,
     base_fee_bps: float | None = None,
     base_min_profit: float | None = None,
-    base_label_delta: float | None = None,
 ) -> Dict[str, Any]:
     """
     Grid for entry_* / exit_* tasks.
@@ -511,7 +510,6 @@ def train_xgb_grid_entry_exit(
         base_max_hold_steps = int(base_max_hold_steps) if base_max_hold_steps is not None else 48
         base_fee_bps = float(base_fee_bps) if base_fee_bps is not None else 6.0
         base_min_profit = float(base_min_profit) if base_min_profit is not None else 0.0
-        base_label_delta = float(base_label_delta) if base_label_delta is not None else 0.0005
 
         def _uniq_sorted(vals):
             out = []
@@ -527,14 +525,6 @@ def train_xgb_grid_entry_exit(
             min_profit_list = _uniq_sorted([max(0.0, base_min_profit * 0.5), base_min_profit, base_min_profit * 2.0])
         else:
             min_profit_list = [0.0, 0.002, 0.005]
-        if task.startswith("exit"):
-            if base_label_delta > 0:
-                label_delta_list = _uniq_sorted([max(0.0, base_label_delta * 0.5), base_label_delta, base_label_delta * 2.0])
-            else:
-                label_delta_list = [0.0005, 0.001, 0.002]
-        else:
-            label_delta_list = [base_label_delta]
-
         grid_id = f"grid-{str(uuid.uuid4())[:6].lower()}"
         push_log(f"📥 Load 5m candles for grid: final={limit_candles_final}, quick={limit_candles_quick}")
         df_5min_full = db_get_or_fetch_ohlcv(symbol_name=symbol, timeframe="5m", limit_candles=limit_candles_final, exchange_id="bybit")
@@ -545,7 +535,7 @@ def train_xgb_grid_entry_exit(
         dfs_quick = _build_dfs_from_5m(df_5min_quick)
         dfs_final = _build_dfs_from_5m(df_5min_full)
 
-        combos = len(hold_steps) * len(fee_bps_list) * len(min_profit_list) * len(label_delta_list)
+        combos = len(hold_steps) * len(fee_bps_list) * len(min_profit_list)
         push_log(f"🧪 Quick grid {task}: combos={combos}, n_estimators={quick_n_estimators}")
 
         results: List[Dict[str, Any]] = []
@@ -560,13 +550,11 @@ def train_xgb_grid_entry_exit(
         for mh in hold_steps:
             for fb in fee_bps_list:
                 for mp in min_profit_list:
-                    for ld in label_delta_list:
                         cfg = XgbConfig(direction=direction)
                         cfg.task = task
                         cfg.max_hold_steps = int(mh)
                         cfg.fee_bps = float(fb)
                         cfg.min_profit = float(mp)
-                        cfg.label_delta = float(ld)
                         cfg.n_estimators = int(quick_n_estimators)
                         trainer = XgbTrainer(cfg)
                         r = trainer.train(symbol=symbol, dfs=dfs_quick, result_root="result")
@@ -594,7 +582,6 @@ def train_xgb_grid_entry_exit(
                                 "max_hold_steps": mh,
                                 "fee_bps": fb,
                                 "min_profit": mp,
-                                "label_delta": ld,
                                 "score": float(score),
                                 "metrics": m,
                                 "run_name": r.get("run_name"),
@@ -610,7 +597,6 @@ def train_xgb_grid_entry_exit(
                                 "max_hold_steps": mh,
                                 "fee_bps": fb,
                                 "min_profit": mp,
-                                "label_delta": ld,
                                 "score": float(score),
                                 "metrics": m,
                                 "run_name": r.get("run_name"),
@@ -619,7 +605,7 @@ def train_xgb_grid_entry_exit(
                                 "filter_info": info,
                             }
                             results.append(item)
-                            push_log(f"grid: mh={mh} fee={fb:.1f} mp={mp:.4f} ld={ld:.4f} filtered ({info.get('reason','?')})")
+                            push_log(f"grid: mh={mh} fee={fb:.1f} mp={mp:.4f} filtered ({info.get('reason','?')})")
                             continue
                         if trading_filter_enabled and info.get("enabled") and ok:
                             passed += 1
@@ -629,7 +615,6 @@ def train_xgb_grid_entry_exit(
                             "max_hold_steps": mh,
                             "fee_bps": fb,
                             "min_profit": mp,
-                            "label_delta": ld,
                             "score": float(score),
                             "metrics": m,
                             "run_name": r.get("run_name"),
@@ -639,7 +624,7 @@ def train_xgb_grid_entry_exit(
                         if float(score) > best_score:
                             best_score = float(score)
                             best = item
-                        push_log(f"grid: mh={mh} fee={fb:.1f} mp={mp:.4f} ld={ld:.4f} score={float(score):.4f}")
+                        push_log(f"grid: mh={mh} fee={fb:.1f} mp={mp:.4f} score={float(score):.4f}")
 
         if trading_filter_enabled:
             if passed == 0 and filtered_out > 0 and best_any is not None:
@@ -656,14 +641,13 @@ def train_xgb_grid_entry_exit(
         if not best:
             return {"success": False, "error": "Grid produced no results"}
 
-        push_log(f"🏁 Best quick {task}: score={best_score:.4f} mh={best['max_hold_steps']} fee={best['fee_bps']} mp={best['min_profit']} ld={best['label_delta']}")
+        push_log(f"🏁 Best quick {task}: score={best_score:.4f} mh={best['max_hold_steps']} fee={best['fee_bps']} mp={best['min_profit']}")
 
         cfg_final = XgbConfig(direction=direction)
         cfg_final.task = task
         cfg_final.max_hold_steps = int(best["max_hold_steps"])
         cfg_final.fee_bps = float(best["fee_bps"])
         cfg_final.min_profit = float(best["min_profit"])
-        cfg_final.label_delta = float(best["label_delta"])
         cfg_final.n_estimators = int(final_n_estimators)
         trainer_final = XgbTrainer(cfg_final)
         final_res = trainer_final.train(symbol=symbol, dfs=dfs_final, result_root="result")
@@ -745,7 +729,6 @@ def train_xgb_grid_full(
     max_hold_steps_list: list | str | None = None,
     min_profit_list: list | str | None = None,
     fee_bps_list: list | str | None = None,
-    label_delta_list: list | str | None = None,
     # model hyper-param ranges (lists)
     max_depth_list: list | str | None = None,
     learning_rate_list: list | str | None = None,
@@ -792,7 +775,6 @@ def train_xgb_grid_full(
         mh_list = _parse_list(max_hold_steps_list, int) or [48]
         mp_list = _parse_list(min_profit_list, float) or [0.0]
         fb_list = _parse_list(fee_bps_list, float) or [6.0]
-        ld_list = _parse_list(label_delta_list, float) or [0.0005]
 
         md_list = _parse_list(max_depth_list, int) or [6]
         lr_list = _parse_list(learning_rate_list, float) or [0.05]
@@ -809,8 +791,8 @@ def train_xgb_grid_full(
             label_combos = list(itertools.product(hs_list, thr_list))
             label_keys = ("horizon_steps", "threshold")
         else:
-            label_combos = list(itertools.product(mh_list, mp_list, fb_list, ld_list))
-            label_keys = ("max_hold_steps", "min_profit", "fee_bps", "label_delta")
+            label_combos = list(itertools.product(mh_list, mp_list, fb_list))
+            label_keys = ("max_hold_steps", "min_profit", "fee_bps")
 
         model_combos = list(itertools.product(md_list, lr_list, ne_list, ss_list, cb_list, rl_list, mcw_list, gm_list, spw_list))
         model_keys = ("max_depth", "learning_rate", "n_estimators", "subsample", "colsample_bytree", "reg_lambda", "min_child_weight", "gamma", "scale_pos_weight")
@@ -845,7 +827,6 @@ def train_xgb_grid_full(
                     cfg.max_hold_steps = int(lc_dict["max_hold_steps"])
                     cfg.min_profit = float(lc_dict["min_profit"])
                     cfg.fee_bps = float(lc_dict["fee_bps"])
-                    cfg.label_delta = float(lc_dict["label_delta"])
                 # model params
                 cfg.max_depth = int(mc_dict["max_depth"])
                 cfg.learning_rate = float(mc_dict["learning_rate"])

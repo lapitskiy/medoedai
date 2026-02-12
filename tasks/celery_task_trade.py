@@ -1368,6 +1368,14 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         syms = symbols
 
         symbol = syms[0]
+
+        # --- Pre-trade exit detection ---
+        # Синхронно вызываем ensure_risk_orders, чтобы зафиксировать выход (trailing/SL/TP),
+        # который мог произойти на бирже до этого тика. Без этого postexit cooldown не сработает.
+        try:
+            ensure_risk_orders.run(ensure_risk_orders, symbol)
+        except Exception as _e_ensure:
+            logger.warning("[execute_trade] ensure_risk_orders pre-call failed for %s: %s", symbol, _e_ensure)
         
         # Если не передали model_paths аргументом — читаем из Redis для конкретного символа
         if model_paths is None and rc is not None:
@@ -2272,10 +2280,21 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                             gate_ok = (act == 'hold')
                     except Exception:
                         gate_ok = (act == 'hold')
-                    if act in ('buy','sell'):
+                    # Remap action для short-моделей: buy↔sell (action 1=ENTER_SHORT→sell, action 2=COVER→buy)
+                    vote_act = act
+                    try:
+                        mp_key = str(p.get('model_path') or '').replace('\\', '/')
+                        if model_roles_map.get(mp_key) == 'short':
+                            if act == 'buy':
+                                vote_act = 'sell'
+                            elif act == 'sell':
+                                vote_act = 'buy'
+                    except Exception:
+                        pass
+                    if vote_act in ('buy','sell'):
                         if gate_ok:
-                            votes[act] += 1
-                    elif act == 'hold':
+                            votes[vote_act] += 1
+                    elif vote_act == 'hold':
                         votes['hold'] += 1
                 # Выбираем порог в моделях в зависимости от режима
                 if consensus_cfg:
@@ -2376,9 +2395,12 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
 
         # --- Trend-veto gate (block trading against regime) ---
         # Если включено: downtrend блокирует BUY, uptrend блокирует SELL (decision -> HOLD).
+        # В long-short режиме направление УЖЕ следует тренду, поэтому trend-veto пропускаем
+        # (иначе он заблокирует cover/exit, т.к. после ремапа cover='buy' в downtrend).
+        _short_dir = (str(trade_mode).strip() == 'long-short' and ls_target_role == 'short')
         try:
             tv_enabled = bool(market_regime_details.get('trend_veto_enabled')) if isinstance(market_regime_details, dict) else False
-            if tv_enabled:
+            if tv_enabled and str(trade_mode).strip() != 'long-short':
                 try:
                     pred_json['trend_veto_gate'] = {'enabled': True, 'market_regime': str(market_regime)}
                 except Exception:
@@ -2395,14 +2417,21 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     except Exception:
                         pass
                     decision = 'hold'
+            elif tv_enabled:
+                try:
+                    pred_json['trend_veto_gate'] = {'enabled': True, 'skipped_long_short': True, 'market_regime': str(market_regime)}
+                except Exception:
+                    pass
         except Exception:
             pass
 
         # --- MarketState gate (OOD-safety) ---
-        # Если рынок не NORMAL (HIGH_VOL/PANIC/DRAWDOWN) — блокируем BUY (override -> HOLD).
+        # Если рынок не NORMAL (HIGH_VOL/PANIC/DRAWDOWN) — блокируем ENTRY (override -> HOLD).
+        # Для long: entry='buy', для short (после ремапа): entry='sell'.
         # ВАЖНО: делаем это здесь (в оркестраторе), т.к. только тут есть OHLCV df_5m.
+        _entry_signal = 'sell' if _short_dir else 'buy'
         try:
-            if decision == 'buy' and df_5m is not None and (not getattr(df_5m, 'empty', False)):
+            if decision == _entry_signal and df_5m is not None and (not getattr(df_5m, 'empty', False)):
                 try:
                     from envs.dqn_model.gym.gutils_optimized import compute_market_state, MarketState
                 except Exception:
@@ -2443,10 +2472,11 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             pass
 
         # --- Post-exit cooldown gate (after TP/SL) ---
-        # Если недавно был выход по TP/SL (см. pred_json['postexit']) — блокируем BUY на N свечей.
+        # Если недавно был выход по TP/SL (см. pred_json['postexit']) — блокируем ENTRY на N свечей.
+        # Для long: entry='buy', для short (после ремапа): entry='sell'.
         try:
             pe = pred_json.get('postexit') if isinstance(pred_json, dict) else None
-            if decision == 'buy' and isinstance(pe, dict):
+            if decision == _entry_signal and isinstance(pe, dict):
                 candles_since = int(pe.get('candles_since_exit')) if pe.get('candles_since_exit') is not None else None
                 cooldown = int(pe.get('cooldown_candles')) if pe.get('cooldown_candles') is not None else None
                 reason = str(pe.get('exit_reason') or '').strip().lower()
@@ -2575,7 +2605,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 cfg_llm = load_gigachat_config()
                 run_llm = bool(cfg_llm.enabled)
                 try:
-                    if bool(cfg_llm.only_on_buy) and str(decision or "").lower() != "buy":
+                    if bool(cfg_llm.only_on_buy) and str(decision or "").lower() != _entry_signal:
                         run_llm = False
                 except Exception:
                     pass

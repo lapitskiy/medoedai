@@ -118,8 +118,8 @@ class CryptoTradingEnvOptimized(gym.Env):
                 pass
         else:
             # УЛУЧШЕНО: Динамические параметры риск-менеджмента
-            self.base_stop_loss = -0.03      # Базовый stop-loss
-            self.base_take_profit = +0.01    # Базовый take-profit
+            self.base_stop_loss = -0.05      # Базовый stop-loss (аварийный, trailing — основной выход)
+            self.base_take_profit = +0.08    # Базовый take-profit (аварийный потолок)
             self.base_min_hold = 8           # Базовое минимальное время удержания
             self.volume_threshold = 0.0001   # Базовый порог объема
             
@@ -344,7 +344,7 @@ class CryptoTradingEnvOptimized(gym.Env):
         
         self.observation_space_shape = (
             self.lookback_window * total_features_per_step +
-            2  # normalized_balance и normalized_crypto_held
+            3  # normalized_balance, normalized_crypto_held, distance_to_trailing
         )
         
         print(f"  • observation_space_shape: {self.observation_space_shape}")
@@ -604,12 +604,12 @@ class CryptoTradingEnvOptimized(gym.Env):
         print(f"🔍 Проверка размеров:")
         print(f"  • precomputed_states.shape: {self.precomputed_states.shape}")
         print(f"  • observation_space_shape: {self.observation_space_shape}")
-        print(f"  • Соответствие: {'✅' if self.precomputed_states.shape[1] == self.observation_space_shape - 2 else '❌'}")
+        print(f"  • Соответствие: {'✅' if self.precomputed_states.shape[1] == self.observation_space_shape - 3 else '❌'}")
         
-        # Если размеры не совпадают, исправляем
-        if self.precomputed_states.shape[1] != self.observation_space_shape - 2:
+        # Если размеры не совпадают, исправляем (+3 = balance, crypto_held, dist_trail)
+        if self.precomputed_states.shape[1] != self.observation_space_shape - 3:
             print(f"⚠️ Исправляю размер observation_space_shape")
-            self.observation_space_shape = self.precomputed_states.shape[1] + 2
+            self.observation_space_shape = self.precomputed_states.shape[1] + 3
             print(f"  • Новый observation_space_shape: {self.observation_space_shape}")
             
             # Обновляем observation_space
@@ -726,10 +726,24 @@ class CryptoTradingEnvOptimized(gym.Env):
             normalized_balance = 0.0
             normalized_crypto_held = 0.0
         
-        # Добавляем баланс и криптовалюту в конец состояния
+        # distance_to_trailing: (current_price - trailing_level) / current_price
+        dist_trail = 0.0
+        try:
+            if self.crypto_held > 0 and getattr(self, 'max_price_during_hold', None) is not None:
+                cp = self.df_5min[self.current_step - 1, 3]
+                thr = 0.02
+                if bool(getattr(self.cfg, 'use_atr_stop', True)) and getattr(self, '_entry_atr_abs', None) is not None:
+                    k_tr = float(getattr(self.cfg, 'atr_trail_mult', 1.5))
+                    thr = float(np.clip(k_tr * (self._entry_atr_abs / max(self.max_price_during_hold, 1e-9)), 0.002, 0.08))
+                tl = self.max_price_during_hold * (1.0 - thr)
+                dist_trail = (cp - tl) / max(cp, 1e-9)
+        except Exception:
+            dist_trail = 0.0
+
+        # Добавляем баланс, криптовалюту и distance_to_trailing в конец состояния
         final_state = np.concatenate([
             precomputed_state,
-            np.array([normalized_balance, normalized_crypto_held], dtype=np.float32)
+            np.array([normalized_balance, normalized_crypto_held, dist_trail], dtype=np.float32)
         ])
         
         return final_state
@@ -760,10 +774,24 @@ class CryptoTradingEnvOptimized(gym.Env):
             normalized_balance = 0.0
             normalized_crypto_held = 0.0
         
-        # Добавляем баланс и криптовалюту в конец состояния
+        # distance_to_trailing
+        dist_trail = 0.0
+        try:
+            if self.crypto_held > 0 and getattr(self, 'max_price_during_hold', None) is not None:
+                cp = self.df_5min[step_idx - 1, 3]
+                thr = 0.02
+                if bool(getattr(self.cfg, 'use_atr_stop', True)) and getattr(self, '_entry_atr_abs', None) is not None:
+                    k_tr = float(getattr(self.cfg, 'atr_trail_mult', 1.5))
+                    thr = float(np.clip(k_tr * (self._entry_atr_abs / max(self.max_price_during_hold, 1e-9)), 0.002, 0.08))
+                tl = self.max_price_during_hold * (1.0 - thr)
+                dist_trail = (cp - tl) / max(cp, 1e-9)
+        except Exception:
+            dist_trail = 0.0
+
+        # Добавляем баланс, криптовалюту и distance_to_trailing
         final_state = torch.cat([
             precomputed_state,
-            torch.tensor([normalized_balance, normalized_crypto_held], dtype=torch.float32)
+            torch.tensor([normalized_balance, normalized_crypto_held, dist_trail], dtype=torch.float32)
         ])
         
         return final_state
@@ -1257,42 +1285,49 @@ class CryptoTradingEnvOptimized(gym.Env):
             except Exception:
                 pass
             if self.crypto_held > 0 and self.last_buy_price is not None:
-                # --- Трейлинг-стоп (как в оригинале) ---
-                if self.epsilon <= 0.2:  # фаза exploitation
-                    # 1. обновляем максимум
-                    if (not hasattr(self, "max_price_during_hold") 
-                        or self.max_price_during_hold is None 
-                        or self.last_buy_step == self.current_step):
-                        self.max_price_during_hold = current_price
-                    
-                    if current_price > self.max_price_during_hold:  # новый пик
-                        self.max_price_during_hold = current_price
-                        self.trailing_stop_counter = 0
-                    
-                    # 2. считаем просадку от пика
-                    drawdown = (self.max_price_during_hold - current_price) / self.max_price_during_hold
-                    # Порог трейлинга: ATR‑базированный (freeze at entry) или фикс. 2%
+                # --- Трейлинг-стоп (всегда активен, 1-бар, по Low, ATR*mult) ---
+                # 1. обновляем максимум цены в позиции
+                if (not hasattr(self, "max_price_during_hold") 
+                    or self.max_price_during_hold is None 
+                    or self.last_buy_step == self.current_step):
+                    self.max_price_during_hold = current_price
+                
+                if current_price > self.max_price_during_hold:
+                    self.max_price_during_hold = current_price
+                
+                # 2. trailing активируется только после trailing_activation % профита
+                trail_activation = float(getattr(self.cfg, 'trailing_activation', 0.0))
+                pnl_from_entry = (self.max_price_during_hold - self.last_buy_price) / self.last_buy_price
+                
+                if pnl_from_entry >= trail_activation:
+                    # 3. вычисляем порог trailing: ATR * mult
                     thr_trail = 0.02
                     try:
                         if bool(getattr(self.cfg, 'use_atr_stop', True)) and getattr(self, '_entry_atr_abs', None) is not None:
-                            k_tr = float(getattr(self.cfg, 'atr_trail_mult', 1.0))
+                            k_tr = float(getattr(self.cfg, 'atr_trail_mult', 1.5))
                             thr_trail = float(np.clip(k_tr * (self._entry_atr_abs / max(self.max_price_during_hold, 1e-9)), 0.002, 0.08))
                     except Exception:
                         thr_trail = 0.02
-                    if drawdown > thr_trail:
-                        self.trailing_stop_counter += 1
                     
-                    # 3. три подряд бара с drawdown > 2% → принудительный SELL
-                    # Но только если позиция держится достаточно долго
-                    if (self.trailing_stop_counter >= 3 and 
+                    # 4. уровень trailing stop
+                    trailing_level = self.max_price_during_hold * (1.0 - thr_trail)
+                    
+                    # 5. проверяем по Low свечи (ближе к реальности)
+                    low_price = self.df_5min[self.current_step - 1, 2]  # Low
+                    
+                    if (low_price <= trailing_level and
                         hasattr(self, 'last_buy_step') and 
                         self.last_buy_step is not None and
                         (self.current_step - self.last_buy_step) >= self.min_hold_steps):
                         
-                        reward -= 0.03
-                        self._log(f"[{self.current_step}] 🔻 TRAILING STOP — SELL by drawdown: {drawdown:.2%}")
+                        # Reward: PnL сделки, бонус если в плюсе
+                        trail_pnl = (trailing_level - self.last_buy_price) / self.last_buy_price
+                        if trail_pnl > 0:
+                            reward += 0.02  # бонус за trailing exit в профите
+                        
+                        self._log(f"[{self.current_step}] 🔻 TRAILING STOP — low={low_price:.4f} <= trail={trailing_level:.4f}, pnl={trail_pnl:.2%}")
                         self._force_sell(current_price, 'TRAILING STOP')
-                        # сброс ATR‑уровней при трейлинг‑выходе
+                        # сброс ATR‑уровней
                         try:
                             self._sl_price_atr = None
                             self._tp_price_atr = None
@@ -1300,13 +1335,10 @@ class CryptoTradingEnvOptimized(gym.Env):
                         except Exception:
                             pass
                         
-                        # Обновляем статистики
                         self._update_stats(current_price)
                         self.current_step += 1
-                        # Обновляем market_state (ровно 1 раз на шаг) перед возвратом
                         self._update_market_state_once()
                         
-                        # Проверяем завершение эпизода
                         done = (
                             self.current_step >= self.start_step + self.episode_length or
                             self.current_step >= self.total_steps
@@ -1317,7 +1349,6 @@ class CryptoTradingEnvOptimized(gym.Env):
                             "current_price": current_price,
                             "total_profit": (self.balance + self.crypto_held * current_price) - getattr(self.cfg, 'initial_balance', 10000.0),
                         })
-                        # Масштабируем награду перед возвратом
                         reward = reward * reward_scale
                         info["reward"] = reward
                         return self._get_state(), reward, done, info
@@ -1332,7 +1363,7 @@ class CryptoTradingEnvOptimized(gym.Env):
                             reward -= 0.05
                             self._force_sell(current_price, "❌ - STOP-LOSS ATR")
                             self._sl_price_atr = None; self._tp_price_atr = None; self._entry_atr_abs = None
-                        elif getattr(self, '_tp_price_atr', None) is not None and current_price >= self._tp_price_atr:
+                        elif bool(getattr(self.cfg, 'use_fixed_tp', True)) and getattr(self, '_tp_price_atr', None) is not None and current_price >= self._tp_price_atr:
                             reward += 0.05
                             self._force_sell(current_price, "🎯 - TAKE-PROFIT ATR")
                             self._sl_price_atr = None; self._tp_price_atr = None; self._entry_atr_abs = None
@@ -1340,14 +1371,14 @@ class CryptoTradingEnvOptimized(gym.Env):
                     pass
                 
                 if unrealized_pnl_percent <= self.STOP_LOSS_PCT:
-                    reward -= 0.05  # штраф за стоп-лосс
+                    reward -= 0.05  # штраф за аварийный стоп-лосс
                     self._force_sell(current_price, "❌ - STOP-LOSS triggered")
                     try:
                         self._sl_price_atr = None; self._tp_price_atr = None; self._entry_atr_abs = None
                     except Exception:
                         pass
                     
-                elif unrealized_pnl_percent >= self.TAKE_PROFIT_PCT:
+                elif bool(getattr(self.cfg, 'use_fixed_tp', True)) and unrealized_pnl_percent >= self.TAKE_PROFIT_PCT:
                     reward += 0.05  # поощрение за фиксацию профита
                     self._force_sell(current_price, "🎯 - TAKE-PROFIT hit")
                     try:
@@ -1851,10 +1882,10 @@ class CryptoTradingEnvOptimized(gym.Env):
                         print(f"🔧 Низкая ликвидность ({current_hour}:00 UTC): консервативные параметры (торговля разрешена)")
             
             # 4. Ограничиваем параметры разумными пределами
-            self.STOP_LOSS_PCT = max(self.STOP_LOSS_PCT, -0.08)  # Не более -8%
-            self.STOP_LOSS_PCT = min(self.STOP_LOSS_PCT, -0.01)  # Не менее -1%
-            self.TAKE_PROFIT_PCT = max(self.TAKE_PROFIT_PCT, 0.003)   # Не менее 0.3%
-            self.TAKE_PROFIT_PCT = min(self.TAKE_PROFIT_PCT, 0.05)   # Не более 20%
+            self.STOP_LOSS_PCT = max(self.STOP_LOSS_PCT, -0.10)  # Не более -10%
+            self.STOP_LOSS_PCT = min(self.STOP_LOSS_PCT, -0.03)  # Не менее -3%
+            self.TAKE_PROFIT_PCT = max(self.TAKE_PROFIT_PCT, 0.03)   # Не менее 3%
+            self.TAKE_PROFIT_PCT = min(self.TAKE_PROFIT_PCT, 0.20)   # Не более 20%
             self.min_hold_steps = max(self.min_hold_steps, 4)     # Не менее 4 шагов
             self.min_hold_steps = min(self.min_hold_steps, 100)    # Не более 100 шагов
             

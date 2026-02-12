@@ -34,13 +34,13 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         batch_size=128,  # Уменьшено с 4096 для сокращения времени обучения
         memory_size=90_000,  # Увеличиваем для стабильности: ~7.5GB VRAM (47% от 16GB)
         hidden_sizes=(256, 128, 64),  # Сбалансированная архитектура
-        train_repeats=4,  # Уменьшено с 4 для сокращения времени обучения
-        use_amp=False,
+        train_repeats=2,  # Уменьшено с 4 для сокращения времени обучения
+        use_amp=True,
         use_gpu_storage=False,  # Включаем для стабильности
         learning_rate=0.00015,  # Уменьшаем для стабильности с большим батчем
         description="Максимальная скорость эпизодов для Tesla P100 (используем все CPU ядра)",
         use_torch_compile=True,
-        eps_decay_steps=9_000_000,
+        eps_decay_steps=2_500_000,
         dropout_rate=0.25
     ),
     
@@ -51,7 +51,7 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         batch_size=192,
         memory_size=100_000,  # Уменьшено для снижения пиков памяти (реплей-буфер)
         hidden_sizes=(384, 256, 192), #hidden_sizes= (1024, 512, 256) (winrate 36%),  hidden_sizes=(384, 192, 96),
-        train_repeats=4,
+        train_repeats=2,
         use_amp=True,
         use_gpu_storage=False,  # Включаем GPU storage для синхронизации устройств
         learning_rate=0.00015,

@@ -141,7 +141,7 @@
                 <!-- Подпункт: DQN Grid (использует те же episodes/episode_length/direction/seed/encoder сверху) -->
                 <div id="training-grid" style="margin-top:14px; padding-top:12px; border-top:1px solid #e5e7eb;">
                     <div class="muted" style="margin-bottom:6px;"><b>🧪 DQN Grid</b> — перебор risk_management + (опционально) DQN hyperparams</div>
-                    <div class="statistics-grid" style="grid-template-columns: repeat(4, 1fr); gap:10px;">
+                    <div class="statistics-grid" style="grid-template-columns: repeat(5, 1fr); gap:10px;">
                         <div class="form-group">
                             <label>SL (отриц.), from (более отриц.) / to (менее отриц.) / step</label>
                             <input id="gridSlFrom" class="form-control" type="number" step="0.0001" value="-0.03">
@@ -165,6 +165,12 @@
                             <input id="gridVolFrom" class="form-control" type="number" step="0.0001" value="0.002">
                             <input id="gridVolTo" class="form-control" type="number" step="0.0001" value="0.004" style="margin-top:6px;">
                             <input id="gridVolStep" class="form-control" type="number" step="0.0001" value="0.001" style="margin-top:6px;">
+                        </div>
+                        <div class="form-group">
+                            <label>atr_trail_mult from / to / step</label>
+                            <input id="gridTrailFrom" class="form-control" type="number" step="0.1" value="1.5">
+                            <input id="gridTrailTo" class="form-control" type="number" step="0.1" value="1.5" style="margin-top:6px;">
+                            <input id="gridTrailStep" class="form-control" type="number" step="0.1" value="0.5" style="margin-top:6px;">
                         </div>
                     </div>
                     <div class="statistics-grid" style="grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:10px;">
@@ -967,6 +973,9 @@ P/L Ratio: ${plr}
                 eps_decay_from: document.getElementById('gridEpsDecayFrom')?.value,
                 eps_decay_to: document.getElementById('gridEpsDecayTo')?.value,
                 eps_decay_step: document.getElementById('gridEpsDecayStep')?.value,
+                trail_from: document.getElementById('gridTrailFrom')?.value,
+                trail_to: document.getElementById('gridTrailTo')?.value,
+                trail_step: document.getElementById('gridTrailStep')?.value,
             };
 
             if(statusDiv) statusDiv.innerHTML = '<div class="status info">⏳ Grid: постановка задач в очередь...</div>';
@@ -1069,13 +1078,43 @@ P/L Ratio: ${plr}
             if(el){ el.textContent=total; el.style.color=total>500?'#dc2626':'#2563eb'; }
         }
 
+        // ===== localStorage cache for DQN grid fields =====
+        const DQN_GRID_CACHE_KEY = 'dqn_grid_cache';
+        const DQN_GRID_IDS = [
+            'trainSymbolSelect','trainDirectionSelect','episodesInput','episodeLengthInput','trainSeedInput',
+            'gridSlFrom','gridSlTo','gridSlStep','gridTpFrom','gridTpTo','gridTpStep',
+            'gridHoldFrom','gridHoldTo','gridHoldStep','gridVolFrom','gridVolTo','gridVolStep',
+            'gridTrailFrom','gridTrailTo','gridTrailStep',
+            'gridBatchFrom','gridBatchTo','gridBatchStep','gridMemFrom','gridMemTo','gridMemStep',
+            'gridHiddenFrom','gridHiddenTo','gridHiddenStep',
+            'gridEpsDecayFrom','gridEpsDecayTo','gridEpsDecayStep','gridMaxModels',
+            'xgbHorizonStepsInput','xgbThresholdInput'
+        ];
+        function dqnGridSaveCache(){
+            const d={};
+            DQN_GRID_IDS.forEach(id=>{ const el=document.getElementById(id); if(el) d[id]=el.value; });
+            try{ localStorage.setItem(DQN_GRID_CACHE_KEY, JSON.stringify(d)); }catch(_){}
+        }
+        function dqnGridLoadCache(){
+            try{
+                const d=JSON.parse(localStorage.getItem(DQN_GRID_CACHE_KEY));
+                if(!d) return;
+                DQN_GRID_IDS.forEach(id=>{ const el=document.getElementById(id); if(el && d[id]!==undefined) el.value=d[id]; });
+            }catch(_){}
+        }
+        dqnGridLoadCache();
+
         // Привязки
         document.addEventListener('DOMContentLoaded', function(){
             ['gridSlFrom','gridSlTo','gridSlStep','gridTpFrom','gridTpTo','gridTpStep',
              'gridHoldFrom','gridHoldTo','gridHoldStep','gridVolFrom','gridVolTo','gridVolStep',
              'gridBatchFrom','gridBatchTo','gridBatchStep','gridMemFrom','gridMemTo','gridMemStep',
-             'gridHiddenFrom','gridHiddenTo','gridHiddenStep','gridEpsDecayFrom','gridEpsDecayTo','gridEpsDecayStep'
-            ].forEach(function(id){ var e=document.getElementById(id); e&&e.addEventListener('input',updateGridComboCount); });
+             'gridHiddenFrom','gridHiddenTo','gridHiddenStep','gridEpsDecayFrom','gridEpsDecayTo','gridEpsDecayStep',
+             'gridTrailFrom','gridTrailTo','gridTrailStep'
+            ].forEach(function(id){ var e=document.getElementById(id); e&&e.addEventListener('input',function(){ updateGridComboCount(); dqnGridSaveCache(); }); });
+            ['trainSymbolSelect','trainDirectionSelect','episodesInput','episodeLengthInput','trainSeedInput',
+             'gridMaxModels','xgbHorizonStepsInput','xgbThresholdInput'
+            ].forEach(function(id){ var e=document.getElementById(id); if(e) e.addEventListener('change', dqnGridSaveCache); });
             updateGridComboCount();
             try{
                 const symSel = document.getElementById('trainSymbolSelect');

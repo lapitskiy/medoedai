@@ -463,6 +463,7 @@ def _save_training_results(
                     'base_stop_loss': get_env_attr_safe(env, 'base_stop_loss'),
                     'base_take_profit': get_env_attr_safe(env, 'base_take_profit'),
                     'base_min_hold': get_env_attr_safe(env, 'base_min_hold'),
+                    'atr_trail_mult': getattr(cfg_obj, 'atr_trail_mult', None),
                 },
                 'position_sizing': {
                     'base_position_fraction': get_env_attr_safe(env, 'base_position_fraction'),
@@ -969,11 +970,20 @@ def train_model_optimized(
                         ]:
                             if field_name in rm2:
                                 set_env_attr_safe(env, env_attr, rm2[field_name])
+                        # atr_trail_mult → пишем в cfg объект env
+                        if 'atr_trail_mult' in rm2:
+                            try:
+                                cfg_obj = get_env_attr_safe(env, 'cfg')
+                                if cfg_obj is not None:
+                                    cfg_obj.atr_trail_mult = float(rm2['atr_trail_mult'])
+                            except Exception:
+                                pass
                         print(
                             f"🧪 GRID OVERRIDE | SL={get_env_attr_safe(env,'STOP_LOSS_PCT')} | "
                             f"TP={get_env_attr_safe(env,'TAKE_PROFIT_PCT')} | "
                             f"minHold={get_env_attr_safe(env,'min_hold_steps')} | "
-                            f"volThr={get_env_attr_safe(env,'volume_threshold')}"
+                            f"volThr={get_env_attr_safe(env,'volume_threshold')} | "
+                            f"trail_mult={rm2.get('atr_trail_mult', '—')}"
                         )
             except Exception:
                 pass
@@ -1014,6 +1024,7 @@ def train_model_optimized(
                     'base_stop_loss': get_env_attr_safe(env, 'base_stop_loss'),
                     'base_take_profit': get_env_attr_safe(env, 'base_take_profit'),
                     'base_min_hold': get_env_attr_safe(env, 'base_min_hold'),
+                    'atr_trail_mult': getattr(cfg_obj2, 'atr_trail_mult', None),
                 },
                 'position_sizing': {
                     'base_position_fraction': get_env_attr_safe(env, 'base_position_fraction'),

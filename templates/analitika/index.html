@@ -299,7 +299,8 @@
                         const sl = rm.STOP_LOSS_PCT != null ? rm.STOP_LOSS_PCT : '—';
                         const mh = rm.min_hold_steps != null ? rm.min_hold_steps : '—';
                         const vt = rm.volume_threshold != null ? rm.volume_threshold : '—';
-                        lines.push(`TP: ${tp} | SL: ${sl} | min_hold_steps: ${mh} | volume_threshold: ${vt}`);
+                        const trm = rm.atr_trail_mult != null ? rm.atr_trail_mult : '—';
+                        lines.push(`TP: ${tp} | SL: ${sl} | min_hold_steps: ${mh} | volume_threshold: ${vt} | trail_mult: ${trm}`);
                     }
                 }catch(_){}
                 // Real run config (cfg_snapshot from train_result.pkl) — это фактические параметры прогона

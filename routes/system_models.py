@@ -204,12 +204,14 @@ def api_system_hypotheses_export():
             tp_v = None
             min_hold_v = None
             vol_thr_v = None
+            trail_v = None
             if risk and any(k in risk for k in ("STOP_LOSS_PCT", "TAKE_PROFIT_PCT", "min_hold_steps", "volume_threshold")):
                 risk_source = "gym_snapshot"
                 sl_v = risk.get("STOP_LOSS_PCT")
                 tp_v = risk.get("TAKE_PROFIT_PCT")
                 min_hold_v = risk.get("min_hold_steps")
                 vol_thr_v = risk.get("volume_threshold")
+                trail_v = risk.get("atr_trail_mult")
             elif adapt and any(k in adapt for k in ("stop_loss_pct", "take_profit_pct", "min_hold_steps", "volume_threshold")):
                 risk_source = "adaptive_params"
                 sl_v = adapt.get("stop_loss_pct")
@@ -241,6 +243,7 @@ def api_system_hypotheses_export():
                 "tp_pct": _safe_float(tp_v),
                 "min_hold_steps": (int(min_hold_v) if isinstance(min_hold_v, (int, float)) else None),
                 "volume_threshold": _safe_float(vol_thr_v),
+                "atr_trail_mult": _safe_float(trail_v),
                 # DQN/SAC hyperparams (from cfg_snapshot in train_result.pkl)
                 "cfg_lr": _safe_float(cfg.get("lr")),
                 "cfg_batch_size": (int(cfg.get("batch_size")) if isinstance(cfg.get("batch_size"), (int, float)) else None),
@@ -274,11 +277,13 @@ def api_system_hypotheses_export():
                     row["sell_agent_pct"] = float(st.get("agent", 0) or 0) / total
                     row["sell_stop_loss_pct"] = float(st.get("stop_loss", 0) or 0) / total
                     row["sell_take_profit_pct"] = float(st.get("take_profit", 0) or 0) / total
+                    row["sell_trailing_pct"] = float(st.get("trailing", 0) or 0) / total
                     row["sell_timeout_pct"] = float(st.get("timeout", 0) or 0) / total
                 else:
                     row["sell_agent_pct"] = None
                     row["sell_stop_loss_pct"] = None
                     row["sell_take_profit_pct"] = None
+                    row["sell_trailing_pct"] = None
                     row["sell_timeout_pct"] = None
             except Exception:
                 row["sell_agent_pct"] = None
@@ -299,6 +304,7 @@ def api_system_hypotheses_export():
             "tp_pct",
             "min_hold_steps",
             "volume_threshold",
+            "atr_trail_mult",
             # cfg hyperparams
             "cfg_lr",
             "cfg_batch_size",
@@ -322,15 +328,16 @@ def api_system_hypotheses_export():
             "sell_agent_pct",
             "sell_stop_loss_pct",
             "sell_take_profit_pct",
+            "sell_trailing_pct",
             "sell_timeout_pct",
         ]
         all_fields = set(k for r in rows for k in r.keys())
         tail = sorted([k for k in all_fields if k not in preferred])
         fieldnames = [k for k in preferred if k in all_fields] + tail
-        w = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+        w = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore", restval="")
         w.writeheader()
         for r in rows:
-            w.writerow(r)
+            w.writerow({k: ("" if v is None else v) for k, v in r.items()})
         csv_text = buf.getvalue()
 
         # TXT prompt (compact: no duplicated top lists; CSV is the source of truth)
@@ -492,10 +499,10 @@ def api_system_hypotheses_export_xgb():
         all_fields = set(k for r in rows for k in r.keys())
         tail = sorted([k for k in all_fields if k not in preferred])
         fieldnames = [k for k in preferred if k in all_fields] + tail
-        w = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+        w = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore", restval="")
         w.writeheader()
         for r in rows:
-            w.writerow(r)
+            w.writerow({k: ("" if v is None else v) for k, v in r.items()})
         csv_text = buf.getvalue()
 
         # TXT prompt
