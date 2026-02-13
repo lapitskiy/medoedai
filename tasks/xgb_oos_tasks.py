@@ -88,6 +88,105 @@ def _compute_metrics(y: np.ndarray, pred: np.ndarray, is_binary: bool) -> Dict[s
     }
 
 
+def _trade_return(entry: float, exit_price: float, is_long: bool, fee_frac: float) -> float:
+    """Trade return as fraction (e.g. 0.01 = 1%). fee_frac is round-trip."""
+    if is_long:
+        return (exit_price - entry) / max(entry, 1e-12) - fee_frac
+    return (entry - exit_price) / max(entry, 1e-12) - fee_frac
+
+
+def _run_backtest(
+    pred: np.ndarray, closes: np.ndarray, task_name: str, cfg, start_capital: float = 10000.0,
+) -> Dict[str, Any]:
+    """Simple backtest: entry on pred=1, exit on max_hold timeout (entry tasks) or pred=2 (directional)."""
+    fee_frac = float(getattr(cfg, "fee_bps", 6.0)) / 10000.0
+    max_hold = int(getattr(cfg, "max_hold_steps", 48))
+    direction = str(getattr(cfg, "direction", "long") or "long").strip().lower()
+    is_long = "long" in task_name or (direction == "long" and "short" not in task_name)
+    is_entry = task_name.startswith("entry")
+    is_directional = task_name == "directional"
+    is_exit = task_name.startswith("exit")
+
+    if is_exit:
+        return {"skip": True, "reason": "exit-only model, standalone backtest N/A"}
+
+    pnl_total = 0.0
+    equity = start_capital
+    peak = start_capital
+    max_dd = 0.0
+    trades_list: list = []
+    position = None  # {'entry_price', 'entry_idx'}
+
+    n = min(len(pred), len(closes))
+    for i in range(n):
+        price = float(closes[i])
+        if price <= 0:
+            continue
+
+        # forced exit after max_hold
+        if position is not None:
+            bars_held = i - position["entry_idx"]
+            if bars_held >= max_hold:
+                ret = _trade_return(position["entry_price"], price, is_long, fee_frac)
+                trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": True})
+                pnl_total += ret * start_capital
+                position = None
+
+        # signals
+        p = int(pred[i])
+        if is_entry:
+            if p == 1 and position is None:
+                position = {"entry_price": price, "entry_idx": i}
+        elif is_directional:
+            if p == 1 and position is None:
+                position = {"entry_price": price, "entry_idx": i}
+            elif p == 2 and position is not None:
+                ret = _trade_return(position["entry_price"], price, is_long, fee_frac)
+                bars_held = i - position["entry_idx"]
+                trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": False})
+                pnl_total += ret * start_capital
+                position = None
+
+        # equity & DD
+        unr = 0.0
+        if position is not None:
+            unr = _trade_return(position["entry_price"], price, is_long, fee_frac) * start_capital
+        equity = start_capital + pnl_total + unr
+        peak = max(peak, equity)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - equity) / peak)
+
+    # force close at end
+    if position is not None:
+        price = float(closes[n - 1])
+        ret = _trade_return(position["entry_price"], price, is_long, fee_frac)
+        bars_held = (n - 1) - position["entry_idx"]
+        trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": True})
+        pnl_total += ret * start_capital
+
+    tc = len(trades_list)
+    wins = sum(1 for t in trades_list if t["pnl"] > 0)
+    gp = sum(max(0, t["pnl"]) for t in trades_list)
+    gl = abs(sum(min(0, t["pnl"]) for t in trades_list))
+    pf = (gp / gl) if gl > 1e-12 else (999.99 if gp > 0 else None)
+    roi = (pnl_total / start_capital) * 100.0 if start_capital > 0 else 0.0
+
+    return {
+        "pnl_total": round(pnl_total, 4),
+        "roi_pct": round(roi, 4),
+        "winrate": round(wins / tc, 4) if tc else None,
+        "profit_factor": round(pf, 4) if pf is not None else None,
+        "max_dd": round(max_dd, 6),
+        "trades_count": tc,
+        "wins": wins,
+        "losses": tc - wins,
+        "avg_trade_pnl": round(pnl_total / tc, 4) if tc else None,
+        "avg_bars_held": round(sum(t["bars"] for t in trades_list) / tc, 1) if tc else None,
+        "start_capital": start_capital,
+        "equity_end": round(start_capital + pnl_total, 2),
+    }
+
+
 def _bars_for_days(days: int) -> int:
     # 5m bars/day = 24*60/5 = 288
     return int(max(1, days) * 288)
@@ -103,7 +202,7 @@ def _resolve_safe_run_dir(result_dir: str) -> Path:
     return target
 
 
-@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={"max_retries": 0}, queue="celery")
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={"max_retries": 0}, queue="oos")
 def run_xgb_oos_test(self, result_dir: str, days: int = 30, ts: str | None = None) -> Dict[str, Any]:
     """
     OOS evaluation for a saved XGB run on the last N days of candles.
@@ -170,7 +269,7 @@ def run_xgb_oos_test(self, result_dir: str, days: int = 30, ts: str | None = Non
     df_5min_oos.reset_index(drop=False, inplace=True)
     dfs = {"df_5min": df_5min_oos, "df_15min": df_15min, "df_1h": df_1h}
 
-    X, y, meta2, _aux = build_xgb_dataset(dfs, cfg)
+    X, y, meta2, aux = build_xgb_dataset(dfs, cfg)
     if X is None or len(y) == 0:
         return {"success": False, "error": "Empty dataset for OOS"}
 
@@ -179,6 +278,15 @@ def run_xgb_oos_test(self, result_dir: str, days: int = 30, ts: str | None = Non
     pred = predictor.predict_action(X)
 
     metrics = _compute_metrics(y=y, pred=pred, is_binary=is_binary)
+
+    # Backtest simulation
+    closes = aux.get("closes")
+    backtest: Dict[str, Any] = {}
+    if closes is not None and len(closes) > 0 and aux.get("closes_mode") == "timeseries":
+        backtest = _run_backtest(pred=pred, closes=closes, task_name=task_name, cfg=cfg)
+    else:
+        backtest = {"skip": True, "reason": "no timeseries closes for backtest"}
+
     out = {
         "success": True,
         "symbol": symbol,
@@ -190,6 +298,7 @@ def run_xgb_oos_test(self, result_dir: str, days: int = 30, ts: str | None = Non
         "model_path": model_path,
         "cfg_snapshot": asdict(cfg),
         "oos_metrics": metrics,
+        "backtest": backtest,
         "meta": meta2,
         "ts": ts or (datetime.utcnow().isoformat() + "Z"),
     }
@@ -198,7 +307,7 @@ def run_xgb_oos_test(self, result_dir: str, days: int = 30, ts: str | None = Non
     hist_path = run_dir / "oos_xgb_results.json"
     prev = _safe_read_json(hist_path)
     history = prev.get("history") if isinstance(prev.get("history"), list) else []
-    history.append({"ts": out["ts"], "days": int(days), "metrics": metrics})
+    history.append({"ts": out["ts"], "days": int(days), "metrics": metrics, "backtest": backtest})
     _atomic_write_json(hist_path, {"symbol": symbol, "run_dir": str(run_dir), "history": history})
 
     return out

@@ -172,19 +172,7 @@
                     </div>
 
                     <div id="gfLabelEntry">
-                        <div class="statistics-grid" style="grid-template-columns: repeat(6, 1fr); gap:10px;">
-                            <div class="form-group">
-                                <label>horizon_steps</label>
-                                <input id="gfHsFrom2" class="form-control gf-range" type="number" step="1" value="12" placeholder="from">
-                                <input id="gfHsTo2" class="form-control gf-range" type="number" step="1" value="12" placeholder="to" style="margin-top:4px;">
-                                <input id="gfHsStep2" class="form-control gf-range" type="number" step="1" value="12" placeholder="step" style="margin-top:4px;">
-                            </div>
-                            <div class="form-group">
-                                <label>threshold, % (0.2 = 0.002)</label>
-                                <input id="gfThrFrom2" class="form-control gf-range" type="number" step="0.01" value="0.20" placeholder="from">
-                                <input id="gfThrTo2" class="form-control gf-range" type="number" step="0.01" value="0.20" placeholder="to" style="margin-top:4px;">
-                                <input id="gfThrStep2" class="form-control gf-range" type="number" step="0.01" value="0.10" placeholder="step" style="margin-top:4px;">
-                            </div>
+                        <div class="statistics-grid" style="grid-template-columns: repeat(4, 1fr); gap:10px;">
                             <div class="form-group">
                                 <label>max_hold_steps</label>
                                 <input id="gfMhFrom" class="form-control gf-range" type="number" step="1" value="48" placeholder="from">
@@ -344,9 +332,7 @@
             if (task === 'directional') {
                 labelN = gfRange('gfHsFrom','gfHsTo','gfHsStep').length * gfRange('gfThrFrom','gfThrTo','gfThrStep').length;
             } else {
-                labelN = gfRange('gfHsFrom2','gfHsTo2','gfHsStep2').length
-                       * gfRange('gfThrFrom2','gfThrTo2','gfThrStep2').length
-                       * gfRange('gfMhFrom','gfMhTo','gfMhStep').length * gfRange('gfMpFrom','gfMpTo','gfMpStep').length
+                labelN = gfRange('gfMhFrom','gfMhTo','gfMhStep').length * gfRange('gfMpFrom','gfMpTo','gfMpStep').length
                        * gfRange('gfFeeFrom','gfFeeTo','gfFeeStep').length;
             }
             const modelN = gfRange('gfMdFrom','gfMdTo','gfMdStep').length
@@ -365,8 +351,6 @@
         const GF_CACHE_KEY = 'xgb_grid_cache';
         const GF_IDS = ['gfSymbol','gfTask','gfDirection','gfLimitCandles','gfEarlyStopping','gfKeepTopN',
             'gfHsFrom','gfHsTo','gfHsStep','gfThrFrom','gfThrTo','gfThrStep',
-            'gfHsFrom2','gfHsTo2','gfHsStep2',
-            'gfThrFrom2','gfThrTo2','gfThrStep2',
             'gfMhFrom','gfMhTo','gfMhStep','gfMpFrom','gfMpTo','gfMpStep',
             'gfFeeFrom','gfFeeTo','gfFeeStep',
             'gfMdFrom','gfMdTo','gfMdStep','gfLrFrom','gfLrTo','gfLrStep',
@@ -412,8 +396,6 @@
                 payload.horizon_steps_list = gfRange('gfHsFrom','gfHsTo','gfHsStep');
                 payload.threshold_list = gfRange('gfThrFrom','gfThrTo','gfThrStep').map(v => v / 100);
             } else {
-                payload.horizon_steps_list = gfRange('gfHsFrom2','gfHsTo2','gfHsStep2');
-                payload.threshold_list = gfRange('gfThrFrom2','gfThrTo2','gfThrStep2').map(v => v / 100);
                 payload.max_hold_steps_list = gfRange('gfMhFrom','gfMhTo','gfMhStep').map(v => Math.round(v));
                 payload.min_profit_list = gfRange('gfMpFrom','gfMpTo','gfMpStep').map(v => v / 100);
                 payload.fee_bps_list = gfRange('gfFeeFrom','gfFeeTo','gfFeeStep').map(v => v * 100);

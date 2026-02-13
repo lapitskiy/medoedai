@@ -11,7 +11,7 @@ from sqlalchemy import Numeric # Import Numeric for casting
 from sqlalchemy.dialects.postgresql import insert
 
 # Import your models from model.py
-from orm.models import Base, Symbol, OHLCV, FundingRate
+from orm.models import Base, Symbol, OHLCV, FundingRate, MarketIndicator
 
 import logging
 
@@ -762,6 +762,36 @@ def db_get_or_fetch_ohlcv(
         except Exception as fe:
             logging.warning(f"Funding join warning: {fe}")
 
+        # --- OI / LS ratio join (market_indicators) ---
+        try:
+            if not df.empty and exchange_id.lower() == 'bybit':
+                # Догрузить OI/LS если нужно (200 дней)
+                fetch_and_store_oi_ls(symbol_name, timeframe, days_back=200, session=session)
+
+                ts_min = int(df['timestamp'].min())
+                ts_max = int(df['timestamp'].max())
+                mi_rows = session.query(MarketIndicator).filter(
+                    MarketIndicator.symbol_id == symbol_obj.id,
+                    MarketIndicator.timeframe == timeframe,
+                    MarketIndicator.timestamp >= ts_min,
+                    MarketIndicator.timestamp <= ts_max,
+                ).order_by(MarketIndicator.timestamp.asc()).all()
+
+                if mi_rows:
+                    mi_df = pd.DataFrame([{
+                        'timestamp': r.timestamp,
+                        'open_interest': r.open_interest,
+                        'buy_ratio': r.buy_ratio,
+                        'sell_ratio': r.sell_ratio,
+                    } for r in mi_rows])
+                    df = df.merge(mi_df, on='timestamp', how='left')
+                    df['open_interest'] = df['open_interest'].ffill()
+                    df['buy_ratio'] = df['buy_ratio'].ffill()
+                    df['sell_ratio'] = df['sell_ratio'].ffill()
+                    logging.info(f"[OI/LS] Joined {len(mi_rows)} indicator rows to OHLCV")
+        except Exception as _oi_e:
+            logging.warning(f"OI/LS join warning: {_oi_e}")
+
         if detailed_logs:
             logging.info(f"Итоговое количество свечей для {symbol_name} {timeframe}: {len(df)}")
 
@@ -1267,3 +1297,185 @@ def _upsert_funding_records(session, records: list) -> None:
     stmt = stmt.on_conflict_do_nothing(index_elements=['symbol', 'timestamp'])
     session.execute(stmt)
     session.commit()
+
+
+# ─────────────────────────────────────────────────────────────
+#  OI / Long-Short ratio: Bybit v5  (market_indicators table)
+# ─────────────────────────────────────────────────────────────
+import requests as _requests
+
+_BYBIT_BASE = "https://api.bybit.com"
+
+
+def _bybit_fetch_open_interest(symbol_raw: str, interval: str,
+                               start_ms: int, end_ms: int) -> list[dict]:
+    """Fetch OI history from Bybit. Returns list of {timestamp, open_interest}."""
+    url = f"{_BYBIT_BASE}/v5/market/open-interest"
+    all_rows: list[dict] = []
+    cursor = ""
+    while True:
+        params = {
+            "category": "linear",
+            "symbol": symbol_raw,
+            "intervalTime": interval,
+            "startTime": str(start_ms),
+            "endTime": str(end_ms),
+            "limit": "200",
+        }
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            r = _requests.get(url, params=params, timeout=15)
+            data = r.json()
+        except Exception as e:
+            logging.warning(f"[OI] request error: {e}")
+            break
+        lst = (data.get("result") or {}).get("list") or []
+        if not lst:
+            break
+        for it in lst:
+            try:
+                all_rows.append({
+                    "timestamp": int(it["timestamp"]),
+                    "open_interest": float(it["openInterest"]),
+                })
+            except Exception:
+                continue
+        cursor = (data.get("result") or {}).get("nextPageCursor") or ""
+        if not cursor:
+            break
+        time.sleep(0.12)  # rate-limit safety
+    return all_rows
+
+
+def _bybit_fetch_ls_ratio(symbol_raw: str, period: str,
+                           start_ms: int, end_ms: int) -> list[dict]:
+    """Fetch Long/Short account ratio from Bybit. Returns list of {timestamp, buy_ratio, sell_ratio}."""
+    url = f"{_BYBIT_BASE}/v5/market/account-ratio"
+    all_rows: list[dict] = []
+    cursor = ""
+    while True:
+        params = {
+            "category": "linear",
+            "symbol": symbol_raw,
+            "period": period,
+            "startTime": str(start_ms),
+            "endTime": str(end_ms),
+            "limit": "500",
+        }
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            r = _requests.get(url, params=params, timeout=15)
+            data = r.json()
+        except Exception as e:
+            logging.warning(f"[LS] request error: {e}")
+            break
+        lst = (data.get("result") or {}).get("list") or []
+        if not lst:
+            break
+        for it in lst:
+            try:
+                all_rows.append({
+                    "timestamp": int(it["timestamp"]),
+                    "buy_ratio": float(it["buyRatio"]),
+                    "sell_ratio": float(it["sellRatio"]),
+                })
+            except Exception:
+                continue
+        cursor = (data.get("result") or {}).get("nextPageCursor") or ""
+        if not cursor:
+            break
+        time.sleep(0.12)
+    return all_rows
+
+
+def fetch_and_store_oi_ls(symbol_name: str, timeframe: str = "5m",
+                          days_back: int = 200,
+                          session=None) -> int:
+    """
+    Загружает OI и LS ratio с Bybit за последние `days_back` дней
+    и сохраняет/обновляет в market_indicators.
+    Возвращает количество upsert-записей.
+    """
+    own_session = session is None
+    if own_session:
+        session = next(get_db_session())
+    try:
+        sym_db = normalize_to_db(symbol_name)
+        symbol_obj = session.query(Symbol).filter_by(name=sym_db).first()
+        if not symbol_obj:
+            symbol_obj = Symbol(name=sym_db)
+            session.add(symbol_obj)
+            session.commit()
+
+        # Bybit symbol format: TONUSDT (no slash)
+        sym_raw = sym_db.replace("/", "").upper()
+
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - days_back * 24 * 3600 * 1000
+
+        # Определим, что уже есть в БД (самая свежая запись)
+        latest = session.query(func.max(MarketIndicator.timestamp)).filter_by(
+            symbol_id=symbol_obj.id, timeframe=timeframe
+        ).scalar()
+        if latest and int(latest) > start_ms:
+            start_ms = int(latest) + 1  # дозагрузить только новое
+
+        # Маппинг timeframe -> Bybit interval
+        tf_map = {"5m": "5min", "15m": "15min", "30m": "30min", "1h": "1h", "4h": "4h", "1d": "1d"}
+        interval = tf_map.get(timeframe, "5min")
+
+        logging.info(f"[OI/LS] Fetching OI for {sym_raw} {interval} from {datetime.fromtimestamp(start_ms/1000)} ...")
+        oi_rows = _bybit_fetch_open_interest(sym_raw, interval, start_ms, now_ms)
+        logging.info(f"[OI/LS] Got {len(oi_rows)} OI records")
+
+        logging.info(f"[OI/LS] Fetching LS ratio for {sym_raw} {interval} ...")
+        ls_rows = _bybit_fetch_ls_ratio(sym_raw, interval, start_ms, now_ms)
+        logging.info(f"[OI/LS] Got {len(ls_rows)} LS records")
+
+        # Мерджим OI и LS по timestamp
+        oi_map = {r["timestamp"]: r["open_interest"] for r in oi_rows}
+        ls_map = {r["timestamp"]: (r["buy_ratio"], r["sell_ratio"]) for r in ls_rows}
+        all_ts = sorted(set(list(oi_map.keys()) + list(ls_map.keys())))
+
+        if not all_ts:
+            logging.info("[OI/LS] No new data to store")
+            return 0
+
+        records = []
+        for ts in all_ts:
+            br, sr = ls_map.get(ts, (None, None))
+            records.append({
+                "symbol_id": symbol_obj.id,
+                "timeframe": timeframe,
+                "timestamp": ts,
+                "open_interest": oi_map.get(ts),
+                "buy_ratio": br,
+                "sell_ratio": sr,
+            })
+
+        # Upsert батчами по 500
+        total = 0
+        for i in range(0, len(records), 500):
+            batch = records[i:i+500]
+            stmt = insert(MarketIndicator).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["symbol_id", "timeframe", "timestamp"],
+                set_={
+                    "open_interest": stmt.excluded.open_interest,
+                    "buy_ratio": stmt.excluded.buy_ratio,
+                    "sell_ratio": stmt.excluded.sell_ratio,
+                }
+            )
+            session.execute(stmt)
+            total += len(batch)
+        session.commit()
+        logging.info(f"[OI/LS] Upserted {total} records for {sym_raw} {timeframe}")
+        return total
+    except Exception as e:
+        logging.error(f"[OI/LS] Error: {e}", exc_info=True)
+        return 0
+    finally:
+        if own_session:
+            session.close()

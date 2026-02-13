@@ -43,19 +43,9 @@ def run_oos_test(self, payload: dict):
         except Exception:
             data = {"success": False, "error": "oos task returned non-json response"}
 
-    # Итоговое состояние
-    if isinstance(data, dict) and data.get('success'):
-        try:
-            self.update_state(state=states.SUCCESS, meta={"finished_at": datetime.utcnow().isoformat() + 'Z'})
-        except Exception:
-            pass
+    # Возвращаем результат — Celery сам выставит SUCCESS
+    if isinstance(data, dict):
         return data
-    else:
-        # Не бросаем исключение, возвращаем ошибку в payload
-        try:
-            self.update_state(state=states.FAILURE, meta={"finished_at": datetime.utcnow().isoformat() + 'Z'})
-        except Exception:
-            pass
-        return data if isinstance(data, dict) else {"success": False, "error": "unknown error"}
+    return {"success": False, "error": "unknown error"}
 
 

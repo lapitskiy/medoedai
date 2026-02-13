@@ -41,7 +41,7 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         description="Максимальная скорость эпизодов для Tesla P100 (используем все CPU ядра)",
         use_torch_compile=True,
         eps_decay_steps=2_500_000,
-        dropout_rate=0.25
+        dropout_rate=0.1
     ),
     
     # Tesla V100 - еще быстрее с Tensor Cores
@@ -58,7 +58,7 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         description="Оптимальная конфигурация для Tesla V100 с Tensor Cores",
         use_torch_compile=True,
         eps_decay_steps=2_500_000,
-        dropout_rate=0.25
+        dropout_rate=0.1
         #vram_gb=16.0,
         #batch_size=2048,
         #memory_size=300_000,
@@ -85,7 +85,7 @@ GPU_CONFIGS: Dict[str, GPUConfig] = {
         learning_rate=0.00015,        
         use_torch_compile=False,
         eps_decay_steps=5_000_000,
-        dropout_rate=0.25,
+        dropout_rate=0.1,
         description="Оптимальная конфигурация для GTX 1660 Super"
     ),
     

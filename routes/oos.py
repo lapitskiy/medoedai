@@ -607,11 +607,11 @@ def oos_test_model():
         n_inf = 0
         try:
             import numpy as _np
-            n_nan = int(_np.isnan(indicators).sum())
-            n_inf = int(_np.isinf(indicators).sum())
+            flat = _np.concatenate([_np.asarray(a, dtype=float).ravel() for a in indicators]) if not isinstance(indicators, _np.ndarray) else indicators.ravel()
+            n_nan = int(_np.isnan(flat).sum())
+            n_inf = int(_np.isinf(flat).sum())
             if n_nan or n_inf:
                 current_app.logger.warning(f"[OOS] ⚠️ indicators NaN={n_nan} Inf={n_inf}")
-                # Не бросаем исключение, просто логируем
             else:
                 current_app.logger.info("[OOS] ✅ indicators: no NaN/Inf")
         except Exception as diag_err:

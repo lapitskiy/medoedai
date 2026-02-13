@@ -35,11 +35,11 @@
             <div class="content">
                 <a href="/" class="back-link">← Вернуться на главную</a>
 
-                <!-- OOS launch -->
+                <!-- OOS launch (single) -->
                 <div class="section">
                     <div class="grid">
                         <div class="card">
-                            <h2 style="margin-top:0;">⚙️ Запуск OOS</h2>
+                            <h2 style="margin-top:0;">⚙️ Запуск OOS (одиночный)</h2>
                             <div class="row">
                                 <div class="form-group" style="min-width:420px;">
                                     <label>Выбери XGB run</label>
@@ -69,13 +69,22 @@
                     </div>
                 </div>
 
+                <!-- CSV history -->
+                <div class="section">
+                    <h2>📁 Сохранённые CSV</h2>
+                    <div id="csvListArea" style="font-size:13px;"></div>
+                </div>
+
                 <!-- Runs list -->
                 <div class="section">
                     <h2>🗂️ Все XGB run'ы</h2>
                     <div style="margin-bottom:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <button class="btn btn-info" onclick="startBatchOos()">▶️ Run Selected OOS</button>
+                        <button class="btn btn-warning" onclick="selectCollapsed()" title="Выделить модели с pred_non_hold=0 (collapsed)">💀 Выделить collapsed</button>
                         <button class="btn btn-danger" id="btnDeleteSelected" onclick="deleteSelectedRuns()">🗑️ Удалить выбранные</button>
                         <span id="selectedInfo" class="mono" style="color:#6b7280;">Выбрано: 0</span>
                     </div>
+                    <div id="batchStatus" class="status info" style="display:none; margin-bottom:10px; white-space:pre-wrap;"></div>
                     <div id="xgbDeleteStatus" class="status info" style="display:none; margin-bottom:10px; white-space:pre-wrap;"></div>
 
                     {% if not xgb_runs %}
@@ -113,7 +122,7 @@
                                 {% set pv = m.get('precision_val') %}
                                 {% set rv = m.get('recall_val') %}
                                 <tr>
-                                    <td class="sel"><input type="checkbox" class="cb-run" value="{{ r.result_dir }}" onchange="updateSelectedCount()"></td>
+                                    <td class="sel"><input type="checkbox" class="cb-run" value="{{ r.result_dir }}" data-pred-nonhold="{{ '%0.6f'|format(m.pred_non_hold_rate_val) if m.pred_non_hold_rate_val is defined and m.pred_non_hold_rate_val is not none else '-1' }}" onchange="updateSelectedCount()"></td>
                                     <td>{{ r.symbol }}</td>
                                     <td>{{ r.run_name }}</td>
                                     <td>{{ r.task }}</td>
@@ -181,7 +190,21 @@
             }
         }
 
-        /* ---------- OOS ---------- */
+        /* ---------- select collapsed ---------- */
+        function selectCollapsed(){
+            let count = 0;
+            document.querySelectorAll('.cb-run').forEach(cb=>{
+                const v = parseFloat(cb.dataset.predNonhold);
+                if(v === 0 || (v >= 0 && v < 0.001)){
+                    cb.checked = true;
+                    count++;
+                }
+            });
+            updateSelectedCount();
+            if(!count) alert('Collapsed моделей не найдено');
+        }
+
+        /* ---------- helpers ---------- */
         function _showStatus(msg, cls){
             const el = document.getElementById('xgbOosStatus');
             if(!el) return;
@@ -189,29 +212,48 @@
             el.className = 'status ' + (cls || 'info');
             el.textContent = msg;
         }
+        function _showBatch(msg, cls){
+            const el = document.getElementById('batchStatus');
+            if(!el) return;
+            el.style.display = 'block';
+            el.className = 'status ' + (cls || 'info');
+            el.textContent = msg;
+        }
+        function _fmt(v, d=4){ return (v != null && v !== '') ? Number(v).toFixed(d) : '—'; }
 
         function _renderResult(data){
             const el = document.getElementById('xgbOosResult');
             if(!el) return;
             if(!data){ el.innerHTML = ''; return; }
             const m = data.oos_metrics || {};
+            const bt = data.backtest || {};
             const lines = [
                 `symbol: ${data.symbol || '—'}`,
                 `task: ${data.task || '—'}  direction: ${data.direction || '—'}`,
                 `days: ${data.days || '—'}  bars: ${data.bars || '—'}`,
                 '',
-                `val_acc: ${m.val_acc ?? '—'}`,
+                '── Classification ──',
+                `val_acc: ${_fmt(m.val_acc)}`,
                 `y_counts_val: ${JSON.stringify(m.y_counts_val ?? '—')}`,
-                `y_non_hold: ${m.y_non_hold_rate_val ?? '—'}  pred_non_hold: ${m.pred_non_hold_rate_val ?? '—'}`,
+                `y_non_hold: ${_fmt(m.y_non_hold_rate_val)}  pred_non_hold: ${_fmt(m.pred_non_hold_rate_val)}`,
                 `f1_buy_sell: ${m.f1_buy_sell_val ?? '—'}`,
-                '',
                 `f1_val: ${JSON.stringify(m.f1_val ?? '—')}`,
                 `precision_val: ${JSON.stringify(m.precision_val ?? '—')}`,
                 `recall_val: ${JSON.stringify(m.recall_val ?? '—')}`,
             ];
+            if(!bt.skip){
+                lines.push('', '── Backtest ──',
+                    `pnl_total: ${_fmt(bt.pnl_total,2)}  roi: ${_fmt(bt.roi_pct,2)}%`,
+                    `trades: ${bt.trades_count ?? '—'}  wins: ${bt.wins ?? '—'}  losses: ${bt.losses ?? '—'}`,
+                    `winrate: ${_fmt(bt.winrate)}  PF: ${_fmt(bt.profit_factor)}`,
+                    `max_dd: ${_fmt(bt.max_dd,4)}  avg_bars: ${_fmt(bt.avg_bars_held,1)}`,
+                    `equity: ${_fmt(bt.start_capital,0)} → ${_fmt(bt.equity_end,2)}`
+                );
+            }
             el.innerHTML = '<pre>' + lines.join('\n') + '</pre>';
         }
 
+        /* ---------- Single OOS ---------- */
         async function startXgbOos(){
             try{
                 const runDir = (document.getElementById('xgbRunSelect')?.value || '').trim();
@@ -219,42 +261,120 @@
                 if(!runDir){ _showStatus('Выбери run.', 'error'); return; }
                 _showStatus('⏳ Ставлю задачу...', 'info');
                 _renderResult(null);
-
                 const r = await fetch('/xgb_oos_test_async', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    method:'POST', headers:{'Content-Type':'application/json'},
                     body: JSON.stringify({ result_dir: runDir, days })
                 });
                 const d = await r.json().catch(()=>null);
-                if(!d || !d.success){ _showStatus('❌ Ошибка: ' + (d && d.error ? d.error : 'unknown'), 'error'); return; }
-                const taskId = d.task_id;
-                _showStatus('✅ Запущено. task_id=' + taskId + '\nЖду результат...', 'info');
+                if(!d||!d.success){ _showStatus('❌ '+(d&&d.error||'unknown'),'error'); return; }
+                _showStatus('⏳ task_id='+d.task_id+' …','info');
+                _pollTask(d.task_id, res=>{
+                    if(res.success){ _showStatus('✅ Готово','success'); _renderResult(res); }
+                    else _showStatus('❌ '+(res.error||'fail'),'error');
+                }, ()=> _showStatus('❌ FAILURE','error'));
+            }catch(e){ _showStatus('❌ '+e.message,'error'); }
+        }
 
-                const poll = async ()=>{
-                    const s = await fetch('/xgb_oos_test_status?task_id=' + encodeURIComponent(taskId));
-                    const sd = await s.json().catch(()=>null);
-                    if(!sd || !sd.success){ _showStatus('❌ Ошибка статуса', 'error'); return; }
-                    if(sd.state === 'SUCCESS'){
-                        const res = sd.result || {};
-                        if(res.success){
-                            _showStatus('✅ Готово', 'success');
-                            _renderResult(res);
-                        }else{
-                            _showStatus('❌ Ошибка: ' + (res.error || 'unknown'), 'error');
-                        }
-                        return;
-                    }
-                    if(sd.state === 'FAILURE'){
-                        _showStatus('❌ FAILURE', 'error');
-                        return;
-                    }
-                    setTimeout(poll, 1000);
-                };
-                setTimeout(poll, 600);
-            }catch(e){
-                _showStatus('❌ Ошибка: ' + (e && e.message ? e.message : e), 'error');
+        function _pollTask(taskId, onDone, onFail){
+            const poll = async()=>{
+                try{
+                    const s = await fetch('/xgb_oos_test_status?task_id='+encodeURIComponent(taskId));
+                    const sd = await s.json();
+                    if(sd.state==='SUCCESS'){ onDone(sd.result||{}); return; }
+                    if(sd.state==='FAILURE'){ onFail(); return; }
+                    setTimeout(poll, 1500);
+                }catch{ setTimeout(poll, 3000); }
+            };
+            setTimeout(poll, 800);
+        }
+
+        /* ---------- Batch OOS ---------- */
+        async function startBatchOos(){
+            const dirs = [...document.querySelectorAll('.cb-run:checked')].map(c=>c.value);
+            if(!dirs.length){ alert('Выберите модели галочками'); return; }
+            const days = parseInt(document.getElementById('xgbOosDays')?.value || '30', 10) || 30;
+            _showBatch(`⏳ Запускаю OOS для ${dirs.length} моделей…`, 'info');
+
+            let resp;
+            try{
+                resp = await fetch('/xgb_oos_batch_async', {
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ result_dirs: dirs, days })
+                });
+            }catch(e){ _showBatch('❌ '+e.message,'error'); return; }
+            const bd = await resp.json().catch(()=>null);
+            if(!bd||!bd.success){ _showBatch('❌ '+(bd&&bd.error||'unknown'),'error'); return; }
+
+            const tasks = bd.tasks; // [{result_dir, task_id}]
+            const total = tasks.length;
+            let done = 0;
+            const results = [];
+
+            const checkAll = ()=>{
+                if(done >= total) finishBatch(results);
+            };
+
+            for(const t of tasks){
+                _pollTask(t.task_id, res=>{
+                    results.push(res);
+                    done++;
+                    _showBatch(`⏳ ${done}/${total} готово…`, 'info');
+                    checkAll();
+                }, ()=>{
+                    done++;
+                    _showBatch(`⏳ ${done}/${total} готово (есть ошибки)…`, 'info');
+                    checkAll();
+                });
             }
         }
+
+        async function finishBatch(results){
+            _showBatch(`✅ Все ${results.length} тестов завершены. Сохраняю CSV…`, 'info');
+            try{
+                const r = await fetch('/xgb_oos_batch_save_csv', {
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ results })
+                });
+                const d = await r.json();
+                if(d.success){
+                    _showBatch(`✅ CSV сохранён: ${d.filename} (${d.rows} строк)`, 'success');
+                    const link = document.createElement('a');
+                    link.href = '/xgb_oos_csv_download/'+encodeURIComponent(d.filename);
+                    link.textContent = '📥 Скачать '+d.filename;
+                    link.style.cssText = 'display:inline-block;margin-top:6px;font-weight:600;';
+                    document.getElementById('batchStatus').appendChild(document.createElement('br'));
+                    document.getElementById('batchStatus').appendChild(link);
+                    loadCsvList();
+                }else{
+                    _showBatch('❌ CSV ошибка: '+(d.error||'unknown'), 'error');
+                }
+            }catch(e){ _showBatch('❌ '+e.message,'error'); }
+        }
+
+        /* ---------- CSV list ---------- */
+        async function loadCsvList(){
+            const area = document.getElementById('csvListArea');
+            if(!area) return;
+            try{
+                const r = await fetch('/xgb_oos_csv_list');
+                const d = await r.json();
+                if(!d.success || !d.files.length){ area.innerHTML='<span style="color:#9ca3af;">Нет сохранённых CSV</span>'; return; }
+                let html = '<table class="tbl" style="max-width:700px;"><thead><tr><th>Файл</th><th>Размер</th><th>Дата</th><th></th></tr></thead><tbody>';
+                for(const f of d.files){
+                    html += `<tr>
+                        <td class="mono">${f.name}</td>
+                        <td>${(f.size/1024).toFixed(1)} KB</td>
+                        <td>${f.mtime}</td>
+                        <td><a href="/xgb_oos_csv_download/${encodeURIComponent(f.name)}">📥</a></td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+                area.innerHTML = html;
+            }catch(e){ area.innerHTML='<span style="color:red;">Ошибка: '+e.message+'</span>'; }
+        }
+
+        // Load CSV list on page load
+        loadCsvList();
     </script>
 </body>
 </html>

@@ -64,6 +64,7 @@ celery.conf.task_routes = {
     'tasks.celery_task_trade.start_trading_task': {'queue': 'trade'},
     'tasks.celery_task_trade.refresh_trading_status': {'queue': 'celery'},
     'tasks.oos_tasks.run_oos_test': {'queue': 'oos'},
+    'tasks.xgb_oos_tasks.run_xgb_oos_test': {'queue': 'oos'},
     'tasks.stock_tasks.train_stock_dqn': {'queue': 'train'},
 }
 

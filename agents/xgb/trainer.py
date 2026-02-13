@@ -61,6 +61,8 @@ class XgbTrainer:
 
         # scale_pos_weight: auto (-1) = count_neg/count_pos
         spw = float(self.cfg.scale_pos_weight)
+        if spw == 0:
+            raise ValueError("scale_pos_weight=0 zeroes positive class. Use >=0.1 or -1 (auto).")
         if spw < 0 and is_binary:
             spw = float(counts[0]) / max(float(counts[1]), 1.0)
 

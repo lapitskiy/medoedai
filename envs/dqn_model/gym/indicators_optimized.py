@@ -1,5 +1,8 @@
+import logging
 import numpy as np
 from typing import Dict, List, Tuple, Optional
+
+logger = logging.getLogger(__name__)
 
 def calculate_rsi(prices: np.ndarray, length: int = 14) -> np.ndarray:
     """
@@ -150,7 +153,10 @@ def precalculate_all_indicators(
     # Объединяем все признаки в один массив
     if features:
         indicators_array = np.column_stack(features)
-        # Заполняем NaN нулями
+        # Заполняем NaN нулями (warmup-строки EMA-200 и т.д.)
+        nan_count = int(np.isnan(indicators_array).sum())
+        if nan_count > 0:
+            logger.debug("indicators: %d NaN values replaced with 0 (warmup rows)", nan_count)
         indicators_array = np.nan_to_num(indicators_array, nan=0.0).astype(np.float32)
     else:
         indicators_array = np.zeros((len(close_prices), 0), dtype=np.float32)

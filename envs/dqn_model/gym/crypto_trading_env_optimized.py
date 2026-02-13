@@ -691,9 +691,15 @@ class CryptoTradingEnvOptimized(gym.Env):
                 print(f"  • indicator_cols: {len(indicator_cols)} колонок")
                 print(f"  • indicator_means: {len(self.indicator_means)} значений")
                 print(f"  • X.shape: {X.shape}")
-                # Включаем нормализацию индикаторов
+                # Включаем нормализацию индикаторов (выравниваем размерности)
                 if hasattr(self, 'indicator_stds') and self.indicator_stds is not None:
-                    normalized[:, indicator_cols] = (X[:, indicator_cols] - self.indicator_means) / np.where(self.indicator_stds==0, 1.0, self.indicator_stds)
+                    n_cols = len(indicator_cols)
+                    n_stats = len(self.indicator_means)
+                    if n_cols != n_stats:
+                        print(f"⚠️ indicator mismatch: X has {n_cols} cols, means has {n_stats} vals — truncating to min")
+                    n = min(n_cols, n_stats)
+                    cols = list(indicator_cols)[:n]
+                    normalized[:, cols] = (X[:, cols] - self.indicator_means[:n]) / np.where(self.indicator_stds[:n]==0, 1.0, self.indicator_stds[:n])
         
         # Очищаем от NaN
         normalized = np.nan_to_num(normalized, nan=0.0)

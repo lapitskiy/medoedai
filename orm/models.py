@@ -105,6 +105,25 @@ class FundingRate(Base):
     )
 
 
+class MarketIndicator(Base):
+    """OI (Open Interest) и Long/Short ratio от Bybit, привязанные к 5m-баркам."""
+    __tablename__ = 'market_indicators'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol_id = Column(Integer, ForeignKey('symbols.id'), nullable=False)
+    timeframe = Column(String, nullable=False)
+    timestamp = Column(BigInteger, nullable=False)  # UNIX ms
+    open_interest = Column(Float, nullable=True)
+    buy_ratio = Column(Float, nullable=True)   # long ratio (0..1)
+    sell_ratio = Column(Float, nullable=True)  # short ratio (0..1)
+
+    symbol = relationship("Symbol")
+
+    __table_args__ = (
+        UniqueConstraint('symbol_id', 'timeframe', 'timestamp', name='uix_mkt_ind_sym_tf_ts'),
+    )
+
+
 class AppSetting(Base):
     """
     Универсальные настройки приложения (в т.ч. secret).

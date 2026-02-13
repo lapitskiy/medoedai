@@ -113,6 +113,13 @@ def build_xgb_dataset(
     - entry_* / exit_*: y in {0,1} = {hold, enter/exit}
     """
     X_base, closes = _build_base_features(dfs)
+
+    # Trim warmup rows where EMA-200 etc. are NaN→0 garbage
+    WARMUP = 200
+    if len(closes) > WARMUP + 100:
+        X_base = X_base[WARMUP:]
+        closes = closes[WARMUP:]
+
     task = (cfg.task or "directional").strip().lower()
     aux: Dict[str, Any] = {"closes_mode": "timeseries", "closes": closes}
 
@@ -161,7 +168,7 @@ def build_xgb_dataset(
     # Entry dataset: one sample per time t (like directional), but binary label from best future pnl within window
     if is_entry:
         y = np.zeros((len(closes),), dtype=np.int64)
-        for t in range(0, len(closes) - max_hold - 1):
+        for t in range(0, len(closes) - max_hold):
             best = _best_future_pnl_long(closes, t, max_hold, fee_frac) if is_long else _best_future_pnl_short(closes, t, max_hold, fee_frac)
             y[t] = 1 if best >= min_profit else 0
         y[-max_hold:] = 0
