@@ -1,4 +1,4 @@
-from agents.vdqn.dqnn import DQNN
+from agents.vdqn.dqnn import DQNN, DistributionalDQN
 from envs.dqn_model.gym.gutils import check_nan, setup_wandb
 import torch
 import torch.nn as nn
@@ -285,8 +285,35 @@ class DQNSolver:
         
         self._eps_decay_rate = math.exp(math.log(self.cfg.eps_final / self.cfg.eps_start) / self.cfg.eps_decay_steps)
 
+        # Флаг distributional для быстрых проверок далее
+        self._use_distributional = bool(getattr(self.cfg, 'use_distributional_rl', False))
+
         # Создаем модели с поддержкой Rainbow компонентов
-        if getattr(self.cfg, 'use_noisy_networks', True):
+        if self._use_distributional:
+            # C51 Distributional DQN
+            _dist_kw = dict(
+                obs_dim=observation_space,
+                act_dim=action_space,
+                hidden_sizes=self.cfg.hidden_sizes,
+                n_atoms=int(getattr(self.cfg, 'n_atoms', 51)),
+                v_min=float(getattr(self.cfg, 'v_min', -10.0)),
+                v_max=float(getattr(self.cfg, 'v_max', 10.0)),
+                dropout_rate=self.cfg.dropout_rate,
+                layer_norm=self.cfg.layer_norm,
+                activation=self.cfg.activation,
+                use_residual=self.cfg.use_residual_blocks,
+                use_swiglu=self.cfg.use_swiglu_gate,
+            )
+            self.model = DistributionalDQN(**_dist_kw).to(self.cfg.device)
+            self.target_model = DistributionalDQN(**_dist_kw).to(self.cfg.device)
+            # Сохраняем параметры support для C51 projection
+            self._n_atoms = self.model.n_atoms
+            self._v_min = self.model.v_min
+            self._v_max = self.model.v_max
+            self._delta_z = self.model.delta_z
+            self._support = self.model.support.to(self.cfg.device)
+            print(f"🌈 Distributional DQN (C51): atoms={self._n_atoms}, v=[{self._v_min}, {self._v_max}]")
+        elif getattr(self.cfg, 'use_noisy_networks', True):
             # Используем Noisy Dueling DQN
             from agents.vdqn.dqnn import NoisyDuelingDQN
             self.model = NoisyDuelingDQN(
@@ -449,6 +476,11 @@ class DQNSolver:
                  and hasattr(self.model.net, 'feature_extractor') and getattr(self.model.net, 'feature_extractor', None) is not None:
                 encoder_params = list(self.model.net.feature_extractor.parameters())
                 head_params = [p for p in self.model.parameters() if p not in encoder_params]
+
+            # Вариант 3: DistributionalDQN — feature_extractor напрямую на модели
+            elif hasattr(self.model, 'feature_extractor') and getattr(self.model, 'feature_extractor', None) is not None:
+                encoder_params = list(self.model.feature_extractor.parameters())
+                head_params = [p for p in self.model.parameters() if not any(p is ep for ep in encoder_params)]
 
             if encoder_params is not None and head_params is not None and len(encoder_params) > 0 and len(head_params) > 0:
                 self.optimizer = optim.AdamW(
@@ -680,24 +712,78 @@ class DQNSolver:
                 return out[0]
             return out
 
-        # Double DQN: используем основную сеть для выбора действий, целевую для оценки
-        if self.cfg.double_dqn:
+        # ====== C51 Distributional RL branch ======
+        if self._use_distributional:
+            batch_size = states.size(0)
+            support = self._support  # [n_atoms]
+
+            # --- current distributions: p(s,a) ---
+            q_vals_cur, dist_cur = self.model(states)            # dist: [B, A, n_atoms]
+            actions_idx = actions.unsqueeze(1).unsqueeze(2).expand(-1, 1, self._n_atoms)
+            chosen_dist = dist_cur.gather(1, actions_idx).squeeze(1)  # [B, n_atoms]
+            log_chosen = torch.log(chosen_dist.clamp(min=1e-8))
+
+            # --- target distributions: project Bellman onto atoms ---
             with torch.no_grad():
-                next_actions = _model_logits(self.model, next_states).argmax(dim=1)
-                next_q_values = _model_logits(self.target_model, next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+                # Double DQN action selection
+                if self.cfg.double_dqn:
+                    q_next_online = _model_logits(self.model, next_states)
+                    next_actions = q_next_online.argmax(dim=1)
+                else:
+                    q_next_target, dist_next_target = self.target_model(next_states)
+                    next_actions = q_next_target.argmax(dim=1)
+
+                _, dist_next = self.target_model(next_states)   # [B, A, n_atoms]
+                na_idx = next_actions.unsqueeze(1).unsqueeze(2).expand(-1, 1, self._n_atoms)
+                next_dist = dist_next.gather(1, na_idx).squeeze(1)  # [B, n_atoms]
+
+                # Bellman projection: Tz = r + gamma * z, clamped to [v_min, v_max]
+                Tz = rewards.unsqueeze(1) + gamma_ns.unsqueeze(1) * (~dones).float().unsqueeze(1) * support.unsqueeze(0)
+                Tz = Tz.clamp(self._v_min, self._v_max)
+                b = (Tz - self._v_min) / self._delta_z        # [B, n_atoms]
+                l = b.floor().long()
+                u = b.ceil().long()
+                # Защита от выхода за границы
+                l = l.clamp(0, self._n_atoms - 1)
+                u = u.clamp(0, self._n_atoms - 1)
+
+                # Distribute probability mass
+                target_dist = torch.zeros_like(next_dist)      # [B, n_atoms]
+                offset = torch.arange(batch_size, device=states.device).unsqueeze(1) * self._n_atoms
+                target_dist.view(-1).index_add_(0, (l + offset).view(-1), (next_dist * (u.float() - b)).view(-1))
+                target_dist.view(-1).index_add_(0, (u + offset).view(-1), (next_dist * (b - l.float())).view(-1))
+
+            # Cross-entropy loss с importance sampling weights
+            loss_per_sample = -(target_dist * log_chosen).sum(dim=1)  # [B]
+            loss = (weights * loss_per_sample).mean()
+
+            # td_errors для PER priorities (используем разницу Q-values)
+            current_q_values = q_vals_cur.gather(1, actions.unsqueeze(1)).squeeze(1)
+            with torch.no_grad():
+                target_q_values = rewards + gamma_ns * (~dones).float() * _model_logits(self.target_model, next_states).gather(
+                    1, next_actions.unsqueeze(1)).squeeze(1)
+            td_errors = target_q_values - current_q_values
+
+        # ====== Standard DQN branch ======
         else:
-            with torch.no_grad():
-                next_q_values = _model_logits(self.target_model, next_states).max(1)[0]
-        
-        # Вычисляем target Q-values
-        target_q_values = rewards + (gamma_ns * next_q_values * ~dones)
-        
-        # Текущие Q-values
-        current_q_values = _model_logits(self.model, states).gather(1, actions.unsqueeze(1)).squeeze(1)
-        
-        # Вычисляем loss с importance sampling weights
-        td_errors = target_q_values - current_q_values
-        loss = (weights * self.criterion(current_q_values, target_q_values)).mean()
+            # Double DQN: используем основную сеть для выбора действий, целевую для оценки
+            if self.cfg.double_dqn:
+                with torch.no_grad():
+                    next_actions = _model_logits(self.model, next_states).argmax(dim=1)
+                    next_q_values = _model_logits(self.target_model, next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+            else:
+                with torch.no_grad():
+                    next_q_values = _model_logits(self.target_model, next_states).max(1)[0]
+            
+            # Вычисляем target Q-values
+            target_q_values = rewards + (gamma_ns * next_q_values * ~dones)
+            
+            # Текущие Q-values
+            current_q_values = _model_logits(self.model, states).gather(1, actions.unsqueeze(1)).squeeze(1)
+            
+            # Вычисляем loss с importance sampling weights
+            td_errors = target_q_values - current_q_values
+            loss = (weights * self.criterion(current_q_values, target_q_values)).mean()
         
         # Mixed Precision Training для ускорения
         if self.scaler is not None:

@@ -15,7 +15,7 @@
     <div class="main-content">
       <div class="header">
         <h1>🧩 Работа с энкодерами</h1>
-        <p>Список энкодеров из <code>result/dqn/&lt;SYMBOL&gt;/encoder</code> + удаление по чекбоксам</p>
+        <p>Список энкодеров из <code>result/.../&lt;SYMBOL&gt;/encoder</code> + удаление по чекбоксам + просмотр manifest</p>
       </div>
 
       <div class="content">
@@ -44,18 +44,27 @@
             <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:920px;">
               <thead>
                 <tr>
-                  <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;"></th>
+                  <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">
+                    <input id="selAll" type="checkbox" title="Выбрать всё">
+                  </th>
                   <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">ID</th>
                   <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">direction</th>
                   <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">created</th>
                   <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">winrate</th>
                   <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">pnl</th>
                   <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">episodes</th>
+                  <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">path</th>
+                  <th style="text-align:left;padding:4px 6px;border-bottom:1px solid #eee;">info</th>
                 </tr>
               </thead>
               <tbody id="encT"></tbody>
             </table>
           </div>
+        </div>
+
+        <div class="section" id="infoSection" style="display:none;">
+          <h2>Информация об энкодере</h2>
+          <div class="status info" style="white-space:pre-wrap;" id="encInfo"></div>
         </div>
 
       </div>
@@ -70,6 +79,10 @@
     const st = document.getElementById('status');
     const encT = document.getElementById('encT');
     const selCount = document.getElementById('selCount');
+    const selAll = document.getElementById('selAll');
+    const infoSection = document.getElementById('infoSection');
+    const encInfo = document.getElementById('encInfo');
+    let __encById = {};
 
     function setStatus(kind, text){
       st.style.display = 'block';
@@ -97,6 +110,7 @@
     }
     function render(encoders){
       const arr = Array.isArray(encoders) ? encoders : [];
+      __encById = Object.fromEntries(arr.map(it=>[String(it.id||''), it]));
       encT.innerHTML = arr.map(it=>{
         const id = esc(it.id);
         const m = it.manifest || {};
@@ -106,6 +120,7 @@
         const wr = (typeof s.winrate === 'number' && isFinite(s.winrate)) ? (s.winrate * 100).toFixed(1) + '%' : '';
         const pnl = (typeof s.pnl === 'number' && isFinite(s.pnl)) ? fmtNum(s.pnl, 4) : '';
         const eps = (typeof s.episodes === 'number' && isFinite(s.episodes)) ? String(Math.trunc(s.episodes)) : '';
+        const pth = esc(it.path || '');
         return `<tr>
           <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;">
             <input type="checkbox" data-enc-id="${id}">
@@ -116,10 +131,41 @@
           <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;"><code>${esc(wr)}</code></td>
           <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;"><code>${esc(pnl)}</code></td>
           <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;"><code>${esc(eps)}</code></td>
+          <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;"><code>${pth}</code></td>
+          <td style="padding:4px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top;">
+            <button class="btn btn-info" style="padding:4px 8px;font-size:12px;" data-info-id="${id}">info</button>
+          </td>
         </tr>`;
       }).join('');
       Array.from(document.querySelectorAll('input[data-enc-id]')).forEach(b=>b.addEventListener('change', refreshSelUi));
+      Array.from(document.querySelectorAll('button[data-info-id]')).forEach(btn=>btn.addEventListener('click', ()=>{
+        const id = btn.getAttribute('data-info-id');
+        showInfo(id);
+      }));
       refreshSelUi();
+    }
+
+    function showInfo(id){
+      try{
+        const key = String(id||'').trim();
+        const it = __encById[key];
+        if(!it){ return; }
+        const m = it.manifest || {};
+        let txt = '';
+        txt += `id: ${key}\n`;
+        txt += `path: ${it.path || ''}\n`;
+        txt += `direction: ${(m.direction || m.trained_as || '')}\n\n`;
+        if(m && typeof m === 'object' && ('yaml' in m)){
+          txt += 'manifest.yaml:\n';
+          txt += String(m.yaml || '').trim();
+        }else{
+          txt += 'manifest.json:\n';
+          try{ txt += JSON.stringify(m, null, 2); }catch(_){ txt += String(m); }
+        }
+        if(encInfo) encInfo.textContent = txt;
+        if(infoSection) infoSection.style.display = 'block';
+        try{ infoSection.scrollIntoView({behavior:'smooth', block:'start'}); }catch(_){}
+      }catch(_){}
     }
 
     async function loadSymbols(){
@@ -141,7 +187,7 @@
         const sym = symSel.value || '';
         if(!sym){ setStatus('error','Выберите symbol'); return; }
         setStatus('info','Загружаю энкодеры...');
-        const resp = await fetch('/api/encoders?symbol=' + encodeURIComponent(sym));
+        const resp = await fetch('/api/encoders?storage=result&symbol=' + encodeURIComponent(sym));
         const data = await resp.json();
         if(!data.success){ setStatus('error', data.error || 'Ошибка'); return; }
         render(data.encoders);
@@ -178,6 +224,11 @@
     loadBtn?.addEventListener('click', loadEncoders);
     delBtn?.addEventListener('click', deleteSelected);
     symSel?.addEventListener('change', loadEncoders);
+    selAll?.addEventListener('change', ()=>{
+      const boxes = Array.from(document.querySelectorAll('input[data-enc-id]'));
+      boxes.forEach(b=>{ b.checked = !!selAll.checked; });
+      refreshSelUi();
+    });
     (async ()=>{ await loadSymbols(); await loadEncoders(); })();
   </script>
 </body>

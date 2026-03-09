@@ -4,6 +4,8 @@ import json
 import shutil
 from typing import Any, Dict, List
 
+from tasks import celery
+
 analytics_bp = Blueprint('analytics', __name__)
 
 def _safe_read_json(path: Path) -> Dict[str, Any]:
@@ -60,6 +62,47 @@ def _scan_xgb_runs() -> List[Dict[str, Any]]:
     return out
 
 
+def _active_xgb_tasks() -> List[Dict[str, Any]]:
+    """
+    Returns active XGB Celery tasks with progress meta (done/total) if available.
+    """
+    out: List[Dict[str, Any]] = []
+    try:
+        insp = celery.control.inspect(timeout=1.0)
+        active = insp.active() or {}
+    except Exception:
+        active = {}
+    for hostname, items in (active or {}).items():
+        if not isinstance(items, list):
+            continue
+        for t in items:
+            try:
+                if not isinstance(t, dict):
+                    continue
+                name = str(t.get("name") or "")
+                if not name.startswith("tasks.xgb_tasks."):
+                    continue
+                task_id = str(t.get("id") or "")
+                kwargs = t.get("kwargs") if isinstance(t.get("kwargs"), dict) else {}
+                info = celery.AsyncResult(task_id).info
+                meta = info if isinstance(info, dict) else {}
+                done = meta.get("done")
+                total = meta.get("total")
+                out.append({
+                    "task_id": task_id,
+                    "name": name,
+                    "hostname": hostname,
+                    "symbol": meta.get("symbol") or kwargs.get("symbol"),
+                    "task": meta.get("task") or kwargs.get("task"),
+                    "direction": kwargs.get("direction"),
+                    "done": done,
+                    "total": total,
+                })
+            except Exception:
+                continue
+    return out
+
+
 @analytics_bp.route('/analitika')
 def analytics_page():
     """Страница аналитики результатов обучения"""
@@ -70,7 +113,8 @@ def analytics_page():
 def analytics_xgb_page():
     """Статистика по XGB моделям (result/xgb/*/runs/*)."""
     runs = _scan_xgb_runs()
-    return render_template('analitika/xgb.html', runs=runs)
+    active_xgb = _active_xgb_tasks()
+    return render_template('analitika/xgb.html', runs=runs, active_xgb=active_xgb)
 
 
 @analytics_bp.get('/analitika/xgb/manifest')

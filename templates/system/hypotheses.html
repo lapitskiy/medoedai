@@ -42,6 +42,9 @@
             <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;cursor:pointer;">
               <input type="checkbox" id="removeDupCols" checked> Убрать дубликаты
             </label>
+            <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;cursor:pointer;">
+              <input type="checkbox" id="includeZeroTrades"> Включать нулевые трейды (XGB)
+            </label>
             <button class="btn btn-secondary" id="dlCsvBtn" disabled>Скачать CSV</button>
             <button class="btn btn-secondary" id="dlTxtBtn" disabled>Скачать TXT</button>
           </div>
@@ -84,10 +87,15 @@
       if(lines.length < 3) return csv;
       const header = csvSplitRow(lines[0]);
       const rows = lines.slice(1).map(l=>csvSplitRow(l));
+      // Keep important columns even if constant across rows
+      const alwaysKeep = new Set([
+        'atr_trail_mult','atr_sl_mult',
+        'buy_roi_thr','buy_trend_thr','buy_volat_thr','buy_strictness_floor','entry_confidence_gate'
+      ]);
       const keep = [];
       for(let i=0;i<header.length;i++){
         const vals = new Set(rows.map(r=>(r[i]||'').trim()));
-        if(vals.size > 1) keep.push(i);
+        if(alwaysKeep.has((header[i]||'').trim()) || vals.size > 1) keep.push(i);
       }
       if(keep.length === header.length) return csv;
       const hdr2 = csvJoinRow(keep.map(i=>header[i]));
@@ -127,7 +135,9 @@
         const mt = document.getElementById('modelType')?.value || 'all';
         const lim = document.getElementById('limitRuns')?.value || '200';
         const ep = mt === 'xgb' ? '/api/system/hypotheses_export_xgb' : '/api/system/hypotheses_export';
-        const resp = await fetch(`${ep}?symbol=${encodeURIComponent(sym)}&limit_runs=${encodeURIComponent(lim)}&model_type=${encodeURIComponent(mt)}`);
+        const includeZero = document.getElementById('includeZeroTrades')?.checked;
+        const extra = (mt === 'xgb' && includeZero) ? `&include_zero_trades=1` : '';
+        const resp = await fetch(`${ep}?symbol=${encodeURIComponent(sym)}&limit_runs=${encodeURIComponent(lim)}&model_type=${encodeURIComponent(mt)}${extra}`);
         const data = await resp.json();
         if(!data.success){ setStatus('error', data.error || 'Ошибка'); return; }
         const removeDup = document.getElementById('removeDupCols')?.checked;

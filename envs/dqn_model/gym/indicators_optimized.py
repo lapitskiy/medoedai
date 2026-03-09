@@ -63,6 +63,61 @@ def calculate_sma(prices: np.ndarray, length: int) -> np.ndarray:
     
     return sma
 
+def calculate_atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, length: int = 14) -> np.ndarray:
+    """ATR (Average True Range) — волатильность"""
+    n = len(close)
+    if n < length + 1:
+        return np.full(n, np.nan)
+    tr = np.empty(n, dtype=np.float64)
+    tr[0] = high[0] - low[0]
+    for i in range(1, n):
+        tr[i] = max(high[i] - low[i], abs(high[i] - close[i-1]), abs(low[i] - close[i-1]))
+    atr = np.full(n, np.nan)
+    atr[length] = np.mean(tr[1:length+1])
+    for i in range(length + 1, n):
+        atr[i] = (atr[i-1] * (length - 1) + tr[i]) / length
+    return atr
+
+
+def calculate_obv(close: np.ndarray, volume: np.ndarray) -> np.ndarray:
+    """On-Balance Volume"""
+    n = len(close)
+    obv = np.zeros(n, dtype=np.float64)
+    for i in range(1, n):
+        if close[i] > close[i-1]:
+            obv[i] = obv[i-1] + volume[i]
+        elif close[i] < close[i-1]:
+            obv[i] = obv[i-1] - volume[i]
+        else:
+            obv[i] = obv[i-1]
+    return obv
+
+
+def calculate_returns(close: np.ndarray, periods: list) -> dict:
+    """Скользящие доходности за periods баров"""
+    n = len(close)
+    result = {}
+    for p in periods:
+        ret = np.full(n, np.nan)
+        for i in range(p, n):
+            if close[i - p] != 0:
+                ret[i] = (close[i] - close[i - p]) / close[i - p]
+        result[p] = ret
+    return result
+
+
+def calculate_zscore(close: np.ndarray, ema: np.ndarray, window: int = 20) -> np.ndarray:
+    """Z-score цены относительно EMA: (close - ema) / rolling_std(close - ema)"""
+    n = len(close)
+    diff = close - ema
+    zs = np.full(n, np.nan)
+    for i in range(window - 1, n):
+        seg = diff[i - window + 1:i + 1]
+        std = np.std(seg)
+        zs[i] = diff[i] / std if std > 1e-12 else 0.0
+    return zs
+
+
 def calculate_ema_cross_features(short_ema: np.ndarray, long_ema: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Рассчитывает признаки пересечения EMA
@@ -99,17 +154,21 @@ def precalculate_all_indicators(
         Tuple[np.ndarray, Dict]: основной массив индикаторов и словарь с отдельными индикаторами
     """
     close_prices = df_5min[:, 3]  # Close prices
+    high_prices = df_5min[:, 1]   # High
+    low_prices = df_5min[:, 2]    # Low
+    volume = df_5min[:, 4]        # Volume
     features = []
     feature_names = []
     individual_indicators = {}
     
-    # RSI
-    if 'rsi' in indicators_config:
-        length_rsi = indicators_config['rsi'].get('length', 14)
-        rsi_values = calculate_rsi(close_prices, length_rsi)
-        features.append(rsi_values)
-        feature_names.append(f'RSI_{length_rsi}')
-        individual_indicators[f'RSI_{length_rsi}'] = rsi_values
+    # RSI (все ключи вида rsi, rsi_7, rsi_21 и т.д.)
+    for key, cfg in indicators_config.items():
+        if key == 'rsi' or key.startswith('rsi_'):
+            length_rsi = cfg.get('length', 14)
+            rsi_values = calculate_rsi(close_prices, length_rsi)
+            features.append(rsi_values)
+            feature_names.append(f'RSI_{length_rsi}')
+            individual_indicators[f'RSI_{length_rsi}'] = rsi_values
     
     # EMA
     if 'ema' in indicators_config and 'lengths' in indicators_config['ema']:
@@ -149,6 +208,44 @@ def precalculate_all_indicators(
                 individual_indicators[f'EMA_{short_len}_above_{long_len}'] = above
                 individual_indicators[f'EMA_{short_len}_cross_up_{long_len}'] = cross_up
                 individual_indicators[f'EMA_{short_len}_cross_down_{long_len}'] = cross_down
+    
+    # ATR
+    if 'atr' in indicators_config:
+        length_atr = indicators_config['atr'].get('length', 14)
+        atr_values = calculate_atr(high_prices, low_prices, close_prices, length_atr)
+        features.append(atr_values)
+        feature_names.append(f'ATR_{length_atr}')
+        individual_indicators[f'ATR_{length_atr}'] = atr_values
+    
+    # OBV
+    if 'obv' in indicators_config:
+        obv_values = calculate_obv(close_prices, volume)
+        features.append(obv_values)
+        feature_names.append('OBV')
+        individual_indicators['OBV'] = obv_values
+    
+    # Returns
+    if 'returns' in indicators_config:
+        periods = indicators_config['returns'].get('periods', [1, 3, 12])
+        rets = calculate_returns(close_prices, periods)
+        for p, r in rets.items():
+            features.append(r)
+            feature_names.append(f'RET_{p}')
+            individual_indicators[f'RET_{p}'] = r
+    
+    # Z-score
+    if 'zscore' in indicators_config:
+        ema_len = indicators_config['zscore'].get('ema_length', 50)
+        window = indicators_config['zscore'].get('window', 20)
+        ema_key = f'EMA_{ema_len}'
+        if ema_key in individual_indicators:
+            zs = calculate_zscore(close_prices, individual_indicators[ema_key], window)
+        else:
+            ema_for_zs = calculate_ema(close_prices, ema_len)
+            zs = calculate_zscore(close_prices, ema_for_zs, window)
+        features.append(zs)
+        feature_names.append(f'ZSCORE_{ema_len}_{window}')
+        individual_indicators[f'ZSCORE_{ema_len}_{window}'] = zs
     
     # Объединяем все признаки в один массив
     if features:
@@ -193,5 +290,33 @@ def preprocess_dataframes(
     
     # Рассчитываем индикаторы только для 5-минутных данных
     indicators_array, individual_indicators = precalculate_all_indicators(df_5min_clean, indicators_config)
+
+    # === ATR 1H normalized (for ATR-based stops in env) ===
+    # Env ожидает ключ 'ATR1H_21_NORM' длиной как df_5min (5m), апсемпленный из 1h.
+    # atr_norm = atr_abs_1h / close_1h  -> далее env делает atr_abs = atr_norm * current_price_5m.
+    try:
+        if df_1h_clean is not None and hasattr(df_1h_clean, "shape") and df_1h_clean.shape[0] >= 25 and df_5min_clean is not None:
+            high_1h = df_1h_clean[:, 1].astype(np.float64)
+            low_1h = df_1h_clean[:, 2].astype(np.float64)
+            close_1h = df_1h_clean[:, 3].astype(np.float64)
+            atr_1h_abs = calculate_atr(high_1h, low_1h, close_1h, length=21)
+            atr_1h_abs = np.nan_to_num(atr_1h_abs, nan=0.0)
+            atr_1h_norm = (atr_1h_abs / np.maximum(close_1h, 1e-12)).astype(np.float32)
+
+            # Upsample 1h -> 5m by repeating each 1h value for 12 bars
+            T5 = int(df_5min_clean.shape[0])
+            T1 = int(df_1h_clean.shape[0])
+            atr_1h_norm_5m = np.zeros(T5, dtype=np.float32)
+            for i in range(T5):
+                idx_1h = i // 12
+                if idx_1h < 0:
+                    idx_1h = 0
+                elif idx_1h >= T1:
+                    idx_1h = T1 - 1
+                atr_1h_norm_5m[i] = atr_1h_norm[idx_1h]
+            individual_indicators["ATR1H_21_NORM"] = atr_1h_norm_5m
+    except Exception:
+        # Если что-то пошло не так — просто не добавляем ключ (env корректно фоллбечит на фиксированный thr)
+        pass
     
     return df_5min_clean, df_15min_clean, df_1h_clean, indicators_array, individual_indicators

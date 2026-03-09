@@ -77,7 +77,11 @@ class BybitExchangeGateway(ExchangeGateway):
                 'timeDifference': True,
             }
         })
-        self.ex.load_markets()
+        try:
+            from utils.bybit_rate_limiter import load_markets_cached
+            load_markets_cached(self.ex)
+        except Exception:
+            self.ex.load_markets()
         self._ticker_thread: Optional[threading.Thread] = None
         self._ticker_stop = threading.Event()
         self._ticker_cb: Optional[Callable[[dict], None]] = None

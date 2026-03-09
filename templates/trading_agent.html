@@ -1722,6 +1722,12 @@
                             const mc = prediction.market_conditions || {};
                             const cooldownGate = mc.postexit_cooldown_gate;
                             const isCooldownBlocked = cooldownGate && cooldownGate.blocked;
+                            // Проверяем блокировку входа "высокий пик" (peak-extension gate)
+                            const peakGate = mc.peak_extension_gate;
+                            const isPeakBlocked = peakGate && peakGate.blocked;
+                            // Проверяем блокировку шорта "пик вниз" (dip-extension gate)
+                            const dipGate = mc.dip_extension_gate;
+                            const isDipBlocked = dipGate && dipGate.blocked;
                             const gigachatText = prediction.market_conditions && prediction.market_conditions.gigachat_text;
                             const gigachatOk = prediction.market_conditions && prediction.market_conditions.gigachat_ok;
                             const gigachatLatency = prediction.market_conditions && prediction.market_conditions.gigachat_latency_ms;
@@ -1729,12 +1735,12 @@
                             const gigachatDecision = prediction.market_conditions && prediction.market_conditions.gigachat_decision;
                             const gigachatReason = prediction.market_conditions && prediction.market_conditions.gigachat_reason;
                             
-                            const borderColor = isCooldownBlocked ? '#e74c3c' : (isQgateFiltered ? '#ffc107' : (actionClass === 'buy' ? '#28a745' : actionClass === 'sell' ? '#dc3545' : '#6c757d'));
+                            const borderColor = isCooldownBlocked ? '#e74c3c' : ((isPeakBlocked || isDipBlocked) ? '#e74c3c' : (isQgateFiltered ? '#ffc107' : (actionClass === 'buy' ? '#28a745' : actionClass === 'sell' ? '#dc3545' : '#6c757d')));
                             predictionsHTML += `
                                 <div class="trade-item" style="border-left: 4px solid ${borderColor};">
                                     <div class="trade-header">
                                         <span class="trade-action ${actionClass}">${prediction.action.toUpperCase()}</span>
-                                        ${isCooldownBlocked ? '<span class="trade-confidence" style="color:#e74c3c;font-weight:700;">⏸️ SL Cooldown</span>' : (isQgateFiltered ? '<span class="trade-confidence warning">🚫 Q-gate отфильтровано</span>' : `<span class="trade-confidence ${confidenceClass}">Уверенность: ${(prediction.confidence * 100).toFixed(1)}%</span>`)}
+                                        ${isCooldownBlocked ? '<span class="trade-confidence" style="color:#e74c3c;font-weight:700;">⏸️ SL Cooldown</span>' : (isPeakBlocked ? '<span class="trade-confidence" style="color:#e74c3c;font-weight:700;">⛰️ High peak (no entry)</span>' : (isDipBlocked ? '<span class="trade-confidence" style="color:#e74c3c;font-weight:700;">🕳️ Low valley (no short)</span>' : (isQgateFiltered ? '<span class="trade-confidence warning">🚫 Q-gate отфильтровано</span>' : `<span class="trade-confidence ${confidenceClass}">Уверенность: ${(prediction.confidence * 100).toFixed(1)}%</span>`)))}
                                         <span>${predictionTime}</span>
                                     </div>
                                     <div class="trade-details">
@@ -1755,6 +1761,20 @@
                                             <div class="value">[${prediction.q_values.map(v => v.toFixed(3)).join(', ')}]</div>
                                         </div>
                                     </div>
+                                    ${isPeakBlocked ? `
+                                    <div style="margin-top: 10px; padding: 10px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; font-size: 12px;">
+                                        <strong>⛰️ Блокировка входа: высокий пик</strong><br>
+                                        <div style="margin-top:6px; color:#721c24;">
+                                            Рост за ${peakGate?.lookback || '—'} баров: ${((peakGate?.ret || 0) * 100).toFixed(2)}% (порог ${( (peakGate?.ret_thr || 0) * 100).toFixed(2)}%), близко к high: ${peakGate?.near_high ? 'да' : 'нет'}
+                                        </div>
+                                    </div>` : ''}
+                                    ${isDipBlocked ? `
+                                    <div style="margin-top: 10px; padding: 10px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; font-size: 12px;">
+                                        <strong>🕳️ Блокировка шорта: “пик вниз”</strong><br>
+                                        <div style="margin-top:6px; color:#721c24;">
+                                            Падение за ${dipGate?.lookback || '—'} баров: ${(Math.abs((dipGate?.ret || 0)) * 100).toFixed(2)}% (порог ${( (dipGate?.ret_thr || 0) * 100).toFixed(2)}%), близко к low: ${dipGate?.near_low ? 'да' : 'нет'}
+                                        </div>
+                                    </div>` : ''}
                                     ${isQgateFiltered ? `
                                     <div style="margin-top: 10px; padding: 10px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; font-size: 12px;">
                                         <strong>🚫 Q-gate фильтрация</strong>${qgateSide ? ` <span style="opacity:0.8">(${qgateSide.toUpperCase()})</span>` : ''}:<br>

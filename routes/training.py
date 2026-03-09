@@ -125,6 +125,15 @@ def train_dqn_symbol_route():
     except Exception:
         episode_length = None
 
+    cutoff_days_raw = data.get('cutoff_days') or request.form.get('cutoff_days') or request.args.get('cutoff_days') or 90
+    cutoff_days = 90
+    try:
+        cutoff_days = int(cutoff_days_raw)
+    except Exception:
+        cutoff_days = 90
+    if cutoff_days < 0:
+        cutoff_days = 0
+
     # Новые параметры: выбор энкодера и режим обучения энкодера
     encoder_id = (data.get('encoder_id') or request.form.get('encoder_id') or '').strip()
     train_encoder = data.get('train_encoder')
@@ -232,7 +241,7 @@ def train_dqn_symbol_route():
         _ep_len = episode_length if (episode_length is not None) else 'cfg'
         _rm = _rm_tag(env_overrides)
         _cfg = _cfg_tag(cfg_overrides)
-        _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}|{_cfg}"
+        _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|cut={cutoff_days}|{(direction or 'long')}|{_rm}|{_cfg}"
         _queued_key = f"celery:train:queued:{_biz_key}"
         _running_key_biz = f"celery:train:running:{_biz_key}"
         _finished_key = f"celery:train:finished:{_biz_key}"
@@ -260,6 +269,8 @@ def train_dqn_symbol_route():
             'direction': direction,
             'env_overrides': env_overrides,
             'cfg_overrides': cfg_overrides,
+            'limit_candles': 100000,
+            'cutoff_days': cutoff_days,
         },
         queue="train",
     )
@@ -283,7 +294,7 @@ def train_dqn_symbol_route():
             _ep_len = episode_length if (episode_length is not None) else 'cfg'
             _rm = _rm_tag(env_overrides)
             _cfg = _cfg_tag(cfg_overrides)
-            _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}|{_cfg}"
+            _biz_key = f"{symbol.upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|cut={cutoff_days}|{(direction or 'long')}|{_rm}|{_cfg}"
             redis_client.setex(f"celery:train:queued:{_biz_key}", max(30, _ttl), task.id)
         except Exception:
             pass
@@ -300,6 +311,7 @@ def train_dqn_symbol_route():
             "seed": seed,
             "env_overrides": env_overrides,
             "cfg_overrides": cfg_overrides,
+            "cutoff_days": cutoff_days,
         })
     return redirect(url_for("index"))
 
@@ -329,6 +341,14 @@ def train_dqn_grid_route():
         if isinstance(train_encoder, str):
             train_encoder = train_encoder.strip().lower() in ('1', 'true', 'yes', 'on')
         train_encoder = bool(train_encoder) if train_encoder is not None else False
+
+        cutoff_days = data.get('cutoff_days', 90)
+        try:
+            cutoff_days = int(cutoff_days)
+        except Exception:
+            cutoff_days = 90
+        if cutoff_days < 0:
+            cutoff_days = 0
 
         seed_base_raw = (data.get('seed') or '').strip() if isinstance(data.get('seed'), str) else data.get('seed')
         seed_base = None
@@ -409,12 +429,23 @@ def train_dqn_grid_route():
             return out
 
         try:
-            sl_from = _float(grid.get('sl_from'), 'sl_from')
-            sl_to = _float(grid.get('sl_to'), 'sl_to')
-            sl_step = _float(grid.get('sl_step'), 'sl_step')
-            tp_from = _float(grid.get('tp_from'), 'tp_from')
-            tp_to = _float(grid.get('tp_to'), 'tp_to')
-            tp_step = _float(grid.get('tp_step'), 'tp_step')
+            # ATR-only режим: SL/TP фиксированы как аварийные, варьируем ATR-множители
+            atr_sl_from = _float(grid.get('atr_sl_from', '1.0'), 'atr_sl_from')
+            atr_sl_to = _float(grid.get('atr_sl_to', '2.0'), 'atr_sl_to')
+            atr_sl_step = _float(grid.get('atr_sl_step', '0.5'), 'atr_sl_step')
+            # BUY filters knobs (optional, fixed values; empty => None)
+            def _opt_float(key: str):
+                v = grid.get(key, None)
+                if v is None:
+                    return None
+                if isinstance(v, str) and v.strip() == '':
+                    return None
+                return _float(v, key)
+            buy_roi_thr = _opt_float('buy_roi_thr')          # e.g. -0.01
+            buy_trend_thr = _opt_float('buy_trend_thr')      # e.g. 0.0
+            buy_volat_thr = _opt_float('buy_volat_thr')      # e.g. 0.003
+            strict_floor = _opt_float('buy_strictness_floor')  # e.g. 0.3
+            entry_gate = _opt_float('entry_confidence_gate') # e.g. 0.6
             mh_from = _int(grid.get('min_hold_from'), 'min_hold_from')
             mh_to = _int(grid.get('min_hold_to'), 'min_hold_to')
             mh_step = _int(grid.get('min_hold_step'), 'min_hold_step')
@@ -469,8 +500,7 @@ def train_dqn_grid_route():
         if max_models <= 0 or max_models > 500:
             return jsonify({"success": False, "error": "max_models must be 1..500"}), 400
 
-        sl_list = _frange("SL", sl_from, sl_to, sl_step)
-        tp_list = _frange("TP", tp_from, tp_to, tp_step)
+        atr_sl_list = _frange("atr_sl_mult", atr_sl_from, atr_sl_to, atr_sl_step)
         mh_list = list(range(mh_from, mh_to + 1, mh_step)) if mh_step > 0 else []
         if not mh_list:
             return jsonify({"success": False, "error": "min_hold range invalid"}), 400
@@ -478,34 +508,48 @@ def train_dqn_grid_route():
         trail_list = _frange("atr_trail_mult", trail_from, trail_to, trail_step)
 
         # cartesian size
-        total = len(sl_list) * len(tp_list) * len(mh_list) * len(vt_list) * len(trail_list) * len(batch_sizes) * len(memory_sizes) * len(hidden_sizes_list) * len(eps_decay_steps_list)
+        total = len(atr_sl_list) * len(mh_list) * len(vt_list) * len(trail_list) * len(batch_sizes) * len(memory_sizes) * len(hidden_sizes_list) * len(eps_decay_steps_list)
         if total <= 0:
             return jsonify({"success": False, "error": "empty grid"}), 400
         if total > 500:
             return jsonify({"success": False, "error": f"grid too large: {total} (>500)"}), 400
 
+        # ATR-only: SL/TP фиксированы как аварийные (широкие), выход через ATR trailing/SL
+        EMERGENCY_SL = -0.50
+        EMERGENCY_TP = 0.15
+
         # select subset deterministically if needed
         combos = []
-        for sl in sl_list:
-            for tp in tp_list:
-                for mh in mh_list:
-                    for vt in vt_list:
-                      for tr in trail_list:
-                        for bs in batch_sizes:
-                            for ms in memory_sizes:
-                                for hs in hidden_sizes_list:
-                                    for dec in eps_decay_steps_list:
-                                        rm = {"STOP_LOSS_PCT": sl, "TAKE_PROFIT_PCT": tp, "min_hold_steps": mh, "volume_threshold": vt, "atr_trail_mult": tr}
-                                        cfg_ov = {}
-                                        if bs is not None:
-                                            cfg_ov["batch_size"] = int(bs)
-                                        if ms is not None:
-                                            cfg_ov["memory_size"] = int(ms)
-                                        if hs is not None:
-                                            cfg_ov["hidden_sizes"] = list(hs)
-                                        if dec is not None:
-                                            cfg_ov["eps_decay_steps"] = int(dec)
-                                        combos.append({"risk_management": rm, "cfg_overrides": (cfg_ov or None)})
+        for asl in atr_sl_list:
+            for mh in mh_list:
+                for vt in vt_list:
+                  for tr in trail_list:
+                    for bs in batch_sizes:
+                        for ms in memory_sizes:
+                            for hs in hidden_sizes_list:
+                                for dec in eps_decay_steps_list:
+                                    rm = {"STOP_LOSS_PCT": EMERGENCY_SL, "TAKE_PROFIT_PCT": EMERGENCY_TP, "min_hold_steps": mh, "volume_threshold": vt, "atr_trail_mult": tr, "atr_sl_mult": asl}
+                                    # Optional buy-filter overrides
+                                    if buy_roi_thr is not None:
+                                        rm["buy_roi_thr"] = float(buy_roi_thr)
+                                    if buy_trend_thr is not None:
+                                        rm["buy_trend_thr"] = float(buy_trend_thr)
+                                    if buy_volat_thr is not None:
+                                        rm["buy_volat_thr"] = float(buy_volat_thr)
+                                    if strict_floor is not None:
+                                        rm["buy_strictness_floor"] = float(strict_floor)
+                                    if entry_gate is not None:
+                                        rm["entry_confidence_gate"] = float(entry_gate)
+                                    cfg_ov = {}
+                                    if bs is not None:
+                                        cfg_ov["batch_size"] = int(bs)
+                                    if ms is not None:
+                                        cfg_ov["memory_size"] = int(ms)
+                                    if hs is not None:
+                                        cfg_ov["hidden_sizes"] = list(hs)
+                                    if dec is not None:
+                                        cfg_ov["eps_decay_steps"] = int(dec)
+                                    combos.append({"risk_management": rm, "cfg_overrides": (cfg_ov or None)})
         selected = combos
         if len(combos) > max_models:
             idxs = []
@@ -531,6 +575,8 @@ def train_dqn_grid_route():
                     "direction": direction,
                     "env_overrides": env_overrides,
                     "cfg_overrides": cfg_overrides,
+                    "limit_candles": 100000,
+                    "cutoff_days": cutoff_days,
                 },
                 queue="train",
             )
@@ -566,7 +612,7 @@ def train_dqn_grid_route():
                     _cfg = "cfg:-"
                 _enc = (encoder_id or '-')
                 _train_enc = 1 if train_encoder else 0
-                _biz_key = f"{symbol}|{engine}|{_enc}|{_train_enc}|{episodes}|{episode_length}|{direction}|{_rm}|{_cfg}"
+                _biz_key = f"{symbol}|{engine}|{_enc}|{_train_enc}|{episodes}|{episode_length}|cut={cutoff_days}|{direction}|{_rm}|{_cfg}"
                 redis_client.setex(f"celery:train:queued:{_biz_key}", max(30, _ttl), task.id)
             except Exception:
                 pass
@@ -577,6 +623,7 @@ def train_dqn_grid_route():
             "total_combinations": total,
             "selected": len(selected),
             "seed_base": seed_base,
+            "cutoff_days": cutoff_days,
             "queued": queued,
         })
     except Exception as e:
@@ -601,6 +648,7 @@ def train_xgb_symbol_route():
     label_delta = data.get('label_delta') or request.form.get('label_delta')
     entry_stride = data.get('entry_stride') or request.form.get('entry_stride')
     max_trades = data.get('max_trades') or request.form.get('max_trades')
+    cutoff_days = data.get('cutoff_days') or request.form.get('cutoff_days') or request.args.get('cutoff_days') or 90
     try:
         horizon_steps = int(horizon_steps) if horizon_steps not in (None, '') else None
     except Exception:
@@ -637,6 +685,12 @@ def train_xgb_symbol_route():
         max_trades = int(max_trades) if max_trades not in (None, '') else None
     except Exception:
         max_trades = None
+    try:
+        cutoff_days = int(cutoff_days) if cutoff_days not in (None, '') else 90
+    except Exception:
+        cutoff_days = 90
+    if cutoff_days < 0:
+        cutoff_days = 0
 
     task = train_xgb_symbol.apply_async(kwargs={
         'symbol': symbol,
@@ -651,6 +705,7 @@ def train_xgb_symbol_route():
         'label_delta': label_delta,
         'entry_stride': entry_stride,
         'max_trades': max_trades,
+        'cutoff_days': cutoff_days,
     }, queue='celery')
 
     # UI list
@@ -678,6 +733,7 @@ def train_xgb_grid_route():
     limit_quick = data.get('limit_candles_quick') or request.form.get('limit_candles_quick')
     max_hold_steps = data.get('max_hold_steps') or request.form.get('max_hold_steps')
     min_profit = data.get('min_profit') or request.form.get('min_profit')
+    cutoff_days = data.get('cutoff_days') or request.form.get('cutoff_days') or request.args.get('cutoff_days') or 90
     try:
         limit_final = int(limit_final) if limit_final not in (None, '') else None
     except Exception:
@@ -694,6 +750,12 @@ def train_xgb_grid_route():
         min_profit = float(min_profit) if min_profit not in (None, '') else None
     except Exception:
         min_profit = None
+    try:
+        cutoff_days = int(cutoff_days) if cutoff_days not in (None, '') else 90
+    except Exception:
+        cutoff_days = 90
+    if cutoff_days < 0:
+        cutoff_days = 0
 
     task = train_xgb_grid.apply_async(kwargs={
         'symbol': symbol,
@@ -701,6 +763,7 @@ def train_xgb_grid_route():
         'limit_candles_quick': limit_quick,
         'base_max_hold_steps': max_hold_steps,
         'base_min_profit': min_profit,
+        'cutoff_days': cutoff_days,
     }, queue='celery')
 
     try:
@@ -730,6 +793,7 @@ def train_xgb_grid_task_route():
     fee_bps = data.get('fee_bps') or request.form.get('fee_bps')
     max_hold_steps = data.get('max_hold_steps') or request.form.get('max_hold_steps')
     min_profit = data.get('min_profit') or request.form.get('min_profit')
+    cutoff_days = data.get('cutoff_days') or request.form.get('cutoff_days') or request.args.get('cutoff_days') or 90
     try:
         limit_final = int(limit_final) if limit_final not in (None, '') else None
     except Exception:
@@ -750,6 +814,12 @@ def train_xgb_grid_task_route():
         min_profit = float(min_profit) if min_profit not in (None, '') else None
     except Exception:
         min_profit = None
+    try:
+        cutoff_days = int(cutoff_days) if cutoff_days not in (None, '') else 90
+    except Exception:
+        cutoff_days = 90
+    if cutoff_days < 0:
+        cutoff_days = 0
 
     if task_name == 'directional':
         task = train_xgb_grid.apply_async(kwargs={
@@ -758,6 +828,7 @@ def train_xgb_grid_task_route():
             'limit_candles_quick': limit_quick,
             'base_max_hold_steps': max_hold_steps,
             'base_min_profit': min_profit,
+            'cutoff_days': cutoff_days,
         }, queue='celery')
     else:
         task = train_xgb_grid_entry_exit.apply_async(kwargs={
@@ -769,6 +840,7 @@ def train_xgb_grid_task_route():
             'base_max_hold_steps': max_hold_steps,
             'base_fee_bps': fee_bps,
             'base_min_profit': min_profit,
+            'cutoff_days': cutoff_days,
         }, queue='celery')
 
     try:
@@ -802,6 +874,14 @@ def train_xgb_grid_full_route():
         'direction': _get('direction') or 'long',
         'task': _get('task') or 'entry_long',
         'limit_candles': _get('limit_candles', int),
+        'cutoff_days': _get('cutoff_days', int) or 90,
+        'p_enter_threshold_list': data.get('p_enter_threshold_list'),
+        'entry_tp_pct': _get('entry_tp_pct', float),
+        'entry_sl_pct': _get('entry_sl_pct', float),
+        'entry_trail_pct': _get('entry_trail_pct', float),
+        'entry_tp_pct_list': data.get('entry_tp_pct_list'),
+        'entry_sl_pct_list': data.get('entry_sl_pct_list'),
+        'entry_trail_pct_list': data.get('entry_trail_pct_list'),
         'horizon_steps_list': data.get('horizon_steps_list'),
         'threshold_list': data.get('threshold_list'),
         'max_hold_steps_list': data.get('max_hold_steps_list'),
@@ -828,6 +908,130 @@ def train_xgb_grid_full_route():
         pass
 
     return jsonify({"success": True, "task_id": task.id, "symbol": data.get('symbol'), "task": data.get('task')})
+
+
+@training_bp.route('/xgb_grid_status', methods=['GET'])
+def xgb_grid_status():
+    task_id = (request.args.get("task_id") or "").strip()
+    if not task_id:
+        return jsonify({"success": False, "error": "task_id required"}), 400
+    ar = AsyncResult(task_id, app=celery)
+    resp = {"success": True, "task_id": task_id, "state": ar.state}
+    if ar.state in ("PROGRESS",):
+        meta = ar.info or {}
+        resp["done"] = meta.get("done", 0)
+        resp["total"] = meta.get("total", 0)
+        resp["keep_top_n"] = meta.get("keep_top_n", 0)
+        logs = meta.get("logs", [])
+        resp["last_log"] = logs[-1] if logs else ""
+    elif ar.state == "SUCCESS":
+        meta = ar.result if isinstance(ar.result, dict) else {}
+        if meta.get("success") is False:
+            resp["state"] = "FAILURE"
+            resp["error"] = meta.get("error") or "unknown task error"
+        else:
+            resp["done"] = meta.get("total_runs", meta.get("done", 0))
+            resp["total"] = meta.get("total_runs", meta.get("total", 0))
+            resp["best"] = meta.get("best")
+    elif ar.state == "FAILURE":
+        resp["error"] = str(ar.result) if ar.result else "unknown"
+    return jsonify(resp)
+
+
+@training_bp.route('/xgb_active_training', methods=['GET'])
+def xgb_active_training():
+    """Scan Redis for active XGB training tasks and return their Celery status."""
+    import time as _time
+    import re as _re
+    try:
+        keys = redis_client.keys("celery:train:xgb:*")
+        active = []
+        for key in keys:
+            task_id = redis_client.get(key)
+            if not task_id:
+                continue
+            if isinstance(task_id, bytes):
+                task_id = task_id.decode()
+            key_str = key.decode() if isinstance(key, bytes) else key
+
+            ar = AsyncResult(task_id, app=celery)
+            state = ar.state
+
+            if state in ("SUCCESS", "FAILURE", "REVOKED"):
+                try:
+                    redis_client.delete(key)
+                except Exception:
+                    pass
+                continue
+
+            parts = key_str.replace("celery:train:xgb:", "").split(":")
+            grid_type = parts[0] if parts else "unknown"
+            symbol = parts[1] if len(parts) > 1 else ""
+            task_name = parts[2] if len(parts) > 2 else ""
+
+            info = {
+                "task_id": task_id,
+                "state": state,
+                "grid_type": grid_type,
+                "symbol": symbol,
+                "task_name": task_name,
+            }
+
+            if state == "PROGRESS":
+                meta = ar.info or {}
+                info["done"] = meta.get("done", 0)
+                info["total"] = meta.get("total", 0)
+                info["symbol"] = meta.get("symbol") or symbol
+                info["task_name"] = meta.get("task") or task_name
+                info["started_at"] = meta.get("started_at")
+                logs = meta.get("logs", [])
+                info["last_log"] = logs[-1] if logs else ""
+                info["logs_tail"] = logs[-5:] if logs else []
+                all_logs = logs
+                sa = meta.get("started_at")
+                d = meta.get("done", 0)
+                t = meta.get("total", 0)
+                if sa and d > 0 and t > 0:
+                    elapsed = _time.time() - float(sa)
+                    avg_per_run = elapsed / d
+                    remaining = (t - d) * avg_per_run
+                    info["elapsed_sec"] = round(elapsed)
+                    info["eta_sec"] = round(remaining)
+                    info["avg_per_run_sec"] = round(avg_per_run, 1)
+                elif d > 0 and t > 0 and len(all_logs) >= 2:
+                    _ts_re = _re.compile(r'^\[(\d{2}):(\d{2}):(\d{2})\].*?(\d+)/(\d+)')
+                    pairs = []
+                    for lg in all_logs:
+                        m = _ts_re.match(lg)
+                        if m:
+                            sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+                            pairs.append((sec, int(m.group(4))))
+                    if len(pairs) >= 2:
+                        dt = pairs[-1][0] - pairs[0][0]
+                        if dt < 0:
+                            dt += 86400
+                        dd = pairs[-1][1] - pairs[0][1]
+                        if dt > 0 and dd > 0:
+                            avg_per_run = dt / dd
+                            remaining = (t - d) * avg_per_run
+                            first_ts = pairs[0][0]
+                            now_s = _time.gmtime()
+                            now_sec = now_s.tm_hour * 3600 + now_s.tm_min * 60 + now_s.tm_sec
+                            elapsed_approx = now_sec - first_ts
+                            if elapsed_approx < 0:
+                                elapsed_approx += 86400
+                            info["elapsed_sec"] = round(elapsed_approx)
+                            info["eta_sec"] = round(remaining)
+                            info["avg_per_run_sec"] = round(avg_per_run, 1)
+            elif state == "PENDING":
+                info["done"] = 0
+                info["total"] = 0
+
+            active.append(info)
+
+        return jsonify({"success": True, "active": active})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @training_bp.route('/continue_training', methods=['POST'])

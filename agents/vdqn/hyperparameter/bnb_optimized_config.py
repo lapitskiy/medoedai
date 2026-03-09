@@ -20,9 +20,14 @@ BNB_OPTIMIZED_CONFIG = {
     # Индикаторы (минимальные правки, можно расширять позже)
     'indicators_config': {
         'rsi': {'length': 14},
-        'ema': {'lengths': [100, 200]},
-        'ema_cross': {'pairs': [(100, 200)], 'include_cross_signal': True},
+        'rsi_7': {'length': 7},
+        'ema': {'lengths': [20, 50, 100, 200]},
+        'ema_cross': {'pairs': [(20, 50), (100, 200)], 'include_cross_signal': True},
         'sma': {'length': 14},
+        'atr': {'length': 14},
+        'obv': {},
+        'returns': {'periods': [1, 3, 12, 60]},
+        'zscore': {'ema_length': 50, 'window': 20},
     },
 
     # Параметры обучения

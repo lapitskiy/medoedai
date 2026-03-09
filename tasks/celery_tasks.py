@@ -203,6 +203,8 @@ def train_dqn_symbol(
     direction: str = 'long',
     env_overrides: dict | None = None,
     cfg_overrides: dict | None = None,
+    limit_candles: int | None = None,
+    cutoff_days: int | None = None,
 ):
     """Обучение DQN для одного символа (BTCUSDT/ETHUSDT/...)
 
@@ -269,9 +271,10 @@ def train_dqn_symbol(
         _train_enc = 1 if train_encoder else 0
         _eps = episodes if (episodes is not None) else 'env'
         _ep_len = episode_length if (episode_length is not None) else 'cfg'
+        _cut = int(cutoff_days or 0)
         _rm = _rm_tag(env_overrides)
         _cfg = _cfg_tag(cfg_overrides)
-        _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|{(direction or 'long')}|{_rm}|{_cfg}"
+        _biz_key = f"{(symbol or '').upper()}|{_engine}|{_enc}|{_train_enc}|{_eps}|{_ep_len}|cut={_cut}|{(direction or 'long')}|{_rm}|{_cfg}"
         _finished_key = f"celery:train:finished:{_biz_key}"
         _queued_key = f"celery:train:queued:{_biz_key}"
         _running_key_biz = f"celery:train:running:{_biz_key}"
@@ -297,10 +300,13 @@ def train_dqn_symbol(
         print(f"\n🚀 Старт обучения для {symbol} [{datetime.now()}]")
         if encoder_id:
             print(f"🧩 Выбран энкодер: {encoder_id} | режим: {'unfrozen' if train_encoder else 'frozen'}")
+        train_window = int(limit_candles) if limit_candles is not None else 100000
+        cd = int(cutoff_days or 0)
+        fetch_limit = int(train_window + max(0, cd) * 288 + 2000)
         df_5min = db_get_or_fetch_ohlcv(
             symbol_name=symbol,
             timeframe='5m',
-            limit_candles=100000,
+            limit_candles=fetch_limit,
             exchange_id='bybit'
         )
 
@@ -312,7 +318,7 @@ def train_dqn_symbol(
                     symbol=symbol,
                     interval='5m',
                     months_to_fetch=12,
-                    desired_candles=100000
+                    desired_candles=fetch_limit
                 )
                 if csv_file_path:
                     loaded_count = load_latest_candles_from_csv_to_db(
@@ -325,7 +331,7 @@ def train_dqn_symbol(
                 df_5min = db_get_or_fetch_ohlcv(
                     symbol_name=symbol,
                     timeframe='5m',
-                    limit_candles=100000,
+                    limit_candles=fetch_limit,
                     exchange_id='bybit'
                 )
             except Exception as fetch_err:
@@ -334,6 +340,23 @@ def train_dqn_symbol(
         
         if df_5min is None or df_5min.empty:
             return {"message": f"❌ Данные для {symbol} не найдены"}
+
+        # Cutoff by time: exclude last N days, then take last train_window candles
+        try:
+            if cd > 0:
+                if "timestamp" not in df_5min.columns:
+                    return {"message": f"❌ {symbol}: df_5min has no timestamp for cutoff_days={cd}"}
+                max_ts = int(float(df_5min["timestamp"].max()))
+                cutoff_ts = int(max_ts - cd * 24 * 3600 * 1000)
+                df_cut = df_5min[df_5min["timestamp"] <= cutoff_ts].copy()
+                if len(df_cut) < train_window:
+                    return {"message": f"❌ {symbol}: not enough candles for cutoff_days={cd} (have={len(df_cut)} need={train_window})"}
+                df_5min = df_cut.tail(train_window).copy()
+                print(f"🗓 cutoff_days={cd} cutoff_ts_ms={cutoff_ts} train_window={train_window} fetched={fetch_limit}")
+            else:
+                df_5min = df_5min.tail(train_window).copy()
+        except Exception as _ce:
+            return {"message": f"❌ {symbol}: cutoff failed: {_ce}"}
 
         import pandas as pd
         df_5min['datetime'] = pd.to_datetime(df_5min['timestamp'], unit='ms')
@@ -352,6 +375,7 @@ def train_dqn_symbol(
             'df_15min': df_15min,
             'df_1h': df_1h,
             'symbol': symbol,
+            'cutoff_days': cd,
             'encoder': {
                 'id': encoder_id,
                 'train_encoder': bool(train_encoder),

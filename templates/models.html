@@ -123,36 +123,27 @@
                     <input id="trainSeedInput" class="form-control" type="number" min="1" step="1" placeholder="например, 42">
                 </div>
                 <div id="xgb-training"></div>
-                <div class="form-group">
-                    <label>XGB: horizon_steps (5m шаги)</label>
-                    <input id="xgbHorizonStepsInput" class="form-control" type="number" min="1" step="1" value="12">
-                </div>
-                <div class="form-group">
-                    <label>XGB: threshold (future return)</label>
-                    <input id="xgbThresholdInput" class="form-control" type="number" min="0" step="0.0001" value="0.002">
-                </div>
                 <div class="button-group">
                     <button class="btn btn-primary" onclick="startTrainingSelected()">🚀 Обучить</button>
                     <button class="btn btn-warning" onclick="startDqnGridSelected()">🧪 Grid</button>
-                    <button class="btn btn-info" onclick="startXgbTrainingSelected()">🧠 Обучить XGB</button>
                 </div>
                 <div id="trainStatus"></div>
 
                 <!-- Подпункт: DQN Grid (использует те же episodes/episode_length/direction/seed/encoder сверху) -->
                 <div id="training-grid" style="margin-top:14px; padding-top:12px; border-top:1px solid #e5e7eb;">
                     <div class="muted" style="margin-bottom:6px;"><b>🧪 DQN Grid</b> — перебор risk_management + (опционально) DQN hyperparams</div>
-                    <div class="statistics-grid" style="grid-template-columns: repeat(5, 1fr); gap:10px;">
+                    <div class="statistics-grid" style="grid-template-columns: repeat(4, 1fr); gap:10px;">
                         <div class="form-group">
-                            <label>SL (отриц.), from (более отриц.) / to (менее отриц.) / step</label>
-                            <input id="gridSlFrom" class="form-control" type="number" step="0.0001" value="-0.03">
-                            <input id="gridSlTo" class="form-control" type="number" step="0.0001" value="-0.01" style="margin-top:6px;">
-                            <input id="gridSlStep" class="form-control" type="number" step="0.0001" value="0.005" style="margin-top:6px;">
+                            <label>atr_sl_mult from / to / step</label>
+                            <input id="gridAtrSlFrom" class="form-control" type="number" step="0.1" value="1.0">
+                            <input id="gridAtrSlTo" class="form-control" type="number" step="0.1" value="2.0" style="margin-top:6px;">
+                            <input id="gridAtrSlStep" class="form-control" type="number" step="0.1" value="0.5" style="margin-top:6px;">
                         </div>
                         <div class="form-group">
-                            <label>TP from / to / step</label>
-                            <input id="gridTpFrom" class="form-control" type="number" step="0.0001" value="0.015">
-                            <input id="gridTpTo" class="form-control" type="number" step="0.0001" value="0.03" style="margin-top:6px;">
-                            <input id="gridTpStep" class="form-control" type="number" step="0.0001" value="0.005" style="margin-top:6px;">
+                            <label>atr_trail_mult from / to / step</label>
+                            <input id="gridTrailFrom" class="form-control" type="number" step="0.1" value="1.0">
+                            <input id="gridTrailTo" class="form-control" type="number" step="0.1" value="2.0" style="margin-top:6px;">
+                            <input id="gridTrailStep" class="form-control" type="number" step="0.1" value="0.5" style="margin-top:6px;">
                         </div>
                         <div class="form-group">
                             <label>min_hold_steps from / to / step</label>
@@ -166,12 +157,33 @@
                             <input id="gridVolTo" class="form-control" type="number" step="0.0001" value="0.004" style="margin-top:6px;">
                             <input id="gridVolStep" class="form-control" type="number" step="0.0001" value="0.001" style="margin-top:6px;">
                         </div>
+                    </div>
+                    <div class="statistics-grid" style="grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:10px;">
                         <div class="form-group">
-                            <label>atr_trail_mult from / to / step</label>
-                            <input id="gridTrailFrom" class="form-control" type="number" step="0.1" value="1.5">
-                            <input id="gridTrailTo" class="form-control" type="number" step="0.1" value="1.5" style="margin-top:6px;">
-                            <input id="gridTrailStep" class="form-control" type="number" step="0.1" value="0.5" style="margin-top:6px;">
+                            <label>BUY filter: buy_roi_thr (fixed, optional)</label>
+                            <input id="gridBuyRoiThr" class="form-control" type="number" step="0.001" value="-0.01" placeholder="например, -0.01">
                         </div>
+                        <div class="form-group">
+                            <label>BUY filter: buy_trend_thr (fixed, optional)</label>
+                            <input id="gridBuyTrendThr" class="form-control" type="number" step="0.001" value="0.0" placeholder="например, 0.0">
+                        </div>
+                        <div class="form-group">
+                            <label>BUY filter: buy_volat_thr (fixed, optional)</label>
+                            <input id="gridBuyVolatThr" class="form-control" type="number" step="0.0005" value="0.003" placeholder="например, 0.003">
+                        </div>
+                        <div class="form-group">
+                            <label>BUY: entry_confidence_gate (fixed, optional)</label>
+                            <input id="gridEntryGate" class="form-control" type="number" step="0.05" value="0.6" placeholder="например, 0.6">
+                        </div>
+                    </div>
+                    <div class="statistics-grid" style="grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:10px;">
+                        <div class="form-group">
+                            <label>BUY: buy_strictness_floor (0..1, optional)</label>
+                            <input id="gridStrictnessFloor" class="form-control" type="number" step="0.05" value="0.3" placeholder="например, 0.3">
+                        </div>
+                        <div class="form-group"></div>
+                        <div class="form-group"></div>
+                        <div class="form-group"></div>
                     </div>
                     <div class="statistics-grid" style="grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:10px;">
                         <div class="form-group">
@@ -194,9 +206,9 @@
                         </div>
                         <div class="form-group">
                             <label>eps_decay_steps from / to / step</label>
-                            <input id="gridEpsDecayFrom" class="form-control" type="number" step="1" value="2500000">
-                            <input id="gridEpsDecayTo" class="form-control" type="number" step="1" value="2500000" style="margin-top:6px;">
-                            <input id="gridEpsDecayStep" class="form-control" type="number" step="1" value="250000" style="margin-top:6px;">
+                            <input id="gridEpsDecayFrom" class="form-control" type="number" step="1" value="150000">
+                            <input id="gridEpsDecayTo" class="form-control" type="number" step="1" value="150000" style="margin-top:6px;">
+                            <input id="gridEpsDecayStep" class="form-control" type="number" step="1" value="50000" style="margin-top:6px;">
                         </div>
                     </div>
                     <div class="form-group" style="margin-top:10px;">
@@ -878,33 +890,6 @@ P/L Ratio: ${plr}
             }
         }
 
-        async function startXgbTrainingForSymbol(symbol) {
-            const statusDiv = document.getElementById('trainStatus');
-            const dirEl = document.getElementById('trainDirectionSelect');
-            const direction = (dirEl && dirEl.value) ? String(dirEl.value).trim().toLowerCase() : 'long';
-            const horizonSteps = document.getElementById('xgbHorizonStepsInput')?.value || 12;
-            const threshold = document.getElementById('xgbThresholdInput')?.value || 0.002;
-            statusDiv.innerHTML = '<div class="status info">⏳ Запуск XGB обучения ' + symbol + ' (' + direction + ')...</div>';
-            try {
-                const payload = { symbol, direction, horizon_steps: horizonSteps, threshold: threshold };
-                const resp = await fetch('/training/train_xgb_symbol', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                const data = await resp.json().catch(() => null);
-                if (data && data.success) {
-                    statusDiv.innerHTML = '<div class="status success">✅ XGB обучение запущено (task: ' + data.task_id + ')</div>';
-                } else if (data && data.error) {
-                    statusDiv.innerHTML = '<div class="status error">❌ ' + String(data.error) + '</div>';
-                } else {
-                    statusDiv.innerHTML = '<div class="status error">❌ Неизвестный ответ сервера</div>';
-                }
-            } catch (e) {
-                statusDiv.innerHTML = '<div class="status error">❌ Ошибка запуска XGB: ' + (e && e.message ? e.message : e) + '</div>';
-            }
-        }
-
         function startTrainingSelected(){
             const sel = document.getElementById('trainSymbolSelect');
             const encSelect = document.getElementById('encoderSelect');
@@ -917,17 +902,6 @@ P/L Ratio: ${plr}
             // Если список энкодеров ещё не загружен для символа — подгрузим
             try{ if(encSelect && encSelect.options.length<=1) loadEncodersForSymbol(symbol); }catch(_){ }
             startTrainingForSymbol(symbol, 'optimized');
-        }
-
-        function startXgbTrainingSelected(){
-            const sel = document.getElementById('trainSymbolSelect');
-            const statusDiv = document.getElementById('trainStatus');
-            const symbol = sel ? (sel.value || '').trim() : '';
-            if(!symbol){
-                if(statusDiv) statusDiv.innerHTML = '<div class="status error">❌ Выберите символ</div>';
-                return;
-            }
-            startXgbTrainingForSymbol(symbol);
         }
 
         async function startDqnGridSelected(){
@@ -949,12 +923,14 @@ P/L Ratio: ${plr}
             const maxModels = document.getElementById('gridMaxModels')?.value || '10';
 
             const grid = {
-                sl_from: document.getElementById('gridSlFrom')?.value,
-                sl_to: document.getElementById('gridSlTo')?.value,
-                sl_step: document.getElementById('gridSlStep')?.value,
-                tp_from: document.getElementById('gridTpFrom')?.value,
-                tp_to: document.getElementById('gridTpTo')?.value,
-                tp_step: document.getElementById('gridTpStep')?.value,
+                atr_sl_from: document.getElementById('gridAtrSlFrom')?.value,
+                atr_sl_to: document.getElementById('gridAtrSlTo')?.value,
+                atr_sl_step: document.getElementById('gridAtrSlStep')?.value,
+                buy_roi_thr: (document.getElementById('gridBuyRoiThr')?.value || '').trim(),
+                buy_trend_thr: (document.getElementById('gridBuyTrendThr')?.value || '').trim(),
+                buy_volat_thr: (document.getElementById('gridBuyVolatThr')?.value || '').trim(),
+                entry_confidence_gate: (document.getElementById('gridEntryGate')?.value || '').trim(),
+                buy_strictness_floor: (document.getElementById('gridStrictnessFloor')?.value || '').trim(),
                 min_hold_from: document.getElementById('gridHoldFrom')?.value,
                 min_hold_to: document.getElementById('gridHoldTo')?.value,
                 min_hold_step: document.getElementById('gridHoldStep')?.value,
@@ -1065,15 +1041,15 @@ P/L Ratio: ${plr}
             return Math.max(1, total);
         }
         function updateGridComboCount(){
-            const sl=countGridSteps('gridSlFrom','gridSlTo','gridSlStep');
-            const tp=countGridSteps('gridTpFrom','gridTpTo','gridTpStep');
+            const atrSl=countGridSteps('gridAtrSlFrom','gridAtrSlTo','gridAtrSlStep');
+            const trail=countGridSteps('gridTrailFrom','gridTrailTo','gridTrailStep');
             const hold=countGridSteps('gridHoldFrom','gridHoldTo','gridHoldStep');
             const vol=countGridSteps('gridVolFrom','gridVolTo','gridVolStep');
             const bs = countGridStepsInt('gridBatchFrom','gridBatchTo','gridBatchStep');
             const ms = countGridStepsInt('gridMemFrom','gridMemTo','gridMemStep');
             const dec = countGridStepsInt('gridEpsDecayFrom','gridEpsDecayTo','gridEpsDecayStep');
             const hs = countHiddenRange();
-            const total=sl*tp*hold*vol*bs*ms*hs*dec;
+            const total=atrSl*trail*hold*vol*bs*ms*hs*dec;
             const el=document.getElementById('gridTotalCombo');
             if(el){ el.textContent=total; el.style.color=total>500?'#dc2626':'#2563eb'; }
         }
@@ -1082,13 +1058,13 @@ P/L Ratio: ${plr}
         const DQN_GRID_CACHE_KEY = 'dqn_grid_cache';
         const DQN_GRID_IDS = [
             'trainSymbolSelect','trainDirectionSelect','episodesInput','episodeLengthInput','trainSeedInput',
-            'gridSlFrom','gridSlTo','gridSlStep','gridTpFrom','gridTpTo','gridTpStep',
+            'gridAtrSlFrom','gridAtrSlTo','gridAtrSlStep',
+            'gridBuyRoiThr','gridBuyTrendThr','gridBuyVolatThr','gridEntryGate','gridStrictnessFloor',
             'gridHoldFrom','gridHoldTo','gridHoldStep','gridVolFrom','gridVolTo','gridVolStep',
             'gridTrailFrom','gridTrailTo','gridTrailStep',
             'gridBatchFrom','gridBatchTo','gridBatchStep','gridMemFrom','gridMemTo','gridMemStep',
             'gridHiddenFrom','gridHiddenTo','gridHiddenStep',
             'gridEpsDecayFrom','gridEpsDecayTo','gridEpsDecayStep','gridMaxModels',
-            'xgbHorizonStepsInput','xgbThresholdInput'
         ];
         function dqnGridSaveCache(){
             const d={};
@@ -1106,14 +1082,15 @@ P/L Ratio: ${plr}
 
         // Привязки
         document.addEventListener('DOMContentLoaded', function(){
-            ['gridSlFrom','gridSlTo','gridSlStep','gridTpFrom','gridTpTo','gridTpStep',
+            ['gridAtrSlFrom','gridAtrSlTo','gridAtrSlStep',
+             'gridBuyRoiThr','gridBuyTrendThr','gridBuyVolatThr','gridEntryGate','gridStrictnessFloor',
              'gridHoldFrom','gridHoldTo','gridHoldStep','gridVolFrom','gridVolTo','gridVolStep',
              'gridBatchFrom','gridBatchTo','gridBatchStep','gridMemFrom','gridMemTo','gridMemStep',
              'gridHiddenFrom','gridHiddenTo','gridHiddenStep','gridEpsDecayFrom','gridEpsDecayTo','gridEpsDecayStep',
              'gridTrailFrom','gridTrailTo','gridTrailStep'
             ].forEach(function(id){ var e=document.getElementById(id); e&&e.addEventListener('input',function(){ updateGridComboCount(); dqnGridSaveCache(); }); });
             ['trainSymbolSelect','trainDirectionSelect','episodesInput','episodeLengthInput','trainSeedInput',
-             'gridMaxModels','xgbHorizonStepsInput','xgbThresholdInput'
+             'gridMaxModels'
             ].forEach(function(id){ var e=document.getElementById(id); if(e) e.addEventListener('change', dqnGridSaveCache); });
             updateGridComboCount();
             try{

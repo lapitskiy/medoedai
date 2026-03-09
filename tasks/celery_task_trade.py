@@ -2471,6 +2471,265 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         except Exception:
             pass
 
+        # --- Peak-extension gate (block late BUY near local peak) ---
+        # Идея: если модель дала BUY, но цена уже "расширилась" (сильный рост) и находится около локального high,
+        # то мы чаще попадаем на разворот/откат у сопротивления. Поэтому режем ENTRY -> HOLD.
+        # ВАЖНО: применяем только для long-entry (BUY). Для short-entry это не тот паттерн.
+        try:
+            if decision == _entry_signal and _entry_signal == 'buy' and df_5m is not None and (not getattr(df_5m, 'empty', False)):
+                # defaults (достаточно консервативные)
+                peak_enabled = True
+                peak_lookback = 96          # 96*5m = 8h
+                peak_ret_thr = 0.03         # +3% за lookback
+                peak_near_high_thr = 0.997  # в пределах ~0.3% от локального high
+
+                def _truthy(v) -> bool:
+                    try:
+                        return str(v).strip().lower() in ('1', 'true', 'yes', 'on')
+                    except Exception:
+                        return False
+
+                # 1) overrides from Postgres (app_settings): scope='trading', group='regime'
+                try:
+                    from utils.settings_store import get_setting_value as _get_setting_value
+                    v0 = _get_setting_value('trading', 'regime', 'PEAK_EXTENSION_VETO')
+                    if v0 is not None:
+                        peak_enabled = _truthy(v0)
+                    v1 = _get_setting_value('trading', 'regime', 'PEAK_EXTENSION_LOOKBACK')
+                    if v1 is not None and str(v1).strip() != '':
+                        peak_lookback = int(float(v1))
+                    v2 = _get_setting_value('trading', 'regime', 'PEAK_EXTENSION_RET_THR')
+                    if v2 is not None and str(v2).strip() != '':
+                        peak_ret_thr = float(v2)
+                    v3 = _get_setting_value('trading', 'regime', 'PEAK_EXTENSION_NEAR_HIGH_THR')
+                    if v3 is not None and str(v3).strip() != '':
+                        peak_near_high_thr = float(v3)
+                except Exception:
+                    pass
+
+                # 2) fallback to Redis trading:regime_config (if DB not configured)
+                try:
+                    cfg = None
+                    if rc is not None:
+                        raw = rc.get('trading:regime_config')
+                        if raw:
+                            cfg = json.loads(raw)
+                    if isinstance(cfg, dict):
+                        if 'peak_extension_veto' in cfg:
+                            peak_enabled = bool(cfg.get('peak_extension_veto') is True or _truthy(cfg.get('peak_extension_veto')))
+                        if 'peak_extension_lookback' in cfg and str(cfg.get('peak_extension_lookback') or '').strip() != '':
+                            peak_lookback = int(float(cfg.get('peak_extension_lookback')))
+                        if 'peak_extension_ret_thr' in cfg and str(cfg.get('peak_extension_ret_thr') or '').strip() != '':
+                            peak_ret_thr = float(cfg.get('peak_extension_ret_thr'))
+                        if 'peak_extension_near_high_thr' in cfg and str(cfg.get('peak_extension_near_high_thr') or '').strip() != '':
+                            peak_near_high_thr = float(cfg.get('peak_extension_near_high_thr'))
+                except Exception:
+                    pass
+
+                # Sanity bounds
+                try:
+                    peak_lookback = int(max(12, min(2000, int(peak_lookback))))
+                except Exception:
+                    peak_lookback = 96
+                try:
+                    peak_ret_thr = float(max(0.0, min(1.0, float(peak_ret_thr))))
+                except Exception:
+                    peak_ret_thr = 0.03
+                try:
+                    peak_near_high_thr = float(max(0.90, min(1.0, float(peak_near_high_thr))))
+                except Exception:
+                    peak_near_high_thr = 0.997
+
+                if peak_enabled:
+                    df_np = None
+                    try:
+                        df_np = df_5m[['open', 'high', 'low', 'close', 'volume']].astype('float32').to_numpy()
+                    except Exception:
+                        df_np = None
+                    if df_np is not None and hasattr(df_np, 'shape') and int(df_np.shape[0]) >= peak_lookback + 1:
+                        close_now = float(df_np[-1, 3])
+                        close_lb = float(df_np[-peak_lookback, 3])
+                        roll_high = float(np.max(df_np[-peak_lookback:, 1]))
+                        ret = (close_now - close_lb) / max(close_lb, 1e-9)
+                        near_high = (close_now >= roll_high * float(peak_near_high_thr))
+                        extended = (ret >= float(peak_ret_thr))
+                        if extended and near_high:
+                            try:
+                                pred_json['decision_before_peak_extension_gate'] = str(decision)
+                            except Exception:
+                                pass
+                            try:
+                                pred_json['peak_extension_gate'] = {
+                                    'blocked': True,
+                                    'reason': 'high_peak',
+                                    'lookback': int(peak_lookback),
+                                    'ret': float(ret),
+                                    'ret_thr': float(peak_ret_thr),
+                                    'near_high': bool(near_high),
+                                    'near_high_thr': float(peak_near_high_thr),
+                                    'close': float(close_now),
+                                    'roll_high': float(roll_high),
+                                    'dist_to_high_pct': float((roll_high - close_now) / max(close_now, 1e-9)),
+                                }
+                            except Exception:
+                                pass
+                            decision = 'hold'
+                            try:
+                                logger.warning("[peak_extension_gate] symbol=%s blocked BUY: ret=%.4f lookback=%s close=%.6f high=%.6f",
+                                               symbol, float(ret), int(peak_lookback), float(close_now), float(roll_high))
+                            except Exception:
+                                pass
+                        else:
+                            # Запишем "не заблокировано", чтобы UI мог показать что гейт активен (по желанию)
+                            try:
+                                pred_json['peak_extension_gate'] = {
+                                    'blocked': False,
+                                    'enabled': True,
+                                    'lookback': int(peak_lookback),
+                                    'ret': float(ret),
+                                    'ret_thr': float(peak_ret_thr),
+                                    'near_high': bool(near_high),
+                                    'near_high_thr': float(peak_near_high_thr),
+                                }
+                            except Exception:
+                                pass
+                else:
+                    try:
+                        pred_json['peak_extension_gate'] = {'blocked': False, 'enabled': False}
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # --- Dip-extension gate (block late SHORT near local bottom) ---
+        # Идея: если решение = entry в шорт (SELL), но цена уже сильно упала и находится около локального low,
+        # то вход в шорт часто "в дно" (pullback/mean-reversion). Поэтому режем ENTRY -> HOLD.
+        # ВАЖНО: применяем только для short-entry (SELL).
+        try:
+            if decision == _entry_signal and _entry_signal == 'sell' and df_5m is not None and (not getattr(df_5m, 'empty', False)):
+                # defaults (консервативные)
+                dip_enabled = True
+                dip_lookback = 96           # 96*5m = 8h
+                dip_ret_thr = 0.03          # 3% падение за lookback (используем модуль)
+                dip_near_low_thr = 1.003    # в пределах ~0.3% от локального low (close <= low*thr)
+
+                def _truthy(v) -> bool:
+                    try:
+                        return str(v).strip().lower() in ('1', 'true', 'yes', 'on')
+                    except Exception:
+                        return False
+
+                # 1) overrides from Postgres (app_settings): scope='trading', group='regime'
+                try:
+                    from utils.settings_store import get_setting_value as _get_setting_value
+                    v0 = _get_setting_value('trading', 'regime', 'DIP_EXTENSION_VETO')
+                    if v0 is not None:
+                        dip_enabled = _truthy(v0)
+                    v1 = _get_setting_value('trading', 'regime', 'DIP_EXTENSION_LOOKBACK')
+                    if v1 is not None and str(v1).strip() != '':
+                        dip_lookback = int(float(v1))
+                    v2 = _get_setting_value('trading', 'regime', 'DIP_EXTENSION_RET_THR')
+                    if v2 is not None and str(v2).strip() != '':
+                        dip_ret_thr = float(v2)
+                    v3 = _get_setting_value('trading', 'regime', 'DIP_EXTENSION_NEAR_LOW_THR')
+                    if v3 is not None and str(v3).strip() != '':
+                        dip_near_low_thr = float(v3)
+                except Exception:
+                    pass
+
+                # 2) fallback to Redis trading:regime_config (if DB not configured)
+                try:
+                    cfg = None
+                    if rc is not None:
+                        raw = rc.get('trading:regime_config')
+                        if raw:
+                            cfg = json.loads(raw)
+                    if isinstance(cfg, dict):
+                        if 'dip_extension_veto' in cfg:
+                            dip_enabled = bool(cfg.get('dip_extension_veto') is True or _truthy(cfg.get('dip_extension_veto')))
+                        if 'dip_extension_lookback' in cfg and str(cfg.get('dip_extension_lookback') or '').strip() != '':
+                            dip_lookback = int(float(cfg.get('dip_extension_lookback')))
+                        if 'dip_extension_ret_thr' in cfg and str(cfg.get('dip_extension_ret_thr') or '').strip() != '':
+                            dip_ret_thr = float(cfg.get('dip_extension_ret_thr'))
+                        if 'dip_extension_near_low_thr' in cfg and str(cfg.get('dip_extension_near_low_thr') or '').strip() != '':
+                            dip_near_low_thr = float(cfg.get('dip_extension_near_low_thr'))
+                except Exception:
+                    pass
+
+                # Sanity bounds
+                try:
+                    dip_lookback = int(max(12, min(2000, int(dip_lookback))))
+                except Exception:
+                    dip_lookback = 96
+                try:
+                    dip_ret_thr = float(max(0.0, min(1.0, float(dip_ret_thr))))
+                except Exception:
+                    dip_ret_thr = 0.03
+                try:
+                    dip_near_low_thr = float(max(1.0, min(1.50, float(dip_near_low_thr))))
+                except Exception:
+                    dip_near_low_thr = 1.003
+
+                if dip_enabled:
+                    df_np = None
+                    try:
+                        df_np = df_5m[['open', 'high', 'low', 'close', 'volume']].astype('float32').to_numpy()
+                    except Exception:
+                        df_np = None
+                    if df_np is not None and hasattr(df_np, 'shape') and int(df_np.shape[0]) >= dip_lookback + 1:
+                        close_now = float(df_np[-1, 3])
+                        close_lb = float(df_np[-dip_lookback, 3])
+                        roll_low = float(np.min(df_np[-dip_lookback:, 2]))
+                        ret = (close_now - close_lb) / max(close_lb, 1e-9)  # отрицательное при падении
+                        near_low = (close_now <= roll_low * float(dip_near_low_thr))
+                        extended = (ret <= -float(dip_ret_thr))
+                        if extended and near_low:
+                            try:
+                                pred_json['decision_before_dip_extension_gate'] = str(decision)
+                            except Exception:
+                                pass
+                            try:
+                                pred_json['dip_extension_gate'] = {
+                                    'blocked': True,
+                                    'reason': 'low_valley',
+                                    'lookback': int(dip_lookback),
+                                    'ret': float(ret),
+                                    'ret_thr': float(dip_ret_thr),
+                                    'near_low': bool(near_low),
+                                    'near_low_thr': float(dip_near_low_thr),
+                                    'close': float(close_now),
+                                    'roll_low': float(roll_low),
+                                    'dist_to_low_pct': float((close_now - roll_low) / max(close_now, 1e-9)),
+                                }
+                            except Exception:
+                                pass
+                            decision = 'hold'
+                            try:
+                                logger.warning("[dip_extension_gate] symbol=%s blocked SELL: ret=%.4f lookback=%s close=%.6f low=%.6f",
+                                               symbol, float(ret), int(dip_lookback), float(close_now), float(roll_low))
+                            except Exception:
+                                pass
+                        else:
+                            try:
+                                pred_json['dip_extension_gate'] = {
+                                    'blocked': False,
+                                    'enabled': True,
+                                    'lookback': int(dip_lookback),
+                                    'ret': float(ret),
+                                    'ret_thr': float(dip_ret_thr),
+                                    'near_low': bool(near_low),
+                                    'near_low_thr': float(dip_near_low_thr),
+                                }
+                            except Exception:
+                                pass
+                else:
+                    try:
+                        pred_json['dip_extension_gate'] = {'blocked': False, 'enabled': False}
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         # --- Post-exit cooldown gate (after TP/SL) ---
         # Если недавно был выход по TP/SL (см. pred_json['postexit']) — блокируем ENTRY на N свечей.
         # Для long: entry='buy', для short (после ремапа): entry='sell'.
@@ -2725,6 +2984,10 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                                 'market_state',
                                 'decision_before_market_state_gate',
                                 'market_state_gate',
+                                'decision_before_peak_extension_gate',
+                                'peak_extension_gate',
+                                'decision_before_dip_extension_gate',
+                                'dip_extension_gate',
                                 'postexit',
                                 'decision_before_postexit_cooldown',
                                 'postexit_cooldown_gate',
@@ -2936,27 +3199,179 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             except Exception:
                 dir_now = 'long'
 
+            # Сбрасываем gate лимитного входа, если позиция уже открыта
+            try:
+                _rc_gate_reset = Redis(host='redis', port=6379, db=0, decode_responses=True)
+                if getattr(agent, 'current_position', None):
+                    _rc_gate_reset.delete(f"trading:limit_entry:first_ts:{symbol}")
+                    _rc_gate_reset.delete(f"trading:limit_entry:attempts:{symbol}")
+                    _rc_gate_reset.delete(f"trading:market_entry:first_ts:{symbol}")
+                    _rc_gate_reset.delete(f"trading:market_entry:attempts:{symbol}")
+            except Exception:
+                pass
+
             # --- ENTRY ---
             # long entry: BUY + dir=long + нет позиции
             # short entry: SELL + dir=short + нет позиции
+            # Safeguard: перед входом обновим позицию с биржи (иногда current_position устаревает/не восстановилась)
+            try:
+                if (not getattr(agent, 'current_position', None)) and (decision in ('buy', 'sell')):
+                    try:
+                        agent._restore_position_from_exchange()
+                    except Exception:
+                        pass
+                    if getattr(agent, 'current_position', None):
+                        try:
+                            _gid = locals().get('ensemble_group_id')
+                            if _gid:
+                                _attach_exec_error_to_group(symbol, str(_gid), "already in position: skip entry", exec_error_type="already_in_position")
+                        except Exception:
+                            pass
+                        decision = 'hold'
+            except Exception:
+                pass
+
+            # --- Market entry gate: ограничиваем число рыночных входов за окно ---
+            if decision in ('buy', 'sell') and str(exec_mode or '').strip() != 'limit_post_only':
+                try:
+                    _rc_mgate = Redis(host='redis', port=6379, db=0, decode_responses=True)
+                    _mma_raw = _rc_mgate.get(f"trading:market_entry_max_attempts:{symbol}") or _rc_mgate.get("trading:market_entry_max_attempts")
+                    _mws_raw = _rc_mgate.get(f"trading:market_entry_window_sec:{symbol}") or _rc_mgate.get("trading:market_entry_window_sec")
+                    _m_max = int(float(_mma_raw)) if (_mma_raw is not None and str(_mma_raw).strip() != '') else 2
+                    _m_win = int(float(_mws_raw)) if (_mws_raw is not None and str(_mws_raw).strip() != '') else 1800
+                    _m_max = max(1, min(100, _m_max))
+                    _m_win = max(60, min(24 * 3600, _m_win))
+                    _mfk = f"trading:market_entry:first_ts:{symbol}"
+                    _mak = f"trading:market_entry:attempts:{symbol}"
+                    _mnow = float(time.time())
+                    _mft = 0.0
+                    try:
+                        _mfr = _rc_mgate.get(_mfk)
+                        _mft = float(_mfr) if (_mfr is not None and str(_mfr).strip() != '') else 0.0
+                    except Exception:
+                        _mft = 0.0
+                    if _mft <= 0 or (_mnow - _mft) > float(_m_win):
+                        _rc_mgate.set(_mfk, str(_mnow), ex=max(600, _m_win * 2))
+                        _rc_mgate.set(_mak, "0", ex=max(600, _m_win * 2))
+                    _matt = 0
+                    try:
+                        _matt = int(float(_rc_mgate.get(_mak) or 0))
+                    except Exception:
+                        _matt = 0
+                    if _matt >= _m_max:
+                        _m_block_reason = f"market blocked: attempts={_matt}/{_m_max} window_sec={_m_win}"
+                        try:
+                            _gid = locals().get('ensemble_group_id')
+                            if _gid:
+                                _attach_exec_error_to_group(symbol, str(_gid), _m_block_reason, exec_error_type="market_entry_gate")
+                        except Exception:
+                            pass
+                        decision = 'hold'
+                        trade_result = {"success": False, "action": "market_entry_blocked", "reason": _m_block_reason}
+                        logger.warning("[market_entry_gate] %s blocked: %s", symbol, _m_block_reason)
+                    else:
+                        _rc_mgate.incr(_mak)
+                        _rc_mgate.expire(_mak, max(600, _m_win * 2))
+                        _rc_mgate.expire(_mfk, max(600, _m_win * 2))
+                except Exception:
+                    pass
+
             if (not agent.current_position) and ((decision == 'buy' and dir_now == 'long') or (decision == 'sell' and dir_now == 'short')):
                 entry_side = 'buy' if decision == 'buy' else 'sell'
                 if exec_mode == 'limit_post_only':
                     try:
-                        base_qty = float(getattr(agent, 'trade_amount', 0.0)) or 0.0
-                        qty_entry = _apply_safety_buffer_qty(base_qty) if base_qty > 0 else None
-                        start_execution_strategy.apply_async(kwargs={
-                            'symbol': symbol,
-                            'execution_mode': 'limit_post_only',
-                            'side': entry_side,
-                            'qty': qty_entry,
-                            'limit_config': (limit_cfg or {}),
-                            'leverage': leverage_val
-                        }, queue='trade')
-                        trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": entry_side, "qty": qty_entry}
+                        # Gate: не даём лимитному входу крутиться бесконечно каждые 5 минут
+                        blocked = False
+                        block_reason = None
+                        try:
+                            _rc_gate = Redis(host='redis', port=6379, db=0, decode_responses=True)
+                            # Настройки: per-symbol -> global -> defaults
+                            _ma_raw = _rc_gate.get(f"trading:limit_entry_max_attempts:{symbol}") or _rc_gate.get("trading:limit_entry_max_attempts")
+                            _ws_raw = _rc_gate.get(f"trading:limit_entry_window_sec:{symbol}") or _rc_gate.get("trading:limit_entry_window_sec")
+                            max_attempts = int(float(_ma_raw)) if (_ma_raw is not None and str(_ma_raw).strip() != '') else 6
+                            window_sec = int(float(_ws_raw)) if (_ws_raw is not None and str(_ws_raw).strip() != '') else 1800  # 30 минут
+                            max_attempts = max(1, min(100, int(max_attempts)))
+                            window_sec = max(60, min(24 * 3600, int(window_sec)))
+
+                            first_key = f"trading:limit_entry:first_ts:{symbol}"
+                            att_key = f"trading:limit_entry:attempts:{symbol}"
+                            now_ts = float(time.time())
+                            first_ts = 0.0
+                            try:
+                                _fr = _rc_gate.get(first_key)
+                                first_ts = float(_fr) if (_fr is not None and str(_fr).strip() != '') else 0.0
+                            except Exception:
+                                first_ts = 0.0
+
+                            # Новое окно
+                            if first_ts <= 0 or (now_ts - first_ts) > float(window_sec):
+                                try:
+                                    _rc_gate.set(first_key, str(now_ts), ex=max(600, window_sec * 2))
+                                except Exception:
+                                    pass
+                                try:
+                                    _rc_gate.set(att_key, "0", ex=max(600, window_sec * 2))
+                                except Exception:
+                                    pass
+                                first_ts = now_ts
+
+                            attempts = 0
+                            try:
+                                attempts = int(float(_rc_gate.get(att_key) or 0))
+                            except Exception:
+                                attempts = 0
+
+                            if attempts >= max_attempts:
+                                blocked = True
+                                block_reason = f"limit_post_only blocked: attempts={attempts}/{max_attempts} window_sec={window_sec}"
+                            else:
+                                # фиксируем попытку до enqueue (чтобы не накрутить вечный цикл)
+                                try:
+                                    _rc_gate.incr(att_key)
+                                    _rc_gate.expire(att_key, max(600, window_sec * 2))
+                                    _rc_gate.expire(first_key, max(600, window_sec * 2))
+                                except Exception:
+                                    pass
+                        except Exception as _gate_e:
+                            # Если gate сломался — лучше не блокировать, но логируем причину в карточку предсказания
+                            try:
+                                _gid = locals().get('ensemble_group_id')
+                                if _gid:
+                                    _attach_exec_error_to_group(symbol, str(_gid), f"limit_entry_gate error: {_gate_e}", exec_error_type="limit_entry_gate_error")
+                            except Exception:
+                                pass
+                            blocked = False
+                            block_reason = None
+
+                        if blocked:
+                            try:
+                                _gid = locals().get('ensemble_group_id')
+                                if _gid and block_reason:
+                                    _attach_exec_error_to_group(symbol, str(_gid), str(block_reason), exec_error_type="limit_entry_gate")
+                            except Exception:
+                                pass
+                            trade_result = {"success": False, "action": "limit_post_only_blocked", "reason": (block_reason or "blocked")}
+                        else:
+                            base_qty = float(getattr(agent, 'trade_amount', 0.0)) or 0.0
+                            qty_entry = _apply_safety_buffer_qty(base_qty) if base_qty > 0 else None
+                            start_execution_strategy.apply_async(kwargs={
+                                'symbol': symbol,
+                                'execution_mode': 'limit_post_only',
+                                'side': entry_side,
+                                'qty': qty_entry,
+                                'limit_config': (limit_cfg or {}),
+                                'leverage': leverage_val
+                            }, queue='trade')
+                            trade_result = {"success": True, "action": "limit_post_only_enqueued", "side": entry_side, "qty": qty_entry}
                     except Exception:
-                        # Фолбэк на market исполнение через агента
-                        trade_result = agent._execute_buy() if entry_side == 'buy' else agent._execute_open_short()
+                        # Без фолбэков: если enqueue не удалось — фиксируем ошибку
+                        try:
+                            _gid = locals().get('ensemble_group_id')
+                            if _gid:
+                                _attach_exec_error_to_group(symbol, str(_gid), "limit_post_only enqueue failed", exec_error_type="limit_post_only_enqueue_failed")
+                        except Exception:
+                            pass
+                        trade_result = {"success": False, "action": "limit_post_only_enqueue_failed"}
                 else:
                     # market: long -> BUY, short -> OPEN_SHORT
                     # Опционально: split entry (например, 2 входа по 50% вместо 1 на 100%).

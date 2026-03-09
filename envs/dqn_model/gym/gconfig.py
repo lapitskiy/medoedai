@@ -27,12 +27,17 @@ class GymConfig:
     # --- индикаторы -----------------------------------------------------------
     indicators_config: Dict[str, Any] = field(default_factory=lambda: {
         'rsi': {'length': 14},
-        'ema': {'lengths': [100, 200]},
+        'rsi_7': {'length': 7},
+        'ema': {'lengths': [20, 50, 100, 200]},
         'ema_cross': {
-            'pairs': [(100, 200)],
+            'pairs': [(20, 50), (100, 200)],
             'include_cross_signal': True,
         },
         'sma': {'length': 14},
+        'atr': {'length': 14},
+        'obv': {},
+        'returns': {'periods': [1, 3, 12, 60]},
+        'zscore': {'ema_length': 50, 'window': 20},
     })
 
     # --- вывод/логирование ----------------------------------------------------
@@ -56,7 +61,7 @@ class GymConfig:
 
     # --- entry confidence gate ------------------------------------------------
     # If entry_confidence < gate -> BUY is masked to HOLD (softly reduces low-quality entries)
-    entry_confidence_gate: float = 0.50
+    entry_confidence_gate: float = 0.35
 
     # --- market regime thresholds (market_state) ------------------------------
     # Make HIGH_VOL less frequent: treat only extreme volatility as HIGH_VOL.

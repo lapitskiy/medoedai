@@ -106,6 +106,30 @@ def _discover_bybit_api_keys(symbol: str | None = None) -> tuple[str | None, str
         return None, None, None
 
 
+def _discover_all_bybit_api_keys() -> list[tuple[str, str, str]]:
+    """Return all valid (api_key, secret_key, var_name) pairs from Postgres."""
+    try:
+        from utils.settings_store import ensure_settings_table, get_setting_value, list_settings
+        ensure_settings_table()
+        rows = list_settings(scope='api', group='bybit')
+        ids: list[int] = []
+        for r in rows:
+            k = str(r.get('key') or '').strip()
+            if k.startswith('BYBIT_') and k.endswith('_API_KEY'):
+                mid = k[len('BYBIT_'):-len('_API_KEY')]
+                if str(mid).isdigit():
+                    ids.append(int(mid))
+        result = []
+        for idx in sorted(set(ids)):
+            ak = (get_setting_value('api', 'bybit', f'BYBIT_{idx}_API_KEY') or '').strip()
+            sk = (get_setting_value('api', 'bybit', f'BYBIT_{idx}_SECRET_KEY') or '').strip()
+            if ak and sk:
+                result.append((ak, sk, f'BYBIT_{idx}_API_KEY'))
+        return result
+    except Exception:
+        return []
+
+
 # --- Database Engine and Session setup ---
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://medoed_user:medoed@postgres:5432/medoed_db")
 engine = create_engine(DATABASE_URL)
@@ -164,8 +188,10 @@ def db_get_or_fetch_ohlcv(
     exchange_id: str = 'binance',
     max_retries: int = 3,
     csv_file_path: str ='./temp/binance_data/bigdata_5m_klines.csv',
-    dry_run: bool = False, # Если True, только загружает, но не сохраняет в БД
-    include_error: bool = False
+    dry_run: bool = False,
+    include_error: bool = False,
+    override_api_key: str | None = None,
+    override_secret_key: str | None = None,
                         ) -> pd.DataFrame:
     """
     Загружает OHLCV данные из базы данных. Если данных недостаточно или есть разрывы,
@@ -230,6 +256,38 @@ def db_get_or_fetch_ohlcv(
             if detailed_logs:
                 logging.info(f"Свечей в базе для {symbol_name}, {timeframe} нет. Начинаем загрузку с нуля.")
 
+        # Если данных в БД достаточно и они "свежие" — не трогаем биржу вообще.
+        try:
+            def _tf_to_ms(tf: str) -> int:
+                s = str(tf or "").strip().lower()
+                if s.endswith("m"):
+                    return int(s[:-1]) * 60_000
+                if s.endswith("h"):
+                    return int(s[:-1]) * 3_600_000
+                if s.endswith("d"):
+                    return int(s[:-1]) * 86_400_000
+                return 0
+
+            tf_ms_local = _tf_to_ms(timeframe)
+            if last_db_timestamp and int(total_count or 0) >= int(limit_candles or 0) and tf_ms_local > 0:
+                now_local_ms = int(time.time() * 1000)
+                if now_local_ms - int(last_db_timestamp) <= tf_ms_local * 2:
+                    db_candles = session.query(OHLCV).filter_by(
+                        symbol_id=symbol_obj.id,
+                        timeframe=timeframe
+                    ).order_by(OHLCV.timestamp.desc()).limit(int(limit_candles)).all()
+                    df = pd.DataFrame([{
+                        'timestamp': c.timestamp,
+                        'open': c.open,
+                        'high': c.high,
+                        'low': c.low,
+                        'close': c.close,
+                        'volume': c.volume
+                    } for c in reversed(db_candles)])
+                    return _wrap_result(df)
+        except Exception:
+            pass
+
         # Инициализация биржи
         try:            
             init_t0 = time.monotonic()
@@ -245,8 +303,10 @@ def db_get_or_fetch_ohlcv(
             bybit_api_key_prefix4 = None
             # Для Bybit: используем API ключи, если заданы, иначе публичные эндпоинты (они достаточны для OHLCV)
             if exchange_id == 'bybit':
-                # Поддержка BYBIT_API_KEY/BYBIT_SECRET_KEY и множественных BYBIT_<N>_*
-                api_key, secret_key, bybit_api_key_var = _discover_bybit_api_keys(symbol_name)
+                if override_api_key and override_secret_key:
+                    api_key, secret_key, bybit_api_key_var = override_api_key, override_secret_key, f'override({_key_prefix_4(override_api_key)})'
+                else:
+                    api_key, secret_key, bybit_api_key_var = _discover_bybit_api_keys(symbol_name)
                 bybit_api_key_prefix4 = _key_prefix_4(api_key)
                 bybit_auth_used = bool(api_key and secret_key)
                 if api_key and secret_key:
@@ -289,7 +349,15 @@ def db_get_or_fetch_ohlcv(
             lm_t0 = time.monotonic()
             if detailed_logs:
                 logging.info("[OHLCV] load_markets() start")
-            exchange.load_markets()
+            try:
+                from utils.bybit_rate_limiter import load_markets_cached
+                load_markets_cached(exchange)
+            except Exception as _lm_err:
+                logging.warning(f"[OHLCV] cached load_markets failed ({_lm_err}), direct fallback")
+                # Avoid double-hitting Bybit during temporary cooldown.
+                if exchange_id.lower() == 'bybit' and ('Access too frequent' in str(_lm_err) or 'try again in 5 minutes' in str(_lm_err)):
+                    raise
+                exchange.load_markets()
             lm_dt = (time.monotonic() - lm_t0) * 1000
             if detailed_logs:
                 logging.info(f"[OHLCV] load_markets() done in {lm_dt:.0f} ms; symbols={len(getattr(exchange,'symbols',[]) or [])}")
@@ -297,6 +365,12 @@ def db_get_or_fetch_ohlcv(
             # Синхронизация времени для избежания retCode 10002 (recv_window)
             try:
                 if hasattr(exchange, 'load_time_difference'):
+                    if exchange_id.lower() == 'bybit':
+                        try:
+                            from utils.bybit_rate_limiter import acquire_slot
+                            acquire_slot(caller=f"time_diff:{symbol_name}")
+                        except Exception:
+                            pass
                     exchange.load_time_difference()
             except Exception as _te:
                 if detailed_logs:
@@ -337,6 +411,25 @@ def db_get_or_fetch_ohlcv(
             else:
                 logging.error(f"Не удалось инициализировать биржу {exchange_id}: {e}")
             error_reason = f"exchange_init_failed: {exchange_id}: {e}"
+            # If exchange is temporarily rate-limiting, return what we already have in DB instead of failing hard.
+            if exchange_id == 'bybit' and ('Access too frequent' in str(e) or 'try again in 5 minutes' in str(e)):
+                try:
+                    db_candles = session.query(OHLCV).filter_by(
+                        symbol_id=symbol_obj.id,
+                        timeframe=timeframe
+                    ).order_by(OHLCV.timestamp.desc()).limit(int(limit_candles)).all()
+                    if db_candles:
+                        df = pd.DataFrame([{
+                            'timestamp': c.timestamp,
+                            'open': c.open,
+                            'high': c.high,
+                            'low': c.low,
+                            'close': c.close,
+                            'volume': c.volume
+                        } for c in reversed(db_candles)])
+                        return _wrap_result(df)
+                except Exception:
+                    pass
             if include_error:
                 return _wrap_result(pd.DataFrame())
             return pd.DataFrame()
@@ -344,6 +437,12 @@ def db_get_or_fetch_ohlcv(
 
         tf_ms = exchange.parse_timeframe(timeframe) * 1000
         # Текущее время биржи (нужно раньше, чтобы рассчитать старт при пустой БД)
+        if exchange_id.lower() == 'bybit':
+            try:
+                from utils.bybit_rate_limiter import acquire_slot
+                acquire_slot(caller=f"milliseconds:{symbol_name}")
+            except Exception:
+                pass
         now_ms = exchange.milliseconds()
 
         # Определяем from какого момента качать данные
@@ -380,6 +479,11 @@ def db_get_or_fetch_ohlcv(
                 # Используем symbol_fetch (unified) если он определён, иначе fallback к symbol_cctx
                 _sym_to_use = symbol_fetch or symbol_cctx
                 print(f"[DB_OHLCV] Fetching {limit_fetch} candles for {_sym_to_use} {timeframe} since {datetime.fromtimestamp(since_ms/1000)}")
+                try:
+                    from utils.bybit_rate_limiter import acquire_slot
+                    acquire_slot(caller=f"fetch_ohlcv:{symbol_name}")
+                except Exception:
+                    pass
                 if exchange_id.lower() == 'bybit':
                     raw_ohlcv = exchange.fetch_ohlcv(_sym_to_use, timeframe, since=since_ms, limit=limit_fetch, params={'category': 'linear'})
                 else:
@@ -612,7 +716,15 @@ def db_get_or_fetch_ohlcv(
                         print(f"[DB_OHLCV] Backfilling older {limit_fetch} candles for {_sym_to_use} {timeframe} since {datetime.fromtimestamp(back_since/1000)}")
                         raw_older = []
                         try:
-                            raw_older = exchange.fetch_ohlcv(_sym_to_use, timeframe, since=back_since, limit=limit_fetch)
+                            try:
+                                from utils.bybit_rate_limiter import acquire_slot
+                                acquire_slot(caller=f"backfill_ohlcv:{symbol_name}")
+                            except Exception:
+                                pass
+                            if exchange_id.lower() == 'bybit':
+                                raw_older = exchange.fetch_ohlcv(_sym_to_use, timeframe, since=back_since, limit=limit_fetch, params={'category': 'linear'})
+                            else:
+                                raw_older = exchange.fetch_ohlcv(_sym_to_use, timeframe, since=back_since, limit=limit_fetch)
                         except Exception as _be:
                             logging.warning(f"Ошибка обратной докачки: {_be}")
                             break
@@ -838,7 +950,11 @@ def db_get_or_fetch_ohlcv(
 
     except Exception as e:
         logging.error(f"Критическая ошибка в db_get_or_fetch_ohlcv: {e}", exc_info=True)
-        return pd.DataFrame()
+        try:
+            error_reason = f"critical_error: {e}"
+        except Exception:
+            error_reason = "critical_error"
+        return _wrap_result(pd.DataFrame())
     finally:
         session.close()
 
@@ -1241,11 +1357,20 @@ def _download_and_store_funding_rates(session, symbol_no_slash: str, ts_from_ms:
     """
     try:
         ex = ccxt.bybit({'enableRateLimit': True, 'timeout': 30000})
-        ex.load_markets()
+        try:
+            from utils.bybit_rate_limiter import load_markets_cached
+            load_markets_cached(ex)
+        except Exception:
+            ex.load_markets()
         inserted = 0
         # Bybit funding раз в 8 часов: шаг 8h
         cursor = ts_from_ms
         while cursor <= ts_to_ms:
+            try:
+                from utils.bybit_rate_limiter import acquire_slot
+                acquire_slot(caller=f"funding:{symbol_no_slash}")
+            except Exception:
+                pass
             params = {'category': 'linear', 'symbol': symbol_no_slash}
             # ccxt не всегда имеет унифицированный метод; используем raw v5, если доступен
             resp = None
@@ -1325,6 +1450,11 @@ def _bybit_fetch_open_interest(symbol_raw: str, interval: str,
         if cursor:
             params["cursor"] = cursor
         try:
+            try:
+                from utils.bybit_rate_limiter import acquire_slot
+                acquire_slot(caller=f"oi:{symbol_raw}")
+            except Exception:
+                pass
             r = _requests.get(url, params=params, timeout=15)
             data = r.json()
         except Exception as e:
@@ -1366,6 +1496,11 @@ def _bybit_fetch_ls_ratio(symbol_raw: str, period: str,
         if cursor:
             params["cursor"] = cursor
         try:
+            try:
+                from utils.bybit_rate_limiter import acquire_slot
+                acquire_slot(caller=f"ls:{symbol_raw}")
+            except Exception:
+                pass
             r = _requests.get(url, params=params, timeout=15)
             data = r.json()
         except Exception as e:

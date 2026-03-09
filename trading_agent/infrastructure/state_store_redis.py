@@ -25,7 +25,19 @@ class RedisStateStore(StateStore):
 
     def save_intent(self, intent: Intent) -> None:
         self.r.set(self._k_intent(intent.intent_id), json.dumps(intent, default=lambda o: o.__dict__))
-        self.r.set(self._k_symbol_active(intent.symbol), intent.intent_id)
+        # active_intent — только для НЕ-терминальных состояний.
+        # Иначе можно получить "failed intent, но active_intent всё ещё стоит" и guard начнёт блокировать новые сигналы.
+        try:
+            terminal = str(getattr(intent, 'state', '') or '').lower() in ('filled', 'cancelled', 'failed', 'expired')
+        except Exception:
+            terminal = False
+        if terminal:
+            try:
+                self.r.delete(self._k_symbol_active(intent.symbol))
+            except Exception:
+                pass
+        else:
+            self.r.set(self._k_symbol_active(intent.symbol), intent.intent_id)
         # Устанавливаем TTL на ключи интента для автоснятия зависших записей
         try:
             ttl = 300

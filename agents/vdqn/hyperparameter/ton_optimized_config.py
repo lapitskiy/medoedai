@@ -14,16 +14,18 @@ TON_OPTIMIZED_CONFIG = {
     
     # Оптимизированные индикаторы
     'indicators_config': {
-        'rsi': {'length': 21},  # Увеличиваем период RSI с 14 до 21 для менее шумных сигналов
-        'ema': {'lengths': [50, 100, 200]},  # Добавляем EMA 50 для лучшего тренда
+        'rsi': {'length': 21},
+        'rsi_7': {'length': 7},
+        'ema': {'lengths': [20, 50, 100, 200]},
         'ema_cross': {
-            'pairs': [(50, 100), (100, 200)],  # Добавляем пересечение 50/100
+            'pairs': [(20, 50), (50, 100), (100, 200)],
             'include_cross_signal': True
         },
-        'sma': {'length': 21},  # Увеличиваем период SMA с 14 до 21
-        # Добавляем новые индикаторы
-        'bb': {'length': 20, 'std': 2},  # Bollinger Bands для волатильности
-        'macd': {'fast': 12, 'slow': 26, 'signal': 9},  # MACD для тренда
+        'sma': {'length': 21},
+        'atr': {'length': 14},
+        'obv': {},
+        'returns': {'periods': [1, 3, 12, 60]},
+        'zscore': {'ema_length': 50, 'window': 20},
     },
     
     # Более консервативные параметры обучения

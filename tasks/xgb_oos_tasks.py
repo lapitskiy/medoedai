@@ -95,27 +95,71 @@ def _trade_return(entry: float, exit_price: float, is_long: bool, fee_frac: floa
     return (entry - exit_price) / max(entry, 1e-12) - fee_frac
 
 
+def _compute_atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, length: int = 14) -> np.ndarray:
+    """
+    Simple ATR (SMA of True Range) to drive ATR-trailing exits.
+    Returns array same length as inputs, with NaN for warmup bars (< length).
+    """
+    n = int(min(len(high), len(low), len(close)))
+    if n <= 0:
+        return np.zeros((0,), dtype=np.float64)
+    L = int(length) if int(length) > 1 else 14
+    h = high[:n].astype(np.float64, copy=False)
+    l = low[:n].astype(np.float64, copy=False)
+    c = close[:n].astype(np.float64, copy=False)
+
+    prev_c = np.roll(c, 1)
+    prev_c[0] = c[0]
+    tr = np.maximum(h - l, np.maximum(np.abs(h - prev_c), np.abs(l - prev_c)))
+
+    atr = np.full((n,), np.nan, dtype=np.float64)
+    if n >= L:
+        # rolling mean via cumulative sum
+        cs = np.cumsum(tr, dtype=np.float64)
+        cs[L:] = cs[L:] - cs[:-L]
+        atr[L - 1 :] = cs[L - 1 :] / float(L)
+    return atr
+
+
 def _run_backtest(
-    pred: np.ndarray, closes: np.ndarray, task_name: str, cfg, start_capital: float = 10000.0,
+    pred: np.ndarray,
+    closes: np.ndarray,
+    task_name: str,
+    cfg,
+    start_capital: float = 10000.0,
+    exit_mode: str = "policy",
+    highs: np.ndarray | None = None,
+    lows: np.ndarray | None = None,
+    atr: np.ndarray | None = None,
+    atr_mult: float = 2.0,
+    direction_override: str | None = None,
 ) -> Dict[str, Any]:
     """Simple backtest: entry on pred=1, exit on max_hold timeout (entry tasks) or pred=2 (directional)."""
     fee_frac = float(getattr(cfg, "fee_bps", 6.0)) / 10000.0
     max_hold = int(getattr(cfg, "max_hold_steps", 48))
+    tp_pct = getattr(cfg, "entry_tp_pct", None)
+    sl_pct = getattr(cfg, "entry_sl_pct", None)
+    trail_pct = getattr(cfg, "entry_trail_pct", None)
     direction = str(getattr(cfg, "direction", "long") or "long").strip().lower()
-    is_long = "long" in task_name or (direction == "long" and "short" not in task_name)
+    if direction_override in ("long", "short"):
+        is_long = direction_override == "long"
+    else:
+        is_long = "long" in task_name or (direction == "long" and "short" not in task_name)
     is_entry = task_name.startswith("entry")
     is_directional = task_name == "directional"
     is_exit = task_name.startswith("exit")
 
-    if is_exit:
-        return {"skip": True, "reason": "exit-only model, standalone backtest N/A"}
+    mode = str(exit_mode or "policy").strip().lower()
+    if mode not in ("policy", "hold_steps", "atr_trail"):
+        mode = "policy"
 
     pnl_total = 0.0
     equity = start_capital
     peak = start_capital
     max_dd = 0.0
     trades_list: list = []
-    position = None  # {'entry_price', 'entry_idx'}
+    position = None  # {'entry_price', 'entry_idx', 'peak_price'}
+    reenter_after_bar = 0  # for exit: bar index when we can re-enter after exit
 
     n = min(len(pred), len(closes))
     for i in range(n):
@@ -123,27 +167,108 @@ def _run_backtest(
         if price <= 0:
             continue
 
+        # exits for open position
+        if position is not None:
+            bars_held = i - position["entry_idx"]
+            # exit_*: exit on pred=1 (exit signal)
+            if is_exit:
+                p = int(pred[i]) if i < len(pred) else 0
+                if p == 1:
+                    ret = _trade_return(position["entry_price"], price, is_long, fee_frac)
+                    trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": False, "reason": "signal"})
+                    pnl_total += ret * start_capital
+                    position = None
+                    reenter_after_bar = i + 1
+                    # skip rest of position block
+                else:
+                    pass  # fall through to peak update
+            if position is not None:
+                try:
+                    ph = price
+                    if highs is not None and i < len(highs):
+                        try:
+                            ph = float(highs[i])
+                        except Exception:
+                            ph = price
+                    position["peak_price"] = max(float(position.get("peak_price") or position["entry_price"]), ph)
+                except Exception:
+                    position["peak_price"] = price
+
+            # entry_* exit policy: trailing / tp / sl (optional)
+            if is_entry:
+                if mode == "policy":
+                    raw_ret = (price - position["entry_price"]) / max(position["entry_price"], 1e-12) if is_long else (position["entry_price"] - price) / max(position["entry_price"], 1e-12)
+                    # trailing from peak (in return units, long-only peak; for short keep disabled unless explicitly set)
+                    if trail_pct is not None and is_long:
+                        peak_p = float(position.get("peak_price") or position["entry_price"])
+                        dd = (peak_p - price) / max(peak_p, 1e-12)
+                        if dd >= float(trail_pct):
+                            ret = _trade_return(position["entry_price"], price, is_long, fee_frac)
+                            trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": False, "reason": "trail"})
+                            pnl_total += ret * start_capital
+                            position = None
+                    if position is not None and tp_pct is not None and raw_ret >= float(tp_pct):
+                        ret = _trade_return(position["entry_price"], price, is_long, fee_frac)
+                        trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": False, "reason": "tp"})
+                        pnl_total += ret * start_capital
+                        position = None
+                    if position is not None and sl_pct is not None and raw_ret <= float(sl_pct):
+                        ret = _trade_return(position["entry_price"], price, is_long, fee_frac)
+                        trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": False, "reason": "sl"})
+                        pnl_total += ret * start_capital
+                        position = None
+                elif mode == "atr_trail" and is_long and atr is not None and i < len(atr):
+                    try:
+                        a = float(atr[i])
+                    except Exception:
+                        a = float("nan")
+                    if a == a and a > 0:  # not NaN
+                        peak_p = float(position.get("peak_price") or position["entry_price"])
+                        stop = peak_p - float(atr_mult) * a
+                        if price <= stop:
+                            ret = _trade_return(position["entry_price"], price, is_long, fee_frac)
+                            trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": False, "reason": "atr_trail"})
+                            pnl_total += ret * start_capital
+                            position = None
+
         # forced exit after max_hold
         if position is not None:
             bars_held = i - position["entry_idx"]
             if bars_held >= max_hold:
                 ret = _trade_return(position["entry_price"], price, is_long, fee_frac)
-                trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": True})
+                trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": True, "reason": "timeout"})
                 pnl_total += ret * start_capital
                 position = None
+                if is_exit:
+                    reenter_after_bar = i + 1
 
         # signals
         p = int(pred[i])
-        if is_entry:
+        if is_exit:
+            if position is None and i >= reenter_after_bar:
+                pk = price
+                if highs is not None and i < len(highs):
+                    try:
+                        pk = float(highs[i])
+                    except Exception:
+                        pk = price
+                position = {"entry_price": price, "entry_idx": i, "peak_price": pk}
+        elif is_entry:
             if p == 1 and position is None:
-                position = {"entry_price": price, "entry_idx": i}
+                pk = price
+                if highs is not None and i < len(highs):
+                    try:
+                        pk = float(highs[i])
+                    except Exception:
+                        pk = price
+                position = {"entry_price": price, "entry_idx": i, "peak_price": pk}
         elif is_directional:
             if p == 1 and position is None:
-                position = {"entry_price": price, "entry_idx": i}
+                position = {"entry_price": price, "entry_idx": i, "peak_price": price}
             elif p == 2 and position is not None:
                 ret = _trade_return(position["entry_price"], price, is_long, fee_frac)
                 bars_held = i - position["entry_idx"]
-                trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": False})
+                trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": False, "reason": "signal"})
                 pnl_total += ret * start_capital
                 position = None
 
@@ -161,7 +286,7 @@ def _run_backtest(
         price = float(closes[n - 1])
         ret = _trade_return(position["entry_price"], price, is_long, fee_frac)
         bars_held = (n - 1) - position["entry_idx"]
-        trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": True})
+        trades_list.append({"pnl": ret * start_capital, "ret": ret, "bars": bars_held, "forced": True, "reason": "eof"})
         pnl_total += ret * start_capital
 
     tc = len(trades_list)
@@ -170,6 +295,36 @@ def _run_backtest(
     gl = abs(sum(min(0, t["pnl"]) for t in trades_list))
     pf = (gp / gl) if gl > 1e-12 else (999.99 if gp > 0 else None)
     roi = (pnl_total / start_capital) * 100.0 if start_capital > 0 else 0.0
+
+    # Exit reason stats (to understand HOW exits happened)
+    reason_counts: Dict[str, int] = {}
+    reason_pnl: Dict[str, float] = {}
+    reason_wins: Dict[str, int] = {}
+    reason_losses: Dict[str, int] = {}
+    forced_counts: Dict[str, int] = {}
+    try:
+        for t in trades_list:
+            r = str(t.get("reason") or "unknown")
+            pnl = float(t.get("pnl") or 0.0)
+            reason_counts[r] = int(reason_counts.get(r, 0)) + 1
+            reason_pnl[r] = float(reason_pnl.get(r, 0.0)) + pnl
+            if pnl > 0:
+                reason_wins[r] = int(reason_wins.get(r, 0)) + 1
+            else:
+                reason_losses[r] = int(reason_losses.get(r, 0)) + 1
+            if bool(t.get("forced")):
+                forced_counts[r] = int(forced_counts.get(r, 0)) + 1
+    except Exception:
+        reason_counts, reason_pnl, reason_wins, reason_losses, forced_counts = {}, {}, {}, {}, {}
+
+    reason_share: Dict[str, float] = {}
+    try:
+        denom = float(tc) if tc else 0.0
+        if denom > 0:
+            for k, v in reason_counts.items():
+                reason_share[str(k)] = float(v) / denom
+    except Exception:
+        reason_share = {}
 
     return {
         "pnl_total": round(pnl_total, 4),
@@ -184,6 +339,12 @@ def _run_backtest(
         "avg_bars_held": round(sum(t["bars"] for t in trades_list) / tc, 1) if tc else None,
         "start_capital": start_capital,
         "equity_end": round(start_capital + pnl_total, 2),
+        "reason_counts": reason_counts,
+        "reason_share": reason_share,
+        "reason_pnl": {k: round(float(v), 4) for k, v in reason_pnl.items()},
+        "reason_wins": reason_wins,
+        "reason_losses": reason_losses,
+        "reason_forced_counts": forced_counts,
     }
 
 
@@ -203,7 +364,21 @@ def _resolve_safe_run_dir(result_dir: str) -> Path:
 
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={"max_retries": 0}, queue="oos")
-def run_xgb_oos_test(self, result_dir: str, days: int = 30, ts: str | None = None) -> Dict[str, Any]:
+def run_xgb_oos_test(
+    self,
+    result_dir: str,
+    days: int = 30,
+    ts: str | None = None,
+    exit_mode: str | None = None,
+    atr_len: int | None = None,
+    atr_mult: float | None = None,
+    override_exit_policy: bool = False,
+    entry_tp_pct: float | None = None,
+    entry_sl_pct: float | None = None,
+    entry_trail_pct: float | None = None,
+    p_enter_threshold: float | None = None,
+    direction_override: str | None = None,
+) -> Dict[str, Any]:
     """
     OOS evaluation for a saved XGB run on the last N days of candles.
     Stores history in <run_dir>/oos_xgb_results.json.
@@ -225,6 +400,47 @@ def run_xgb_oos_test(self, result_dir: str, days: int = 30, ts: str | None = Non
                 setattr(cfg, k, v)
             except Exception:
                 pass
+
+    # Optional override for entry_* exit policy (affects backtest ONLY).
+    if bool(override_exit_policy):
+        try:
+            cfg.entry_tp_pct = float(entry_tp_pct) if entry_tp_pct is not None else None
+        except Exception:
+            cfg.entry_tp_pct = None
+        try:
+            cfg.entry_sl_pct = float(entry_sl_pct) if entry_sl_pct is not None else None
+        except Exception:
+            cfg.entry_sl_pct = None
+        try:
+            cfg.entry_trail_pct = float(entry_trail_pct) if entry_trail_pct is not None else None
+        except Exception:
+            cfg.entry_trail_pct = None
+
+        # Normalize sign conventions to avoid accidental 1-bar exits:
+        # - TP must be >= 0
+        # - SL must be <= 0
+        # - Trail must be >= 0
+        try:
+            if cfg.entry_tp_pct is not None and float(cfg.entry_tp_pct) < 0:
+                cfg.entry_tp_pct = abs(float(cfg.entry_tp_pct))
+        except Exception:
+            cfg.entry_tp_pct = None
+        try:
+            if cfg.entry_sl_pct is not None and float(cfg.entry_sl_pct) > 0:
+                cfg.entry_sl_pct = -abs(float(cfg.entry_sl_pct))
+        except Exception:
+            cfg.entry_sl_pct = None
+        try:
+            if cfg.entry_trail_pct is not None and float(cfg.entry_trail_pct) < 0:
+                cfg.entry_trail_pct = abs(float(cfg.entry_trail_pct))
+        except Exception:
+            cfg.entry_trail_pct = None
+
+    if p_enter_threshold is not None:
+        try:
+            cfg.p_enter_threshold = float(p_enter_threshold)
+        except Exception:
+            pass
 
     task_name = str(getattr(cfg, "task", "") or manifest.get("task") or "").strip().lower()
     is_binary = _is_binary_task(task_name)
@@ -275,15 +491,77 @@ def run_xgb_oos_test(self, result_dir: str, days: int = 30, ts: str | None = Non
 
     model_path = str(manifest.get("model_path") or (run_dir / "model.json"))
     predictor = XgbPredictor(model_path=model_path)
-    pred = predictor.predict_action(X)
+    if is_binary:
+        thr = float(getattr(cfg, "p_enter_threshold", 0.5) or 0.5)
+        proba = predictor.predict_proba(X)[:, 1]
+        pred = (proba >= thr).astype(np.int64)
+    else:
+        pred = predictor.predict_action(X)
 
     metrics = _compute_metrics(y=y, pred=pred, is_binary=is_binary)
 
     # Backtest simulation
     closes = aux.get("closes")
+    closes_mode = aux.get("closes_mode", "")
+
+    # For exit models: build_xgb_dataset returns exit_rows (sampled trade windows),
+    # not a timeseries. For backtest we need per-bar predictions on full timeseries.
+    # Re-predict using directional-like features (X_base + zero trade_feats).
+    if (closes_mode == "exit_rows" or task_name.startswith("exit")) and closes is None:
+        try:
+            from agents.xgb.features import _build_base_features
+            cfg_ts = XgbConfig()
+            for k, v in cfg_snap.items():
+                if hasattr(cfg_ts, k):
+                    try:
+                        setattr(cfg_ts, k, v)
+                    except Exception:
+                        pass
+            X_base, closes_ts = _build_base_features(dfs, cfg_ts)
+            W = 200
+            if len(closes_ts) > W + 100:
+                X_base = X_base[W:]
+                closes_ts = closes_ts[W:]
+            trade_feats = np.zeros((len(X_base), 4), dtype=np.float32)
+            X_ts = np.concatenate([X_base.astype(np.float32), trade_feats], axis=1)
+            if is_binary:
+                proba_ts = predictor.predict_proba(X_ts)[:, 1]
+                pred = (proba_ts >= thr).astype(np.int64)
+            else:
+                pred = predictor.predict_action(X_ts)
+            closes = closes_ts
+            closes_mode = "timeseries"
+        except Exception:
+            closes = None
+
     backtest: Dict[str, Any] = {}
-    if closes is not None and len(closes) > 0 and aux.get("closes_mode") == "timeseries":
-        backtest = _run_backtest(pred=pred, closes=closes, task_name=task_name, cfg=cfg)
+    if closes is not None and len(closes) > 0 and closes_mode == "timeseries":
+        highs = None
+        lows = None
+        atr = None
+        try:
+            df5 = dfs.get("df_5min")
+            if hasattr(df5, "__getitem__") and ("high" in df5.columns) and ("low" in df5.columns) and ("close" in df5.columns):
+                h = np.asarray(df5["high"].to_numpy(), dtype=np.float64)
+                l = np.asarray(df5["low"].to_numpy(), dtype=np.float64)
+                c = np.asarray(df5["close"].to_numpy(), dtype=np.float64)
+                W = 200
+                start = W if len(c) > (W + 100) else 0
+                n2 = int(len(closes))
+                highs = h[start : start + n2]
+                lows = l[start : start + n2]
+                c2 = c[start : start + n2]
+                if atr_len is not None or atr_mult is not None or str(exit_mode or "").strip().lower() == "atr_trail":
+                    L = int(atr_len) if atr_len is not None else 14
+                    atr = _compute_atr(highs, lows, c2, length=L)
+        except Exception:
+            highs = None
+            lows = None
+            atr = None
+
+        em = str(exit_mode or "policy").strip().lower()
+        am = float(atr_mult) if atr_mult is not None else 2.0
+        backtest = _run_backtest(pred=pred, closes=closes, task_name=task_name, cfg=cfg, exit_mode=em, highs=highs, lows=lows, atr=atr, atr_mult=am, direction_override=direction_override)
     else:
         backtest = {"skip": True, "reason": "no timeseries closes for backtest"}
 
@@ -291,7 +569,7 @@ def run_xgb_oos_test(self, result_dir: str, days: int = 30, ts: str | None = Non
         "success": True,
         "symbol": symbol,
         "task": task_name,
-        "direction": str(getattr(cfg, "direction", "") or manifest.get("direction") or ""),
+        "direction": direction_override if direction_override in ("long", "short") else str(getattr(cfg, "direction", "") or manifest.get("direction") or ""),
         "days": int(days),
         "bars": int(bars),
         "run_dir": str(run_dir),
@@ -300,6 +578,9 @@ def run_xgb_oos_test(self, result_dir: str, days: int = 30, ts: str | None = Non
         "oos_metrics": metrics,
         "backtest": backtest,
         "meta": meta2,
+        "exit_mode": str(exit_mode or "policy"),
+        "atr_len": int(atr_len) if atr_len is not None else None,
+        "atr_mult": float(atr_mult) if atr_mult is not None else None,
         "ts": ts or (datetime.utcnow().isoformat() + "Z"),
     }
 

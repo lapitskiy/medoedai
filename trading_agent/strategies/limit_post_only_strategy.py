@@ -21,6 +21,33 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
 
     def place_intent(self, symbol: str, side: Side, qty: float, cfg: Optional[LimitConfig] = None) -> Intent:
         cfg = cfg or LimitConfig()
+        # Guard: если позиция уже есть на бирже, не ставим новый входящий лимит вообще.
+        # Это защищает от "залипших" enqueue/тасок, которые стартуют позже и могут открыть позицию поверх уже открытой.
+        try:
+            if self._has_open_position(symbol):
+                intent = Intent(
+                    intent_id=f"limitpo-{symbol}-{int(time.time()*1000)}",
+                    symbol=symbol,
+                    side=side,
+                    qty_total=qty,
+                    qty_remaining=0.0,
+                    tick_size=None,
+                    price=None,
+                    offset_ticks=1,
+                    cfg=cfg,
+                )
+                intent.state = IntentState.FILLED
+                intent.last_error = "position already open: skip placing entry limit"
+                intent.add_log(None, event='skip_place', reason=intent.last_error)
+                self.store.save_intent(intent)
+                try:
+                    self._log.info(f"[LimitPO] skip place_intent: position already open; symbol={symbol}")
+                except Exception:
+                    pass
+                return intent
+        except Exception:
+            # Если проверка позиции сломалась — продолжаем как раньше (не блокируем торговлю).
+            pass
         tick = self.gateway.get_tick_size(symbol)
         best_bid, best_ask = self.gateway.get_best_bid_ask(symbol)
         price = self._edge_price(side, best_bid, best_ask, tick, offset_ticks=1)
@@ -174,8 +201,15 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                 ttl_seconds = int(float(intent.cfg.max_lifetime_sec))
         except Exception:
             ttl_seconds = 300
+        # Жёстко соблюдаем доменное ограничение: max_lifetime_sec ≤ 300.
+        # Важно: даже если в Redis записали trading:limit_ttl_s больше, мы НЕ должны крутиться часами.
+        try:
+            cfg_max = int(float(getattr(getattr(intent, 'cfg', None), 'max_lifetime_sec', 300) or 300))
+        except Exception:
+            cfg_max = 300
         if ttl_seconds <= 0:
             ttl_seconds = 300
+        ttl_seconds = max(10, min(300, int(ttl_seconds), int(cfg_max) if cfg_max > 0 else 300))
         deadline = start_ts + ttl_seconds
         try:
             self._log.info(f"[LimitPO] TTL resolved: symbol={intent.symbol} ttl_s={ttl_seconds}")
@@ -204,6 +238,23 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
             cur = self.store.load_intent(intent.intent_id) or intent
             if cur.state in (IntentState.FILLED, IntentState.CANCELLED, IntentState.FAILED, IntentState.EXPIRED):
                 break
+            # Если позиция уже открыта (ордер мог исполниться, но статус ордера не обновился/ID сменился),
+            # прекращаем попытки реквота, чтобы не "дрочить" входы по мелочи.
+            try:
+                if self._has_open_position(cur.symbol):
+                    try:
+                        self._cancel_all_non_reduce_only(cur.symbol)
+                    except Exception:
+                        pass
+                    self.store.set_state(cur.intent_id, IntentState.FILLED, last_error="position already open")
+                    self.store.remove_pending(cur.symbol, cur.intent_id)
+                    try:
+                        self._log.info(f"[LimitPO] stop: position already open -> mark FILLED; id={cur.intent_id} symbol={cur.symbol}")
+                    except Exception:
+                        pass
+                    break
+            except Exception:
+                pass
             if time.time() >= deadline:
                 self._expire_and_cleanup(cur)
                 break
@@ -395,6 +446,68 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
             pass
         return 0.0
 
+    def _has_open_position(self, symbol: str) -> bool:
+        """Best-effort проверка открытой позиции по symbol через ccxt/bybit v5 raw.
+
+        Нужна как failsafe: если ордер уже исполнился, но get_order_status не отразил fill,
+        лимитная стратегия не должна продолжать ставить/реквотить входы.
+        """
+        ex = getattr(self.gateway, 'ex', None)
+        if not ex:
+            return False
+        def _norm_sym(s: str) -> str:
+            try:
+                raw = str(s).upper()
+                base_part = raw.split(':')[0]
+                return ''.join(ch for ch in base_part if ch.isalnum())
+            except Exception:
+                return ''.join(ch for ch in str(s).upper() if ch.isalnum())
+        # 1) unified fetch_positions
+        try:
+            if hasattr(ex, 'fetch_positions'):
+                pos = ex.fetch_positions([symbol])
+                for p in pos or []:
+                    try:
+                        psym = p.get('symbol') or p.get('info', {}).get('symbol')
+                        if psym and (_norm_sym(psym) != _norm_sym(symbol)):
+                            continue
+                        # contracts/size
+                        for k in ('contracts', 'contractSize', 'size', 'positionAmt', 'qty'):
+                            v = p.get(k) if k in p else (p.get('info', {}) or {}).get(k)
+                            if v is None:
+                                continue
+                            if abs(float(v)) > 0:
+                                return True
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        # 2) raw v5 position/list (как в TradingAgent)
+        try:
+            params = {'category': 'linear', 'symbol': symbol}
+            resp = None
+            if hasattr(ex, 'v5PrivateGetPositionList'):
+                resp = ex.v5PrivateGetPositionList(params)
+            elif hasattr(ex, 'privateGetV5PositionList'):
+                resp = ex.privateGetV5PositionList(params)
+            if isinstance(resp, dict):
+                lst = (((resp.get('result') or {}).get('list')) if isinstance(resp.get('result'), dict) else None)
+                if isinstance(lst, list) and lst:
+                    row = lst[0] if isinstance(lst[0], dict) else None
+                    if row:
+                        for k in ('size', 'positionAmt', 'qty'):
+                            if row.get(k) is not None and abs(float(row.get(k))) > 0:
+                                return True
+                        # fallback: positionValue>0 + avgPrice>0
+                        pv = row.get('positionValue')
+                        ap = row.get('avgPrice')
+                        if pv is not None and ap is not None:
+                            if float(pv) > 0 and float(ap) > 0:
+                                return True
+        except Exception:
+            pass
+        return False
+
     def _get_min_amount(self, symbol: str) -> float:
         ex = getattr(self.gateway, 'ex', None)
         if not ex:
@@ -422,7 +535,20 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
             free_usdt = float(self._get_free_usdt() or 0.0)
             avail = max(0.0, free_usdt * float(buffer_ratio))
             required = float(cur.qty_remaining) * float(price)
-            if required <= avail or avail <= 0:
+            # Если свободных средств нет — сразу завершаем intent, чтобы не крутиться бесконечно
+            if avail <= 0 and required > 0:
+                try:
+                    self._cancel_all_non_reduce_only(cur.symbol)
+                except Exception:
+                    pass
+                self.store.set_state(cur.intent_id, IntentState.FAILED, last_error=f"no free USDT: free={free_usdt:.4f}")
+                self.store.remove_pending(cur.symbol, cur.intent_id)
+                try:
+                    self._log.warning(f"[LimitPO] no free USDT: symbol={cur.symbol} free={free_usdt:.4f} -> FAIL")
+                except Exception:
+                    pass
+                return False
+            if required <= avail:
                 return True
 
             max_qty = avail / float(price)

@@ -464,6 +464,16 @@ def _save_training_results(
                     'base_take_profit': get_env_attr_safe(env, 'base_take_profit'),
                     'base_min_hold': get_env_attr_safe(env, 'base_min_hold'),
                     'atr_trail_mult': getattr(cfg_obj, 'atr_trail_mult', None),
+                    'atr_sl_mult': getattr(cfg_obj, 'atr_sl_mult', None),
+                    # buy filters / gates (to reproduce throttling behavior)
+                    'entry_confidence_gate': getattr(cfg_obj, 'entry_confidence_gate', None),
+                    'buy_roi_thr': get_env_attr_safe(env, 'buy_roi_thr'),
+                    'buy_trend_thr': get_env_attr_safe(env, 'buy_trend_thr'),
+                    'buy_volat_thr': get_env_attr_safe(env, 'buy_volat_thr'),
+                    'buy_strictness_floor': get_env_attr_safe(env, 'buy_strictness_floor'),
+                    'buy_vol_min_lenient': get_env_attr_safe(env, 'buy_vol_min_lenient'),
+                    'buy_vol_min_strict': get_env_attr_safe(env, 'buy_vol_min_strict'),
+                    'buy_vol_floor_mult': get_env_attr_safe(env, 'buy_vol_floor_mult'),
                 },
                 'position_sizing': {
                     'base_position_fraction': get_env_attr_safe(env, 'base_position_fraction'),
@@ -967,23 +977,41 @@ def train_model_optimized(
                             ('TAKE_PROFIT_PCT', 'TAKE_PROFIT_PCT'),
                             ('min_hold_steps', 'min_hold_steps'),
                             ('volume_threshold', 'volume_threshold'),
+                            # Buy-filters knobs (env attributes)
+                            ('buy_roi_thr', 'buy_roi_thr'),
+                            ('buy_trend_thr', 'buy_trend_thr'),
+                            ('buy_volat_thr', 'buy_volat_thr'),
+                            ('buy_strictness_floor', 'buy_strictness_floor'),
+                            ('buy_vol_min_lenient', 'buy_vol_min_lenient'),
+                            ('buy_vol_min_strict', 'buy_vol_min_strict'),
+                            ('buy_vol_floor_mult', 'buy_vol_floor_mult'),
                         ]:
                             if field_name in rm2:
                                 set_env_attr_safe(env, env_attr, rm2[field_name])
-                        # atr_trail_mult → пишем в cfg объект env
-                        if 'atr_trail_mult' in rm2:
-                            try:
-                                cfg_obj = get_env_attr_safe(env, 'cfg')
-                                if cfg_obj is not None:
+                        # atr_trail_mult / atr_sl_mult → пишем в cfg объект env
+                        try:
+                            cfg_obj = get_env_attr_safe(env, 'cfg')
+                            if cfg_obj is not None:
+                                if 'atr_trail_mult' in rm2:
                                     cfg_obj.atr_trail_mult = float(rm2['atr_trail_mult'])
-                            except Exception:
-                                pass
+                                if 'atr_sl_mult' in rm2:
+                                    cfg_obj.atr_sl_mult = float(rm2['atr_sl_mult'])
+                                if 'entry_confidence_gate' in rm2:
+                                    cfg_obj.entry_confidence_gate = float(rm2['entry_confidence_gate'])
+                        except Exception:
+                            pass
                         print(
                             f"🧪 GRID OVERRIDE | SL={get_env_attr_safe(env,'STOP_LOSS_PCT')} | "
                             f"TP={get_env_attr_safe(env,'TAKE_PROFIT_PCT')} | "
                             f"minHold={get_env_attr_safe(env,'min_hold_steps')} | "
                             f"volThr={get_env_attr_safe(env,'volume_threshold')} | "
-                            f"trail_mult={rm2.get('atr_trail_mult', '—')}"
+                            f"trail_mult={rm2.get('atr_trail_mult', '—')} | "
+                            f"atr_sl_mult={rm2.get('atr_sl_mult', '—')} | "
+                            f"gate={rm2.get('entry_confidence_gate', '—')} | "
+                            f"roi_thr={rm2.get('buy_roi_thr', '—')} | "
+                            f"trend_thr={rm2.get('buy_trend_thr', '—')} | "
+                            f"volat_thr={rm2.get('buy_volat_thr', '—')} | "
+                            f"strict_floor={rm2.get('buy_strictness_floor', '—')}"
                         )
             except Exception:
                 pass
@@ -1025,6 +1053,16 @@ def train_model_optimized(
                     'base_take_profit': get_env_attr_safe(env, 'base_take_profit'),
                     'base_min_hold': get_env_attr_safe(env, 'base_min_hold'),
                     'atr_trail_mult': getattr(cfg_obj2, 'atr_trail_mult', None),
+                    'atr_sl_mult': getattr(cfg_obj2, 'atr_sl_mult', None),
+                    # buy filters / gates (to reproduce throttling behavior)
+                    'entry_confidence_gate': getattr(cfg_obj2, 'entry_confidence_gate', None),
+                    'buy_roi_thr': get_env_attr_safe(env, 'buy_roi_thr'),
+                    'buy_trend_thr': get_env_attr_safe(env, 'buy_trend_thr'),
+                    'buy_volat_thr': get_env_attr_safe(env, 'buy_volat_thr'),
+                    'buy_strictness_floor': get_env_attr_safe(env, 'buy_strictness_floor'),
+                    'buy_vol_min_lenient': get_env_attr_safe(env, 'buy_vol_min_lenient'),
+                    'buy_vol_min_strict': get_env_attr_safe(env, 'buy_vol_min_strict'),
+                    'buy_vol_floor_mult': get_env_attr_safe(env, 'buy_vol_floor_mult'),
                 },
                 'position_sizing': {
                     'base_position_fraction': get_env_attr_safe(env, 'base_position_fraction'),

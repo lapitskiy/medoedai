@@ -36,7 +36,11 @@ def create_exchange(exchange_id: str) -> ccxt.Exchange:
     }
     # Для Bybit теперь полагаемся исключительно на category='linear' в запросах
     ex = ex_class(opts)
-    ex.load_markets()
+    try:
+        from utils.bybit_rate_limiter import load_markets_cached
+        load_markets_cached(ex)
+    except Exception:
+        ex.load_markets()
     return ex
 
 

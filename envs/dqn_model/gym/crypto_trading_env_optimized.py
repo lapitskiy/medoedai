@@ -62,6 +62,17 @@ class CryptoTradingEnvOptimized(gym.Env):
         self.buy_attempts = 0
         self.buy_rejected_vol = 0
         self.buy_rejected_roi = 0
+        # Параметры BUY-фильтров (можно переопределять через env_overrides)
+        # Если *_thr заданы (не None) — используем фиксированный порог и игнорируем strictness-интерполяцию.
+        self.buy_roi_thr = None       # например -0.01: не входить если recent_roi_mean < -1%
+        self.buy_trend_thr = None     # например 0.0: входить только если 20-барный тренд >= 0
+        self.buy_volat_thr = None     # например 0.003: входить только если волатильность >= 0.3%
+        # Пол/минимальная "строгость" фильтров даже при высоком epsilon (борьба с овертрейдингом в exploration)
+        self.buy_strictness_floor = 0.0
+        # Минимальные пороги vol_relative (до применения volume_threshold)
+        self.buy_vol_min_lenient = 0.0015
+        self.buy_vol_min_strict = 0.0040
+        self.buy_vol_floor_mult = 0.5
         
         # Получаем размер окна с значением по умолчанию
         window_size = getattr(self.cfg, 'window288', 288)  # По умолчанию 288 (24 часа * 12 пятиминуток)
@@ -148,12 +159,17 @@ class CryptoTradingEnvOptimized(gym.Env):
         if indicators_config is None:
             self.indicators_config = {
                 'rsi': {'length': 14},
-                'ema': {'lengths': [100, 200]},
+                'rsi_7': {'length': 7},
+                'ema': {'lengths': [20, 50, 100, 200]},
                 'ema_cross': {
-                    'pairs': [(100, 200)],
+                    'pairs': [(20, 50), (100, 200)],
                     'include_cross_signal': True
                 },
                 'sma': {'length': 14},
+                'atr': {'length': 14},
+                'obv': {},
+                'returns': {'periods': [1, 3, 12, 60]},
+                'zscore': {'ema_length': 50, 'window': 20},
             }
         else:
             self.indicators_config = indicators_config
@@ -412,8 +428,11 @@ class CryptoTradingEnvOptimized(gym.Env):
         # Причины продаж (эпизодные и кумулятивные)
         self.sell_types = {
             'agent': 0,
-            'stop_loss': 0,
-            'take_profit': 0,
+            # split exits: ATR vs fixed percent SL/TP
+            'stop_loss_atr': 0,
+            'stop_loss_pct': 0,
+            'take_profit_atr': 0,
+            'take_profit_pct': 0,
             'trailing': 0,
             'timeout': 0,
             'other': 0,
@@ -421,8 +440,11 @@ class CryptoTradingEnvOptimized(gym.Env):
         }
         self.cumulative_sell_types = {
             'agent': 0,
-            'stop_loss': 0,
-            'take_profit': 0,
+            # split exits: ATR vs fixed percent SL/TP
+            'stop_loss_atr': 0,
+            'stop_loss_pct': 0,
+            'take_profit_atr': 0,
+            'take_profit_pct': 0,
             'trailing': 0,
             'timeout': 0,
             'other': 0,
@@ -1066,13 +1088,7 @@ class CryptoTradingEnvOptimized(gym.Env):
                         self._sl_price_atr = None
                         self._tp_price_atr = None
                     
-                    # Reward на входе ≈ 0: не даём "сладких" бонусов за BUY.
-                    # Оставляем только комиссию (минус) и, опционально, штрафы (но не плюсы).
-                    try:
-                        vol_sh = float(getattr(self, '_vol_shaping_reward', 0.0))
-                        reward += float(min(0.0, vol_sh))
-                    except Exception:
-                        pass
+                    # Reward на входе ≈ 0: только комиссия (минус), без доп. шейпинга
                     
                     if self._can_log:
                         print(f"🔵 BUY: {crypto_to_buy:.4f} at {current_price:.2f}, уверенность: {entry_confidence:.2f}, награда: {reward:.4f}")
@@ -1143,60 +1159,15 @@ class CryptoTradingEnvOptimized(gym.Env):
                 profit_loss = sell_amount - (self.crypto_held * self.last_buy_price)
                 net_profit_loss = profit_loss - ((self.fee_entry or 0.0) + (fee_exit or 0.0))
                 
-                # Награда за продажу (как в оригинале)
-                reward += np.tanh(pnl * 25) * 2  # За результат сделки
-
-                # --- Reward shaping вокруг SL/TP ---
-                try:
-                    p = float(pnl)
-                    sl = float(getattr(self, 'STOP_LOSS_PCT', -0.03))
-                    tp = float(getattr(self, 'TAKE_PROFIT_PCT', 0.06))
-                    tau_mult = float(getattr(self.cfg, 'micro_profit_tau_mult', 9.0))
-                    tau_min = float(getattr(self.cfg, 'micro_profit_tau_min', 0.005))
-                    tau = max(float(getattr(self, 'trade_fee_percent', 0.00055)) * tau_mult, tau_min)
-
-                    # SL shaping
-                    if p <= sl:
-                        a_sl, b_sl = 0.02, 0.5  # базовый бонус и штраф за запоздание ниже SL
-                        reward += a_sl - b_sl * max(0.0, (sl - p))
-                    elif sl < p < 0.0:
-                        c_sl = 0.01  # мягкий штраф за ранний выход до достижения SL
-                        denom = max(1e-6, abs(sl))
-                        reward += -c_sl * (sl - p) / denom
-
-                    # TP shaping
-                    if p >= tp:
-                        a_tp, k_tp, cap = 0.02, 0.1, 0.03  # базовый бонус, за избыток, кап
-                        reward += a_tp + min(cap, k_tp * (p - tp))
-                    elif 0.0 < p < tp:
-                        if p < tau:
-                            k_small = float(getattr(self.cfg, 'micro_profit_k_small', 0.10))  # штраф за микоприбыль ниже комиссионного порога
-                            reward += -k_small * (tau - p)
-                        # иначе — нейтрально
-                except Exception:
-                    pass
-                
-                # Дополнительные награды за качество сделки (УЛУЧШЕНО)
-                if pnl > 0.05:  # Прибыль > 5%
-                    reward += 0.5  # Увеличил с 0.3 до 0.5 для больших прибылей
-                elif pnl > 0.02:  # Прибыль > 2%
-                    reward += 0.2  # Новая награда за среднюю прибыль
-                elif pnl < -0.03:  # Убыток > 3%
-                    reward -= 0.005  # Уменьшил штраф с -0.01 до -0.005
-                elif pnl < -0.01:  # Убыток > 1%
-                    reward -= 0.001  # Небольшой штраф за малые убытки
-                # Трендовый шейпинг SELL
-                try:
-                    m = 1.0
-                    if getattr(self, '_trend_regime', 0) == 1 and getattr(self, '_L_up_med', 0.0) > 0:
-                        u = float(np.clip(self._run_len_up / max(1.0, self._L_up_med), 0.0, 1.0))
-                        m = 1.0 + 0.30 * u
-                    elif getattr(self, '_trend_regime', 0) == -1 and getattr(self, '_L_down_med', 0.0) > 0:
-                        u = float(np.clip(self._run_len_down / max(1.0, self._L_down_med), 0.0, 1.0))
-                        m = 1.0 - 0.20 * u
-                    reward *= float(np.clip(m, 0.7, 1.3))
-                except Exception:
-                    pass
+                # Награда за продажу — штраф за micro-profit, иначе PnL через tanh
+                _tau = max(
+                    float(getattr(self.cfg, 'micro_profit_tau_min', 0.005)),
+                    float(getattr(self.cfg, 'micro_profit_tau_mult', 9.0)) * self.trade_fee_percent * 2,
+                )
+                if 0 < pnl < _tau:
+                    reward += -float(getattr(self.cfg, 'micro_profit_penalty_fixed', 0.05))
+                else:
+                    reward += np.tanh(pnl * 25) * 2
                 
                 # ИСПРАВЛЯЕМ: Записываем сделку в оба списка для правильного расчета winrate
                 # Включаем расширенные поля для последующей визуализации
@@ -1321,10 +1292,10 @@ class CryptoTradingEnvOptimized(gym.Env):
                     # 5. проверяем по Low свечи (ближе к реальности)
                     low_price = self.df_5min[self.current_step - 1, 2]  # Low
                     
+                    # Trailing is a risk-exit: allow it even inside min_hold_steps.
                     if (low_price <= trailing_level and
                         hasattr(self, 'last_buy_step') and 
-                        self.last_buy_step is not None and
-                        (self.current_step - self.last_buy_step) >= self.min_hold_steps):
+                        self.last_buy_step is not None):
                         
                         # Reward: PnL сделки, бонус если в плюсе
                         trail_pnl = (trailing_level - self.last_buy_price) / self.last_buy_price
@@ -1392,28 +1363,12 @@ class CryptoTradingEnvOptimized(gym.Env):
                     except Exception:
                         pass
                 
-                # --- Награды за удержание позиции (УЛУЧШЕНО) ---
-                if unrealized_pnl_percent > 0:
-                    # Чем выше нереализованная прибыль, тем больше награда за удержание
-                    reward += unrealized_pnl_percent * 3  # Увеличил с 2 до 3 для лучшего удержания прибыли
-                else:
-                    # Чем больше нереализованный убыток, тем больше штраф за удержание
-                    reward += unrealized_pnl_percent * 2  # Уменьшил с 3 до 2 для меньшего давления
+                # --- Reward за удержание позиции: слабый шейпинг по unrealized PnL ---
+                reward += np.clip(unrealized_pnl_percent, -0.02, 0.02)
             else:
                 # Если action == HOLD и нет открытой позиции
                 reward = 0.0  # Без бонуса за бездействие
-        # Трендовый шейпинг HOLD
-        try:
-            m = 1.0
-            if getattr(self, '_trend_regime', 0) == 1 and getattr(self, '_L_up_med', 0.0) > 0:
-                u = float(np.clip(self._run_len_up / max(1.0, self._L_up_med), 0.0, 1.0))
-                m = 1.0 + 0.20 * (1.0 - abs(2.0 * u - 1.0))
-            elif getattr(self, '_trend_regime', 0) == -1 and getattr(self, '_L_down_med', 0.0) > 0:
-                u = float(np.clip(self._run_len_down / max(1.0, self._L_down_med), 0.0, 1.0))
-                m = 1.0 - 0.15 * (1.0 - abs(2.0 * u - 1.0))
-            reward *= float(np.clip(m, 0.7, 1.3))
-        except Exception:
-            pass
+        # (трендовый шейпинг HOLD убран — модель учится на чистом PnL-сигнале)
         
         # Обновляем статистики
         self._update_stats(current_price)
@@ -1610,6 +1565,12 @@ class CryptoTradingEnvOptimized(gym.Env):
         # оставляем хотя бы базовые фильтры (volume floor / anti-dead-market).
         # Степень строгости [0..1]
         strictness = np.clip((0.8 - eps) / (0.8 - 0.2), 0.0, 1.0)
+        # Минимальный уровень фильтрации даже в exploration
+        try:
+            strict_floor = float(getattr(self, 'buy_strictness_floor', 0.0))
+        except Exception:
+            strict_floor = 0.0
+        strictness = float(max(strictness, strict_floor))
         
         # 1. Проверка объема - АДАПТИВНЫЙ порог с мягким шейпингом
         current_volume = self.df_5min[self.current_step - 1, 4]
@@ -1617,11 +1578,15 @@ class CryptoTradingEnvOptimized(gym.Env):
         
         # Порог объема: ужесточаем, чтобы реже входить в "полумёртвый" рынок
         cfg_thr = float(getattr(self, 'volume_threshold', 0.0005))
-        base_lenient_vol = max(cfg_thr, 0.0015)
-        base_strict_vol  = max(cfg_thr, 0.0040)
+        base_lenient_vol = max(cfg_thr, float(getattr(self, 'buy_vol_min_lenient', 0.0015)))
+        base_strict_vol  = max(cfg_thr, float(getattr(self, 'buy_vol_min_strict', 0.0040)))
         vol_thr = base_lenient_vol + strictness * (base_strict_vol - base_lenient_vol)
         # Жёсткий пол: совсем «мертвый» объём — запрещаем
-        vol_floor = 0.5 * base_lenient_vol
+        try:
+            vol_floor_mult = float(getattr(self, 'buy_vol_floor_mult', 0.5))
+        except Exception:
+            vol_floor_mult = 0.5
+        vol_floor = vol_floor_mult * base_lenient_vol
         # Обнулим shaping по объёму на каждый вызов
         self._vol_shaping_reward = 0.0
         self._vol_size_multiplier = 1.0
@@ -1649,9 +1614,11 @@ class CryptoTradingEnvOptimized(gym.Env):
         # 2. Проверка ROI - УЛУЧШЕНО: Более умный фильтр
         if len(self.roi_buf) > 0:
             recent_roi_mean = np.mean(list(self.roi_buf))
-            # Порог по среднему ROI: ужесточаем, чтобы меньше ловить "падающий нож"
-            roi_thr = -0.04 + strictness * (-0.008 + 0.04)  # -0.04 → -0.008
-            if recent_roi_mean < roi_thr:
+            # Порог по среднему ROI: либо фиксированный override, либо интерполяция
+            roi_thr = getattr(self, 'buy_roi_thr', None)
+            if roi_thr is None:
+                roi_thr = -0.04 + strictness * (-0.008 + 0.04)  # -0.04 → -0.008
+            if recent_roi_mean < float(roi_thr):
                 self.buy_rejected_roi += 1
                 if self.current_step % 100 == 0:
                     print(f"🔍 Фильтр ROI: recent_roi_mean={recent_roi_mean:.4f} < {roi_thr:.4f}, отклонено")
@@ -1661,9 +1628,11 @@ class CryptoTradingEnvOptimized(gym.Env):
         if self.current_step >= 20:
             recent_prices = self.df_5min[self.current_step-20:self.current_step, 3]  # Close prices
             price_trend = (recent_prices[-1] - recent_prices[0]) / recent_prices[0]
-            # Порог тренда: от -2.0% (мягко) к -0.5% (строго)
-            trend_thr = -0.02 + strictness * ( -0.005 + 0.02 )  # -0.02 → -0.005
-            if price_trend < trend_thr:
+            # Порог тренда: либо фиксированный override, либо интерполяция (мягко->строго)
+            trend_thr = getattr(self, 'buy_trend_thr', None)
+            if trend_thr is None:
+                trend_thr = -0.02 + strictness * ( -0.005 + 0.02 )  # -0.02 → -0.005
+            if price_trend < float(trend_thr):
                 if self.current_step % 100 == 0:
                     print(f"🔍 Фильтр тренда: price_trend={price_trend:.4f} < {trend_thr:.4f}, отклонено")
                 return False, 'trend'
@@ -1673,25 +1642,16 @@ class CryptoTradingEnvOptimized(gym.Env):
             recent_highs = self.df_5min[self.current_step-12:self.current_step, 1]  # High prices
             recent_lows = self.df_5min[self.current_step-12:self.current_step, 2]   # Low prices
             volatility = np.mean((recent_highs - recent_lows) / recent_lows)
-            # Порог волатильности: от 0.002 (мягко) к 0.0045 (строго)
-            volat_thr = 0.002 + strictness * (0.0045 - 0.002)
-            if volatility < volat_thr:
+            # Порог волатильности: либо фиксированный override, либо интерполяция
+            volat_thr = getattr(self, 'buy_volat_thr', None)
+            if volat_thr is None:
+                volat_thr = 0.002 + strictness * (0.0045 - 0.002)
+            if volatility < float(volat_thr):
                 if self.current_step % 100 == 0:
                     print(f"🔍 Фильтр волатильности: volatility={volatility:.4f} < {volat_thr:.4f}, отклонено")
                 return False, 'volatility'
         
-        # 5. НОВЫЙ: Фильтр по силе тренда (ADX-подобный)
-        if self.current_step >= 20:
-            # Рассчитываем силу тренда на основе изменения цены
-            recent_prices = self.df_5min[self.current_step-20:self.current_step, 3]  # Close prices
-            price_changes = np.diff(recent_prices)
-            trend_strength = np.abs(np.mean(price_changes)) / (np.std(price_changes) + 1e-8)
-            # Порог силы тренда: ужесточаем
-            ts_thr = 0.20 + strictness * (0.45 - 0.20)
-            if trend_strength < ts_thr:
-                if self.current_step % 100 == 0:
-                    print(f"🔍 Фильтр тренда: trend_strength={trend_strength:.4f} < {ts_thr:.4f}, отклонено")
-                return False, 'trend_strength'
+        # (фильтр trend_strength убран — дублировал фильтр тренда и слишком агрессивно резал входы)
         
         # Все фильтры пройдены - разрешаем покупку
         return True, None
@@ -1792,12 +1752,23 @@ class CryptoTradingEnvOptimized(gym.Env):
             
             # Причина принудительной продажи
             try:
-                if 'STOP-LOSS' in reason.upper():
-                    self.sell_types['stop_loss'] += 1
-                    self.cumulative_sell_types['stop_loss'] += 1
-                elif 'TAKE-PROFIT' in reason.upper():
-                    self.sell_types['take_profit'] += 1
-                    self.cumulative_sell_types['take_profit'] += 1
+                ru = (reason or "").upper()
+                if 'STOP-LOSS' in ru:
+                    # Separate ATR SL vs fixed percent SL
+                    if 'ATR' in ru:
+                        self.sell_types['stop_loss_atr'] += 1
+                        self.cumulative_sell_types['stop_loss_atr'] += 1
+                    else:
+                        self.sell_types['stop_loss_pct'] += 1
+                        self.cumulative_sell_types['stop_loss_pct'] += 1
+                elif 'TAKE-PROFIT' in ru:
+                    # Separate ATR TP vs fixed percent TP
+                    if 'ATR' in ru:
+                        self.sell_types['take_profit_atr'] += 1
+                        self.cumulative_sell_types['take_profit_atr'] += 1
+                    else:
+                        self.sell_types['take_profit_pct'] += 1
+                        self.cumulative_sell_types['take_profit_pct'] += 1
                 elif 'TRAILING' in reason.upper():
                     self.sell_types['trailing'] += 1
                     self.cumulative_sell_types['trailing'] += 1

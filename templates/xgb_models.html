@@ -21,6 +21,14 @@
             <div class="content">
                 <a href="/" class="back-link">← Вернуться на главную</a>
 
+                <!-- ========== ACTIVE TRAINING STATUS ========== -->
+                <div class="section" id="xgb-active-training" style="margin-bottom:18px;">
+                    <h2>📊 Статус обучения XGB</h2>
+                    <div id="xgbActiveStatus">
+                        <div class="status info" style="opacity:0.6;">⏳ Проверка…</div>
+                    </div>
+                </div>
+
                 <div class="section" id="xgb-training">
                     <h2>🎯 Обучение XGB модели</h2>
                     <p>
@@ -62,16 +70,6 @@
                     </div>
 
                     <div class="form-group">
-                        <label>horizon_steps (5m шаги)</label>
-                        <input id="xgbHorizonStepsInput" class="form-control" type="number" min="1" step="1" value="12">
-                    </div>
-
-                    <div class="form-group">
-                        <label>threshold, % (порог hold для directional)</label>
-                        <input id="xgbThresholdPctInput" class="form-control" type="number" min="0" step="0.01" value="0.20">
-                    </div>
-
-                    <div class="form-group">
                         <label>max_hold_steps (макс. удержание, шаги 5m)</label>
                         <input id="xgbMaxHoldStepsInput" class="form-control" type="number" min="2" step="1" value="48">
                     </div>
@@ -82,7 +80,7 @@
                     </div>
 
                     <div class="form-group">
-                        <label>min_profit, % (минимальная прибыль для label=1)</label>
+                        <label>min_profit, % (1 = 1% минимальная прибыль для label=1)</label>
                         <input id="xgbMinProfitPctInput" class="form-control" type="number" min="0" step="0.01" value="0.00">
                     </div>
 
@@ -97,7 +95,6 @@
                     </div>
 
                     <div class="button-group">
-                        <button class="btn btn-info" onclick="startXgbTrainingSelected()">🧠 Обучить XGB</button>
                         <button class="btn btn-primary" onclick="startXgbGridSelected()">🧪 Grid (auto → финал)</button>
                     </div>
 
@@ -154,6 +151,10 @@
                     </div>
 
                     <h3 style="margin-top:14px;">📐 Labeling params (from / to / step)</h3>
+                    <p id="gfLabelNote" class="text-muted" style="font-size:12px; margin:4px 0 8px;">
+                        <b>entry_*</b>: сила сигнала = <code>min_profit</code> (threshold не используется).<br>
+                        <b>directional</b>: сила сигнала = <code>threshold</code>.
+                    </p>
                     <div id="gfLabelDirectional" style="display:none;">
                         <div class="statistics-grid" style="grid-template-columns: repeat(2, 1fr); gap:10px;">
                             <div class="form-group">
@@ -180,7 +181,7 @@
                                 <input id="gfMhStep" class="form-control gf-range" type="number" step="1" value="48" placeholder="step" style="margin-top:4px;">
                             </div>
                             <div class="form-group">
-                                <label>min_profit, % (0.25 = 0.0025)</label>
+                                <label>min_profit, % (1 = 1%)</label>
                                 <input id="gfMpFrom" class="form-control gf-range" type="number" step="0.01" value="0.00" placeholder="from">
                                 <input id="gfMpTo" class="form-control gf-range" type="number" step="0.01" value="0.50" placeholder="to" style="margin-top:4px;">
                                 <input id="gfMpStep" class="form-control gf-range" type="number" step="0.01" value="0.25" placeholder="step" style="margin-top:4px;">
@@ -190,6 +191,46 @@
                                 <input id="gfFeeFrom" class="form-control gf-range" type="number" step="0.01" value="0.06" placeholder="from">
                                 <input id="gfFeeTo" class="form-control gf-range" type="number" step="0.01" value="0.06" placeholder="to" style="margin-top:4px;">
                                 <input id="gfFeeStep" class="form-control gf-range" type="number" step="0.01" value="0.01" placeholder="step" style="margin-top:4px;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="gfPolicyBinary" style="margin-top:14px;">
+                        <h3 style="margin-top:14px;">🚪 Entry policy (binary): p_enter_threshold</h3>
+                        <div class="statistics-grid" style="grid-template-columns: repeat(1, 1fr); gap:10px;">
+                            <div class="form-group">
+                                <label>p_enter_threshold (from / to / step)</label>
+                                <input id="gfPeFrom" class="form-control gf-range" type="number" step="0.05" value="0.60" placeholder="from">
+                                <input id="gfPeTo" class="form-control gf-range" type="number" step="0.05" value="0.80" placeholder="to" style="margin-top:4px;">
+                                <input id="gfPeStep" class="form-control gf-range" type="number" step="0.05" value="0.10" placeholder="step" style="margin-top:4px;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="gfExitPolicy" style="margin-top:14px;">
+                        <h3 style="margin-top:14px;">🚪 Exit-policy for entry_* (TP/SL/Trail)</h3>
+                        <p class="text-muted" style="font-size:12px; margin:4px 0 8px;">
+                            Эти параметры используются при разметке <code>entry_*</code> и в proxy_pnl (должны совпадать с OOS/прод).
+                            Для <code>directional</code> игнорируются.
+                        </p>
+                        <div class="statistics-grid" style="grid-template-columns: repeat(3, 1fr); gap:10px;">
+                            <div class="form-group">
+                                <label>entry_tp_pct, % (from / to / step)</label>
+                                <input id="gfEtpFrom" class="form-control gf-range" type="number" step="0.1" value="1.2" placeholder="from">
+                                <input id="gfEtpTo" class="form-control gf-range" type="number" step="0.1" value="1.2" placeholder="to" style="margin-top:4px;">
+                                <input id="gfEtpStep" class="form-control gf-range" type="number" step="0.1" value="0.1" placeholder="step" style="margin-top:4px;">
+                            </div>
+                            <div class="form-group">
+                                <label>entry_sl_pct, % (from / to / step)</label>
+                                <input id="gfEslFrom" class="form-control gf-range" type="number" step="0.1" value="-0.7" placeholder="from">
+                                <input id="gfEslTo" class="form-control gf-range" type="number" step="0.1" value="-0.7" placeholder="to" style="margin-top:4px;">
+                                <input id="gfEslStep" class="form-control gf-range" type="number" step="0.1" value="0.1" placeholder="step" style="margin-top:4px;">
+                            </div>
+                            <div class="form-group">
+                                <label>entry_trail_pct, % (from / to / step)</label>
+                                <input id="gfEtrFrom" class="form-control gf-range" type="number" step="0.1" value="0.6" placeholder="from">
+                                <input id="gfEtrTo" class="form-control gf-range" type="number" step="0.1" value="0.6" placeholder="to" style="margin-top:4px;">
+                                <input id="gfEtrStep" class="form-control gf-range" type="number" step="0.1" value="0.1" placeholder="step" style="margin-top:4px;">
                             </div>
                         </div>
                     </div>
@@ -264,54 +305,172 @@
                     </div>
                     <div id="gfStatus"></div>
                 </div>
+                <!-- ========== CREATE XGB MODEL VERSION ========== -->
+                <div class="section" id="xgb-create-model" style="margin-top:24px;">
+                    <h2>📦 Создать новую версию XGB модели</h2>
+                    <p>Скопирует файлы run-а из <code>result/xgb/</code> в <code>models/xgb/&lt;symbol&gt;/ensemble-a/vN</code> (с <code>manifest.yaml</code> и ссылкой <code>current</code>)</p>
+                    <div class="form-group">
+                        <label>Символ</label>
+                        <select id="xgbCreateSymbol" class="form-control" onchange="loadXgbRunsForCreate()">
+                            <option value="">Загрузка символов...</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Выберите run из result/xgb</label>
+                        <select id="xgbCreateRun" class="form-control">
+                            <option value="">Сначала выберите символ...</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Ансамбль назначения</label>
+                        <select id="xgbCreateEnsemble" class="form-control">
+                            <option value="ensemble-a" selected>ensemble-a</option>
+                            <option value="ensemble-b">ensemble-b</option>
+                            <option value="ensemble-c">ensemble-c</option>
+                        </select>
+                    </div>
+                    <div class="button-group">
+                        <button id="xgbCreateBtn" class="btn btn-success" onclick="createXgbModelVersion(this)">🚀 Создать новую версию</button>
+                    </div>
+                    <div id="xgbCreateStatus"></div>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
-        async function startXgbTrainingSelected(){
-            const statusDiv = document.getElementById('xgbStatus');
-            const symbol = (document.getElementById('xgbSymbolSelect')?.value || 'BTCUSDT').trim();
-            const direction = (document.getElementById('xgbDirectionSelect')?.value || 'long').trim().toLowerCase();
-            const task = (document.getElementById('xgbTaskSelect')?.value || 'directional').trim().toLowerCase();
-            const horizonSteps = document.getElementById('xgbHorizonStepsInput')?.value || 12;
-            const thresholdPct = document.getElementById('xgbThresholdPctInput')?.value || 0.20;
-            const maxHold = document.getElementById('xgbMaxHoldStepsInput')?.value || 48;
-            const feePct = document.getElementById('xgbFeePctInput')?.value || 0.06;
-            const minProfitPct = document.getElementById('xgbMinProfitPctInput')?.value || 0.00;
-            const labelDeltaPct = document.getElementById('xgbLabelDeltaPctInput')?.value || 0.05;
-            const limitCandles = document.getElementById('xgbLimitCandlesInput')?.value || 100000;
-            statusDiv.innerHTML = '<div class="status info">⏳ Запуск XGB: ' + symbol + ' dir=' + direction + ' task=' + task + '...</div>';
-            try {
-                const threshold = (parseFloat(thresholdPct) || 0.0) / 100.0;
-                const fee_bps = (parseFloat(feePct) || 0.0) * 100.0; // % -> bps
-                const min_profit = (parseFloat(minProfitPct) || 0.0) / 100.0;
-                const label_delta = (parseFloat(labelDeltaPct) || 0.0) / 100.0;
-                const payload = { symbol, direction, task, horizon_steps: horizonSteps, threshold: threshold, max_hold_steps: maxHold, fee_bps: fee_bps, min_profit: min_profit, label_delta: label_delta, limit_candles: limitCandles };
-                const resp = await fetch('/training/train_xgb_symbol', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                    body: JSON.stringify(payload)
+        /* ===== XGB Create Model Version ===== */
+        async function loadXgbSymbolsForCreate(){
+            const sel = document.getElementById('xgbCreateSymbol');
+            if(!sel) return;
+            try{
+                const resp = await fetch('/api/xgb/symbols');
+                const data = await resp.json();
+                if(!data.success){ sel.innerHTML='<option value="">Ошибка</option>'; return; }
+                const list = data.symbols || [];
+                if(!list.length){ sel.innerHTML='<option value="">Нет символов</option>'; return; }
+                sel.innerHTML = list.map(s=>`<option value="${s}">${s}</option>`).join('');
+                loadXgbRunsForCreate();
+            }catch(e){ sel.innerHTML='<option value="">Ошибка загрузки</option>'; }
+        }
+        async function loadXgbRunsForCreate(){
+            const sym = (document.getElementById('xgbCreateSymbol')?.value||'').trim();
+            const sel = document.getElementById('xgbCreateRun');
+            if(!sel) return;
+            if(!sym){ sel.innerHTML='<option value="">Сначала выберите символ...</option>'; return; }
+            try{
+                const resp = await fetch('/api/xgb/runs?symbol='+encodeURIComponent(sym));
+                const data = await resp.json();
+                if(!data.success){ sel.innerHTML='<option value="">Ошибка</option>'; return; }
+                const runs = data.runs || [];
+                if(!runs.length){ sel.innerHTML='<option value="">Нет run-ов</option>'; return; }
+                sel.innerHTML = runs.map(r=>{
+                    const acc = (typeof r.val_acc==='number') ? ' acc='+(r.val_acc*100).toFixed(1)+'%' : '';
+                    const dir = r.direction ? ' ['+r.direction+']' : '';
+                    const task = r.task ? ' ('+r.task+')' : '';
+                    return `<option value="${r.run_id}">${r.run_id}${task}${dir}${acc}</option>`;
+                }).join('');
+            }catch(e){ sel.innerHTML='<option value="">Ошибка загрузки</option>'; }
+        }
+        async function createXgbModelVersion(btnEl){
+            const statusDiv = document.getElementById('xgbCreateStatus');
+            const btn = btnEl || document.getElementById('xgbCreateBtn');
+            const sym = (document.getElementById('xgbCreateSymbol')?.value||'').trim();
+            const runId = (document.getElementById('xgbCreateRun')?.value||'').trim();
+            const ens = (document.getElementById('xgbCreateEnsemble')?.value||'ensemble-a').trim();
+            if(!sym||!runId){ statusDiv.innerHTML='<div class="status error">❌ Выберите символ и run</div>'; return; }
+            if(btn){ btn.disabled=true; btn.textContent='⏳ Создание...'; }
+            statusDiv.innerHTML='<div class="status info">Создание новой версии...</div>';
+            try{
+                const resp = await fetch('/create_xgb_model_version',{
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({symbol:sym, run_id:runId, ensemble:ens})
                 });
-                const data = await resp.json().catch(() => null);
-                if (data && data.success) {
-                    const tname = data.task ? String(data.task) : task;
-                    statusDiv.innerHTML = '<div class="status success">✅ XGB запущен: task=' + tname + ' (celery: ' + data.task_id + ')</div>';
-                } else if (data && data.error) {
-                    statusDiv.innerHTML = '<div class="status error">❌ ' + String(data.error) + '</div>';
+                const result = await resp.json();
+                if(result.success){
+                    statusDiv.innerHTML=`<div class="status success">✅ Версия создана: ${result.version}<br>Путь: ${result.path}<br>Файлы: ${result.files.join(', ')}</div>`;
                 } else {
-                    statusDiv.innerHTML = '<div class="status error">❌ Неизвестный ответ сервера</div>';
+                    statusDiv.innerHTML=`<div class="status error">❌ ${result.error}</div>`;
                 }
+            }catch(e){
+                statusDiv.innerHTML=`<div class="status error">❌ Ошибка сети: ${e.message}</div>`;
+            }finally{
+                if(btn){ btn.disabled=false; btn.textContent='🚀 Создать новую версию'; }
+            }
+        }
+        document.addEventListener('DOMContentLoaded', function(){
+            loadXgbSymbolsForCreate();
+            pollActiveTraining();
+        });
+
+        /* ===== Active Training Polling ===== */
+        let _activePollTimer = null;
+        function _fmtDuration(sec) {
+            if (!sec || sec <= 0) return '—';
+            const h = Math.floor(sec / 3600);
+            const m = Math.floor((sec % 3600) / 60);
+            const s = Math.floor(sec % 60);
+            if (h > 0) return h + 'ч ' + m + 'м';
+            if (m > 0) return m + 'м ' + s + 'с';
+            return s + 'с';
+        }
+        async function pollActiveTraining() {
+            const div = document.getElementById('xgbActiveStatus');
+            try {
+                const r = await fetch('/training/xgb_active_training');
+                const d = await r.json();
+                if (!d.success || !d.active || d.active.length === 0) {
+                    div.innerHTML = '<div class="status" style="background:#f0f4f8;color:#64748b;border-left:4px solid #94a3b8;padding:10px 14px;">Активных обучений XGB нет</div>';
+                    _activePollTimer = setTimeout(pollActiveTraining, 10000);
+                    return;
+                }
+                let html = '';
+                for (const t of d.active) {
+                    const pct = (t.total > 0 && t.done > 0) ? Math.round(t.done / t.total * 100) : 0;
+                    const barW = Math.max(2, pct);
+                    const stateLabel = t.state === 'PROGRESS' ? 'Обучение' : (t.state === 'PENDING' ? 'В очереди' : t.state);
+                    const elapsed = _fmtDuration(t.elapsed_sec);
+                    const eta = _fmtDuration(t.eta_sec);
+                    const avg = t.avg_per_run_sec ? t.avg_per_run_sec.toFixed(1) + 'с/run' : '';
+                    html += '<div class="status info" style="padding:12px 16px;">';
+                    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+                    html += '<b>' + stateLabel + ': ' + (t.symbol||'') + ' / ' + (t.task_name||t.grid_type||'') + '</b>';
+                    html += '<span style="font-size:12px;color:#64748b;">task: ' + (t.task_id||'').substring(0,8) + '…</span>';
+                    html += '</div>';
+                    if (t.total > 0) {
+                        html += '<div style="background:#e2e8f0;border-radius:6px;height:20px;margin-bottom:8px;overflow:hidden;">';
+                        html += '<div style="background:#2563eb;height:100%;width:' + barW + '%;border-radius:6px;transition:width 0.5s;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;">' + pct + '%</div>';
+                        html += '</div>';
+                        html += '<div style="display:flex;gap:16px;font-size:13px;flex-wrap:wrap;">';
+                        html += '<span>✅ Готово: <b>' + t.done + '</b> / ' + t.total + '</span>';
+                        html += '<span>⏱ Прошло: <b>' + elapsed + '</b></span>';
+                        html += '<span>⏳ Осталось: <b>' + eta + '</b></span>';
+                        if (avg) html += '<span>⚡ ' + avg + '</span>';
+                        html += '</div>';
+                    }
+                    if (t.last_log) {
+                        html += '<div style="margin-top:6px;font-size:11px;color:#475569;font-family:monospace;white-space:pre-wrap;max-height:80px;overflow-y:auto;">' + (t.logs_tail||[t.last_log]).join('\n') + '</div>';
+                    }
+                    html += '</div>';
+                }
+                div.innerHTML = html;
+                _activePollTimer = setTimeout(pollActiveTraining, 5000);
             } catch (e) {
-                statusDiv.innerHTML = '<div class="status error">❌ Ошибка запуска XGB: ' + (e && e.message ? e.message : e) + '</div>';
+                div.innerHTML = '<div class="status error">Ошибка проверки: ' + e.message + '</div>';
+                _activePollTimer = setTimeout(pollActiveTraining, 10000);
             }
         }
 
         /* ===== Full Grid helpers ===== */
+        function _pnum(raw){
+            const s = String(raw ?? '').trim().replace(',', '.');
+            const x = parseFloat(s);
+            return Number.isFinite(x) ? x : NaN;
+        }
         function gfRange(fromId, toId, stepId) {
-            const f = parseFloat(document.getElementById(fromId).value);
-            const t = parseFloat(document.getElementById(toId).value);
-            const s = parseFloat(document.getElementById(stepId).value);
+            const f = _pnum(document.getElementById(fromId)?.value);
+            const t = _pnum(document.getElementById(toId)?.value);
+            const s = _pnum(document.getElementById(stepId)?.value);
             if (isNaN(f)) return [];
             if (isNaN(t) || t <= f || isNaN(s) || s <= 0) return [f];
             const arr = [];
@@ -323,6 +482,9 @@
             const task = document.getElementById('gfTask').value;
             document.getElementById('gfLabelDirectional').style.display = task === 'directional' ? '' : 'none';
             document.getElementById('gfLabelEntry').style.display = task !== 'directional' ? '' : 'none';
+            const showExitPolicy = task.startsWith('entry');
+            const ep = document.getElementById('gfExitPolicy');
+            if (ep) ep.style.display = showExitPolicy ? '' : 'none';
             gfCalcCombo();
         }
 
@@ -344,7 +506,13 @@
                          * gfRange('gfMcwFrom','gfMcwTo','gfMcwStep').length
                          * gfRange('gfGmFrom','gfGmTo','gfGmStep').length
                          * gfRange('gfSpwFrom','gfSpwTo','gfSpwStep').length;
-            document.getElementById('gfTotalCombo').textContent = labelN * modelN;
+            const policyN = (task === 'directional') ? 1 : gfRange('gfPeFrom','gfPeTo','gfPeStep').length;
+            const exitPolicyN = task.startsWith('entry')
+                ? (gfRange('gfEtpFrom','gfEtpTo','gfEtpStep').length
+                   * gfRange('gfEslFrom','gfEslTo','gfEslStep').length
+                   * gfRange('gfEtrFrom','gfEtrTo','gfEtrStep').length)
+                : 1;
+            document.getElementById('gfTotalCombo').textContent = labelN * modelN * policyN * exitPolicyN;
         }
 
         // ===== localStorage cache for grid fields =====
@@ -353,6 +521,10 @@
             'gfHsFrom','gfHsTo','gfHsStep','gfThrFrom','gfThrTo','gfThrStep',
             'gfMhFrom','gfMhTo','gfMhStep','gfMpFrom','gfMpTo','gfMpStep',
             'gfFeeFrom','gfFeeTo','gfFeeStep',
+            'gfPeFrom','gfPeTo','gfPeStep',
+            'gfEtpFrom','gfEtpTo','gfEtpStep',
+            'gfEslFrom','gfEslTo','gfEslStep',
+            'gfEtrFrom','gfEtrTo','gfEtrStep',
             'gfMdFrom','gfMdTo','gfMdStep','gfLrFrom','gfLrTo','gfLrStep',
             'gfNeFrom','gfNeTo','gfNeStep','gfSsFrom','gfSsTo','gfSsStep',
             'gfCbFrom','gfCbTo','gfCbStep','gfRlFrom','gfRlTo','gfRlStep',
@@ -399,6 +571,12 @@
                 payload.max_hold_steps_list = gfRange('gfMhFrom','gfMhTo','gfMhStep').map(v => Math.round(v));
                 payload.min_profit_list = gfRange('gfMpFrom','gfMpTo','gfMpStep').map(v => v / 100);
                 payload.fee_bps_list = gfRange('gfFeeFrom','gfFeeTo','gfFeeStep').map(v => v * 100);
+                payload.p_enter_threshold_list = gfRange('gfPeFrom','gfPeTo','gfPeStep');
+                if (task.startsWith('entry')) {
+                    payload.entry_tp_pct_list = gfRange('gfEtpFrom','gfEtpTo','gfEtpStep').map(v => v / 100);
+                    payload.entry_sl_pct_list = gfRange('gfEslFrom','gfEslTo','gfEslStep').map(v => v / 100);
+                    payload.entry_trail_pct_list = gfRange('gfEtrFrom','gfEtrTo','gfEtrStep').map(v => v / 100);
+                }
             }
             // model
             payload.max_depth_list = gfRange('gfMdFrom','gfMdTo','gfMdStep').map(v => Math.round(v));
@@ -421,13 +599,37 @@
                 });
                 const data = await resp.json().catch(() => null);
                 if (data && data.success) {
-                    statusDiv.innerHTML = '<div class="status success">✅ Grid запущен (celery: ' + data.task_id + '). ' + total + ' комбинаций. DQN не затрагивается.</div>';
+                    statusDiv.innerHTML = '<div class="status info">⏳ Grid запущен: 0/' + total + ' (celery: ' + data.task_id + ')</div>';
+                    _pollGridStatus(data.task_id, total, statusDiv);
                 } else {
                     statusDiv.innerHTML = '<div class="status error">❌ ' + (data && data.error ? data.error : 'Ошибка') + '</div>';
                 }
             } catch (e) {
                 statusDiv.innerHTML = '<div class="status error">❌ ' + (e.message || e) + '</div>';
             }
+        }
+
+        function _pollGridStatus(taskId, expectedTotal, statusDiv) {
+            const poll = async () => {
+                try {
+                    const r = await fetch('/training/xgb_grid_status?task_id=' + encodeURIComponent(taskId));
+                    const d = await r.json();
+                    if (d.state === 'PROGRESS') {
+                        const pct = d.total > 0 ? Math.round(d.done / d.total * 100) : 0;
+                        statusDiv.innerHTML = '<div class="status info">⏳ Grid: ' + d.done + '/' + d.total + ' (' + pct + '%)' +
+                            (d.last_log ? '<br><small>' + d.last_log + '</small>' : '') + '</div>';
+                        setTimeout(poll, 3000);
+                    } else if (d.state === 'SUCCESS') {
+                        const cnt = d.done || d.total || 0;
+                        statusDiv.innerHTML = '<div class="status success">✅ Grid завершён: ' + (cnt > 0 ? cnt : expectedTotal) + ' моделей обучено.</div>';
+                    } else if (d.state === 'FAILURE') {
+                        statusDiv.innerHTML = '<div class="status error">❌ Grid ошибка: ' + (d.error || 'unknown') + '</div>';
+                    } else {
+                        setTimeout(poll, 3000);
+                    }
+                } catch { setTimeout(poll, 5000); }
+            };
+            setTimeout(poll, 2000);
         }
 
         async function startXgbGridSelected(){
@@ -443,8 +645,8 @@
             const labelDeltaPct = document.getElementById('xgbLabelDeltaPctInput')?.value || 0.05;
             statusDiv.innerHTML = '<div class="status info">⏳ Запуск XGB grid: ' + symbol + ' task=' + task + '...</div>';
             try {
-                const fee_bps = (parseFloat(feePct) || 0.0) * 100.0; // % -> bps
-                const min_profit = (parseFloat(minProfitPct) || 0.0) / 100.0;
+                const fee_bps = (_pnum(feePct) || 0.0) * 100.0; // % -> bps
+                const min_profit = (_pnum(minProfitPct) || 0.0) / 100.0;
                 const payload = { symbol, task, direction, limit_candles_final: limitFinal, limit_candles_quick: limitQuick, max_hold_steps: maxHold, fee_bps, min_profit };
                 const resp = await fetch('/training/train_xgb_grid_task', {
                     method: 'POST',

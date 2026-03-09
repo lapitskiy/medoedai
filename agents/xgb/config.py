@@ -16,6 +16,10 @@ class XgbConfig:
     direction: str = "long"  # long|short (affects buy/sell mapping)
     val_ratio: float = 0.2
 
+    # Features (keep feature shape stable for old models)
+    # NOTE: If disabled, ATR column is kept but zeroed (so models can't learn from it).
+    use_atr_feature: bool = True
+
     # Entry/Exit labeling (position-aware)
     fee_bps: float = 6.0  # round-trip fee/slippage in basis points (0.01% = 1 bps)
     max_hold_steps: int = 48  # window in 5m steps for entry/exit labels
@@ -23,6 +27,14 @@ class XgbConfig:
     label_delta: float = 0.0005  # for exit: treat as "near best" if pnl_now >= best_future - delta
     entry_stride: int = 20  # sample entry points every N steps for exit dataset generation
     max_trades: int = 2000  # cap number of sampled trades for exit datasets
+
+    # Inference policy for entry_* (binary): use predict_proba + threshold
+    p_enter_threshold: float = 0.5  # 0.5 = default XGBoost decision boundary
+
+    # Simple exit policy for entry_* backtests (optional). If None → disabled.
+    entry_tp_pct: float | None = None      # e.g. 0.015 = +1.5%
+    entry_sl_pct: float | None = None      # e.g. -0.01 = -1.0%
+    entry_trail_pct: float | None = None   # e.g. 0.02 = 2% trailing from peak
 
     # Model
     n_estimators: int = 600

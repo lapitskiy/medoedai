@@ -20,7 +20,8 @@ GLOBAL_OVERRIDES: Dict[str, Dict[str, Any]] = {
     # Параметры риск-менеджмента, маппятся на атрибуты env:
     # STOP_LOSS_PCT, TAKE_PROFIT_PCT, min_hold_steps, volume_threshold
     "risk_management": {
-        "STOP_LOSS_PCT": -0.02,
+        # Wide "emergency" percent SL so it doesn't override ATR-based exits
+        "STOP_LOSS_PCT": -0.5,
         "TAKE_PROFIT_PCT": 0.02,
         "min_hold_steps": 12,      # 12 шагов * 5 минут = ~60 минут
         "volume_threshold": 0.003,

@@ -207,9 +207,11 @@ class TradingAgent:
                 }
             })
             
-            # Загружаем рынки для получения информации о деривативах
-            self.exchange.load_markets()
-            # Синхронизируем время, чтобы избежать retCode 10002 (recv_window)
+            try:
+                from utils.bybit_rate_limiter import load_markets_cached
+                load_markets_cached(self.exchange)
+            except Exception:
+                self.exchange.load_markets()
             try:
                 if hasattr(self.exchange, 'load_time_difference'):
                     self.exchange.load_time_difference()
@@ -328,15 +330,19 @@ class TradingAgent:
             # Ищем позицию по нужному символу (нормализуем представления типа BTC/USDT:USDT)
             pos = None
             def _norm_sym(s: str) -> str:
+                """XRP/USDT:USDT → XRPUSDT, XRPUSDT → XRPUSDT"""
                 try:
-                    return ''.join(ch for ch in s.upper() if ch.isalnum())
+                    raw = str(s).upper()
+                    # ccxt unified: 'XRP/USDT:USDT' → отсекаем settle-суффикс после ':'
+                    base_part = raw.split(':')[0]
+                    return ''.join(ch for ch in base_part if ch.isalnum())
                 except Exception:
-                    return s.upper()
+                    return ''.join(ch for ch in str(s).upper() if ch.isalnum())
             target_norm = _norm_sym(symbol)
             for p in positions:
                 try:
                     psym = p.get('symbol') or p.get('info', {}).get('symbol') or ''
-                    if psym and _norm_sym(psym).endswith(target_norm):
+                    if psym and _norm_sym(psym) == target_norm:
                         pos = p
                         break
                 except Exception:
@@ -374,7 +380,7 @@ class TradingAgent:
                             for it in items:
                                 try:
                                     isym = it.get('symbol') or ''
-                                    if _norm_sym(isym).endswith(target_norm):
+                                    if _norm_sym(isym) == target_norm:
                                         sz = it.get('size')
                                         side = (it.get('side') or '').lower()
                                         avg = it.get('avgPrice') or it.get('entryPrice')
@@ -580,6 +586,19 @@ class TradingAgent:
             if not self.exchange:
                 return {"success": False, "error": "Биржа не инициализирована"}
 
+            # Определяем базовую валюту текущего символа (например, XRP для XRPUSDT),
+            # чтобы sizing мог использовать base_balance, если USDT недоступен.
+            base_ccy = None
+            try:
+                sym0 = str(getattr(self, 'base_symbol', None) or getattr(self, 'symbol', None) or '').upper().strip()
+                if sym0:
+                    for _q in ('USDT', 'USD', 'USDC', 'BUSD', 'USDP'):
+                        if sym0.endswith(_q) and len(sym0) > len(_q):
+                            base_ccy = sym0[:-len(_q)]
+                            break
+            except Exception:
+                base_ccy = None
+
             def _as_float(x):
                 try:
                     if x is None:
@@ -593,9 +612,25 @@ class TradingAgent:
                 try:
                     cur = balance_obj.get(code)
                     if isinstance(cur, dict):
-                        v = cur.get('free')
-                        if v is not None:
-                            return float(v)
+                        # Bybit UNIFIED/ccxt может хранить доступный баланс в разных ключах.
+                        # Предпочтение: free/available/availableToWithdraw, затем total (когда free отсутствует/некорректен).
+                        for k in ('free', 'available', 'availableBalance', 'availableToWithdraw', 'total'):
+                            v = cur.get(k)
+                            if v is None:
+                                continue
+                            vf = _as_float(v)
+                            if vf is None:
+                                continue
+                            # Если значение > 0 — сразу возвращаем.
+                            if vf > 0:
+                                return float(vf)
+                        # Если все ключи есть, но нули — вернём free (или total) как есть
+                        vf = _as_float(cur.get('free'))
+                        if vf is not None:
+                            return float(vf)
+                        vt = _as_float(cur.get('total'))
+                        if vt is not None:
+                            return float(vt)
                     elif cur is not None:
                         v = _as_float(cur)
                         if v is not None:
@@ -608,6 +643,57 @@ class TradingAgent:
                         v = _as_float(free_map.get(code))
                         if v is not None:
                             return v
+                except Exception:
+                    pass
+                try:
+                    total_map = balance_obj.get('total') or {}
+                    if isinstance(total_map, dict) and total_map.get(code) is not None:
+                        v = _as_float(total_map.get(code))
+                        if v is not None:
+                            return v
+                except Exception:
+                    pass
+                # Фолбэк: разбор raw info (Bybit v5 walletBalance/availableToWithdraw)
+                try:
+                    info = balance_obj.get('info') or {}
+                    # ожидаемый формат: info.result.list = [{coin, walletBalance, availableToWithdraw, availableBalance, ...}]
+                    lst = None
+                    if isinstance(info, dict):
+                        res = info.get('result') or {}
+                        if isinstance(res, dict):
+                            lst = res.get('list')
+                    if isinstance(lst, list) and lst:
+                        for row in lst:
+                            try:
+                                if not isinstance(row, dict):
+                                    continue
+                                # Bybit v5: часто row['coin'] = [ {coin, walletBalance, availableToWithdraw, ...}, ... ]
+                                coin_field = row.get('coin')
+                                if isinstance(coin_field, list) and coin_field:
+                                    for crow in coin_field:
+                                        try:
+                                            if not isinstance(crow, dict):
+                                                continue
+                                            c2 = crow.get('coin') or crow.get('currencyCoin')
+                                            if not c2 or str(c2).upper() != str(code).upper():
+                                                continue
+                                            for k in ('availableToWithdraw', 'availableBalance', 'walletBalance', 'equity'):
+                                                v = _as_float(crow.get(k))
+                                                if v is not None:
+                                                    return float(v)
+                                        except Exception:
+                                            continue
+                                    continue
+                                # Bybit: бывает row сам является coin-объектом
+                                c = row.get('coin') or row.get('currencyCoin')
+                                if not c or str(c).upper() != str(code).upper():
+                                    continue
+                                for k in ('availableToWithdraw', 'availableBalance', 'walletBalance', 'equity'):
+                                    v = _as_float(row.get(k))
+                                    if v is not None:
+                                        return float(v)
+                            except Exception:
+                                continue
                 except Exception:
                     pass
                 return 0.0
@@ -632,13 +718,19 @@ class TradingAgent:
                     continue
             if balance is None:
                 raise RuntimeError(f"fetch_balance failed: {last_e}")
-            return {
+            out = {
                 "success": True,
                 "balance": {
                     "USDT": _extract_currency(balance, 'USDT'),
                     "BTC": _extract_currency(balance, 'BTC')
                 }
             }
+            try:
+                if base_ccy and base_ccy not in ('USDT', 'BTC'):
+                    out["balance"][base_ccy] = _extract_currency(balance, base_ccy)  # type: ignore[index]
+            except Exception:
+                pass
+            return out
         except Exception as e:
             logger.error(f"Ошибка получения баланса: {e}")
             return {"success": False, "error": str(e)}
@@ -1259,7 +1351,8 @@ class TradingAgent:
                     'SOL': {'min_amount': 0.1, 'precision_amount': 1},      # 0.1 SOL
                     'TON': {'min_amount': 1.0, 'precision_amount': 0},      # 1 TON
                     'ADA': {'min_amount': 1.0, 'precision_amount': 0},      # 1 ADA
-                    'BNB': {'min_amount': 0.01, 'precision_amount': 2},    # 0.01 BNB
+                    'BNB': {'min_amount': 0.01, 'precision_amount': 2},     # 0.01 BNB
+                    'XRP': {'min_amount': 1.0, 'precision_amount': 0},      # 1 XRP
                 }
                 
                 if base_currency in known_limits:
@@ -1282,6 +1375,7 @@ class TradingAgent:
                 'TON': {'min_amount': 1.0, 'precision_amount': 0},
                 'ADA': {'min_amount': 1.0, 'precision_amount': 0},
                 'BNB': {'min_amount': 0.01, 'precision_amount': 2},
+                'XRP': {'min_amount': 1.0, 'precision_amount': 0},
             }
             
             limits = default_limits.get(base_currency, {'min_amount': 0.001, 'precision_amount': 3})
@@ -1671,9 +1765,14 @@ class TradingAgent:
             # Конфигурация индикаторов (как в обучении)
             indicators_config = {
                 'rsi': {'length': 14},
-                'ema': {'lengths': [12, 26]},
-                'sma': {'length': 20},
-                'ema_cross': {'pairs': [(12, 26)]}
+                'rsi_7': {'length': 7},
+                'ema': {'lengths': [20, 50, 100, 200]},
+                'ema_cross': {'pairs': [(20, 50), (100, 200)], 'include_cross_signal': True},
+                'sma': {'length': 14},
+                'atr': {'length': 14},
+                'obv': {},
+                'returns': {'periods': [1, 3, 12, 60]},
+                'zscore': {'ema_length': 50, 'window': 20},
             }
             
             # Рассчитываем индикаторы

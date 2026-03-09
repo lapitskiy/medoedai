@@ -548,19 +548,26 @@ def api_encoders_list():
         symbol = (request.args.get('symbol') or '').strip().upper()
         if not symbol:
             return jsonify({'success': False, 'error': 'symbol required'}), 400
+        storage = (request.args.get('storage') or 'all').strip().lower()  # all|result|models
+        if storage not in {'all', 'result', 'models'}:
+            storage = 'all'
 
         # Нормализуем базу символа: BTCUSDT -> btc, TONUSDT -> ton
         base_lower = symbol.split('USDT')[0].lower()
         base_upper = symbol.split('USDT')[0].upper()
 
-        # Два корня поиска:
-        # 1) Прод/релизы: models/<base>/encoder/unfrozen/vN
-        # 2) Черновики/результаты: result/dqn/<BASE_UPPER>/encoder/unfrozen/vN
-        roots = [
-            Path('models') / base_lower / 'encoder' / 'unfrozen',
+        roots_models = [Path('models') / base_lower / 'encoder' / 'unfrozen']
+        roots_result = [
             Path('result') / 'dqn' / base_upper / 'encoder' / 'unfrozen',
             Path('result') / base_upper / 'encoder' / 'unfrozen',  # совместимость со старой структурой result/<SYMBOL>
         ]
+        if storage == 'models':
+            roots = roots_models
+        elif storage == 'result':
+            roots = roots_result
+        else:
+            # default: keep old precedence (models first), but list both
+            roots = roots_models + roots_result
 
         seen_ids = set()
         items = []
@@ -688,7 +695,15 @@ def api_encoders_list():
                     continue
                 stats = extract_encoder_stats(manifest, base_upper)
                 seen_ids.add(enc_id)
-                items.append({'id': enc_id, 'name': enc_id, 'manifest': manifest, 'stats': stats})
+                src = 'models' if str(root.as_posix()).startswith('models/') else 'result'
+                items.append({
+                    'id': enc_id,
+                    'name': enc_id,
+                    'manifest': manifest,
+                    'stats': stats,
+                    'source': src,
+                    'path': d.as_posix(),
+                })
 
         # Стабильная сортировка по id (v1<v2<...)
         try:
@@ -719,9 +734,18 @@ def api_encoders_delete():
             return jsonify({'success': False, 'error': 'ids list required'}), 400
 
         base_upper = symbol.split('USDT')[0].upper()
-        root = Path('result') / 'dqn' / base_upper / 'encoder' / encoder_type
-        if not (root.exists() and root.is_dir()):
-            return jsonify({'success': False, 'error': f'encoder dir not found: {root.as_posix()}'}), 404
+        # поддержим обе структуры: result/dqn/<SYMBOL>/... и legacy result/<SYMBOL>/...
+        root_candidates = [
+            Path('result') / 'dqn' / base_upper / 'encoder' / encoder_type,
+            Path('result') / base_upper / 'encoder' / encoder_type,
+        ]
+        root = None
+        for rc in root_candidates:
+            if rc.exists() and rc.is_dir():
+                root = rc
+                break
+        if root is None:
+            return jsonify({'success': False, 'error': f'encoder dir not found: {root_candidates[0].as_posix()}'}), 404
 
         # normalize ids: only v<digits>
         remove_set = set()

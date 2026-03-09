@@ -30,7 +30,20 @@ def _upsample_1h_to_5m(df_5m: np.ndarray, df_1h: np.ndarray) -> np.ndarray:
     return out
 
 
-def _build_base_features(dfs: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+def _atr_col_index_in_indicators() -> int:
+    """
+    Index of ATR_14 column inside indicators_array produced by indicators_config below.
+    Keep in sync with the indicators_config ordering (Python dict preserves insertion order).
+    """
+    # rsi(14), rsi_7(7) -> 2
+    # ema lengths [20,50,100,200] -> +4 => 6
+    # ema_cross pairs 2 * (above,cross_up,cross_down) -> +6 => 12
+    # sma(14) -> +1 => 13
+    # atr(14) -> +1 => ATR index = 13 (0-based)
+    return 13
+
+
+def _build_base_features(dfs: Dict[str, Any], cfg: XgbConfig) -> Tuple[np.ndarray, np.ndarray]:
     """
     Builds base market feature matrix X_base aligned to 5m rows, plus close prices.
     """
@@ -42,11 +55,25 @@ def _build_base_features(dfs: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
     df_5m, df_15m, df_1h, indicators, _ind_map = preprocess_dataframes(
         df_5m_raw, df_15m_raw, df_1h_raw, indicators_config={
             "rsi": {"length": 14},
-            "ema": {"lengths": [100, 200]},
-            "ema_cross": {"pairs": [(100, 200)], "include_cross_signal": True},
+            "rsi_7": {"length": 7},
+            "ema": {"lengths": [20, 50, 100, 200]},
+            "ema_cross": {"pairs": [(20, 50), (100, 200)], "include_cross_signal": True},
             "sma": {"length": 14},
+            "atr": {"length": 14},
+            "obv": {},
+            "returns": {"periods": [1, 3, 12, 60]},
+            "zscore": {"ema_length": 50, "window": 20},
         }
     )
+
+    # Disable ATR without breaking feature shape for old models.
+    try:
+        if not bool(getattr(cfg, "use_atr_feature", True)):
+            j = _atr_col_index_in_indicators()
+            if indicators is not None and hasattr(indicators, "shape") and indicators.ndim == 2 and indicators.shape[1] > j:
+                indicators[:, j] = 0.0
+    except Exception:
+        pass
 
     df_15m_5m = _upsample_15m_to_5m(df_5m, df_15m).astype(np.float32)
     df_1h_5m = _upsample_1h_to_5m(df_5m, df_1h).astype(np.float32)
@@ -58,6 +85,68 @@ def _build_base_features(dfs: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
 def _fee_to_fraction(fee_bps: float) -> float:
     # round-trip bps -> fraction
     return float(fee_bps) / 10000.0
+
+
+def _policy_entry_return(
+    closes: np.ndarray,
+    highs: np.ndarray | None,
+    entry_idx: int,
+    max_hold: int,
+    fee_frac: float,
+    is_long: bool,
+    tp_pct: float | None,
+    sl_pct: float | None,
+    trail_pct: float | None,
+) -> float:
+    """
+    Entry labeling: simulate the SAME exit-policy as OOS backtest:
+    - optional TP/SL/trailing (trailing only for long, same as tasks/xgb_oos_tasks.py)
+    - forced exit at max_hold timeout
+    Returns net return fraction (after fee).
+    """
+    n = int(len(closes))
+    if entry_idx < 0 or entry_idx >= n:
+        return 0.0
+    entry = float(closes[int(entry_idx)])
+    if entry <= 0:
+        return 0.0
+    end = min(n - 1, int(entry_idx) + int(max_hold))
+    if end <= entry_idx:
+        return 0.0
+
+    peak = entry
+    for i in range(int(entry_idx) + 1, int(end) + 1):
+        px = float(closes[int(i)])
+        if px <= 0:
+            continue
+
+        # peak update (for trailing)
+        if is_long:
+            ph = px
+            if highs is not None and int(i) < len(highs):
+                try:
+                    ph = float(highs[int(i)])
+                except Exception:
+                    ph = px
+            peak = max(float(peak), float(ph))
+
+        raw_ret = (px - entry) / max(entry, 1e-12) if is_long else (entry - px) / max(entry, 1e-12)
+
+        # trailing from peak (only long, consistent with OOS)
+        if trail_pct is not None and is_long:
+            dd = (peak - px) / max(peak, 1e-12)
+            if dd >= float(trail_pct):
+                return float(raw_ret) - float(fee_frac)
+
+        if tp_pct is not None and raw_ret >= float(tp_pct):
+            return float(raw_ret) - float(fee_frac)
+        if sl_pct is not None and raw_ret <= float(sl_pct):
+            return float(raw_ret) - float(fee_frac)
+
+    # timeout exit at end
+    px = float(closes[int(end)])
+    raw_ret = (px - entry) / max(entry, 1e-12) if is_long else (entry - px) / max(entry, 1e-12)
+    return float(raw_ret) - float(fee_frac)
 
 
 def _best_future_pnl_long(closes: np.ndarray, entry_idx: int, max_hold: int, fee_frac: float) -> float:
@@ -112,7 +201,7 @@ def build_xgb_dataset(
     - directional: y in {0,1,2} = {hold,buy,sell}
     - entry_* / exit_*: y in {0,1} = {hold, enter/exit}
     """
-    X_base, closes = _build_base_features(dfs)
+    X_base, closes = _build_base_features(dfs, cfg)
 
     # Trim warmup rows where EMA-200 etc. are NaN→0 garbage
     WARMUP = 200
@@ -121,7 +210,18 @@ def build_xgb_dataset(
         closes = closes[WARMUP:]
 
     task = (cfg.task or "directional").strip().lower()
-    aux: Dict[str, Any] = {"closes_mode": "timeseries", "closes": closes}
+    # For entry-like backtests/labels we need highs/lows for trailing/diagnostics.
+    highs = None
+    lows = None
+    try:
+        if isinstance(X_base, np.ndarray) and X_base.ndim == 2 and X_base.shape[1] >= 5:
+            highs = X_base[:, 1].astype(np.float64, copy=False)
+            lows = X_base[:, 2].astype(np.float64, copy=False)
+    except Exception:
+        highs = None
+        lows = None
+
+    aux: Dict[str, Any] = {"closes_mode": "timeseries", "closes": closes, "highs": highs, "lows": lows}
 
     # Directional (legacy)
     if task == "directional":
@@ -168,9 +268,23 @@ def build_xgb_dataset(
     # Entry dataset: one sample per time t (like directional), but binary label from best future pnl within window
     if is_entry:
         y = np.zeros((len(closes),), dtype=np.int64)
+        # Exit-policy knobs (match OOS policy-mode semantics)
+        tp_pct = getattr(cfg, "entry_tp_pct", None)
+        sl_pct = getattr(cfg, "entry_sl_pct", None)
+        trail_pct = getattr(cfg, "entry_trail_pct", None)
         for t in range(0, len(closes) - max_hold):
-            best = _best_future_pnl_long(closes, t, max_hold, fee_frac) if is_long else _best_future_pnl_short(closes, t, max_hold, fee_frac)
-            y[t] = 1 if best >= min_profit else 0
+            ret = _policy_entry_return(
+                closes=closes,
+                highs=highs,
+                entry_idx=t,
+                max_hold=max_hold,
+                fee_frac=fee_frac,
+                is_long=is_long,
+                tp_pct=tp_pct,
+                sl_pct=sl_pct,
+                trail_pct=trail_pct,
+            )
+            y[t] = 1 if float(ret) >= float(min_profit) else 0
         y[-max_hold:] = 0
         # trade-features are zeros for entry (no position yet)
         trade_feats = np.zeros((len(closes), 4), dtype=np.float32)
@@ -182,7 +296,18 @@ def build_xgb_dataset(
             "cfg_snapshot": asdict(cfg),
         }
         aux_entry = dict(aux)
-        aux_entry.update({"fee_frac": fee_frac, "max_hold_steps": max_hold, "position_side": ("long" if is_long else "short")})
+        aux_entry.update(
+            {
+                "fee_frac": fee_frac,
+                "max_hold_steps": max_hold,
+                "position_side": ("long" if is_long else "short"),
+                "entry_exit_policy": {
+                    "tp_pct": (float(tp_pct) if tp_pct is not None else None),
+                    "sl_pct": (float(sl_pct) if sl_pct is not None else None),
+                    "trail_pct": (float(trail_pct) if trail_pct is not None else None),
+                },
+            }
+        )
         return X, y, meta, aux_entry
 
     # Exit dataset: simulate many trades opened at sampled entry points and label "exit now" near best future

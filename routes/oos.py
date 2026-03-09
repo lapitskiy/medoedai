@@ -267,7 +267,11 @@ def api_runs_ohlcv():
                 uni = normalize_symbol(symbol)
                 ex_class = getattr(ccxt, exchange_req)
                 ex = ex_class({'enableRateLimit': True, 'timeout': 30000})
-                ex.load_markets()
+                try:
+                    from utils.bybit_rate_limiter import load_markets_cached
+                    load_markets_cached(ex)
+                except Exception:
+                    ex.load_markets()
                 if uni not in getattr(ex, 'symbols', []):
                     # попытка по id
                     markets = getattr(ex, 'markets', {}) or {}
@@ -596,9 +600,14 @@ def oos_test_model():
         else:
             indicators_config = {
                 'rsi': {'length': 14},
-                'ema': {'lengths': [100, 200]},
-                'ema_cross': {'pairs': [(100, 200)], 'include_cross_signal': True},
-                'sma': {'length': 14}
+                'rsi_7': {'length': 7},
+                'ema': {'lengths': [20, 50, 100, 200]},
+                'ema_cross': {'pairs': [(20, 50), (100, 200)], 'include_cross_signal': True},
+                'sma': {'length': 14},
+                'atr': {'length': 14},
+                'obv': {},
+                'returns': {'periods': [1, 3, 12, 60]},
+                'zscore': {'ema_length': 50, 'window': 20},
             }
         indicators = preprocess_dataframes(df_5min_np, df_15min_np, df_1h_np, indicators_config)
 

@@ -20,11 +20,14 @@ BTC_OPTIMIZED_CONFIG = {
     # Индикаторы (базовый, расширяемый набор)
     'indicators_config': {
         'rsi': {'length': 21},
-        'ema': {'lengths': [50, 100, 200]},
-        'ema_cross': {'pairs': [(50, 100), (100, 200)], 'include_cross_signal': True},
+        'rsi_7': {'length': 7},
+        'ema': {'lengths': [20, 50, 100, 200]},
+        'ema_cross': {'pairs': [(20, 50), (50, 100), (100, 200)], 'include_cross_signal': True},
         'sma': {'length': 21},
-        'bb': {'length': 20, 'std': 2},
-        'macd': {'fast': 12, 'slow': 26, 'signal': 9},
+        'atr': {'length': 14},
+        'obv': {},
+        'returns': {'periods': [1, 3, 12, 60]},
+        'zscore': {'ema_length': 50, 'window': 20},
     },
 
     # Параметры обучения

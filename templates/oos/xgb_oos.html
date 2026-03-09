@@ -55,6 +55,52 @@
                                     <label>Days</label>
                                     <input id="xgbOosDays" class="form-control" type="number" min="1" max="365" step="1" value="30">
                                 </div>
+                                <div class="form-group" style="min-width:150px;">
+                                    <label>Direction</label>
+                                    <select id="xgbDirection" class="form-control">
+                                        <option value="" selected>как в модели</option>
+                                        <option value="long">Long</option>
+                                        <option value="short">Short (invert)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" style="min-width:210px;">
+                                    <label>Exit mode</label>
+                                    <select id="xgbExitMode" class="form-control">
+                                        <option value="hold_steps">hold_steps (timeout)</option>
+                                        <option value="atr_trail">atr_trail</option>
+                                        <option value="policy" selected>policy (tp/sl/trail/timeout)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" style="min-width:120px;">
+                                    <label>ATR len</label>
+                                    <input id="xgbAtrLen" class="form-control" type="number" min="2" max="200" step="1" value="14">
+                                </div>
+                                <div class="form-group" style="min-width:120px;">
+                                    <label>ATR mult</label>
+                                    <input id="xgbAtrMult" class="form-control" type="number" min="0.1" max="20" step="0.1" value="2.0">
+                                </div>
+                                <div class="form-group" style="min-width:140px;">
+                                    <label>p_enter_thr override</label>
+                                    <input id="xgbPEnterThr" class="form-control" type="text" step="0.01" placeholder="пусто=как в run">
+                                </div>
+                                <div class="form-group" style="min-width:190px;">
+                                    <label class="mono" style="display:flex; gap:8px; align-items:center;">
+                                        <input id="xgbOverrideExitPolicy" type="checkbox">
+                                        override TP/SL/trail
+                                    </label>
+                                </div>
+                                <div class="form-group" style="min-width:130px;">
+                                    <label>TP, %</label>
+                                    <input id="xgbEntryTpPct" class="form-control" type="number" step="0.01" placeholder="пусто=как в run">
+                                </div>
+                                <div class="form-group" style="min-width:130px;">
+                                    <label>SL, %</label>
+                                    <input id="xgbEntrySlPct" class="form-control" type="number" step="0.01" placeholder="пусто=как в run">
+                                </div>
+                                <div class="form-group" style="min-width:130px;">
+                                    <label>Trail, %</label>
+                                    <input id="xgbEntryTrailPct" class="form-control" type="number" step="0.01" placeholder="пусто=как в run">
+                                </div>
                                 <div class="form-group">
                                     <button class="btn btn-info" onclick="startXgbOos()">▶️ Run XGB OOS</button>
                                 </div>
@@ -80,8 +126,52 @@
                     <h2>🗂️ Все XGB run'ы</h2>
                     <div style="margin-bottom:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                         <button class="btn btn-info" onclick="startBatchOos()">▶️ Run Selected OOS</button>
-                        <button class="btn btn-warning" onclick="selectCollapsed()" title="Выделить модели с pred_non_hold=0 (collapsed)">💀 Выделить collapsed</button>
+                        <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
+                            select (for delete)
+                            <select id="predSelectMode" class="form-control" style="width:280px;">
+                                <option value="all">✅ ALL (collapsed/overtrade/proxy0/f1&lt;0.1/acc_delta)</option>
+                                <option value="collapsed">💀 collapsed (pred_non_hold≈0)</option>
+                                <option value="pred_lt_005">📉 pred_non_hold &lt; 0.005 (слишком мало сигналов)</option>
+                                <option value="pred_lt_01">📉 pred_non_hold &lt; 0.01</option>
+                                <option value="weak_high">⚠ weak: pred_non_hold &gt; 0.2</option>
+                                <option value="overtrade_03">🔥 overtrade: pred_non_hold &gt; 0.30</option>
+                                <option value="proxy0">⛔ proxy_trades = 0</option>
+                                <option value="f1lt10">🧯 f1(1) &lt; 0.10</option>
+                                <option value="f1lt30">🧯 f1(1) &lt; 0.30</option>
+                                <option value="recall_lt_03">📉 recall(1) &lt; 0.30</option>
+                                <option value="prec_lt_03">📉 prec(1) &lt; 0.30</option>
+                                <option value="y_nonhold_lt_002">📉 y_non_hold &lt; 0.002 (мало меток)</option>
+                                <option value="accdelta_le_neg001">🧊 acc_delta ≤ -0.01</option>
+                            </select>
+                        </label>
+                        <button class="btn btn-warning" onclick="selectByPredMode()" title="Выделить модели по pred_non_hold">Выделить</button>
+                        <button class="btn btn-secondary" onclick="pruneSelectedRuns()" title="Удалит худшие и оставит лучших по val-метрикам (до OOS)">🧹 Prune selected</button>
+                        <button class="btn btn-secondary" onclick="pruneDuplicateConfigs()" title="Оставить top-1 по f1(1) на каждую комбинацию (symbol,task,H,Thr,max_hold,min_profit)">🔄 Prune duplicates</button>
+                        <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
+                            keep%
+                            <input id="pruneKeepPct" class="form-control" type="number" min="1" max="100" step="1" value="10" style="width:78px;">
+                        </label>
                         <button class="btn btn-danger" id="btnDeleteSelected" onclick="deleteSelectedRuns()">🗑️ Удалить выбранные</button>
+                        <span class="mono" style="color:#6b7280; margin-left:8px;">Days grid:</span>
+                        <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
+                            <input type="checkbox" class="cb-oos-days" value="30">30
+                        </label>
+                        <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
+                            <input type="checkbox" class="cb-oos-days" value="60">60
+                        </label>
+                        <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
+                            <input type="checkbox" class="cb-oos-days" value="90" checked>90
+                        </label>
+                        <span class="mono" style="color:#6b7280; margin-left:8px;">Exit grid:</span>
+                        <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
+                            <input type="checkbox" class="cb-oos-exit" value="policy" checked>policy
+                        </label>
+                        <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
+                            <input type="checkbox" class="cb-oos-exit" value="hold_steps">hold_steps
+                        </label>
+                        <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
+                            <input type="checkbox" class="cb-oos-exit" value="atr_trail">atr_trail
+                        </label>
                         <span id="selectedInfo" class="mono" style="color:#6b7280;">Выбрано: 0</span>
                     </div>
                     <div id="batchStatus" class="status info" style="display:none; margin-bottom:10px; white-space:pre-wrap;"></div>
@@ -122,7 +212,15 @@
                                 {% set pv = m.get('precision_val') %}
                                 {% set rv = m.get('recall_val') %}
                                 <tr>
-                                    <td class="sel"><input type="checkbox" class="cb-run" value="{{ r.result_dir }}" data-pred-nonhold="{{ '%0.6f'|format(m.pred_non_hold_rate_val) if m.pred_non_hold_rate_val is defined and m.pred_non_hold_rate_val is not none else '-1' }}" onchange="updateSelectedCount()"></td>
+                                    <td class="sel"><input type="checkbox" class="cb-run" value="{{ r.result_dir }}"
+                                        data-pred-nonhold="{{ '%0.6f'|format(m.pred_non_hold_rate_val) if m.pred_non_hold_rate_val is defined and m.pred_non_hold_rate_val is not none else '-1' }}"
+                                        data-f1-one="{{ '%0.6f'|format(f1v[1]) if f1v and f1v|length > 1 else '-1' }}"
+                                        data-prec-one="{{ '%0.6f'|format(pv[1]) if pv and pv|length > 1 else '-1' }}"
+                                        data-recall-one="{{ '%0.6f'|format(rv[1]) if rv and rv|length > 1 else '-1' }}"
+                                        data-val-acc="{{ '%0.6f'|format(m.val_acc) if m.val_acc is defined and m.val_acc is not none else '-1' }}"
+                                        data-y-nonhold="{{ '%0.6f'|format(m.y_non_hold_rate_val) if m.y_non_hold_rate_val is defined and m.y_non_hold_rate_val is not none else '-1' }}"
+                                        data-proxy-trades="{{ (m.get('proxy_pnl_val',{}).get('trades') if m.get('proxy_pnl_val') is defined and m.get('proxy_pnl_val') is not none else -1) }}"
+                                        onchange="updateSelectedCount()"></td>
                                     <td>{{ r.symbol }}</td>
                                     <td>{{ r.run_name }}</td>
                                     <td>{{ r.task }}</td>
@@ -153,6 +251,11 @@
 
     <script>
         function toggleSidebar(){ document.body.classList.toggle('sidebar-open'); }
+        function _pnum(raw){
+            const s = String(raw ?? '').trim().replace(',', '.');
+            const x = parseFloat(s);
+            return Number.isFinite(x) ? x : NaN;
+        }
 
         /* ---------- selection ---------- */
         function toggleAll(el){
@@ -190,18 +293,105 @@
             }
         }
 
-        /* ---------- select collapsed ---------- */
-        function selectCollapsed(){
+        async function pruneDuplicateConfigs(){
+            if(!confirm('Prune duplicates: оставить top-1 по f1(1) на каждую комбинацию (symbol,task,H,Thr,max_hold,min_profit). Удалить остальные?')) return;
+            const st = document.getElementById('xgbDeleteStatus');
+            if(st){ st.style.display='block'; st.className='status info'; st.textContent='Prune duplicates…'; }
+            try{
+                const resp = await fetch('/xgb_oos_prune_duplicates', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({}) });
+                const d = await resp.json().catch(()=>null);
+                if(!d || !d.success){
+                    if(st){ st.className='status error'; st.textContent='❌ '+(d&&d.error||'unknown'); }
+                    return;
+                }
+                if(st){ st.className='status success'; st.textContent = `✅ Duplicates pruned. kept=${d.kept_count} deleted=${d.deleted_count}`; }
+                setTimeout(()=>location.reload(), 800);
+            }catch(e){ if(st){ st.className='status error'; st.textContent='❌ '+e.message; } }
+        }
+
+        async function pruneSelectedRuns(){
+            const paths = [...document.querySelectorAll('.cb-run:checked')].map(c=>c.value);
+            if(!paths.length){ alert('Ничего не выбрано'); return; }
+            const keepPct = parseFloat(document.getElementById('pruneKeepPct')?.value || '10') || 10;
+            const keepN = Math.max(1, Math.ceil(paths.length * (keepPct/100)));
+            if(!confirm(`Prune: выбрано ${paths.length}. Оставить top ${keepPct}% (~${keepN}), удалить остальное?`)) return;
+            const st = document.getElementById('xgbDeleteStatus');
+            if(st){ st.style.display='block'; st.className='status info'; st.textContent='Prune… считаю метрики и удаляю…'; }
+            try{
+                const resp = await fetch('/xgb_oos_prune_runs', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json','Accept':'application/json'},
+                    body: JSON.stringify({paths, keep_pct: keepPct})
+                });
+                const d = await resp.json().catch(()=>null);
+                if(!d || !d.success){
+                    if(st){ st.className='status error'; st.textContent='❌ '+(d&&d.error||'unknown'); }
+                    return;
+                }
+                if(st){
+                    st.className='status success';
+                    st.textContent = `✅ Prune done. kept=${d.kept_count} deleted=${d.deleted_count} cutoff_score=${d.cutoff_score}`;
+                }
+                setTimeout(()=>location.reload(), 800);
+            }catch(e){
+                if(st){ st.className='status error'; st.textContent='❌ '+(e.message||e); }
+            }
+        }
+
+        /* ---------- select by pred_non_hold ---------- */
+        function selectByPredMode(){
+            const mode = (document.getElementById('predSelectMode')?.value || 'all').trim();
             let count = 0;
             document.querySelectorAll('.cb-run').forEach(cb=>{
                 const v = parseFloat(cb.dataset.predNonhold);
-                if(v === 0 || (v >= 0 && v < 0.001)){
-                    cb.checked = true;
-                    count++;
+                const f1 = parseFloat(cb.dataset.f1One);
+                const prec = parseFloat(cb.dataset.precOne);
+                const recall = parseFloat(cb.dataset.recallOne);
+                const acc = parseFloat(cb.dataset.valAcc);
+                const ynh = parseFloat(cb.dataset.yNonhold);
+                const pt = parseInt(cb.dataset.proxyTrades || '-1', 10);
+                const hasPred = (v >= 0);
+                const isCollapsed = hasPred && (v === 0 || v < 0.001);
+                const isPredLt005 = hasPred && (v > 0 && v < 0.005);
+                const isPredLt01 = hasPred && (v > 0 && v < 0.01);
+                const isWeakHigh = hasPred && (v > 0.2);
+                const isOvertrade = hasPred && (v > 0.30);
+                const isProxy0 = (Number.isFinite(pt) && pt === 0);
+                const isF1lt10 = (f1 >= 0 && f1 < 0.10);
+                const isF1lt30 = (f1 >= 0 && f1 < 0.30);
+                const isRecallLt03 = (recall >= 0 && recall < 0.30);
+                const isPrecLt03 = (prec >= 0 && prec < 0.30);
+                const isYNonholdLt002 = (ynh >= 0 && ynh < 0.002);
+                const isAccDeltaBad = (acc >= 0 && ynh >= 0) ? ((acc - (1.0 - ynh)) <= -0.01) : false;
+
+                if(mode === 'all'){
+                    if(isCollapsed || isWeakHigh || isOvertrade || isProxy0 || isF1lt10 || isAccDeltaBad){
+                        cb.checked = true;
+                        count++;
+                    }
+                    return;
                 }
+                if(mode === 'pred_lt_005'){ if(isPredLt005){ cb.checked=true; count++; } return; }
+                if(mode === 'pred_lt_01'){ if(isPredLt01){ cb.checked=true; count++; } return; }
+                if(mode === 'weak_high'){ if(isWeakHigh){ cb.checked=true; count++; } return; }
+                if(mode === 'overtrade_03'){ if(isOvertrade){ cb.checked=true; count++; } return; }
+                if(mode === 'proxy0'){ if(isProxy0){ cb.checked=true; count++; } return; }
+                if(mode === 'f1lt10'){ if(isF1lt10){ cb.checked=true; count++; } return; }
+                if(mode === 'f1lt30'){ if(isF1lt30){ cb.checked=true; count++; } return; }
+                if(mode === 'recall_lt_03'){ if(isRecallLt03){ cb.checked=true; count++; } return; }
+                if(mode === 'prec_lt_03'){ if(isPrecLt03){ cb.checked=true; count++; } return; }
+                if(mode === 'y_nonhold_lt_002'){ if(isYNonholdLt002){ cb.checked=true; count++; } return; }
+                if(mode === 'accdelta_le_neg001'){ if(isAccDeltaBad){ cb.checked=true; count++; } return; }
+                if(mode === 'collapsed'){ if(isCollapsed){ cb.checked=true; count++; } return; }
             });
             updateSelectedCount();
-            if(!count) alert('Collapsed моделей не найдено');
+            if(!count){
+                const msgs = { all:'ALL-условиям', pred_lt_005:'pred_non_hold < 0.005', pred_lt_01:'pred_non_hold < 0.01',
+                    weak_high:'pred_non_hold > 0.2', overtrade_03:'pred_non_hold > 0.30', proxy0:'proxy_trades=0',
+                    f1lt10:'f1(1) < 0.10', f1lt30:'f1(1) < 0.30', recall_lt_03:'recall(1) < 0.30', prec_lt_03:'prec(1) < 0.30',
+                    y_nonhold_lt_002:'y_non_hold < 0.002', accdelta_le_neg001:'acc_delta ≤ -0.01', collapsed:'collapsed' };
+                alert('Моделей по ' + (msgs[mode] || mode) + ' не найдено');
+            }
         }
 
         /* ---------- helpers ---------- */
@@ -249,6 +439,9 @@
                     `max_dd: ${_fmt(bt.max_dd,4)}  avg_bars: ${_fmt(bt.avg_bars_held,1)}`,
                     `equity: ${_fmt(bt.start_capital,0)} → ${_fmt(bt.equity_end,2)}`
                 );
+                if(bt.reason_counts){
+                    lines.push(`exit_reasons: ${JSON.stringify(bt.reason_counts)}`);
+                }
             }
             el.innerHTML = '<pre>' + lines.join('\n') + '</pre>';
         }
@@ -258,12 +451,36 @@
             try{
                 const runDir = (document.getElementById('xgbRunSelect')?.value || '').trim();
                 const days = parseInt(document.getElementById('xgbOosDays')?.value || '30', 10) || 30;
+                const exit_mode = (document.getElementById('xgbExitMode')?.value || 'policy').trim();
+                const atr_len = parseInt(document.getElementById('xgbAtrLen')?.value || '14', 10) || 14;
+                const atr_mult = _pnum(document.getElementById('xgbAtrMult')?.value || '2.0') || 2.0;
+                const direction_override = (document.getElementById('xgbDirection')?.value || '').trim() || null;
+                const peThrRaw = document.getElementById('xgbPEnterThr')?.value;
+                const p_enter_threshold = (peThrRaw === '' || peThrRaw == null) ? null : _pnum(peThrRaw);
+                const override_exit_policy = !!document.getElementById('xgbOverrideExitPolicy')?.checked;
+                const tpPct = document.getElementById('xgbEntryTpPct')?.value;
+                const slPct = document.getElementById('xgbEntrySlPct')?.value;
+                const trPct = document.getElementById('xgbEntryTrailPct')?.value;
+                const entry_tp_pct = (tpPct === '' || tpPct == null) ? null : (_pnum(tpPct) / 100.0);
+                const entry_sl_pct = (slPct === '' || slPct == null) ? null : (_pnum(slPct) / 100.0);
+                const entry_trail_pct = (trPct === '' || trPct == null) ? null : (_pnum(trPct) / 100.0);
                 if(!runDir){ _showStatus('Выбери run.', 'error'); return; }
                 _showStatus('⏳ Ставлю задачу...', 'info');
                 _renderResult(null);
+                const bodyObj = { result_dir: runDir, days, exit_mode, atr_len, atr_mult };
+                if(direction_override) bodyObj.direction_override = direction_override;
+                if(p_enter_threshold !== null && Number.isFinite(p_enter_threshold)){
+                    bodyObj.p_enter_threshold = p_enter_threshold;
+                }
+                if(override_exit_policy){
+                    bodyObj.override_exit_policy = true;
+                    bodyObj.entry_tp_pct = entry_tp_pct;
+                    bodyObj.entry_sl_pct = entry_sl_pct;
+                    bodyObj.entry_trail_pct = entry_trail_pct;
+                }
                 const r = await fetch('/xgb_oos_test_async', {
                     method:'POST', headers:{'Content-Type':'application/json'},
-                    body: JSON.stringify({ result_dir: runDir, days })
+                    body: JSON.stringify(bodyObj)
                 });
                 const d = await r.json().catch(()=>null);
                 if(!d||!d.success){ _showStatus('❌ '+(d&&d.error||'unknown'),'error'); return; }
@@ -292,14 +509,44 @@
         async function startBatchOos(){
             const dirs = [...document.querySelectorAll('.cb-run:checked')].map(c=>c.value);
             if(!dirs.length){ alert('Выберите модели галочками'); return; }
-            const days = parseInt(document.getElementById('xgbOosDays')?.value || '30', 10) || 30;
-            _showBatch(`⏳ Запускаю OOS для ${dirs.length} моделей…`, 'info');
+            const days_grid = [...document.querySelectorAll('.cb-oos-days:checked')]
+                .map(cb=>parseInt(cb.value || '0', 10))
+                .filter(x=>Number.isFinite(x) && x>0);
+            if(!days_grid.length){ _showBatch('❌ Выбери days grid (30/60/90)', 'error'); return; }
+            const exit_modes = [...document.querySelectorAll('.cb-oos-exit:checked')]
+                .map(cb=>String(cb.value||'').trim())
+                .filter(x=>x);
+            if(!exit_modes.length){ _showBatch('❌ Выбери exit grid (policy/hold_steps/atr_trail)', 'error'); return; }
+            const atr_len = parseInt(document.getElementById('xgbAtrLen')?.value || '14', 10) || 14;
+            const atr_mult = _pnum(document.getElementById('xgbAtrMult')?.value || '2.0') || 2.0;
+            const direction_override = (document.getElementById('xgbDirection')?.value || '').trim() || null;
+            const peThrRaw = document.getElementById('xgbPEnterThr')?.value;
+            const p_enter_threshold = (peThrRaw === '' || peThrRaw == null) ? null : _pnum(peThrRaw);
+            const override_exit_policy = !!document.getElementById('xgbOverrideExitPolicy')?.checked;
+            const tpPct = document.getElementById('xgbEntryTpPct')?.value;
+            const slPct = document.getElementById('xgbEntrySlPct')?.value;
+            const trPct = document.getElementById('xgbEntryTrailPct')?.value;
+            const entry_tp_pct = (tpPct === '' || tpPct == null) ? null : (_pnum(tpPct) / 100.0);
+            const entry_sl_pct = (slPct === '' || slPct == null) ? null : (_pnum(slPct) / 100.0);
+            const entry_trail_pct = (trPct === '' || trPct == null) ? null : (_pnum(trPct) / 100.0);
+            _showBatch(`⏳ Запускаю OOS: ${dirs.length} моделей × ${days_grid.length} days × ${exit_modes.length} exit…`, 'info');
 
             let resp;
             try{
+                const bodyObj = { result_dirs: dirs, days_grid, exit_modes, atr_len, atr_mult };
+                if(direction_override) bodyObj.direction_override = direction_override;
+                if(p_enter_threshold !== null && Number.isFinite(p_enter_threshold)){
+                    bodyObj.p_enter_threshold = p_enter_threshold;
+                }
+                if(override_exit_policy){
+                    bodyObj.override_exit_policy = true;
+                    bodyObj.entry_tp_pct = entry_tp_pct;
+                    bodyObj.entry_sl_pct = entry_sl_pct;
+                    bodyObj.entry_trail_pct = entry_trail_pct;
+                }
                 resp = await fetch('/xgb_oos_batch_async', {
                     method:'POST', headers:{'Content-Type':'application/json'},
-                    body: JSON.stringify({ result_dirs: dirs, days })
+                    body: JSON.stringify(bodyObj)
                 });
             }catch(e){ _showBatch('❌ '+e.message,'error'); return; }
             const bd = await resp.json().catch(()=>null);
@@ -321,6 +568,8 @@
                     _showBatch(`⏳ ${done}/${total} готово…`, 'info');
                     checkAll();
                 }, ()=>{
+                    // keep placeholder so CSV step can show a meaningful error
+                    results.push({success:false, error:'FAILURE', task_id:t.task_id, result_dir:t.result_dir, days:t.days});
                     done++;
                     _showBatch(`⏳ ${done}/${total} готово (есть ошибки)…`, 'info');
                     checkAll();
@@ -329,11 +578,16 @@
         }
 
         async function finishBatch(results){
-            _showBatch(`✅ Все ${results.length} тестов завершены. Сохраняю CSV…`, 'info');
+            const ok = (results || []).filter(r=>r && r.success);
+            if(!ok.length){
+                _showBatch('❌ Нет успешных результатов OOS (все задачи упали или вернули success=false). CSV не сохранён.', 'error');
+                return;
+            }
+            _showBatch(`✅ Все ${results.length} тестов завершены. Успешных: ${ok.length}. Сохраняю CSV…`, 'info');
             try{
                 const r = await fetch('/xgb_oos_batch_save_csv', {
                     method:'POST', headers:{'Content-Type':'application/json'},
-                    body: JSON.stringify({ results })
+                    body: JSON.stringify({ results: ok })
                 });
                 const d = await r.json();
                 if(d.success){
@@ -365,12 +619,36 @@
                         <td class="mono">${f.name}</td>
                         <td>${(f.size/1024).toFixed(1)} KB</td>
                         <td>${f.mtime}</td>
-                        <td><a href="/xgb_oos_csv_download/${encodeURIComponent(f.name)}">📥</a></td>
+                        <td>
+                          <a href="/xgb_oos_csv_download/${encodeURIComponent(f.name)}" title="Скачать">📥</a>
+                          <a href="#" onclick="deleteCsvFile('${encodeURIComponent(f.name)}'); return false;" title="Удалить" style="margin-left:8px;">🗑️</a>
+                        </td>
                     </tr>`;
                 }
                 html += '</tbody></table>';
                 area.innerHTML = html;
             }catch(e){ area.innerHTML='<span style="color:red;">Ошибка: '+e.message+'</span>'; }
+        }
+
+        async function deleteCsvFile(encodedName){
+            const name = decodeURIComponent(encodedName || '');
+            if(!name) return;
+            if(!confirm('Удалить CSV '+name+'?')) return;
+            try{
+                const r = await fetch('/xgb_oos_csv_delete', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json','Accept':'application/json'},
+                    body: JSON.stringify({ filename: name })
+                });
+                const d = await r.json().catch(()=>null);
+                if(!d || !d.success){
+                    alert('Ошибка удаления: '+(d&&d.error||'unknown'));
+                    return;
+                }
+                loadCsvList();
+            }catch(e){
+                alert('Ошибка удаления: '+(e.message||e));
+            }
         }
 
         // Load CSV list on page load

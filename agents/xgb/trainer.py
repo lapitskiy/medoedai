@@ -8,6 +8,7 @@ from dataclasses import asdict
 from typing import Any, Dict, Optional
 
 import numpy as np
+from datetime import datetime
 
 from .config import XgbConfig
 from .features import build_xgb_dataset
@@ -28,6 +29,33 @@ def _atomic_write_json(path: str, data: Dict[str, Any]) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
+
+
+def _safe_iso_dt(v) -> str | None:
+    try:
+        if v is None:
+            return None
+        if hasattr(v, "to_pydatetime"):
+            v = v.to_pydatetime()
+        if hasattr(v, "isoformat"):
+            return v.isoformat()
+        # numpy.datetime64
+        if isinstance(v, np.datetime64):
+            # convert to seconds
+            ts = (v - np.datetime64("1970-01-01T00:00:00Z")) / np.timedelta64(1, "s")
+            return datetime.utcfromtimestamp(float(ts)).isoformat()
+        return str(v)
+    except Exception:
+        return None
+
+
+def _safe_utc_from_ms(ts_ms) -> str | None:
+    try:
+        if ts_ms is None:
+            return None
+        return datetime.utcfromtimestamp(float(ts_ms) / 1000.0).isoformat()
+    except Exception:
+        return None
 
 
 class XgbTrainer:
@@ -52,19 +80,81 @@ class XgbTrainer:
         X_tr, y_tr = X[:train_n], y[:train_n]
         X_va, y_va = X[train_n:], y[train_n:]
 
+        # ------------------------------------------------------------------
+        # Dataset metadata (best-effort): timeframe, source range, split range.
+        # ------------------------------------------------------------------
+        try:
+            df5 = dfs.get("df_5min") if isinstance(dfs, dict) else None
+            dt_list = None
+            if df5 is not None and hasattr(df5, "columns"):
+                cols = list(getattr(df5, "columns", []))
+                if "datetime" in cols:
+                    dt_list = list(df5["datetime"])
+                elif "timestamp" in cols:
+                    dt_list = [_safe_utc_from_ms(x) for x in list(df5["timestamp"])]
+            if dt_list is None and df5 is not None and hasattr(df5, "index"):
+                try:
+                    dt_list = list(getattr(df5, "index"))
+                except Exception:
+                    dt_list = None
+
+            warmup_rows = 200
+            src_rows = int(len(df5)) if df5 is not None and hasattr(df5, "__len__") else None
+            trimmed = bool(src_rows is not None and src_rows > (warmup_rows + 100))
+            start_src_idx = int(warmup_rows) if trimmed else 0
+
+            ds_meta: Dict[str, Any] = {
+                "timeframe_base": "5m",
+                "source_rows_5m": src_rows,
+                "warmup_rows": int(warmup_rows),
+                "trimmed_warmup": bool(trimmed),
+                "effective_start_row_5m": int(start_src_idx),
+                "dataset_rows": int(n),
+                "dataset_kind": str(aux.get("closes_mode") or "unknown"),
+                "split_type": ("time" if str(aux.get("closes_mode") or "") == "timeseries" else "index"),
+            }
+
+            # source start/end (5m candles)
+            if dt_list and len(dt_list) > 0:
+                ds_meta["source_start_datetime"] = _safe_iso_dt(dt_list[0])
+                ds_meta["source_end_datetime"] = _safe_iso_dt(dt_list[-1])
+
+            # train/val date ranges only for timeseries-aligned datasets
+            if str(aux.get("closes_mode") or "") == "timeseries" and dt_list and src_rows is not None:
+                # align: dataset i corresponds to candle row (start_src_idx + i)
+                need = int(start_src_idx) + int(n)
+                if len(dt_list) >= need and n > 0 and train_n > 0 and val_n > 0:
+                    ds_meta["train_start_datetime"] = _safe_iso_dt(dt_list[int(start_src_idx)])
+                    ds_meta["train_end_datetime"] = _safe_iso_dt(dt_list[int(start_src_idx) + int(train_n) - 1])
+                    ds_meta["val_start_datetime"] = _safe_iso_dt(dt_list[int(start_src_idx) + int(train_n)])
+                    ds_meta["val_end_datetime"] = _safe_iso_dt(dt_list[int(start_src_idx) + int(n) - 1])
+
+            if isinstance(meta, dict):
+                meta["dataset"] = ds_meta
+        except Exception:
+            pass
+
         # Class weights to reduce imbalance
         num_classes = 2 if is_binary else 3
         counts = np.bincount(y_tr, minlength=num_classes).astype(np.float64)
-        inv = np.where(counts > 0, 1.0 / counts, 0.0)
-        w = inv[y_tr]
-        w = (w / np.mean(w)) if np.mean(w) > 0 else None
+        # NOTE: for binary entry/exit tasks we avoid double-imbalance handling:
+        # we rely on scale_pos_weight only (see below), so no sample_weight.
+        w = None
+        if not is_binary:
+            inv = np.where(counts > 0, 1.0 / counts, 0.0)
+            w = inv[y_tr]
+            w = (w / np.mean(w)) if np.mean(w) > 0 else None
 
         # scale_pos_weight: auto (-1) = count_neg/count_pos
         spw = float(self.cfg.scale_pos_weight)
         if spw == 0:
             raise ValueError("scale_pos_weight=0 zeroes positive class. Use >=0.1 or -1 (auto).")
         if spw < 0 and is_binary:
-            spw = float(counts[0]) / max(float(counts[1]), 1.0)
+            # auto only when positive is minority; otherwise keep neutral (1.0)
+            if float(counts[1]) <= float(counts[0]):
+                spw = float(counts[0]) / max(float(counts[1]), 1.0)
+            else:
+                spw = 1.0
 
         common_params = dict(
             n_estimators=int(self.cfg.n_estimators),
@@ -101,7 +191,12 @@ class XgbTrainer:
         model.fit(X_tr, y_tr, sample_weight=w, eval_set=[(X_va, y_va)], verbose=False)
 
         # Metrics
-        pred = model.predict(X_va)
+        if is_binary:
+            thr = float(getattr(self.cfg, "p_enter_threshold", 0.5) or 0.5)
+            proba = model.predict_proba(X_va)[:, 1]
+            pred = (proba >= thr).astype(np.int64)
+        else:
+            pred = model.predict(X_va)
         acc = float(np.mean(pred == y_va)) if len(y_va) else 0.0
         pred = pred.astype(np.int64, copy=False) if hasattr(pred, "astype") else pred
 
@@ -151,35 +246,76 @@ class XgbTrainer:
                         )
             elif task.startswith("entry"):
                 closes = aux.get("closes")
+                highs = aux.get("highs")
                 mh = int(getattr(self.cfg, "max_hold_steps", 0) or 0)
                 side = "long" if task.endswith("long") else "short"
+                tp_pct = getattr(self.cfg, "entry_tp_pct", None)
+                sl_pct = getattr(self.cfg, "entry_sl_pct", None)
+                trail_pct = getattr(self.cfg, "entry_trail_pct", None)
                 if not isinstance(closes, np.ndarray) or closes.ndim != 1 or mh <= 0:
                     proxy_pnl.update({"enabled": False, "reason": "no_closes_or_bad_max_hold"})
                 else:
-                    # val indices in original series
-                    idx_all = np.arange(train_n, n, dtype=np.int64)
-                    # only where model predicts enter
-                    idx = idx_all[pred == 1]
-                    # match labeling window: require full [t+1 .. t+mh] to exist
-                    idx = idx[(idx + mh + 1) < len(closes)]
+                    # Use the same entry exit-policy as OOS backtest (policy-mode):
+                    # tp/sl/trail (optional) + timeout at max_hold_steps.
+                    is_long = side == "long"
+                    # validation slice aligned to pred (timeseries dataset)
+                    c = closes[train_n : train_n + len(pred)]
+                    h = None
+                    try:
+                        if isinstance(highs, np.ndarray) and highs.ndim == 1:
+                            h = highs[train_n : train_n + len(pred)]
+                    except Exception:
+                        h = None
+
                     pnls: list[float] = []
-                    for t in idx.tolist():
-                        end = min(len(closes) - 1, int(t) + mh)
-                        if end <= t:
+                    pos = None  # {'entry':float, 'idx':int, 'peak':float}
+                    for i in range(int(len(pred))):
+                        px = float(c[i])
+                        if px <= 0:
                             continue
-                        entry = float(closes[int(t)])
-                        if entry <= 0:
-                            continue
-                        window = closes[int(t) + 1 : end + 1]
-                        if len(window) == 0:
-                            continue
-                        if side == "long":
-                            best_exit = float(np.max(window))
-                            pnl = (best_exit - entry) / entry - fee_frac
-                        else:
-                            best_exit = float(np.min(window))
-                            pnl = (entry - best_exit) / entry - fee_frac
-                        pnls.append(float(pnl))
+
+                        if pos is not None:
+                            bars_held = i - int(pos["idx"])
+                            if is_long:
+                                ph = px
+                                if h is not None and i < len(h):
+                                    try:
+                                        ph = float(h[i])
+                                    except Exception:
+                                        ph = px
+                                pos["peak"] = max(float(pos["peak"]), float(ph))
+                            raw_ret = (px - float(pos["entry"])) / max(float(pos["entry"]), 1e-12) if is_long else (float(pos["entry"]) - px) / max(float(pos["entry"]), 1e-12)
+
+                            if trail_pct is not None and is_long:
+                                dd = (float(pos["peak"]) - px) / max(float(pos["peak"]), 1e-12)
+                                if dd >= float(trail_pct):
+                                    pnls.append(float(raw_ret) - float(fee_frac))
+                                    pos = None
+                            if pos is not None and tp_pct is not None and raw_ret >= float(tp_pct):
+                                pnls.append(float(raw_ret) - float(fee_frac))
+                                pos = None
+                            if pos is not None and sl_pct is not None and raw_ret <= float(sl_pct):
+                                pnls.append(float(raw_ret) - float(fee_frac))
+                                pos = None
+
+                            if pos is not None and bars_held >= mh:
+                                pnls.append(float(raw_ret) - float(fee_frac))
+                                pos = None
+
+                        if pos is None and int(pred[i]) == 1:
+                            pk = px
+                            if is_long and h is not None and i < len(h):
+                                try:
+                                    pk = float(h[i])
+                                except Exception:
+                                    pk = px
+                            pos = {"entry": px, "idx": i, "peak": pk}
+
+                    if pos is not None and len(c) > 0:
+                        px = float(c[-1])
+                        raw_ret = (px - float(pos["entry"])) / max(float(pos["entry"]), 1e-12) if is_long else (float(pos["entry"]) - px) / max(float(pos["entry"]), 1e-12)
+                        pnls.append(float(raw_ret) - float(fee_frac))
+
                     trades = int(len(pnls))
                     pnl_sum = float(np.sum(pnls)) if pnls else 0.0
                     proxy_pnl.update(
@@ -190,6 +326,11 @@ class XgbTrainer:
                             "fee_frac": fee_frac,
                             "max_hold_steps": mh,
                             "position_side": side,
+                            "exit_policy": {
+                                "tp_pct": (float(tp_pct) if tp_pct is not None else None),
+                                "sl_pct": (float(sl_pct) if sl_pct is not None else None),
+                                "trail_pct": (float(trail_pct) if trail_pct is not None else None),
+                            },
                         }
                     )
             elif task.startswith("exit"):

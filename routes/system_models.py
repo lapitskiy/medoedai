@@ -38,6 +38,31 @@ def _safe_float(v):
         return None
 
 
+def _safe_int(v):
+    try:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return int(v)
+        if isinstance(v, (int, float)):
+            return int(v)
+        if isinstance(v, str) and v.strip() != "":
+            return int(float(v.strip()))
+        return None
+    except Exception:
+        return None
+
+
+def _safe_str(v):
+    try:
+        if v is None:
+            return None
+        s = str(v)
+        return s
+    except Exception:
+        return None
+
+
 def _pick(d: dict, path: str):
     """Pick nested key via dot-path."""
     try:
@@ -198,6 +223,21 @@ def api_system_hypotheses_export():
             risk = gym.get("risk_management") if isinstance(gym.get("risk_management"), dict) else {}
             adapt = manifest.get("adaptive_params") if isinstance(manifest.get("adaptive_params"), dict) else {}
 
+            # Episodes count: prefer actual completed episodes; else planned.
+            episodes_planned = (
+                _safe_int(data.get("episodes"))
+                or _safe_int(cfg.get("episodes"))
+                or _safe_int(cfg.get("train_episodes"))
+                or _safe_int(meta.get("episodes"))
+            )
+            episodes_actual = (
+                _safe_int(data.get("actual_episodes"))
+                or _safe_int(manifest.get("episodes_end"))
+                or _safe_int(meta.get("episodes_end"))
+                or _safe_int(meta.get("episodes_last"))
+            )
+            episodes_count = episodes_actual or episodes_planned
+
             # Risk params: prefer gym_snapshot (actual per-run values), else adaptive_params as fallback.
             risk_source = "none"
             sl_v = None
@@ -205,6 +245,12 @@ def api_system_hypotheses_export():
             min_hold_v = None
             vol_thr_v = None
             trail_v = None
+            atr_sl_v = None
+            buy_roi_thr_v = None
+            buy_trend_thr_v = None
+            buy_volat_thr_v = None
+            buy_strict_floor_v = None
+            entry_gate_v = None
             if risk and any(k in risk for k in ("STOP_LOSS_PCT", "TAKE_PROFIT_PCT", "min_hold_steps", "volume_threshold")):
                 risk_source = "gym_snapshot"
                 sl_v = risk.get("STOP_LOSS_PCT")
@@ -212,6 +258,12 @@ def api_system_hypotheses_export():
                 min_hold_v = risk.get("min_hold_steps")
                 vol_thr_v = risk.get("volume_threshold")
                 trail_v = risk.get("atr_trail_mult")
+                atr_sl_v = risk.get("atr_sl_mult")
+                buy_roi_thr_v = risk.get("buy_roi_thr")
+                buy_trend_thr_v = risk.get("buy_trend_thr")
+                buy_volat_thr_v = risk.get("buy_volat_thr")
+                buy_strict_floor_v = risk.get("buy_strictness_floor")
+                entry_gate_v = risk.get("entry_confidence_gate")
             elif adapt and any(k in adapt for k in ("stop_loss_pct", "take_profit_pct", "min_hold_steps", "volume_threshold")):
                 risk_source = "adaptive_params"
                 sl_v = adapt.get("stop_loss_pct")
@@ -238,12 +290,19 @@ def api_system_hypotheses_export():
                 "model_type": mt,
                 "run_id": manifest.get("run_id") or run_dir.name,
                 "direction": manifest.get("direction") or manifest.get("trained_as"),
+                "episodes_count": episodes_count,
                 # risk knobs
                 "sl_pct": _safe_float(sl_v),
                 "tp_pct": _safe_float(tp_v),
                 "min_hold_steps": (int(min_hold_v) if isinstance(min_hold_v, (int, float)) else None),
                 "volume_threshold": _safe_float(vol_thr_v),
                 "atr_trail_mult": _safe_float(trail_v),
+                "atr_sl_mult": _safe_float(atr_sl_v),
+                "buy_roi_thr": _safe_float(buy_roi_thr_v),
+                "buy_trend_thr": _safe_float(buy_trend_thr_v),
+                "buy_volat_thr": _safe_float(buy_volat_thr_v),
+                "buy_strictness_floor": _safe_float(buy_strict_floor_v),
+                "entry_confidence_gate": _safe_float(entry_gate_v),
                 # DQN/SAC hyperparams (from cfg_snapshot in train_result.pkl)
                 "cfg_lr": _safe_float(cfg.get("lr")),
                 "cfg_batch_size": (int(cfg.get("batch_size")) if isinstance(cfg.get("batch_size"), (int, float)) else None),
@@ -269,24 +328,79 @@ def api_system_hypotheses_export():
                 "avg_loss": _safe_float(stats.get("avg_loss")),
             }
 
-            # sell_types_total → store as percents (agent/stop_loss/take_profit/timeout/trailing)
+            # sell_types_total → store as percents (agent/SL/TP/timeout/trailing).
+            # New format splits SL/TP into ATR vs fixed percent; keep backward compat for old runs.
             try:
                 st = data.get("sell_types_total") if isinstance(data.get("sell_types_total"), dict) else {}
-                total = float(sum(float(v) for v in st.values() if isinstance(v, (int, float))))
-                if total > 0:
-                    row["sell_agent_pct"] = float(st.get("agent", 0) or 0) / total
-                    row["sell_stop_loss_pct"] = float(st.get("stop_loss", 0) or 0) / total
-                    row["sell_take_profit_pct"] = float(st.get("take_profit", 0) or 0) / total
-                    row["sell_trailing_pct"] = float(st.get("trailing", 0) or 0) / total
-                    row["sell_timeout_pct"] = float(st.get("timeout", 0) or 0) / total
+                def _f(key: str) -> float:
+                    try:
+                        v = st.get(key, 0)
+                        return float(v or 0) if isinstance(v, (int, float)) else 0.0
+                    except Exception:
+                        return 0.0
+
+                # new split keys (may be absent for old runs)
+                sl_atr = _f("stop_loss_atr")
+                sl_pct = _f("stop_loss_pct")
+                tp_atr = _f("take_profit_atr")
+                tp_pct = _f("take_profit_pct")
+
+                has_split = (sl_atr + sl_pct + tp_atr + tp_pct) > 0
+                if has_split:
+                    agent = _f("agent")
+                    trailing = _f("trailing")
+                    timeout = _f("timeout")
+                    other = _f("other") + _f("invalid_sell")
+                    total = agent + sl_atr + sl_pct + tp_atr + tp_pct + trailing + timeout + other
+                    if total > 0:
+                        row["sell_agent_pct"] = agent / total
+                        row["sell_stop_loss_atr_pct"] = sl_atr / total
+                        row["sell_stop_loss_fixed_pct"] = sl_pct / total
+                        row["sell_take_profit_atr_pct"] = tp_atr / total
+                        row["sell_take_profit_fixed_pct"] = tp_pct / total
+                        row["sell_stop_loss_pct"] = (sl_atr + sl_pct) / total
+                        row["sell_take_profit_pct"] = (tp_atr + tp_pct) / total
+                        row["sell_trailing_pct"] = trailing / total
+                        row["sell_timeout_pct"] = timeout / total
+                    else:
+                        row["sell_agent_pct"] = None
+                        row["sell_stop_loss_atr_pct"] = None
+                        row["sell_stop_loss_fixed_pct"] = None
+                        row["sell_take_profit_atr_pct"] = None
+                        row["sell_take_profit_fixed_pct"] = None
+                        row["sell_stop_loss_pct"] = None
+                        row["sell_take_profit_pct"] = None
+                        row["sell_trailing_pct"] = None
+                        row["sell_timeout_pct"] = None
                 else:
-                    row["sell_agent_pct"] = None
-                    row["sell_stop_loss_pct"] = None
-                    row["sell_take_profit_pct"] = None
-                    row["sell_trailing_pct"] = None
-                    row["sell_timeout_pct"] = None
+                    # old aggregated keys
+                    total = float(sum(float(v) for v in st.values() if isinstance(v, (int, float))))
+                    if total > 0:
+                        row["sell_agent_pct"] = _f("agent") / total
+                        row["sell_stop_loss_pct"] = _f("stop_loss") / total
+                        row["sell_take_profit_pct"] = _f("take_profit") / total
+                        row["sell_trailing_pct"] = _f("trailing") / total
+                        row["sell_timeout_pct"] = _f("timeout") / total
+                        row["sell_stop_loss_atr_pct"] = None
+                        row["sell_stop_loss_fixed_pct"] = None
+                        row["sell_take_profit_atr_pct"] = None
+                        row["sell_take_profit_fixed_pct"] = None
+                    else:
+                        row["sell_agent_pct"] = None
+                        row["sell_stop_loss_pct"] = None
+                        row["sell_take_profit_pct"] = None
+                        row["sell_trailing_pct"] = None
+                        row["sell_timeout_pct"] = None
+                        row["sell_stop_loss_atr_pct"] = None
+                        row["sell_stop_loss_fixed_pct"] = None
+                        row["sell_take_profit_atr_pct"] = None
+                        row["sell_take_profit_fixed_pct"] = None
             except Exception:
                 row["sell_agent_pct"] = None
+                row["sell_stop_loss_atr_pct"] = None
+                row["sell_stop_loss_fixed_pct"] = None
+                row["sell_take_profit_atr_pct"] = None
+                row["sell_take_profit_fixed_pct"] = None
                 row["sell_stop_loss_pct"] = None
                 row["sell_take_profit_pct"] = None
                 row["sell_timeout_pct"] = None
@@ -299,12 +413,19 @@ def api_system_hypotheses_export():
             "model_type",
             "run_id",
             "direction",
+            "episodes_count",
             # risk knobs
             "sl_pct",
             "tp_pct",
             "min_hold_steps",
             "volume_threshold",
             "atr_trail_mult",
+            "atr_sl_mult",
+            "buy_roi_thr",
+            "buy_trend_thr",
+            "buy_volat_thr",
+            "buy_strictness_floor",
+            "entry_confidence_gate",
             # cfg hyperparams
             "cfg_lr",
             "cfg_batch_size",
@@ -326,7 +447,11 @@ def api_system_hypotheses_export():
             "avg_loss",
             # sell composition
             "sell_agent_pct",
+            "sell_stop_loss_atr_pct",
+            "sell_stop_loss_fixed_pct",
             "sell_stop_loss_pct",
+            "sell_take_profit_atr_pct",
+            "sell_take_profit_fixed_pct",
             "sell_take_profit_pct",
             "sell_trailing_pct",
             "sell_timeout_pct",
@@ -383,6 +508,7 @@ def api_system_hypotheses_export_xgb():
             limit_runs = int(request.args.get("limit_runs") or "500")
         except Exception:
             limit_runs = 500
+        include_zero_trades = str(request.args.get("include_zero_trades") or "0").strip().lower() in ("1", "true", "yes", "on")
 
         sym_dir = _symbol_to_dir_name(symbol)
         base = Path("result") / "xgb" / sym_dir / "runs"
@@ -408,6 +534,7 @@ def api_system_hypotheses_export_xgb():
         items = items[:limit_runs]
 
         rows = []
+        filtered_zero_trades = 0
         for it in items:
             manifest = {}
             metrics = {}
@@ -427,6 +554,7 @@ def api_system_hypotheses_export_xgb():
                 pass
 
             cfg = meta.get("cfg_snapshot") if isinstance(meta.get("cfg_snapshot"), dict) else {}
+            ds = meta.get("dataset") if isinstance(meta.get("dataset"), dict) else {}
 
             # f1_val is a list: [hold, buy, sell] or [hold, enter]
             f1v = metrics.get("f1_val")
@@ -451,6 +579,34 @@ def api_system_hypotheses_export_xgb():
                 proxy_trades = None
             proxy_mean_trade = _safe_float(proxy.get("pnl_mean_per_trade"))
 
+            # Filter degenerate runs by default: if model produced no trades/signals, hypotheses are meaningless.
+            if (not include_zero_trades) and (int(proxy_trades or 0) <= 0):
+                filtered_zero_trades += 1
+                continue
+
+            # Confusion-matrix derived counters for class=1 (buy/enter) on val.
+            cm = metrics.get("cm_val") if isinstance(metrics.get("cm_val"), list) else None
+            tp_1 = fp_1 = fn_1 = tn_1 = None
+            y_pos_1 = pred_pos_1 = None
+            try:
+                if isinstance(cm, list) and len(cm) > 1 and isinstance(cm[1], list) and len(cm[1]) > 1:
+                    # total
+                    total = int(sum(int(x) for row in cm if isinstance(row, list) for x in row if isinstance(x, (int, float))))
+                    tp_1 = int(cm[1][1])
+                    pred_pos_1 = int(sum(int(row[1]) for row in cm if isinstance(row, list) and len(row) > 1 and isinstance(row[1], (int, float))))
+                    y_pos_1 = int(sum(int(x) for x in cm[1] if isinstance(x, (int, float))))
+                    fp_1 = int(pred_pos_1 - tp_1)
+                    fn_1 = int(y_pos_1 - tp_1)
+                    tn_1 = int(total - tp_1 - fp_1 - fn_1)
+            except Exception:
+                tp_1 = fp_1 = fn_1 = tn_1 = None
+
+            # Baseline and deltas (HOLD-only baseline for directional/entry tasks)
+            y_non_hold = _safe_float(metrics.get("y_non_hold_rate_val"))
+            val_acc = _safe_float(metrics.get("val_acc"))
+            acc_hold_baseline = (1.0 - y_non_hold) if (y_non_hold is not None) else None
+            acc_delta = (val_acc - acc_hold_baseline) if (val_acc is not None and acc_hold_baseline is not None) else None
+
             row = {
                 "run_id": manifest.get("run_name") or it["run_dir"].name,
                 # labeling params
@@ -459,6 +615,7 @@ def api_system_hypotheses_export_xgb():
                 "max_hold_steps": cfg.get("max_hold_steps"),
                 "min_profit": _safe_float(cfg.get("min_profit")),
                 "label_delta": _safe_float(cfg.get("label_delta")),
+                "fee_bps": _safe_float(cfg.get("fee_bps")),
                 # model hyperparams
                 "max_depth": cfg.get("max_depth"),
                 "learning_rate": _safe_float(cfg.get("learning_rate")),
@@ -470,31 +627,59 @@ def api_system_hypotheses_export_xgb():
                 "gamma": _safe_float(cfg.get("gamma")),
                 "scale_pos_weight": _safe_float(cfg.get("scale_pos_weight")),
                 # metrics
-                "val_acc": _safe_float(metrics.get("val_acc")),
+                "val_acc": val_acc,
+                "acc_hold_baseline": _safe_float(acc_hold_baseline),
+                "acc_delta": _safe_float(acc_delta),
                 "f1_buy_sell": _safe_float(metrics.get("f1_buy_sell_val")),
                 "f1_1": f1_1,
                 "prec_1": prec_1,
                 "recall_1": recall_1,
-                "y_non_hold": _safe_float(metrics.get("y_non_hold_rate_val")),
+                "y_non_hold": _safe_float(y_non_hold),
                 "pred_non_hold": _safe_float(metrics.get("pred_non_hold_rate_val")),
+                "tp_1": tp_1,
+                "fp_1": fp_1,
+                "fn_1": fn_1,
+                "tn_1": tn_1,
+                "y_pos_1": y_pos_1,
+                "pred_pos_1": pred_pos_1,
                 "proxy_pnl_sum": proxy_sum,
                 "proxy_pnl_mean_trade": proxy_mean_trade,
                 "proxy_pnl_trades": proxy_trades,
                 "train_rows": metrics.get("train_rows"),
                 "val_rows": metrics.get("val_rows"),
+                # dataset meta (best-effort)
+                "dataset_timeframe": _safe_str(ds.get("timeframe_base")),
+                "dataset_source_start": _safe_str(ds.get("source_start_datetime")),
+                "dataset_source_end": _safe_str(ds.get("source_end_datetime")),
+                "dataset_kind": _safe_str(ds.get("dataset_kind")),
+                "split_type": _safe_str(ds.get("split_type")),
+                "val_start": _safe_str(ds.get("val_start_datetime")),
+                "val_end": _safe_str(ds.get("val_end_datetime")),
             }
             rows.append(row)
+
+        if (not include_zero_trades) and len(rows) == 0 and filtered_zero_trades > 0:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "All runs were filtered out because proxy_pnl_trades=0. Use include_zero_trades=1 or retrain with non-degenerate labeling/policy.",
+                    "filtered_zero_trades": filtered_zero_trades,
+                }
+            ), 422
 
         # CSV
         buf = io.StringIO()
         preferred = [
             "run_id",
-            "horizon_steps", "threshold", "max_hold_steps", "min_profit", "label_delta",
+            "horizon_steps", "threshold", "max_hold_steps", "min_profit", "label_delta", "fee_bps",
             "max_depth", "learning_rate", "n_estimators", "subsample", "colsample_bytree",
             "reg_lambda", "min_child_weight", "gamma", "scale_pos_weight",
-            "val_acc", "f1_buy_sell", "f1_1", "prec_1", "recall_1",
+            "val_acc", "acc_hold_baseline", "acc_delta",
+            "f1_buy_sell", "f1_1", "prec_1", "recall_1",
             "y_non_hold", "pred_non_hold", "train_rows", "val_rows",
+            "tp_1", "fp_1", "fn_1", "tn_1", "y_pos_1", "pred_pos_1",
             "proxy_pnl_sum", "proxy_pnl_mean_trade", "proxy_pnl_trades",
+            "dataset_timeframe", "dataset_source_start", "dataset_source_end", "dataset_kind", "split_type", "val_start", "val_end",
         ]
         all_fields = set(k for r in rows for k in r.keys())
         tail = sorted([k for k in all_fields if k not in preferred])
@@ -510,10 +695,11 @@ def api_system_hypotheses_export_xgb():
             f"Symbol: {symbol}",
             f"Model: XGBoost",
             f"Runs scanned: {len(rows)}",
+            (f"Filtered out (proxy_pnl_trades=0): {filtered_zero_trades}" if not include_zero_trades else "Filtered out (proxy_pnl_trades=0): disabled"),
             "",
             "Task: analyze the CSV and propose hypotheses which XGB settings correlate with better prediction quality.",
-            "Primary targets: f1_1 (F1 class=1), prec_1, recall_1, val_acc.",
-            "Key labeling knobs: max_hold_steps, min_profit, threshold, fee_bps.",
+            "Primary targets: proxy_pnl_sum, proxy_pnl_mean_trade, proxy_pnl_trades, f1_1 (class=1), prec_1, recall_1, acc_delta.",
+            "Key labeling knobs: max_hold_steps, min_profit, threshold, fee_bps, label_delta.",
             "Key model knobs: max_depth, learning_rate, n_estimators, subsample, colsample_bytree, reg_lambda, min_child_weight, gamma, scale_pos_weight.",
             "",
             "Output format:",
