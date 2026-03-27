@@ -690,6 +690,14 @@ def api_system_hypotheses_export_xgb():
             w.writerow({k: ("" if v is None else v) for k, v in r.items()})
         csv_text = buf.getvalue()
 
+        # Persist generated CSV on server for offline hypothesis workflows.
+        save_dir = Path("predict_test") / "xgb_hypo"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        csv_name = f"hypotheses_xgb_{symbol}_{ts}.csv"
+        csv_path = save_dir / csv_name
+        csv_path.write_text(csv_text, encoding="utf-8")
+
         # TXT prompt
         lines = [
             f"Symbol: {symbol}",
@@ -712,6 +720,7 @@ def api_system_hypotheses_export_xgb():
         return jsonify({
             "success": True, "symbol": symbol, "model_type": "xgb",
             "runs_count": len(rows), "csv": csv_text, "prompt": prompt_text,
+            "saved_csv_path": csv_path.as_posix(),
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

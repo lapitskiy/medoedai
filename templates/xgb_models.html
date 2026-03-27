@@ -515,8 +515,9 @@
             document.getElementById('gfTotalCombo').textContent = labelN * modelN * policyN * exitPolicyN;
         }
 
-        // ===== localStorage cache for grid fields =====
+        // ===== cache for grid fields (server json + localStorage) =====
         const GF_CACHE_KEY = 'xgb_grid_cache';
+        const GF_SERVER_PRESET_URL = '/api/xgb/grid_full_preset';
         const GF_IDS = ['gfSymbol','gfTask','gfDirection','gfLimitCandles','gfEarlyStopping','gfKeepTopN',
             'gfHsFrom','gfHsTo','gfHsStep','gfThrFrom','gfThrTo','gfThrStep',
             'gfMhFrom','gfMhTo','gfMhStep','gfMpFrom','gfMpTo','gfMpStep',
@@ -530,19 +531,57 @@
             'gfCbFrom','gfCbTo','gfCbStep','gfRlFrom','gfRlTo','gfRlStep',
             'gfMcwFrom','gfMcwTo','gfMcwStep','gfGmFrom','gfGmTo','gfGmStep',
             'gfSpwFrom','gfSpwTo','gfSpwStep'];
-        function gfSaveCache(){
+        function gfCollectValues(){
             const d={};
             GF_IDS.forEach(id=>{ const el=document.getElementById(id); if(el) d[id]=el.value; });
-            try{ localStorage.setItem(GF_CACHE_KEY, JSON.stringify(d)); }catch(_){}
+            return d;
         }
-        function gfLoadCache(){
+        function gfSaveCache(){
+            const d = gfCollectValues();
+            try{ localStorage.setItem(GF_CACHE_KEY, JSON.stringify(d)); }catch(_){}
+            gfSaveServerCacheDebounced();
+        }
+        function gfApplyValues(d){
+            if(!d || typeof d !== 'object') return;
+            GF_IDS.forEach(id=>{ const el=document.getElementById(id); if(el && d[id]!==undefined) el.value=d[id]; });
+        }
+        function gfLoadLocalCache(){
             try{
                 const d=JSON.parse(localStorage.getItem(GF_CACHE_KEY));
                 if(!d) return;
-                GF_IDS.forEach(id=>{ const el=document.getElementById(id); if(el && d[id]!==undefined) el.value=d[id]; });
+                gfApplyValues(d);
             }catch(_){}
         }
-        gfLoadCache();
+
+        let _gfSaveServerTimer = null;
+        async function gfSaveServerCache(){
+            try{
+                await fetch(GF_SERVER_PRESET_URL, {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json','Accept':'application/json'},
+                    body: JSON.stringify({ values: gfCollectValues() })
+                });
+            }catch(_){}
+        }
+        function gfSaveServerCacheDebounced(){
+            try{
+                if(_gfSaveServerTimer){ clearTimeout(_gfSaveServerTimer); }
+                _gfSaveServerTimer = setTimeout(()=>{ gfSaveServerCache(); }, 350);
+            }catch(_){}
+        }
+
+        async function gfLoadServerOrLocalCache(){
+            try{
+                const r = await fetch(GF_SERVER_PRESET_URL, { headers:{'Accept':'application/json'} });
+                const d = await r.json().catch(()=>null);
+                if(d && d.success && d.values && typeof d.values === 'object' && Object.keys(d.values).length){
+                    gfApplyValues(d.values);
+                    try{ localStorage.setItem(GF_CACHE_KEY, JSON.stringify(d.values)); }catch(_){}
+                    return;
+                }
+            }catch(_){}
+            gfLoadLocalCache();
+        }
 
         // recalc on any input change + save cache
         document.querySelectorAll('.gf-range').forEach(el => el.addEventListener('input', ()=>{ gfCalcCombo(); gfSaveCache(); }));
@@ -550,7 +589,11 @@
             const el=document.getElementById(id);
             if(el) el.addEventListener('change', gfSaveCache);
         });
-        setTimeout(gfUpdateLabels, 100);
+        setTimeout(async ()=>{
+            await gfLoadServerOrLocalCache();
+            gfUpdateLabels();
+            gfCalcCombo();
+        }, 100);
 
         async function startXgbGridFull() {
             const statusDiv = document.getElementById('gfStatus');

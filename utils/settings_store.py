@@ -36,6 +36,11 @@ def ensure_settings_table() -> None:
         _bootstrap_trading_atr_defaults()
     except Exception:
         pass
+    # Bootstrap: дефолты для XGB grid_full ranking — чтобы настраивать через /settings.
+    try:
+        _bootstrap_xgb_grid_full_defaults()
+    except Exception:
+        pass
 
 
 def _bootstrap_bybit_from_env() -> None:
@@ -203,6 +208,59 @@ def _bootstrap_trading_atr_defaults() -> None:
             if key in existing:
                 continue
             row = AppSetting(scope='trading', group='atr', key=key)
+            row.value_type = vt
+            row.is_secret = bool(is_secret)
+            row.value = val
+            row.label = label
+            row.description = desc
+            session.add(row)
+            changed = True
+
+        if changed:
+            session.commit()
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+def _bootstrap_xgb_grid_full_defaults() -> None:
+    """
+    Создаёт дефолтные ключи (scope=xgb, group=grid_full), если их ещё нет.
+    """
+    session = get_db_session()
+    try:
+        rows = session.query(AppSetting).filter(
+            AppSetting.scope == 'xgb',
+            AppSetting.group == 'grid_full',
+        ).all()
+        existing = {str(r.key or '') for r in rows}
+
+        defaults = [
+            (
+                'XGB_GRID_FULL_PROXY_TRADES_MIN',
+                'number',
+                False,
+                '5',
+                'Proxy trades min',
+                'Минимум trades в proxy_pnl для приоритетного ранжирования в grid_full.',
+            ),
+            (
+                'XGB_GRID_FULL_PROXY_TRADES_MAX',
+                'number',
+                False,
+                '200',
+                'Proxy trades max',
+                'Максимум trades в proxy_pnl для приоритетного ранжирования в grid_full.',
+            ),
+        ]
+
+        changed = False
+        for key, vt, is_secret, val, label, desc in defaults:
+            if key in existing:
+                continue
+            row = AppSetting(scope='xgb', group='grid_full', key=key)
             row.value_type = vt
             row.is_secret = bool(is_secret)
             row.value = val

@@ -129,7 +129,8 @@
                         <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
                             select (for delete)
                             <select id="predSelectMode" class="form-control" style="width:280px;">
-                                <option value="all">✅ ALL (collapsed/overtrade/proxy0/f1&lt;0.1/acc_delta)</option>
+                                <option value="all_safe" selected>✅ ALL safe (без acc_delta)</option>
+                                <option value="all">⚠ ALL strict (collapsed/overtrade/proxy0/f1&lt;0.1/acc_delta)</option>
                                 <option value="collapsed">💀 collapsed (pred_non_hold≈0)</option>
                                 <option value="pred_lt_005">📉 pred_non_hold &lt; 0.005 (слишком мало сигналов)</option>
                                 <option value="pred_lt_01">📉 pred_non_hold &lt; 0.01</option>
@@ -190,7 +191,7 @@
                                     <th>Task</th>
                                     <th>Dir</th>
                                     <th>Source</th>
-                                    <th>H</th>
+                                    <th>H (directional)</th>
                                     <th>Thr</th>
                                     <th>max_hold</th>
                                     <th>min_profit%</th>
@@ -226,7 +227,8 @@
                                     <td>{{ r.task }}</td>
                                     <td>{{ r.direction }}</td>
                                     <td>{{ r.source }}</td>
-                                    <td>{{ c.get('horizon_steps','') }}</td>
+                                    {% set task_l = (r.task or '')|lower %}
+                                    <td>{{ c.get('horizon_steps','') if task_l[:5] != 'entry' and task_l[:4] != 'exit' else '—' }}</td>
                                     <td>{{ c.get('threshold','') }}</td>
                                     <td>{{ c.get('max_hold_steps','') }}</td>
                                     <td>{{ '%0.2f'|format(c.get('min_profit',0)*100) if c.get('min_profit') is not none else '' }}</td>
@@ -340,7 +342,7 @@
 
         /* ---------- select by pred_non_hold ---------- */
         function selectByPredMode(){
-            const mode = (document.getElementById('predSelectMode')?.value || 'all').trim();
+            const mode = (document.getElementById('predSelectMode')?.value || 'all_safe').trim();
             let count = 0;
             document.querySelectorAll('.cb-run').forEach(cb=>{
                 const v = parseFloat(cb.dataset.predNonhold);
@@ -371,6 +373,13 @@
                     }
                     return;
                 }
+                if(mode === 'all_safe'){
+                    if(isCollapsed || isWeakHigh || isOvertrade || isProxy0 || isF1lt10){
+                        cb.checked = true;
+                        count++;
+                    }
+                    return;
+                }
                 if(mode === 'pred_lt_005'){ if(isPredLt005){ cb.checked=true; count++; } return; }
                 if(mode === 'pred_lt_01'){ if(isPredLt01){ cb.checked=true; count++; } return; }
                 if(mode === 'weak_high'){ if(isWeakHigh){ cb.checked=true; count++; } return; }
@@ -386,7 +395,7 @@
             });
             updateSelectedCount();
             if(!count){
-                const msgs = { all:'ALL-условиям', pred_lt_005:'pred_non_hold < 0.005', pred_lt_01:'pred_non_hold < 0.01',
+                const msgs = { all:'ALL strict', all_safe:'ALL safe (без acc_delta)', pred_lt_005:'pred_non_hold < 0.005', pred_lt_01:'pred_non_hold < 0.01',
                     weak_high:'pred_non_hold > 0.2', overtrade_03:'pred_non_hold > 0.30', proxy0:'proxy_trades=0',
                     f1lt10:'f1(1) < 0.10', f1lt30:'f1(1) < 0.30', recall_lt_03:'recall(1) < 0.30', prec_lt_03:'prec(1) < 0.30',
                     y_nonhold_lt_002:'y_non_hold < 0.002', accdelta_le_neg001:'acc_delta ≤ -0.01', collapsed:'collapsed' };

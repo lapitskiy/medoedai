@@ -16,6 +16,7 @@ from tasks import celery
 from utils.db_utils import db_get_or_fetch_ohlcv, load_latest_candles_from_csv_to_db, _discover_bybit_api_keys, _discover_all_bybit_api_keys, _key_prefix_4
 from utils.parser import parser_download_and_combine_with_library
 from utils.redis_utils import get_redis_client
+from utils.settings_store import get_setting_value as _get_setting_value
 
 
 def _api_hint(symbol: str) -> str:
@@ -160,6 +161,26 @@ def _env_opt_float(name: str) -> float | None:
         return float(s)
     except Exception:
         return None
+
+
+def _setting_int(scope: str, group: str | None, key: str, default: int) -> int:
+    try:
+        raw = _get_setting_value(scope, group, key)
+        if raw is None:
+            return int(default)
+        return int(float(str(raw).strip()))
+    except Exception:
+        return int(default)
+
+
+def _setting_bool(scope: str, group: str | None, key: str, default: bool) -> bool:
+    try:
+        raw = _get_setting_value(scope, group, key)
+        if raw is None:
+            return bool(default)
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    except Exception:
+        return bool(default)
 
 
 def _passes_trading_filters_entry_exit(metrics: Dict[str, Any]) -> tuple[bool, Dict[str, Any]]:
@@ -1024,6 +1045,73 @@ def train_xgb_grid_full(
 
         grid_id = f"gridfull-{str(uuid.uuid4())[:6].lower()}"
         results: List[Dict[str, Any]] = []
+        rank_by_proxy = bool(
+            is_binary and _setting_bool(
+                "xgb",
+                "grid_full",
+                "XGB_GRID_FULL_RANK_BY_PROXY_PNL",
+                _env_flag("XGB_GRID_FULL_RANK_BY_PROXY_PNL", default=True),
+            )
+        )
+        proxy_trades_min = max(
+            0,
+            int(
+                _setting_int(
+                    "xgb",
+                    "grid_full",
+                    "XGB_GRID_FULL_PROXY_TRADES_MIN",
+                    _env_int("XGB_GRID_FULL_PROXY_TRADES_MIN", 1),
+                )
+            ),
+        )
+        proxy_trades_max = max(
+            proxy_trades_min,
+            int(
+                _setting_int(
+                    "xgb",
+                    "grid_full",
+                    "XGB_GRID_FULL_PROXY_TRADES_MAX",
+                    _env_int("XGB_GRID_FULL_PROXY_TRADES_MAX", 10**9),
+                )
+            ),
+        )
+
+        def _grid_full_sort_key(item: Dict[str, Any]):
+            """
+            For binary tasks prefer runs with valid proxy_pnl and trades bounds:
+            1) in-bounds proxy candidate
+            2) higher proxy pnl_sum
+            3) fallback to classification score / f1(1)
+            """
+            m = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+            try:
+                score = float(item.get("score", 0.0) or 0.0)
+            except Exception:
+                score = 0.0
+            f1v = m.get("f1_val")
+            try:
+                f1_1 = float(f1v[1]) if isinstance(f1v, list) and len(f1v) > 1 else 0.0
+            except Exception:
+                f1_1 = 0.0
+            if not rank_by_proxy:
+                return (score, f1_1)
+
+            proxy = m.get("proxy_pnl_val") if isinstance(m.get("proxy_pnl_val"), dict) else {}
+            try:
+                enabled = bool(proxy.get("enabled"))
+            except Exception:
+                enabled = False
+            try:
+                trades = int(proxy.get("trades", 0) or 0)
+            except Exception:
+                trades = 0
+            try:
+                pnl_sum = float(proxy.get("pnl_sum", 0.0) or 0.0)
+            except Exception:
+                pnl_sum = 0.0
+            in_bounds = bool(enabled and (proxy_trades_min <= trades <= proxy_trades_max))
+            # reverse-sort tuple
+            return (1 if in_bounds else 0, pnl_sum if in_bounds else float("-inf"), score, f1_1)
 
         def _periodic_cleanup(force: bool = False) -> None:
             """
@@ -1038,7 +1126,7 @@ def train_xgb_grid_full(
                 trigger = max(2, int(topn) * 2)
                 if (not force) and (len(results) < trigger):
                     return
-                results.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+                results.sort(key=_grid_full_sort_key, reverse=True)
                 keep = results[:topn]
                 keep_dirs = set()
                 for it in keep:
@@ -1159,6 +1247,16 @@ def train_xgb_grid_full(
                             "entry_trail_pct": cfg.entry_trail_pct,
                             "score": score, "metrics": m,
                             "run_name": r.get("run_name"), "result_dir": r.get("result_dir")}
+                    if is_binary:
+                        pp = m.get("proxy_pnl_val") if isinstance(m.get("proxy_pnl_val"), dict) else {}
+                        try:
+                            item["proxy_pnl_sum"] = float(pp.get("pnl_sum", 0.0) or 0.0)
+                        except Exception:
+                            item["proxy_pnl_sum"] = 0.0
+                        try:
+                            item["proxy_trades"] = int(pp.get("trades", 0) or 0)
+                        except Exception:
+                            item["proxy_trades"] = 0
                     results.append(item)
                 except Exception as exc:
                     push_log(f"⚠ Error: {exc}")
@@ -1172,7 +1270,7 @@ def train_xgb_grid_full(
 
         # Final cleanup + sort (ensure only top-N remains even if grid ended early)
         _periodic_cleanup(force=True)
-        results.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        results.sort(key=_grid_full_sort_key, reverse=True)
 
         # Save grid results
         sym_code = (symbol or "").upper().replace("USDT", "").replace("USD", "").replace("USDC", "").replace("BUSD", "").replace("USDP", "")

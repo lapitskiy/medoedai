@@ -8,6 +8,73 @@ from datetime import datetime
 
 xgb_bp = Blueprint("xgb", __name__)
 
+_XGB_GRID_PRESET_PATH = Path("predict_test") / "xgb_hypo" / "xgb_grid_full_preset.json"
+_XGB_GRID_PRESET_ALLOWED_KEYS = {
+    "gfSymbol", "gfTask", "gfDirection", "gfLimitCandles", "gfEarlyStopping", "gfKeepTopN",
+    "gfHsFrom", "gfHsTo", "gfHsStep", "gfThrFrom", "gfThrTo", "gfThrStep",
+    "gfMhFrom", "gfMhTo", "gfMhStep", "gfMpFrom", "gfMpTo", "gfMpStep",
+    "gfFeeFrom", "gfFeeTo", "gfFeeStep",
+    "gfPeFrom", "gfPeTo", "gfPeStep",
+    "gfEtpFrom", "gfEtpTo", "gfEtpStep",
+    "gfEslFrom", "gfEslTo", "gfEslStep",
+    "gfEtrFrom", "gfEtrTo", "gfEtrStep",
+    "gfMdFrom", "gfMdTo", "gfMdStep", "gfLrFrom", "gfLrTo", "gfLrStep",
+    "gfNeFrom", "gfNeTo", "gfNeStep", "gfSsFrom", "gfSsTo", "gfSsStep",
+    "gfCbFrom", "gfCbTo", "gfCbStep", "gfRlFrom", "gfRlTo", "gfRlStep",
+    "gfMcwFrom", "gfMcwTo", "gfMcwStep", "gfGmFrom", "gfGmTo", "gfGmStep",
+    "gfSpwFrom", "gfSpwTo", "gfSpwStep",
+}
+
+
+def _read_xgb_grid_preset() -> dict:
+    if not _XGB_GRID_PRESET_PATH.exists():
+        return {}
+    try:
+        data = json.loads(_XGB_GRID_PRESET_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+@xgb_bp.get("/api/xgb/grid_full_preset")
+def api_xgb_grid_full_preset_get():
+    try:
+        data = _read_xgb_grid_preset()
+        values = data.get("values") if isinstance(data.get("values"), dict) else {}
+        return jsonify({
+            "success": True,
+            "values": values,
+            "updated_at": data.get("updated_at"),
+            "source": "server_json",
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@xgb_bp.post("/api/xgb/grid_full_preset")
+def api_xgb_grid_full_preset_save():
+    try:
+        payload = request.get_json(silent=True) or {}
+        raw_values = payload.get("values") if isinstance(payload.get("values"), dict) else payload
+        if not isinstance(raw_values, dict):
+            return jsonify({"success": False, "error": "values must be an object"}), 400
+
+        values = {}
+        for k, v in raw_values.items():
+            key = str(k)
+            if key in _XGB_GRID_PRESET_ALLOWED_KEYS:
+                values[key] = "" if v is None else str(v)
+
+        _XGB_GRID_PRESET_PATH.parent.mkdir(parents=True, exist_ok=True)
+        doc = {
+            "values": values,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        _XGB_GRID_PRESET_PATH.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        return jsonify({"success": True, "saved_keys": len(values), "path": _XGB_GRID_PRESET_PATH.as_posix()})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 
 @xgb_bp.get("/xgb_models")
 def xgb_models_page():
