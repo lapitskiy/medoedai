@@ -2,6 +2,7 @@ import time
 import pandas as pd
 import json
 import requests
+import re
 from redis import Redis
 import numpy as np
 from utils.db_utils import db_get_or_fetch_ohlcv # Импортируем функцию загрузки данных
@@ -9,17 +10,629 @@ from utils.db_utils import load_latest_candles_from_csv_to_db
 from utils.parser import parser_download_and_combine_with_library
 from utils.trade_utils import create_model_prediction
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 import math
+from html import escape
 from utils.config_loader import get_config_value
 import logging
 import traceback
 from utils.redis_utils import get_redis_client
+from signal_notifier.publisher import publish_signal_event
+from utils.trading_sessions import (
+    delete_runtime_value,
+    get_runtime_json,
+    get_runtime_value,
+    get_status as get_session_status,
+    list_session_ids,
+    load_session,
+    session_lock_key,
+    session_runtime_key,
+    set_runtime_json,
+    set_runtime_value,
+    set_status as set_session_status,
+)
 from tasks import celery
 from trading_agent.risk_trailing import setup_trailing_stop_bybit
 
 logger = logging.getLogger(__name__)
+
+
+def _xgb_side_risk_defaults(session_doc: dict | None, side: str) -> tuple[float | None, float | None]:
+    try:
+        side_name = str(side or "").strip().lower()
+        if side_name not in ("long", "short") or not isinstance(session_doc, dict):
+            return None, None
+        model_paths = [str(item) for item in (session_doc.get("model_paths") or []) if item]
+        model_roles = session_doc.get("model_roles") if isinstance(session_doc.get("model_roles"), dict) else {}
+        side_path = None
+        for path_item in model_paths:
+            path_key = str(path_item).replace("\\", "/")
+            path_abs = path_key if path_key.startswith("/") else ("/workspace/" + path_key.lstrip("/"))
+            role = str(model_roles.get(str(path_item)) or model_roles.get(path_abs) or "").strip().lower()
+            if role == side_name:
+                side_path = str(path_item)
+                break
+        if side_path is None and len(model_paths) == 1:
+            direction = str(session_doc.get("direction") or "").strip().lower()
+            if direction == side_name:
+                side_path = model_paths[0]
+        if not side_path:
+            return None, None
+        from tasks.xgb_live import _load_xgb_runtime_meta
+        cfg, _, _ = _load_xgb_runtime_meta(side_path)
+        raw_tp = getattr(cfg, "entry_tp_pct", None)
+        raw_sl = getattr(cfg, "entry_sl_pct", None)
+        tp_pct = abs(float(raw_tp)) * 100.0 if raw_tp not in (None, "") else None
+        sl_pct = abs(float(raw_sl)) * 100.0 if raw_sl not in (None, "") else None
+        return tp_pct, sl_pct
+    except Exception:
+        return None, None
+
+
+def _xgb_buy_best_prediction(pred_json: dict | None) -> dict | None:
+    preds = (pred_json or {}).get("predictions") or []
+    buy_preds = [
+        p for p in preds
+        if isinstance(p, dict)
+        and str(p.get("action") or "").strip().lower() == "buy"
+        and "/models/xgb/" in str(p.get("model_path") or "").replace("\\", "/")
+    ]
+    return max(buy_preds, key=lambda p: float(p.get("confidence") or 0.0)) if buy_preds else None
+
+
+def _xgb_buy_prediction_signature(
+    *,
+    symbol: str,
+    pred_json: dict | None,
+    current_price: float | None,
+    market_regime: str | None,
+) -> str:
+    best = _xgb_buy_best_prediction(pred_json)
+    return json.dumps(
+        {
+            "symbol": str(symbol or "").strip().upper(),
+            "action": "buy",
+            "confidence": best.get("confidence") if isinstance(best, dict) else (pred_json or {}).get("confidence"),
+            "price": current_price,
+            "market_regime": str(market_regime or "unknown"),
+            "model_path": str(best.get("model_path") or "").replace("\\", "/") if isinstance(best, dict) else "",
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def _is_repeated_last_xgb_buy_prediction(rc, key: str, signature: str) -> bool:
+    if rc is None:
+        return False
+    raw = rc.get(key)
+    prev = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+    return str(prev or "") == signature
+
+
+def _mark_last_xgb_buy_prediction(rc, key: str, signature: str) -> None:
+    if rc is not None:
+        rc.setex(key, 86400 * 7, signature)
+
+
+def _fmt_entry_time_msk(entry_time) -> str:
+    if hasattr(entry_time, "replace") and hasattr(entry_time, "strftime"):
+        dt = entry_time.replace(tzinfo=None) + timedelta(hours=3)
+    else:
+        dt = datetime.utcnow() + timedelta(hours=3)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _notify_max_position_entry(
+    *,
+    rc,
+    session_id: str,
+    symbol: str,
+    side: str,
+    entry_price: float | None,
+    entry_time,
+    stop_loss_pct: float | None,
+    trade_number: str | None = None,
+) -> None:
+    """
+    Шлёт MAX-уведомление о фактическом входе в позицию.
+    Источник настроек только app_settings: api/max/MAX_*.
+    """
+    try:
+        from utils.settings_store import get_setting_value
+
+        if not entry_price or float(entry_price) <= 0:
+            logger.warning("[max_entry_notify] skip: entry_price is empty session=%s symbol=%s", session_id, symbol)
+            return
+
+        dedupe_id = str(trade_number or "")
+        if not dedupe_id:
+            try:
+                dedupe_id = str(int(float(entry_time.timestamp() * 1000))) if hasattr(entry_time, "timestamp") else ""
+            except Exception:
+                dedupe_id = ""
+        dedupe_key = f"max:entry_notify:{session_id}:{symbol}:{dedupe_id or 'unknown'}"
+        if rc is not None:
+            try:
+                if rc.get(dedupe_key):
+                    return
+                rc.setex(dedupe_key, 86400 * 7, "1")
+            except Exception:
+                pass
+
+        token = (get_setting_value("api", "max", "MAX_BOT_TOKEN") or "").strip()
+        api_url = (get_setting_value("api", "max", "MAX_API_URL") or "").strip().rstrip("/")
+        chat_ids_raw = (get_setting_value("api", "max", "MAX_CHAT_IDS") or "").strip()
+        if not token or not api_url or not chat_ids_raw:
+            logger.warning("[max_entry_notify] skip: MAX_BOT_TOKEN/MAX_API_URL/MAX_CHAT_IDS required in app_settings")
+            return
+
+        if api_url.endswith("/messages"):
+            url = api_url
+        else:
+            url = f"{api_url}/messages"
+        chat_ids = [item.strip() for item in chat_ids_raw.split(",") if item.strip()]
+        if not chat_ids:
+            logger.warning("[max_entry_notify] skip: MAX_CHAT_IDS is empty")
+            return
+
+        side_n = str(side or "").strip().lower()
+        side_ru = "LONG" if side_n in ("buy", "long") else "SHORT" if side_n in ("sell", "short") else side_n.upper()
+        entry_price_f = float(entry_price)
+        stop_line = "Стоп: не задан"
+        if stop_loss_pct is not None:
+            sl_pct_f = float(stop_loss_pct)
+            if side_n in ("sell", "short"):
+                stop_price = entry_price_f * (1.0 + sl_pct_f / 100.0)
+            else:
+                stop_price = entry_price_f * (1.0 - sl_pct_f / 100.0)
+            stop_line = f"Стоп: {sl_pct_f:g}% (~{stop_price:.6g})"
+
+        time_s = _fmt_entry_time_msk(entry_time)
+
+        text = "\n".join([
+            "Вход в позицию",
+            f"Крипта: {symbol}",
+            f"Сторона: {side_ru}",
+            f"Цена входа: {entry_price_f:.6g}",
+            f"Время: {time_s}",
+            stop_line,
+            "Сигнал на выход придёт отдельным сообщением.",
+        ])
+
+        for chat_id in chat_ids:
+            try:
+                resp = requests.post(
+                    url,
+                    headers={"Authorization": token, "Content-Type": "application/json"},
+                    params={"chat_id": chat_id},
+                    json={"text": text},
+                    timeout=15,
+                )
+                if not resp.ok:
+                    logger.warning("[max_entry_notify] send failed chat_id=%s http=%s body=%s", chat_id, resp.status_code, resp.text[:300])
+            except Exception as exc:
+                logger.warning("[max_entry_notify] send error chat_id=%s: %s", chat_id, exc)
+    except Exception as exc:
+        logger.warning("[max_entry_notify] failed: %s", exc)
+
+
+def _notify_telegram_position_entry(
+    *,
+    rc,
+    session_id: str,
+    symbol: str,
+    side: str,
+    entry_price: float | None,
+    entry_time,
+    stop_loss_pct: float | None,
+    trade_number: str | None = None,
+) -> None:
+    """Шлёт Telegram-уведомление о фактическом входе в позицию."""
+    try:
+        from utils.bot_users_store import list_platform_users
+        from utils.settings_store import get_setting_value
+
+        if not entry_price or float(entry_price) <= 0:
+            logger.warning("[telegram_entry_notify] skip: entry_price is empty session=%s symbol=%s", session_id, symbol)
+            return
+
+        token = (get_setting_value("api", "telegram", "TELEGRAM_BOT_TOKEN") or "").strip()
+        if not token:
+            logger.warning("[telegram_entry_notify] skip: TELEGRAM_BOT_TOKEN required in app_settings")
+            return
+
+        users = list_platform_users(platform="telegram")
+        chat_ids = [str(u.get("platform_user_id") or "").strip() for u in users if str(u.get("status") or "") == "active"]
+        chat_ids = [cid for cid in dict.fromkeys(chat_ids) if cid]
+        if not chat_ids:
+            logger.warning("[telegram_entry_notify] skip: no registered telegram users")
+            return
+
+        side_n = str(side or "").strip().lower()
+        side_ru = "LONG" if side_n in ("buy", "long") else "SHORT" if side_n in ("sell", "short") else side_n.upper()
+        entry_price_f = float(entry_price)
+        stop_line = "Стоп: не задан"
+        if stop_loss_pct is not None:
+            sl_pct_f = float(stop_loss_pct)
+            stop_price = entry_price_f * (1.0 + sl_pct_f / 100.0) if side_n in ("sell", "short") else entry_price_f * (1.0 - sl_pct_f / 100.0)
+            stop_line = f"Стоп: {sl_pct_f:g}% (~{stop_price:.6g})"
+
+        time_s = _fmt_entry_time_msk(entry_time)
+        text = "\n".join([
+            "Вход в позицию",
+            f"Крипта: {symbol}",
+            f"Сторона: {side_ru}",
+            f"Цена входа: {entry_price_f:.6g}",
+            f"Время: {time_s}",
+            stop_line,
+            f"Trade#: {trade_number or '—'}",
+        ])
+
+        dedupe_id = str(trade_number or "")
+        if not dedupe_id:
+            try:
+                dedupe_id = str(int(float(entry_time.timestamp() * 1000))) if hasattr(entry_time, "timestamp") else ""
+            except Exception:
+                dedupe_id = ""
+
+        proxy_url = (get_setting_value("api", "telegram", "TELEGRAM_PROXY_URL") or "").strip()
+        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
+        for chat_id in chat_ids:
+            key = f"telegram:entry_notify:{session_id}:{symbol}:{dedupe_id or 'unknown'}:{chat_id}"
+            if rc is not None and rc.get(key):
+                continue
+            resp = requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": text},
+                timeout=10,
+                proxies=proxies,
+            )
+            if not resp.ok:
+                logger.warning("[telegram_entry_notify] send failed chat_id=%s http=%s body=%s", chat_id, resp.status_code, resp.text[:300])
+                continue
+            if rc is not None:
+                rc.setex(key, 86400 * 7, "1")
+    except Exception as exc:
+        logger.warning("[telegram_entry_notify] failed: %s", exc)
+
+
+def _notify_position_exit(
+    *,
+    rc,
+    session_id: str,
+    symbol: str,
+    reason: str,
+    side: str,
+    entry_price: float | None,
+    exit_price: float | None,
+    qty: float | None,
+    pnl: float | None,
+    exit_ts_ms: int | None,
+    order_id: str | None,
+) -> None:
+    """Шлёт уведомление о фактическом выходе в MAX и Telegram."""
+    text = _build_position_exit_text(
+        symbol=symbol,
+        reason=reason,
+        side=side,
+        entry_price=entry_price,
+        exit_price=exit_price,
+        qty=qty,
+        pnl=pnl,
+        exit_ts_ms=exit_ts_ms,
+    )
+    dedupe_id = str(order_id or exit_ts_ms or "unknown")
+    _send_max_position_exit(rc=rc, session_id=session_id, symbol=symbol, dedupe_id=dedupe_id, text=text)
+    _send_telegram_position_exit(rc=rc, session_id=session_id, symbol=symbol, dedupe_id=dedupe_id, text=text)
+
+
+def _build_position_exit_text(
+    *,
+    symbol: str,
+    reason: str,
+    side: str,
+    entry_price: float | None,
+    exit_price: float | None,
+    qty: float | None,
+    pnl: float | None,
+    exit_ts_ms: int | None,
+) -> str:
+    reason_s = str(reason or "unknown").strip().lower()
+    reason_ru = {
+        "take_profit": "take profit",
+        "stop_loss": "stop loss",
+        "trailing": "trailing stop",
+        "timeout": "timeout",
+        "signal": "signal exit",
+        "manual": "manual",
+    }.get(reason_s, reason_s or "unknown")
+    lines = [
+        "Выход из позиции",
+        f"Символ: {escape(str(symbol or '?'))}",
+        f"Причина: {escape(reason_ru)}",
+        f"Сторона закрытия: {escape(str(side or '—').upper())}",
+        f"Цена входа: {entry_price:.6g}" if entry_price else "Цена входа: —",
+        f"Цена выхода: {exit_price:.6g}" if exit_price else "Цена выхода: —",
+        f"Количество: {qty:.8g}" if qty else "Количество: —",
+        f"PnL: {pnl:.6g}" if pnl is not None else "PnL: —",
+        f"<b>Время: {escape(_fmt_closed_ts_msk_with_age(exit_ts_ms))}</b>",
+    ]
+    return "\n".join(lines)
+
+
+def _send_max_position_exit(*, rc, session_id: str, symbol: str, dedupe_id: str, text: str) -> None:
+    try:
+        from utils.settings_store import get_setting_value
+
+        token = (get_setting_value("api", "max", "MAX_BOT_TOKEN") or "").strip()
+        api_url = (get_setting_value("api", "max", "MAX_API_URL") or "").strip().rstrip("/")
+        chat_ids_raw = (get_setting_value("api", "max", "MAX_CHAT_IDS") or "").strip()
+        if not token or not api_url or not chat_ids_raw:
+            logger.warning("[max_exit_notify] skip: MAX_BOT_TOKEN/MAX_API_URL/MAX_CHAT_IDS required in app_settings")
+            return
+        url = api_url if api_url.endswith("/messages") else f"{api_url}/messages"
+        for chat_id in [item.strip() for item in chat_ids_raw.split(",") if item.strip()]:
+            key = f"max:exit_notify:{session_id}:{symbol}:{dedupe_id}:{chat_id}"
+            if rc is not None and rc.get(key):
+                continue
+            resp = requests.post(
+                url,
+                headers={"Authorization": token, "Content-Type": "application/json"},
+                params={"chat_id": chat_id},
+                json={"text": text, "format": "html"},
+                timeout=15,
+            )
+            if not resp.ok:
+                logger.warning("[max_exit_notify] send failed chat_id=%s http=%s body=%s", chat_id, resp.status_code, resp.text[:300])
+                continue
+            if rc is not None:
+                rc.setex(key, 86400 * 7, "1")
+    except Exception as exc:
+        logger.warning("[max_exit_notify] failed: %s", exc)
+
+
+def _send_telegram_position_exit(*, rc, session_id: str, symbol: str, dedupe_id: str, text: str) -> None:
+    try:
+        from utils.bot_users_store import list_platform_users
+        from utils.settings_store import get_setting_value
+
+        token = (get_setting_value("api", "telegram", "TELEGRAM_BOT_TOKEN") or "").strip()
+        if not token:
+            logger.warning("[telegram_exit_notify] skip: TELEGRAM_BOT_TOKEN required in app_settings")
+            return
+        users = list_platform_users(platform="telegram")
+        chat_ids = [str(u.get("platform_user_id") or "").strip() for u in users if str(u.get("status") or "") == "active"]
+        proxy_url = (get_setting_value("api", "telegram", "TELEGRAM_PROXY_URL") or "").strip()
+        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+        for chat_id in [cid for cid in dict.fromkeys(chat_ids) if cid]:
+            key = f"telegram:exit_notify:{session_id}:{symbol}:{dedupe_id}:{chat_id}"
+            if rc is not None and rc.get(key):
+                continue
+            resp = requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                timeout=10,
+                proxies=proxies,
+            )
+            if not resp.ok:
+                logger.warning("[telegram_exit_notify] send failed chat_id=%s http=%s body=%s", chat_id, resp.status_code, resp.text[:300])
+                continue
+            if rc is not None:
+                rc.setex(key, 86400 * 7, "1")
+    except Exception as exc:
+        logger.warning("[telegram_exit_notify] failed: %s", exc)
+
+
+def _notify_max_xgb_buy_prediction(
+    *,
+    rc,
+    session_id: str,
+    symbol: str,
+    pred_json: dict | None,
+    current_price: float | None,
+    market_regime: str | None,
+    closed_ts_ms: int | None,
+) -> None:
+    """Шлёт в MAX новый итоговый XGB BUY prediction. Настройки только из app_settings."""
+    try:
+        from utils.settings_store import get_setting_value
+
+        signature = _xgb_buy_prediction_signature(
+            symbol=symbol,
+            pred_json=pred_json,
+            current_price=current_price,
+            market_regime=market_regime,
+        )
+        last_key = f"max:xgb_buy_prediction:last:{session_id}:{symbol}"
+        if _is_repeated_last_xgb_buy_prediction(rc, last_key, signature):
+            logger.info("[max_xgb_buy_notify] skipped repeated previous signal session=%s symbol=%s", session_id, symbol)
+            return
+
+        dedupe_key = f"max:xgb_buy_prediction:{session_id}:{symbol}:{closed_ts_ms or 'unknown'}"
+        if rc is not None:
+            try:
+                if rc.get(dedupe_key):
+                    return
+                rc.setex(dedupe_key, 86400 * 7, "1")
+            except Exception:
+                pass
+
+        token = (get_setting_value("api", "max", "MAX_BOT_TOKEN") or "").strip()
+        api_url = (get_setting_value("api", "max", "MAX_API_URL") or "").strip().rstrip("/")
+        chat_ids_raw = (get_setting_value("api", "max", "MAX_CHAT_IDS") or "").strip()
+        if not token or not api_url or not chat_ids_raw:
+            logger.warning("[max_xgb_buy_notify] skip: MAX_BOT_TOKEN/MAX_API_URL/MAX_CHAT_IDS required in app_settings")
+            return
+
+        url = api_url if api_url.endswith("/messages") else f"{api_url}/messages"
+        chat_ids = [item.strip() for item in chat_ids_raw.split(",") if item.strip()]
+        if not chat_ids:
+            return
+
+        text = _build_xgb_buy_prediction_text(
+            symbol=symbol,
+            pred_json=pred_json,
+            current_price=current_price,
+            market_regime=market_regime,
+            closed_ts_ms=closed_ts_ms,
+        )
+
+        for chat_id in chat_ids:
+            try:
+                resp = requests.post(
+                    url,
+                    headers={"Authorization": token, "Content-Type": "application/json"},
+                    params={"chat_id": chat_id},
+                    json={"text": text, "format": "html"},
+                    timeout=15,
+                )
+                if not resp.ok:
+                    logger.warning("[max_xgb_buy_notify] send failed chat_id=%s http=%s body=%s", chat_id, resp.status_code, resp.text[:300])
+                    continue
+                _mark_last_xgb_buy_prediction(rc, last_key, signature)
+            except Exception as exc:
+                logger.warning("[max_xgb_buy_notify] send error chat_id=%s: %s", chat_id, exc)
+    except Exception as exc:
+        logger.warning("[max_xgb_buy_notify] failed: %s", exc)
+
+
+def _notify_telegram_xgb_buy_prediction(
+    *,
+    rc,
+    session_id: str,
+    symbol: str,
+    pred_json: dict | None,
+    current_price: float | None,
+    market_regime: str | None,
+    closed_ts_ms: int | None,
+) -> None:
+    """Шлёт новый XGB BUY prediction всем зарегистрированным Telegram users."""
+    try:
+        from utils.bot_users_store import list_platform_users
+        from utils.settings_store import get_setting_value
+
+        token = (get_setting_value("api", "telegram", "TELEGRAM_BOT_TOKEN") or "").strip()
+        if not token:
+            logger.warning("[telegram_xgb_buy_notify] skip: TELEGRAM_BOT_TOKEN required in app_settings")
+            return
+
+        users = list_platform_users(platform="telegram")
+        chat_ids = [str(u.get("platform_user_id") or "").strip() for u in users if str(u.get("status") or "") == "active"]
+        chat_ids = [chat_id for chat_id in dict.fromkeys(chat_ids) if chat_id]
+        if not chat_ids:
+            logger.warning("[telegram_xgb_buy_notify] skip: no registered telegram users")
+            return
+
+        signature = _xgb_buy_prediction_signature(
+            symbol=symbol,
+            pred_json=pred_json,
+            current_price=current_price,
+            market_regime=market_regime,
+        )
+        text = _build_xgb_buy_prediction_text(
+            symbol=symbol,
+            pred_json=pred_json,
+            current_price=current_price,
+            market_regime=market_regime,
+            closed_ts_ms=closed_ts_ms,
+        )
+        proxy_url = (get_setting_value("api", "telegram", "TELEGRAM_PROXY_URL") or "").strip()
+        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
+        for chat_id in chat_ids:
+            dedupe_key = f"telegram:xgb_buy_prediction:{session_id}:{symbol}:{closed_ts_ms or 'unknown'}:{chat_id}"
+            last_key = f"telegram:xgb_buy_prediction:last:{session_id}:{symbol}:{chat_id}"
+            if rc is not None:
+                try:
+                    if _is_repeated_last_xgb_buy_prediction(rc, last_key, signature):
+                        logger.info("[telegram_xgb_buy_notify] skipped repeated previous signal session=%s symbol=%s chat_id=%s", session_id, symbol, chat_id)
+                        continue
+                    if rc.get(dedupe_key):
+                        continue
+                except Exception:
+                    pass
+            try:
+                resp = requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                    timeout=10,
+                    proxies=proxies,
+                )
+                if not resp.ok:
+                    logger.warning("[telegram_xgb_buy_notify] send failed chat_id=%s http=%s body=%s", chat_id, resp.status_code, resp.text[:300])
+                    continue
+                if rc is not None:
+                    try:
+                        rc.setex(dedupe_key, 86400 * 7, "1")
+                        _mark_last_xgb_buy_prediction(rc, last_key, signature)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.warning("[telegram_xgb_buy_notify] send error chat_id=%s: %s", chat_id, exc)
+    except Exception as exc:
+        logger.warning("[telegram_xgb_buy_notify] failed: %s", exc)
+
+
+def _build_xgb_buy_prediction_text(
+    *,
+    symbol: str,
+    pred_json: dict | None,
+    current_price: float | None,
+    market_regime: str | None,
+    closed_ts_ms: int | None,
+) -> str:
+    best = _xgb_buy_best_prediction(pred_json)
+    conf = best.get("confidence") if isinstance(best, dict) else (pred_json or {}).get("confidence")
+    model_path = best.get("model_path") if isinstance(best, dict) else None
+    lines = [
+        "Новый XGB BUY-сигнал",
+        f"Символ: {escape(str(symbol or '?'))}",
+        "Действие: BUY",
+        f"Уверенность: {conf if conf is not None else '—'}",
+        f"Цена: {current_price if current_price is not None else '—'}",
+        f"<b>Время: {escape(_fmt_closed_ts_msk_with_age(closed_ts_ms))}</b>",
+        f"Режим рынка: {escape(str(market_regime or 'unknown'))}",
+    ]
+    if model_path:
+        lines.append(f"Модель {_model_version_label(model_path)}")
+    lines.append("Повторное предсказание на вход.")
+    return "\n".join(lines)
+
+
+def _fmt_closed_ts_msk_with_age(closed_ts_ms: int | None) -> str:
+    if not closed_ts_ms:
+        return "—"
+    dt_utc = datetime.utcfromtimestamp(int(closed_ts_ms) / 1000)
+    dt_msk = dt_utc + timedelta(hours=3)
+    return dt_msk.strftime("%Y-%m-%d %H:%M")
+
+
+def _model_version_label(model_path: object) -> str:
+    match = re.search(r"/(v\d+)(?:/|$)", str(model_path or "").replace("\\", "/"))
+    return match.group(1) if match else "unknown"
+
+
+def _norm_notify_model_path(model_path: object) -> str:
+    return str(model_path or "").replace("\\", "/").strip()
+
+
+def _entry_notifications_allowed_for_model_paths(model_paths: list | None) -> bool:
+    from utils.settings_store import get_setting_value
+
+    raw = get_setting_value("notifications", "xgb", "ENTRY_MODEL_PATHS")
+    if raw is None:
+        return True
+    selected = json.loads(raw or "[]")
+    if not isinstance(selected, list):
+        raise RuntimeError("ENTRY_MODEL_PATHS must be a JSON list")
+    selected_set = {_norm_notify_model_path(item) for item in selected if _norm_notify_model_path(item)}
+    event_set = {_norm_notify_model_path(item) for item in (model_paths or []) if _norm_notify_model_path(item)}
+    return bool(selected_set and (event_set & selected_set))
+
 
 def _safe_json_loads(raw: str) -> dict:
     try:
@@ -117,8 +730,271 @@ def _apply_safety_buffer_qty(amount: float, buffer_pct: float | None = None) -> 
         return max(0.0, float(f"{safe:.12f}"))
     except Exception:
         return float(amount)
+
+XGB_SIGNAL_EXIT_WINDOW_DEFAULT = 20
+XGB_SIGNAL_EXIT_THRESHOLD_DEFAULT = 0.5
+XGB_ENTRY_ATTEMPTS_HISTORY_KEY = "trading:xgb_entry_attempts_history"
+XGB_ENTRY_ATTEMPTS_HISTORY_LIMIT = 300
+
+def _to_float_or_none(value) -> float | None:
+    try:
+        if value in (None, ''):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+def _derive_xgb_signal_score(q_values, task_name=None, confidence=None) -> float | None:
+    try:
+        task = str(task_name).strip().lower() if task_name not in (None, '') else None
+        if isinstance(q_values, list) and len(q_values) >= 3:
+            if task in ('entry_short', 'exit_long'):
+                return _to_float_or_none(q_values[2])
+            if task in ('entry_long', 'exit_short', 'directional', None):
+                return _to_float_or_none(q_values[1])
+    except Exception:
+        pass
+    return _to_float_or_none(confidence)
+
+def _extract_xgb_signal_snapshot(
+    pred_json: dict | None,
+    *,
+    model_paths: list[str] | None = None,
+    threshold_override: float | None = None,
+) -> dict | None:
+    try:
+        threshold_by_model: dict[str, float] = {}
+        fallback_threshold = _to_float_or_none(threshold_override)
+        if isinstance(model_paths, list):
+            try:
+                from tasks.xgb_live import _load_xgb_runtime_meta
+                for model_path in model_paths:
+                    model_path_s = str(model_path or '').strip()
+                    if not model_path_s or model_path_s in threshold_by_model:
+                        continue
+                    try:
+                        cfg, _, _ = _load_xgb_runtime_meta(model_path_s)
+                        thr = _to_float_or_none(getattr(cfg, 'p_enter_threshold', None))
+                        if thr is not None:
+                            threshold_by_model[model_path_s] = float(thr)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        preds = (pred_json or {}).get('predictions') or []
+        if not isinstance(preds, list) or not preds:
+            preds = []
+        signals = []
+        thresholds = []
+        for pred in preds:
+            if not isinstance(pred, dict):
+                continue
+            signal = _derive_xgb_signal_score(
+                pred.get('q_values') or [],
+                pred.get('task'),
+                pred.get('confidence'),
+            )
+            threshold = _to_float_or_none(pred.get('xgb_runtime_threshold'))
+            if threshold is None:
+                model_path_s = str(pred.get('model_path') or '').strip()
+                if model_path_s:
+                    threshold = threshold_by_model.get(model_path_s)
+            if threshold is None:
+                threshold = fallback_threshold
+            if signal is None or threshold is None:
+                continue
+            signals.append(float(signal))
+            thresholds.append(float(threshold))
+        if not signals or not thresholds:
+            signal = _derive_xgb_signal_score(
+                (pred_json or {}).get('q_values') or [],
+                (pred_json or {}).get('task'),
+                (pred_json or {}).get('confidence'),
+            )
+            threshold = fallback_threshold
+            if threshold is None and len(threshold_by_model) == 1:
+                threshold = next(iter(threshold_by_model.values()))
+            if signal is not None and threshold is not None:
+                signals.append(float(signal))
+                thresholds.append(float(threshold))
+        if not signals or not thresholds:
+            return None
+        return {
+            'signal': float(sum(signals) / len(signals)),
+            'threshold': float(sum(thresholds) / len(thresholds)),
+        }
+    except Exception:
+        return None
+
+def _append_xgb_signal_history(rc, session_id: str, snapshot: dict, window: int = XGB_SIGNAL_EXIT_WINDOW_DEFAULT) -> None:
+    try:
+        key = session_runtime_key(session_id, "xgb_signal_exit_history")
+        raw = rc.get(key) if rc is not None else None
+        history = json.loads(raw) if raw else []
+        if not isinstance(history, list):
+            history = []
+        snapshot_ts = int(snapshot.get('ts_ms') or 0) if isinstance(snapshot, dict) else 0
+        if history and snapshot_ts:
+            try:
+                last_ts = int((history[-1] or {}).get('ts_ms') or 0)
+            except Exception:
+                last_ts = 0
+            if last_ts == snapshot_ts:
+                history[-1] = snapshot
+            else:
+                history.append(snapshot)
+        else:
+            history.append(snapshot)
+        keep = max(1, int(window))
+        rc.set(key, json.dumps(history[-keep:], ensure_ascii=False))
+    except Exception:
+        logger.exception("[xgb_signal_exit] failed to append history session=%s", session_id)
+
+
+def _extract_xgb_long_short_signals(pred_json: dict | None) -> tuple[float | None, float | None]:
+    try:
+        preds = (pred_json or {}).get('predictions') or []
+        long_values: list[float] = []
+        short_values: list[float] = []
+        for pred in preds:
+            if not isinstance(pred, dict):
+                continue
+            signal = _derive_xgb_signal_score(
+                pred.get('q_values') or [],
+                pred.get('task'),
+                pred.get('confidence'),
+            )
+            if signal is None:
+                continue
+            task = str(pred.get('task') or '').strip().lower()
+            action = str(pred.get('action') or '').strip().lower()
+            side = None
+            if task in ('entry_long', 'exit_short'):
+                side = 'long'
+            elif task in ('entry_short', 'exit_long'):
+                side = 'short'
+            elif action == 'buy':
+                side = 'long'
+            elif action == 'sell':
+                side = 'short'
+            if side == 'long':
+                long_values.append(float(signal))
+            elif side == 'short':
+                short_values.append(float(signal))
+        long_signal = (float(sum(long_values) / len(long_values)) if long_values else None)
+        short_signal = (float(sum(short_values) / len(short_values)) if short_values else None)
+        return long_signal, short_signal
+    except Exception:
+        return None, None
+
+
+def _append_xgb_entry_attempt_history(rc, row: dict, limit: int = XGB_ENTRY_ATTEMPTS_HISTORY_LIMIT) -> None:
+    try:
+        if rc is None or not isinstance(row, dict):
+            return
+        keep = max(1, int(limit))
+        rc.lpush(XGB_ENTRY_ATTEMPTS_HISTORY_KEY, json.dumps(row, ensure_ascii=False, default=str))
+        rc.ltrim(XGB_ENTRY_ATTEMPTS_HISTORY_KEY, 0, keep - 1)
+    except Exception:
+        logger.exception("[xgb_entry_attempt] failed to append row")
+
+def _rebuild_xgb_signal_history_from_predictions(rc, session_id: str, window: int = XGB_SIGNAL_EXIT_WINDOW_DEFAULT) -> list[dict]:
+    try:
+        from orm.database import get_db_session
+        from orm.models import ModelPrediction
+        from tasks.xgb_live import _load_xgb_runtime_meta
+
+        entry_ts = _to_float_or_none(get_runtime_value(rc, session_id, "pos_entry_ts")) if rc is not None else None
+        start_step = _to_float_or_none(get_runtime_value(rc, session_id, "xgb_signal_exit_start_step")) if rc is not None else None
+        min_ts = int(entry_ts + start_step * 300000) if entry_ts is not None and start_step is not None else None
+        threshold_override = _to_float_or_none(get_runtime_value(rc, session_id, "xgb_entry_threshold")) if rc is not None else None
+
+        rebuilt = []
+        session = get_db_session()
+        try:
+            rows = (
+                session.query(ModelPrediction)
+                .filter(ModelPrediction.market_conditions.like(f'%"{session_id}"%'))
+                .order_by(ModelPrediction.created_at.desc())
+                .limit(max(100, int(window) * 5))
+                .all()
+            )
+        finally:
+            session.close()
+
+        for row in reversed(rows):
+            meta = _safe_json_loads(getattr(row, "market_conditions", None))
+            if str(meta.get("session_id") or "") != str(session_id):
+                continue
+            ts_ms = int(row.created_at.timestamp() * 1000) if getattr(row, "created_at", None) else 0
+            if min_ts is not None and ts_ms < min_ts:
+                continue
+            model_path = str(getattr(row, "model_path", "") or "")
+            if "/models/xgb/" not in model_path.replace("\\", "/"):
+                continue
+            q_values = json.loads(row.q_values or "[]") if isinstance(row.q_values, str) else (row.q_values or [])
+            cfg, task_name, _ = _load_xgb_runtime_meta(model_path)
+            threshold = threshold_override
+            if threshold is None:
+                threshold = _to_float_or_none(getattr(cfg, "p_enter_threshold", None))
+            signal = _derive_xgb_signal_score(q_values, task_name, getattr(row, "confidence", None))
+            if signal is None or threshold is None:
+                continue
+            rebuilt.append({"signal": float(signal), "threshold": float(threshold), "ts_ms": ts_ms})
+
+        rebuilt = rebuilt[-max(1, int(window)):]
+        if rebuilt and rc is not None:
+            rc.set(session_runtime_key(session_id, "xgb_signal_exit_history"), json.dumps(rebuilt, ensure_ascii=False))
+        return rebuilt
+    except Exception:
+        logger.exception("[xgb_signal_exit] failed to rebuild history session=%s", session_id)
+        return []
+
+def _load_xgb_signal_history(rc, session_id: str, window: int = XGB_SIGNAL_EXIT_WINDOW_DEFAULT) -> list[dict]:
+    try:
+        key = session_runtime_key(session_id, "xgb_signal_exit_history")
+        raw = rc.get(key) if rc is not None else None
+        history = json.loads(raw) if raw else []
+        if not isinstance(history, list):
+            return []
+        cleaned = []
+        for item in history[-max(1, int(window)):]:
+            if not isinstance(item, dict):
+                continue
+            signal = _to_float_or_none(item.get('signal'))
+            threshold = _to_float_or_none(item.get('threshold'))
+            if signal is None or threshold is None:
+                continue
+            cleaned.append({
+                'signal': float(signal),
+                'threshold': float(threshold),
+                'ts_ms': int(item.get('ts_ms') or 0) if item.get('ts_ms') not in (None, '') else 0,
+            })
+        if len(cleaned) >= max(1, int(window)):
+            return cleaned
+        rebuilt = _rebuild_xgb_signal_history_from_predictions(rc, session_id, window)
+        return rebuilt if len(rebuilt) > len(cleaned) else cleaned
+    except Exception:
+        logger.exception("[xgb_signal_exit] failed to load history session=%s", session_id)
+        return _rebuild_xgb_signal_history_from_predictions(rc, session_id, window)
+
+def _reset_xgb_signal_history(rc, session_id: str) -> None:
+    try:
+        if rc is not None:
+            rc.delete(session_runtime_key(session_id, "xgb_signal_exit_history"))
+    except Exception:
+        pass
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='trade')
-def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', side: str = 'buy', qty: float | None = None, limit_config: dict | None = None, leverage: int | None = None):
+def start_execution_strategy(
+    self,
+    session_id: str,
+    symbol: str | None = None,
+    execution_mode: str = 'market',
+    side: str = 'buy',
+    qty: float | None = None,
+    limit_config: dict | None = None,
+    leverage: int | None = None,
+):
     """Запуск DDD-стратегии исполнения (market | limit_post_only).
 
     - Ограничение max_lifetime_sec ≤ 300 соблюдается на уровне сервиса
@@ -128,13 +1004,18 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
     try:
         from trading_agent.application.executor_service import ExecutionService
         from trading_agent.infrastructure.state_store_redis import RedisStateStore
+        session_doc = load_session(get_redis_client(), session_id)
+        if not isinstance(session_doc, dict):
+            return {"success": False, "error": f"session not found: {session_id}"}
+        symbol = str(symbol or session_doc.get('symbol') or '').strip().upper()
+        account_id = str(session_doc.get('account_id') or '').strip()
+        if not symbol:
+            return {"success": False, "error": "symbol is required"}
+        if not account_id:
+            return {"success": False, "error": f"account_id not set for session {session_id}"}
         # Реальный Bybit gateway (fallback на stub при ошибке инициализации ключей)
-        try:
-            from trading_agent.infrastructure.exchange_gateway_bybit import BybitExchangeGateway
-            _gateway = BybitExchangeGateway(symbol_for_markets=symbol)
-        except Exception:
-            from trading_agent.infrastructure.exchange_gateway_stub import ExchangeGatewayStub
-            _gateway = ExchangeGatewayStub()
+        from trading_agent.infrastructure.exchange_gateway_bybit import BybitExchangeGateway
+        _gateway = BybitExchangeGateway(symbol_for_markets=symbol, account_id=account_id)
         from trading_agent.strategies.market_strategy import MarketStrategy
         from trading_agent.strategies.limit_post_only_strategy import LimitPostOnlyStrategy
         from trading_agent.domain.models import LimitConfig, Side
@@ -143,16 +1024,15 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
         if qty is None or qty <= 0:
             try:
                 from trading_agent.trading_agent import TradingAgent
-                # Направление берём из Redis per-symbol (fallback long)
-                try:
-                    _rc = get_redis_client()
-                    _dir = _rc.get(f'trading:direction:{symbol}')
-                    if isinstance(_dir, (bytes, bytearray)):
-                        _dir = _dir.decode('utf-8')
-                    _dir = (str(_dir).strip().lower() if _dir else 'long')
-                except Exception:
-                    _dir = 'long'
-                agent = TradingAgent(direction=_dir, symbol=symbol)
+                _dir = str(get_runtime_value(get_redis_client(), session_id, 'direction', session_doc.get('direction') or 'long')).strip().lower() or 'long'
+                session_model_path = str(session_doc.get('model_path') or '').strip() or None
+                agent = TradingAgent(
+                    model_path=session_model_path,
+                    direction=_dir,
+                    symbol=symbol,
+                    session_id=session_id,
+                    account_id=account_id,
+                )
                 agent.symbol = symbol
                 agent.base_symbol = symbol
                 qty = float(agent._calculate_trade_amount())
@@ -180,7 +1060,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
         # 2.5) Очистка зависшего active_intent (если есть) ДО запуска сервиса
         try:
             _rc_chk = Redis(host='redis', port=6379, db=0, decode_responses=True)
-            aid = _rc_chk.get(f'exec:active_intent:{symbol}')
+            aid = _rc_chk.get(f'exec:active_intent:{session_id}')
             if aid:
                 raw = _rc_chk.get(f'exec:intent:{aid}')
                 stale = False
@@ -200,7 +1080,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
                     except Exception:
                         pass
                     try:
-                        _rc_chk.delete(f'exec:active_intent:{symbol}')
+                        _rc_chk.delete(f'exec:active_intent:{session_id}')
                     except Exception:
                         pass
         except Exception:
@@ -215,7 +1095,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
                     return False
             dbg_raw = os.getenv(f"DEBUG_BUY_{str(symbol).upper()}") or os.getenv("DEBUG_BUY")
             if dbg_raw is not None and _truthy(dbg_raw):
-                aid2 = _rc_chk.get(f'exec:active_intent:{symbol}')
+                aid2 = _rc_chk.get(f'exec:active_intent:{session_id}')
                 if aid2:
                     raw2 = _rc_chk.get(f'exec:intent:{aid2}')
                     try:
@@ -224,7 +1104,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
                             exch_id2 = data2.get('exchange_order_id')
                             if exch_id2:
                                 try:
-                                    gateway.cancel_order(symbol, exch_id2)
+                                    _gateway.cancel_order(symbol, exch_id2)
                                 except Exception:
                                     pass
                     except Exception:
@@ -234,7 +1114,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
                     except Exception:
                         pass
                     try:
-                        _rc_chk.delete(f'exec:active_intent:{symbol}')
+                        _rc_chk.delete(f'exec:active_intent:{session_id}')
                     except Exception:
                         pass
                     try:
@@ -245,7 +1125,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
             pass
 
         # 3) Создаём сервис и стратегий
-        store = RedisStateStore()
+        store = RedisStateStore(scope=session_id)
         gateway = _gateway
         # Устанавливаем плечо (1..5) перед стартом стратегии, только для лимитного исполнения
         try:
@@ -277,14 +1157,16 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
             risk_type_exec = None
             try:
                 rc_rt = Redis(host='redis', port=6379, db=0, decode_responses=True)
-                _rtv = rc_rt.get(f'trading:risk_management_type:{symbol}') or rc_rt.get('trading:risk_management_type')
+                _rtv = get_runtime_value(rc_rt, session_id, 'risk_management_type', session_doc.get('risk_management_type'))
                 if _rtv is not None and str(_rtv).strip() != '':
                     risk_type_exec = str(_rtv).strip()
             except Exception:
                 risk_type_exec = None
 
             from trading_agent.trading_agent import TradingAgent as _TA
-            ag_pos = _TA(); ag_pos.symbol = symbol; ag_pos.base_symbol = symbol
+            ag_pos = _TA(symbol=symbol, session_id=session_id, account_id=account_id)
+            ag_pos.symbol = symbol
+            ag_pos.base_symbol = symbol
             try:
                 ag_pos._restore_position_from_exchange()
             except Exception:
@@ -314,7 +1196,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
         def _clear_active_intent_for(sym: str) -> None:
             try:
                 rc_loc = Redis(host='redis', port=6379, db=0, decode_responses=True)
-                aid_loc = rc_loc.get(f'exec:active_intent:{sym}')
+                aid_loc = rc_loc.get(f'exec:active_intent:{session_id}')
                 raw_loc = rc_loc.get(f'exec:intent:{aid_loc}') if aid_loc else None
                 if aid_loc and raw_loc:
                     try:
@@ -333,7 +1215,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
                     except Exception:
                         pass
                 try:
-                    rc_loc.delete(f'exec:active_intent:{sym}')
+                    rc_loc.delete(f'exec:active_intent:{session_id}')
                 except Exception:
                     pass
                 try:
@@ -391,7 +1273,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
                 gid = None
                 try:
                     rc_gid = get_redis_client()
-                    gid = rc_gid.get(f"trading:last_ensemble_group_id:{symbol}")
+                    gid = get_runtime_value(rc_gid, session_id, "last_ensemble_group_id")
                 except Exception:
                     gid = None
                 if gid:
@@ -413,11 +1295,11 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
         try:
             if str(execution_mode) == 'limit_post_only':
                 # 2s часто слишком рано: лимитка может выставляться/перекотироваться десятки секунд до первого fill.
-                ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=20, queue='trade')
-                ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=15, queue='trade')
-                ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=60, queue='trade')
-                ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=120, queue='trade')
-                ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=180, queue='trade')
+                ensure_risk_orders.apply_async(kwargs={'session_id': session_id, 'symbol': symbol}, countdown=20, queue='trade')
+                ensure_risk_orders.apply_async(kwargs={'session_id': session_id, 'symbol': symbol}, countdown=15, queue='trade')
+                ensure_risk_orders.apply_async(kwargs={'session_id': session_id, 'symbol': symbol}, countdown=60, queue='trade')
+                ensure_risk_orders.apply_async(kwargs={'session_id': session_id, 'symbol': symbol}, countdown=120, queue='trade')
+                ensure_risk_orders.apply_async(kwargs={'session_id': session_id, 'symbol': symbol}, countdown=180, queue='trade')
         except Exception:
             pass
 
@@ -429,7 +1311,7 @@ def start_execution_strategy(self, symbol: str, execution_mode: str = 'market', 
 
 # --- Ensure TP/SL idempotent task ---
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='trade')
-def ensure_risk_orders(self, symbol: str):
+def ensure_risk_orders(self, session_id: str, symbol: str | None = None):
     """
     Идемпотентная постановка TP/SL для открытой позиции по символу.
     - Читает risk_type/tp/sl из Redis (per-symbol → global → дефолт)
@@ -440,19 +1322,26 @@ def ensure_risk_orders(self, symbol: str):
     - Антидублирование через Redis setex 120s
     """
     try:
-        try:
-            logger.info(f"[ensure_risk] ▶ start for {symbol}")
-        except Exception:
-            pass
         from redis import Redis
         rc = Redis(host='redis', port=6379, db=0, decode_responses=True)
     except Exception:
         rc = None
+    session_doc = load_session(rc, session_id) if rc is not None else None
+    if not isinstance(session_doc, dict):
+        return {"success": False, "error": f"session not found: {session_id}"}
+    symbol = str(symbol or session_doc.get('symbol') or '').strip().upper()
+    account_id = str(session_doc.get('account_id') or '').strip()
+    if not symbol:
+        return {"success": False, "error": f"symbol not set for session {session_id}"}
+    try:
+        logger.info(f"[ensure_risk] ▶ start for session={session_id} symbol={symbol}")
+    except Exception:
+        pass
 
     # Антидублирование
     # Важно: для limit_post_only fill может произойти позже, поэтому при "позиции нет" держим TTL коротким,
     # чтобы отложенные повторы ensure_risk_orders смогли отработать.
-    ensure_key = f"risk:ensured:{symbol}"
+    ensure_key = session_runtime_key(session_id, "risk:ensured")
     recently_ensured = False
     try:
         if rc is not None and rc.get(ensure_key):
@@ -469,16 +1358,18 @@ def ensure_risk_orders(self, symbol: str):
         pass
 
     from trading_agent.trading_agent import TradingAgent
-    # Направление per-symbol
     try:
-        _rc = get_redis_client()
-        _dir = _rc.get(f'trading:direction:{symbol}')
-        if isinstance(_dir, (bytes, bytearray)):
-            _dir = _dir.decode('utf-8')
-        _dir = (str(_dir).strip().lower() if _dir else 'long')
+        _dir = str(get_runtime_value(rc, session_id, 'direction', session_doc.get('direction') or 'long')).strip().lower() or 'long'
     except Exception:
         _dir = 'long'
-    agent = TradingAgent(direction=_dir, symbol=symbol)
+    session_model_path = str(session_doc.get('model_path') or '').strip() or None
+    agent = TradingAgent(
+        model_path=session_model_path,
+        direction=_dir,
+        symbol=symbol,
+        session_id=session_id,
+        account_id=account_id,
+    )
     agent.symbol = symbol
     agent.base_symbol = symbol
 
@@ -504,23 +1395,23 @@ def ensure_risk_orders(self, symbol: str):
     atr_trail_mult = 1.0
     try:
         if rc is not None:
-            _rt = rc.get(f'trading:risk_management_type:{symbol}') or rc.get('trading:risk_management_type')
+            _rt = get_runtime_value(rc, session_id, 'risk_management_type', session_doc.get('risk_management_type'))
             if _rt:
                 risk_type = str(_rt)
-            _tp = rc.get(f'trading:take_profit_pct:{symbol}') or rc.get('trading:take_profit_pct')
-            _sl = rc.get(f'trading:stop_loss_pct:{symbol}') or rc.get('trading:stop_loss_pct')
+            _tp = get_runtime_value(rc, session_id, 'take_profit_pct', session_doc.get('take_profit_pct'))
+            _sl = get_runtime_value(rc, session_id, 'stop_loss_pct', session_doc.get('stop_loss_pct'))
             if _pick_num(_tp) is not None:
                 tp_pct = _pick_num(_tp)
             if _pick_num(_sl) is not None:
                 sl_pct = _pick_num(_sl)
             # ATR stop mode
             try:
-                _rsm = rc.get(f'trading:risk_stop_mode:{symbol}') or rc.get('trading:risk_stop_mode')
+                _rsm = get_runtime_value(rc, session_id, 'risk_stop_mode', session_doc.get('risk_stop_mode'))
                 if _rsm:
                     risk_stop_mode = str(_rsm)
-                _ak = rc.get(f'trading:atr_k:{symbol}') or rc.get('trading:atr_k')
-                _am = rc.get(f'trading:atr_m:{symbol}') or rc.get('trading:atr_m')
-                _ams = rc.get(f'trading:atr_min_sl_mult:{symbol}') or rc.get('trading:atr_min_sl_mult')
+                _ak = get_runtime_value(rc, session_id, 'atr_k', session_doc.get('atr_k'))
+                _am = get_runtime_value(rc, session_id, 'atr_m', session_doc.get('atr_m'))
+                _ams = get_runtime_value(rc, session_id, 'atr_min_sl_mult', session_doc.get('atr_min_sl_mult'))
                 if _pick_num(_ak) is not None:
                     atr_k = _pick_num(_ak)
                 if _pick_num(_am) is not None:
@@ -531,22 +1422,22 @@ def ensure_risk_orders(self, symbol: str):
                 pass
             # Trailing
             try:
-                _ten = rc.get(f'trading:trailing_enabled:{symbol}') or rc.get('trading:trailing_enabled')
+                _ten = get_runtime_value(rc, session_id, 'trailing_enabled', session_doc.get('trailing_enabled'))
                 if _ten is not None:
                     trailing_enabled = str(_ten).strip().lower() in ('1','true','yes','on')
-                _tmode = rc.get(f'trading:trailing_mode:{symbol}') or rc.get('trading:trailing_mode')
+                _tmode = get_runtime_value(rc, session_id, 'trailing_mode', session_doc.get('trailing_mode'))
                 if _tmode is not None and str(_tmode).strip() != '':
                     trailing_mode = str(_tmode).strip()
-                _tact_mode = rc.get(f'trading:trailing_activate_mode:{symbol}') or rc.get('trading:trailing_activate_mode')
+                _tact_mode = get_runtime_value(rc, session_id, 'trailing_activate_mode', session_doc.get('trailing_activate_mode'))
                 if _tact_mode is not None and str(_tact_mode).strip() != '':
                     trailing_activate_mode = str(_tact_mode).strip()
-                _tact_val = rc.get(f'trading:trailing_activate_value:{symbol}') or rc.get('trading:trailing_activate_value')
+                _tact_val = get_runtime_value(rc, session_id, 'trailing_activate_value', session_doc.get('trailing_activate_value'))
                 if _tact_val is not None:
                     try:
                         trailing_activate_value = float(_tact_val)
                     except Exception:
                         trailing_activate_value = None
-                _tatm = rc.get(f'trading:atr_trail_mult:{symbol}') or rc.get('trading:atr_trail_mult')
+                _tatm = get_runtime_value(rc, session_id, 'atr_trail_mult', session_doc.get('atr_trail_mult'))
                 if _pick_num(_tatm) is not None:
                     atr_trail_mult = float(_pick_num(_tatm))
             except Exception:
@@ -580,6 +1471,22 @@ def ensure_risk_orders(self, symbol: str):
     entry_price = pos.get('entry_price')
     amount = pos.get('amount')
     ptype = str(pos.get('type') or '').lower()
+    try:
+        if rc is not None and ptype in ('long', 'short'):
+            _tp_side = get_runtime_value(rc, session_id, f'take_profit_pct_{ptype}', session_doc.get(f'take_profit_pct_{ptype}'))
+            _sl_side = get_runtime_value(rc, session_id, f'stop_loss_pct_{ptype}', session_doc.get(f'stop_loss_pct_{ptype}'))
+            if _pick_num(_tp_side) is None or _pick_num(_sl_side) is None:
+                _tp_default, _sl_default = _xgb_side_risk_defaults(session_doc, ptype)
+                if _pick_num(_tp_side) is None:
+                    _tp_side = _tp_default
+                if _pick_num(_sl_side) is None:
+                    _sl_side = _sl_default
+            if _pick_num(_tp_side) is not None:
+                tp_pct = _pick_num(_tp_side)
+            if _pick_num(_sl_side) is not None:
+                sl_pct = _pick_num(_sl_side)
+    except Exception:
+        pass
 
     # --- Exit detection (TP/SL) for post-exit cooldown/Q-gate boost ---
     # Мы храним "позиция была/нет" в Redis, чтобы поймать событие закрытия позиции,
@@ -681,17 +1588,46 @@ def ensure_risk_orders(self, symbol: str):
         except Exception:
             return {'reason': 'unknown'}
 
+    def _is_confirmed_exit_event(evt: dict) -> bool:
+        try:
+            return bool(
+                evt.get('order_id')
+                and float(evt.get('qty') or 0.0) > 0
+                and float(evt.get('price') or 0.0) > 0
+            )
+        except Exception:
+            return False
+
     try:
         if rc is not None:
-            pos_key = f"trading:pos_open:{symbol}"
+            pos_key = session_runtime_key(session_id, "pos_open")
             was_open = str(rc.get(pos_key) or '0').strip() == '1'
             if entry_price and amount and amount > 0:
                 # Mark open and remember entry for later heuristics/debug
                 try:
                     rc.set(pos_key, "1")
-                    rc.set(f"trading:pos_entry_price:{symbol}", str(entry_price))
-                    rc.set(f"trading:pos_type:{symbol}", str(ptype or ''))
-                    rc.set(f"trading:pos_entry_ts:{symbol}", str(int(_last_closed_5m_ts_ms() or 0)))
+                    set_runtime_value(rc, session_id, "pos_entry_price", entry_price)
+                    set_runtime_value(rc, session_id, "pos_type", str(ptype or ''))
+                    if not was_open:
+                        set_runtime_value(rc, session_id, "pos_entry_ts", int(_last_closed_5m_ts_ms() or 0))
+                        _reset_xgb_signal_history(rc, session_id)
+                        try:
+                            _notify_max_position_entry(
+                                rc=rc,
+                                session_id=session_id,
+                                symbol=symbol,
+                                side=str(ptype or ''),
+                                entry_price=float(entry_price),
+                                entry_time=datetime.now(),
+                                stop_loss_pct=float(sl_pct) if sl_pct not in (None, '') else None,
+                                trade_number=None,
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        _existing_entry_ts = get_runtime_value(rc, session_id, "pos_entry_ts")
+                        if _existing_entry_ts in (None, '', '0'):
+                            set_runtime_value(rc, session_id, "pos_entry_ts", int(_last_closed_5m_ts_ms() or 0))
                 except Exception:
                     pass
             else:
@@ -705,12 +1641,24 @@ def ensure_risk_orders(self, symbol: str):
                     now_bucket_ts = _last_closed_5m_ts_ms()
                     prev_exit = None
                     try:
-                        prev_exit = rc.get(f"trading:last_exit_ts_ms:{symbol}")
+                        prev_exit = get_runtime_value(rc, session_id, "last_exit_ts_ms")
                         prev_exit = int(prev_exit) if prev_exit is not None and str(prev_exit).strip() != '' else None
                     except Exception:
                         prev_exit = None
                     if now_bucket_ts:
                         evt = _detect_exit_event(getattr(agent, 'exchange', None), symbol) or {}
+                        if not _is_confirmed_exit_event(evt):
+                            try:
+                                rc.set(pos_key, "1")
+                            except Exception:
+                                pass
+                            logger.warning(
+                                "[exit_detect] skip unconfirmed exit session=%s symbol=%s evt=%s",
+                                session_id,
+                                symbol,
+                                evt,
+                            )
+                            return {"success": True, "skipped": True, "reason": "exit_unconfirmed"}
                         # Пишем реальное время выхода из закрытого reduceOnly (если доступно),
                         # иначе fallback на "последнюю закрытую 5m свечу".
                         try:
@@ -722,27 +1670,52 @@ def ensure_risk_orders(self, symbol: str):
                         if prev_exit is not None and exit_ts_to_save <= int(prev_exit):
                             return {"success": True, "skipped": True, "reason": "exit_not_newer_than_prev"}
                         reason = str(evt.get('reason') or 'unknown')
+                        try:
+                            if reason == 'unknown':
+                                forced_reason = get_runtime_value(rc, session_id, "forced_exit_reason") if rc is not None else None
+                                forced_reason = str(forced_reason or '').strip().lower()
+                                if forced_reason:
+                                    reason = forced_reason
+                            if rc is not None:
+                                delete_runtime_value(rc, session_id, "forced_exit_reason")
+                        except Exception:
+                            pass
+                        try:
+                            ep_hint_raw = get_runtime_value(rc, session_id, "pos_entry_price")
+                            ep_hint = float(ep_hint_raw) if ep_hint_raw not in (None, '') else None
+                            px_hint = float(evt.get('price') or 0.0)
+                            qty_hint = float(evt.get('qty') or 0.0)
+                            side_hint = str(evt.get('side') or '').lower()
+                            if ep_hint and px_hint and qty_hint and str(reason).strip().lower() in ('stop_loss', 'take_profit'):
+                                pnl_hint = (px_hint - ep_hint) * qty_hint if side_hint == 'sell' else (ep_hint - px_hint) * qty_hint
+                                if reason == 'stop_loss' and pnl_hint > 0:
+                                    reason = 'take_profit'
+                                elif reason == 'take_profit' and pnl_hint < 0:
+                                    reason = 'stop_loss'
+                        except Exception:
+                            pass
                         # anti-dup by exchange order id (best-effort)
                         try:
-                            last_oid = rc.get(f"trading:last_exit_order_id:{symbol}")
+                            last_oid = get_runtime_value(rc, session_id, "last_exit_order_id")
                         except Exception:
                             last_oid = None
                         oid = evt.get('order_id')
                         if oid and last_oid and str(oid) == str(last_oid):
                             return {"success": True, "skipped": True, "reason": "exit_duplicate_order"}
                         try:
-                            rc.setex(f"trading:last_exit_ts_ms:{symbol}", 86400, str(int(exit_ts_to_save)))
-                            rc.setex(f"trading:last_exit_reason:{symbol}", 86400, str(reason))
+                            rc.setex(session_runtime_key(session_id, "last_exit_ts_ms"), 86400, str(int(exit_ts_to_save)))
+                            rc.setex(session_runtime_key(session_id, "last_exit_reason"), 86400, str(reason))
                             if oid:
-                                rc.setex(f"trading:last_exit_order_id:{symbol}", 86400, str(oid))
+                                rc.setex(session_runtime_key(session_id, "last_exit_order_id"), 86400, str(oid))
+                            _reset_xgb_signal_history(rc, session_id)
                             # SL streak escalation: increment on stop_loss, reset on TP/trailing
                             try:
                                 if str(reason).strip().lower() == 'stop_loss':
-                                    _streak = int(rc.get(f"trading:sl_streak:{symbol}") or 0) + 1
-                                    rc.setex(f"trading:sl_streak:{symbol}", 172800, str(_streak))
+                                    _streak = int(get_runtime_value(rc, session_id, "sl_streak", 0) or 0) + 1
+                                    rc.setex(session_runtime_key(session_id, "sl_streak"), 172800, str(_streak))
                                     logger.warning("[sl_streak] symbol=%s streak=%d", symbol, _streak)
                                 else:
-                                    rc.delete(f"trading:sl_streak:{symbol}")
+                                    delete_runtime_value(rc, session_id, "sl_streak")
                             except Exception:
                                 pass
                         except Exception:
@@ -753,20 +1726,26 @@ def ensure_risk_orders(self, symbol: str):
                             ep = None
                             ptype_prev = None
                             try:
-                                ep_raw = rc.get(f"trading:pos_entry_price:{symbol}")
+                                ep_raw = get_runtime_value(rc, session_id, "pos_entry_price")
                                 ep = float(ep_raw) if ep_raw is not None and str(ep_raw).strip() != '' else None
                             except Exception:
                                 ep = None
                             try:
-                                ptype_prev = str(rc.get(f"trading:pos_type:{symbol}") or '').strip().lower()
+                                ptype_prev = str(get_runtime_value(rc, session_id, "pos_type") or '').strip().lower()
                             except Exception:
                                 ptype_prev = None
                             entry_ts_ms = None
                             try:
-                                raw_ets = rc.get(f"trading:pos_entry_ts:{symbol}")
+                                raw_ets = get_runtime_value(rc, session_id, "pos_entry_ts")
                                 entry_ts_ms = int(raw_ets) if raw_ets and str(raw_ets).strip() not in ('', '0') else None
                             except Exception:
                                 entry_ts_ms = None
+                            leverage_meta = 1
+                            try:
+                                raw_lev = get_runtime_value(rc, session_id, "leverage", session_doc.get("leverage", 1))
+                                leverage_meta = max(1, int(float(raw_lev or 1)))
+                            except Exception:
+                                leverage_meta = 1
                             bal_after = None
                             try:
                                 bal_after = agent._get_current_balance()
@@ -784,6 +1763,11 @@ def ensure_risk_orders(self, symbol: str):
                                         pnl = (px - ep) * qty
                                     elif action == 'buy': # short close
                                         pnl = (ep - px) * qty
+                                        
+                                    # Вычитаем примерную комиссию (taker 0.055% за вход и выход)
+                                    fee_rate = 0.00055
+                                    total_fee = (ep * qty * fee_rate) + (px * qty * fee_rate)
+                                    pnl -= total_fee
                             except Exception:
                                 pnl = None
                             bal_before = (bal_after - pnl) if (bal_after is not None and pnl is not None) else None
@@ -798,17 +1782,61 @@ def ensure_risk_orders(self, symbol: str):
                                 position_pnl=pnl,
                                 exchange_order_id=str(oid) if oid else None,
                                 error_message=json.dumps({
+                                    'account_id': account_id,
                                     'exit_reason': reason,
                                     'exit_ts_ms': int(now_bucket_ts),
                                     'exit_side': action,
                                     'entry_price': ep,
                                     'entry_ts_ms': entry_ts_ms,
                                     'pos_type_prev': ptype_prev,
+                                    'leverage': leverage_meta,
+                                    'model_path': (str(getattr(agent, 'model_path', '') or '') or None),
+                                    'model_family': (
+                                        'xgb'
+                                        if '/models/xgb/' in str(getattr(agent, 'model_path', '') or '').replace('\\', '/')
+                                        else 'dqn'
+                                    ),
                                     'bal_before': bal_before,
                                     'bal_after': bal_after,
                                 }, ensure_ascii=False),
                                 is_successful=True
                             )
+                            try:
+                                _notify_position_exit(
+                                    rc=rc,
+                                    session_id=session_id,
+                                    symbol=symbol,
+                                    reason=reason,
+                                    side=action,
+                                    entry_price=ep,
+                                    exit_price=px,
+                                    qty=qty,
+                                    pnl=pnl,
+                                    exit_ts_ms=exit_ts_to_save,
+                                    order_id=str(oid) if oid else None,
+                                )
+                            except Exception:
+                                logger.exception("[exit_notify] failed session=%s symbol=%s", session_id, symbol)
+                            try:
+                                from tasks.celery_task_copy_trade import copy_trade_for_clients
+                                copy_trade_for_clients.apply_async(
+                                    kwargs={
+                                        "session_id": str(session_id),
+                                        "symbol": str(symbol),
+                                        "action": "exit",
+                                        "position_type": str(ptype_prev or "long"),
+                                        "entry_price": px,
+                                    },
+                                    queue="celery"
+                                )
+                            except Exception as e_cp:
+                                logger.exception("[copy_trade] manual/risk exit trigger failed: %s", e_cp)
+                            try:
+                                delete_runtime_value(rc, session_id, "pos_entry_ts")
+                                delete_runtime_value(rc, session_id, "pos_entry_price")
+                                delete_runtime_value(rc, session_id, "pos_type")
+                            except Exception:
+                                pass
                         except Exception:
                             pass
                         try:
@@ -834,7 +1862,7 @@ def ensure_risk_orders(self, symbol: str):
         try:
             from redis import Redis as _Rai
             _rc_ai = _Rai(host='redis', port=6379, db=0, decode_responses=True)
-            _aid_ai = _rc_ai.get(f'exec:active_intent:{symbol}')
+            _aid_ai = _rc_ai.get(f'exec:active_intent:{session_id}')
         except Exception:
             _aid_ai = None
         if _aid_ai:
@@ -894,7 +1922,7 @@ def ensure_risk_orders(self, symbol: str):
         try:
             from redis import Redis as _R
             _rc2 = _R(host='redis', port=6379, db=0, decode_responses=True)
-            aid2 = _rc2.get(f'exec:active_intent:{symbol}')
+            aid2 = _rc2.get(f'exec:active_intent:{session_id}')
             if aid2:
                 raw2 = _rc2.get(f'exec:intent:{aid2}')
                 exch_id2 = None
@@ -914,7 +1942,7 @@ def ensure_risk_orders(self, symbol: str):
                     _rc2.delete(f'exec:intent:{aid2}')
                 except Exception:
                     pass
-                _rc2.delete(f'exec:active_intent:{symbol}')
+                _rc2.delete(f'exec:active_intent:{session_id}')
                 cleared_intent = True
         except Exception:
             pass
@@ -1210,6 +2238,9 @@ def ensure_risk_orders(self, symbol: str):
                     tp_price = _rp(float(entry_price) * (1.0 + float(tp_pct)/100.0))
             elif tp_pct and tp_pct > 0:
                 tp_price = _rp(float(entry_price) * (1.0 + float(tp_pct)/100.0))
+            else:
+                tp_price = None
+            if tp_price:
                 try:
                     agent.exchange.create_limit_sell_order(symbol, float(amount), tp_price, { 'reduceOnly': True, 'timeInForce': 'GTC' })
                     try:
@@ -1228,6 +2259,9 @@ def ensure_risk_orders(self, symbol: str):
                     sl_price = _rp(float(entry_price) * (1.0 - float(sl_pct)/100.0))
             elif sl_pct and sl_pct > 0:
                 sl_price = _rp(float(entry_price) * (1.0 - float(sl_pct)/100.0))
+            else:
+                sl_price = None
+            if sl_price:
                 try:
                     agent.exchange.create_order(
                         symbol,
@@ -1254,6 +2288,9 @@ def ensure_risk_orders(self, symbol: str):
                     tp_price = _rp(float(entry_price) * (1.0 - float(tp_pct)/100.0))
             elif tp_pct and tp_pct > 0:
                 tp_price = _rp(float(entry_price) * (1.0 - float(tp_pct)/100.0))
+            else:
+                tp_price = None
+            if tp_price:
                 try:
                     agent.exchange.create_limit_buy_order(symbol, float(amount), tp_price, { 'reduceOnly': True, 'timeInForce': 'GTC' })
                     try:
@@ -1271,6 +2308,9 @@ def ensure_risk_orders(self, symbol: str):
                     sl_price = _rp(float(entry_price) * (1.0 + float(sl_pct)/100.0))
             elif sl_pct and sl_pct > 0:
                 sl_price = _rp(float(entry_price) * (1.0 + float(sl_pct)/100.0))
+            else:
+                sl_price = None
+            if sl_price:
                 try:
                     agent.exchange.create_order(
                         symbol,
@@ -1301,7 +2341,7 @@ def ensure_risk_orders(self, symbol: str):
 
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='trade')
-def execute_trade(self, symbols: list, model_path: str | None = None, model_paths: list | None = None, dry_run: bool = False):
+def execute_trade(self, session_id: str, dry_run: bool = False):
     """Исполнение торгового шага: предсказание через serving, торговля через TradingAgent."""
     try:
         from trading_agent.trading_agent import TradingAgent
@@ -1313,94 +2353,64 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         except Exception:
             rc = None
 
-        if (not symbols) and rc is not None:
-            try:
-                # Если общий список пуст, берем из статусов активных агентов
-                all_symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'TONUSDT', 'ADAUSDT', 'BNBUSDT', 'XRPUSDT']
-                for sym in all_symbols:
-                    status_key = f'trading:status:{sym}'
-                    if rc.get(status_key):
-                        symbols = [sym]
-                        break
-            except Exception as e:
-                logger.error(f"Ошибка при поиске активных символов: {e}")
-                return {
-                    "success": False, 
-                    "skipped": True, 
-                    "reason": "symbol_search_error", 
-                    "error": f"Не удалось найти активные символы: {e}"
-                }
-
-        if not symbols or not isinstance(symbols, list):
-            logger.error("Не переданы символы для торговли или переданы в неверном формате")
+        session_doc = load_session(rc, session_id) if rc is not None else None
+        if not isinstance(session_doc, dict):
+            logger.error("Сессия не найдена: %s", session_id)
             return {
                 "success": False, 
-                "skipped": True, 
-                "reason": "symbols_invalid", 
-                "error": "Символы должны быть переданы в виде непустого списка"
+                "skipped": True,
+                "reason": "session_not_found",
+                "error": f"session not found: {session_id}",
             }
-        
-        # Ранний выход: символ отключён пользователем
+
+        symbol = str(session_doc.get('symbol') or '').strip().upper()
+        account_id = str(session_doc.get('account_id') or '').strip()
+        symbols = [symbol]
+        model_paths = list(session_doc.get('model_paths') or [])
+        model_path = str(session_doc.get('model_path') or (model_paths[0] if model_paths else '')).strip() or None
+        if not symbol:
+            return {"success": False, "skipped": True, "reason": "symbol_missing", "error": "symbol missing in session"}
+        if not account_id:
+            return {"success": False, "skipped": True, "reason": "account_missing", "error": "account_id missing in session"}
+
+        def sget(name: str, default=None):
+            if rc is None:
+                return default
+            return get_runtime_value(rc, session_id, name, default)
+
+        def sset(name: str, value) -> None:
+            if rc is not None:
+                set_runtime_value(rc, session_id, name, value)
+
+        def sdel(name: str) -> None:
+            if rc is not None:
+                delete_runtime_value(rc, session_id, name)
+
+        def sget_json(name: str, default=None):
+            if rc is None:
+                return default
+            return get_runtime_json(rc, session_id, name, default)
+
+        def sset_json(name: str, value) -> None:
+            if rc is not None:
+                set_runtime_json(rc, session_id, name, value)
+
         try:
-            if rc is not None and symbols:
-                sym0 = str(symbols[0]).upper()
-                if rc.get(f'trading:disabled:{sym0}'):
-                    return {"success": False, "skipped": True, "reason": "symbol_disabled", "symbol": sym0}
+            if rc is not None and sget('disabled'):
+                return {"success": False, "skipped": True, "reason": "session_disabled", "symbol": symbol, "session_id": session_id}
         except Exception:
             pass
 
-        # Нормализуем символы (защита от "TON USDT", "TON/USDT", лишних пробелов и т.п.)
-        try:
-            from utils.cctx_utils import normalize_to_db as _normalize_to_db
-            if isinstance(symbols, (list, tuple)):
-                symbols = [_normalize_to_db(str(s)) for s in symbols if s]
-            elif isinstance(symbols, str) and symbols:
-                symbols = [_normalize_to_db(symbols)]
-        except Exception:
-            try:
-                if isinstance(symbols, (list, tuple)):
-                    symbols = [str(s).replace('/', '').replace(' ', '').upper().strip() for s in symbols if s]
-                elif isinstance(symbols, str) and symbols:
-                    symbols = [str(symbols).replace('/', '').replace(' ', '').upper().strip()]
-            except Exception:
-                pass
-
         syms = symbols
-
-        symbol = syms[0]
 
         # --- Pre-trade exit detection ---
         # Синхронно вызываем ensure_risk_orders, чтобы зафиксировать выход (trailing/SL/TP),
         # который мог произойти на бирже до этого тика. Без этого postexit cooldown не сработает.
         try:
-            ensure_risk_orders.run(ensure_risk_orders, symbol)
+            ensure_risk_orders.run(session_id=session_id, symbol=symbol)
         except Exception as _e_ensure:
             logger.warning("[execute_trade] ensure_risk_orders pre-call failed for %s: %s", symbol, _e_ensure)
         
-        # Если не передали model_paths аргументом — читаем из Redis для конкретного символа
-        if model_paths is None and rc is not None:
-            try:
-                # Читаем модели для конкретного символа
-                _mps = rc.get(f'trading:model_paths:{symbol}')
-                if _mps:
-                    parsed = json.loads(_mps)
-                    if isinstance(parsed, list) and parsed:
-                        model_paths = parsed
-                else:
-                    # Фолбэк на общие модели
-                    _mps = rc.get('trading:model_paths')
-                    if _mps:
-                        parsed = json.loads(_mps)
-                        if isinstance(parsed, list) and parsed:
-                            model_paths = parsed
-            except Exception as e:
-                logger.error(f"Ошибка при получении путей моделей для символа {symbol}: {e}")
-                return {
-                    "success": False, 
-                    "skipped": True, 
-                    "reason": "model_paths_error", 
-                    "error": f"Не удалось получить пути моделей для символа {symbol}: {e}"
-                }
         if (model_paths is None or not model_paths) and model_path:
             model_paths = [model_path]
         # Санити: оставляем только существующие файлы и убираем дубликаты
@@ -1433,7 +2443,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         except Exception:
             pass
         if not model_paths:
-            return {"success": False, "error": "model_paths not provided"}
+            return {"success": False, "error": f"model_paths not provided for session {session_id}"}
 
         # 2) Готовим состояние для serving (как в агенте: закрытые 5m свечи -> плотный вектор)
         # Последняя закрытая метка времени (5m)
@@ -1444,6 +2454,282 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 return last_closed * 1000
             except Exception:
                 return 0
+
+        def _sync_last_exit_from_db() -> dict | None:
+            """Reconcile Redis last_exit_* with the latest persisted exit for this session."""
+            if rc is None:
+                return None
+            db_session = None
+            try:
+                from orm.database import get_db_session
+                from orm.models import Symbol, Trade
+
+                db_session = get_db_session()
+                rows = (
+                    db_session.query(Trade)
+                    .join(Symbol, Symbol.id == Trade.symbol_id)
+                    .filter(Symbol.name == symbol)
+                    .filter(Trade.status == 'executed')
+                    .filter(Trade.is_successful.is_(True))
+                    .order_by(Trade.created_at.desc())
+                    .limit(100)
+                    .all()
+                )
+                latest = None
+                expected_model_path = str(model_path or (model_paths[0] if model_paths else '') or '').strip()
+                for tr in rows:
+                    meta = {}
+                    try:
+                        meta = json.loads(tr.error_message or '{}')
+                    except Exception:
+                        meta = {}
+                    meta_session = str(meta.get('session_id') or '').strip()
+                    meta_account = str(meta.get('account_id') or '').strip()
+                    meta_model_path = str(meta.get('model_path') or '').strip()
+                    matches_session = bool(meta_session and meta_session == str(session_id))
+                    matches_account_model = bool(
+                        meta_account
+                        and meta_account == str(account_id)
+                        and (not expected_model_path or meta_model_path == expected_model_path)
+                    )
+                    if not (matches_session or matches_account_model):
+                        continue
+                    model_prediction = str(getattr(tr, 'model_prediction', '') or '')
+                    reason = str(meta.get('exit_reason') or '').strip().lower()
+                    if not reason and model_prediction.startswith('exit:'):
+                        reason = model_prediction.split(':', 1)[1].strip().lower()
+                    if not reason:
+                        continue
+                    exit_ts = None
+                    try:
+                        raw_ts = meta.get('exit_ts_ms')
+                        exit_ts = int(float(raw_ts)) if raw_ts not in (None, '') else None
+                    except Exception:
+                        exit_ts = None
+                    if not exit_ts:
+                        dt = getattr(tr, 'executed_at', None) or getattr(tr, 'created_at', None)
+                        if dt is not None and hasattr(dt, 'timestamp'):
+                            exit_ts = int(dt.timestamp() * 1000)
+                    if exit_ts:
+                        latest = {'ts_ms': int(exit_ts), 'reason': reason, 'order_id': getattr(tr, 'exchange_order_id', None)}
+                        break
+                if not latest:
+                    return None
+                current_ts = None
+                try:
+                    raw_current = sget('last_exit_ts_ms')
+                    current_ts = int(float(raw_current)) if raw_current not in (None, '') else None
+                except Exception:
+                    current_ts = None
+                if current_ts is None or int(latest['ts_ms']) > int(current_ts):
+                    rc.setex(session_runtime_key(session_id, 'last_exit_ts_ms'), 86400, str(int(latest['ts_ms'])))
+                    rc.setex(session_runtime_key(session_id, 'last_exit_reason'), 86400, str(latest['reason']))
+                    if latest.get('order_id'):
+                        rc.setex(session_runtime_key(session_id, 'last_exit_order_id'), 86400, str(latest['order_id']))
+                    logger.warning(
+                        "[postexit_sync] session=%s symbol=%s redis_last_exit updated from DB: %s reason=%s",
+                        session_id, symbol, latest['ts_ms'], latest['reason']
+                    )
+                return latest
+            except Exception as exc:
+                logger.warning("[postexit_sync] failed session=%s symbol=%s: %s", session_id, symbol, exc)
+                return None
+            finally:
+                try:
+                    if db_session is not None:
+                        db_session.close()
+                except Exception:
+                    pass
+
+        # Hard timeout guard: выход по hold_steps должен срабатывать даже если дальше
+        # упадёт OHLCV/prediction-пайплайн. Проверяем таймаут до запроса данных.
+        try:
+            if rc is not None:
+                raw_exit_mode_pre = sget('exit_mode')
+                exit_mode_pre = str(raw_exit_mode_pre or '').strip().lower()
+                if exit_mode_pre == 'hold_steps':
+                    raw_mhs_pre = sget('max_hold_steps')
+                    raw_ets_pre = sget('pos_entry_ts')
+                    max_hold_steps_pre = int(float(raw_mhs_pre)) if raw_mhs_pre not in (None, '') else 0
+                    entry_ts_pre = int(float(raw_ets_pre)) if raw_ets_pre not in (None, '', '0') else 0
+                    now_bucket_pre = int(_last_closed_ts_ms() or 0)
+
+                    if max_hold_steps_pre > 0 and entry_ts_pre > 0 and now_bucket_pre >= entry_ts_pre:
+                        elapsed_steps_pre = int((now_bucket_pre - entry_ts_pre) // 300000)
+                        if elapsed_steps_pre >= int(max_hold_steps_pre):
+                            try:
+                                rc.setex(session_runtime_key(session_id, "forced_exit_reason"), 3600, "timeout")
+                            except Exception:
+                                pass
+
+                            try:
+                                dir_pre = str(sget('direction', 'long') or 'long').strip().lower()
+                            except Exception:
+                                dir_pre = 'long'
+                            try:
+                                pos_type_hint_pre = str(sget('pos_type') or '').strip().lower()
+                            except Exception:
+                                pos_type_hint_pre = ''
+
+                            try:
+                                model_for_timeout = (model_paths[0] if model_paths else model_path)
+                            except Exception:
+                                model_for_timeout = model_path
+
+                            try:
+                                agent_timeout = TradingAgent(
+                                    model_path=model_for_timeout,
+                                    direction=dir_pre,
+                                    symbol=symbol,
+                                    session_id=session_id,
+                                    account_id=account_id,
+                                )
+                                agent_timeout.symbol = symbol
+                                agent_timeout.base_symbol = symbol
+                                agent_timeout._restore_position_from_exchange()
+                                pos_live = getattr(agent_timeout, 'current_position', None)
+                                pos_type_live = str((pos_live or {}).get('type') or '').strip().lower()
+                                pos_type_eff = pos_type_live or pos_type_hint_pre or dir_pre
+
+                                if pos_live:
+                                    if pos_type_eff == 'short':
+                                        trade_result_timeout = agent_timeout._execute_cover_short()
+                                    else:
+                                        trade_result_timeout = agent_timeout._execute_sell()
+
+                                    if isinstance(trade_result_timeout, dict) and trade_result_timeout.get('success'):
+                                        try:
+                                            sset("pos_open", "0")
+                                            sset("last_exit_ts_ms", int(now_bucket_pre))
+                                            sdel("pos_entry_ts")
+                                        except Exception:
+                                            pass
+                                        try:
+                                            status_timeout = agent_timeout.get_trading_status()
+                                            status_timeout['last_model_prediction'] = 'timeout_exit'
+                                            status_timeout['session_id'] = session_id
+                                            status_timeout['bybit_account_id'] = account_id
+                                            set_session_status(rc, session_id, status_timeout)
+                                        except Exception:
+                                            pass
+                                        return {
+                                            "success": True,
+                                            "decision": ("buy" if pos_type_eff == 'short' else "sell"),
+                                            "trade_result": trade_result_timeout,
+                                            "timeout_exit": True,
+                                            "symbol": symbol,
+                                        }
+                            except Exception as _timeout_close_e:
+                                logger.warning("[execute_trade] timeout close attempt failed for %s: %s", symbol, _timeout_close_e)
+        except Exception as _timeout_guard_e:
+            logger.warning("[execute_trade] timeout guard failed for %s: %s", symbol, _timeout_guard_e)
+
+        # Hard weak-signal guard: для hold_steps early exit должен закрывать позицию
+        # сразу, даже если risk_management_type=exchange_orders.
+        try:
+            if rc is not None:
+                raw_exit_mode_pre = sget('exit_mode')
+                exit_mode_pre = str(raw_exit_mode_pre or '').strip().lower()
+                raw_signal_exit_enabled_pre = sget('xgb_signal_exit_enabled', session_doc.get('xgb_signal_exit_enabled'))
+                signal_exit_enabled_pre = str(raw_signal_exit_enabled_pre or '').strip().lower() in ('1', 'true', 'yes', 'on')
+                if exit_mode_pre == 'hold_steps' and signal_exit_enabled_pre:
+                    dir_pre = str(sget('direction', 'long') or 'long').strip().lower()
+                    pos_type_hint_pre = str(sget('pos_type') or '').strip().lower()
+                    signal_exit_role_pre = 'short' if (pos_type_hint_pre == 'short' or dir_pre == 'short') else 'long'
+                    raw_signal_exit_role_enabled_pre = sget(
+                        f'xgb_signal_exit_{signal_exit_role_pre}_enabled',
+                        session_doc.get(f'xgb_signal_exit_{signal_exit_role_pre}_enabled'),
+                    )
+                    role_enabled_pre = str(raw_signal_exit_role_enabled_pre or '').strip().lower() in ('1', 'true', 'yes', 'on')
+                    role_exit_disabled_pre = raw_signal_exit_role_enabled_pre not in (None, '') and not role_enabled_pre
+                    if role_exit_disabled_pre:
+                        raw_signal_exit_start_pre = None
+                        raw_signal_exit_threshold_pre = None
+                    else:
+                        raw_signal_exit_start_pre = sget(
+                            f'xgb_signal_exit_{signal_exit_role_pre}_start_step',
+                            session_doc.get(f'xgb_signal_exit_{signal_exit_role_pre}_start_step'),
+                        )
+                        raw_signal_exit_threshold_pre = sget(
+                            f'xgb_signal_exit_{signal_exit_role_pre}_threshold',
+                            session_doc.get(f'xgb_signal_exit_{signal_exit_role_pre}_threshold'),
+                        )
+                    if (not role_exit_disabled_pre) and raw_signal_exit_start_pre in (None, ''):
+                        raw_signal_exit_start_pre = sget('xgb_signal_exit_start_step', session_doc.get('xgb_signal_exit_start_step'))
+                    raw_signal_exit_window_pre = sget('xgb_signal_exit_window', session_doc.get('xgb_signal_exit_window'))
+                    if (not role_exit_disabled_pre) and raw_signal_exit_threshold_pre in (None, ''):
+                        raw_signal_exit_threshold_pre = sget(
+                            'xgb_signal_exit_threshold',
+                            session_doc.get('xgb_signal_exit_threshold', XGB_SIGNAL_EXIT_THRESHOLD_DEFAULT),
+                        )
+                    raw_ets_pre = sget('pos_entry_ts')
+                    signal_exit_start_pre = int(float(raw_signal_exit_start_pre)) if raw_signal_exit_start_pre not in (None, '') else 0
+                    signal_exit_window_pre = max(1, int(float(raw_signal_exit_window_pre))) if raw_signal_exit_window_pre not in (None, '') else XGB_SIGNAL_EXIT_WINDOW_DEFAULT
+                    signal_exit_threshold_pre = (
+                        float(raw_signal_exit_threshold_pre)
+                        if raw_signal_exit_threshold_pre not in (None, '')
+                        else XGB_SIGNAL_EXIT_THRESHOLD_DEFAULT
+                    )
+                    entry_ts_pre = int(float(raw_ets_pre)) if raw_ets_pre not in (None, '', '0') else 0
+                    now_bucket_pre = int(_last_closed_ts_ms() or 0)
+                    elapsed_steps_pre = int((now_bucket_pre - entry_ts_pre) // 300000) if entry_ts_pre > 0 and now_bucket_pre >= entry_ts_pre else None
+
+                    if isinstance(elapsed_steps_pre, int) and signal_exit_start_pre > 0 and elapsed_steps_pre >= signal_exit_start_pre:
+                        signal_samples_pre = _load_xgb_signal_history(rc, session_id, signal_exit_window_pre)
+                        if len(signal_samples_pre) >= signal_exit_window_pre:
+                            avg_signal_pre = float(sum(float(item['signal']) for item in signal_samples_pre) / len(signal_samples_pre))
+                            avg_threshold_pre = float(signal_exit_threshold_pre)
+                            if avg_signal_pre < avg_threshold_pre:
+                                rc.setex(session_runtime_key(session_id, "forced_exit_reason"), 3600, "weak_signal_avg")
+
+                                model_for_signal_exit = (model_paths[0] if model_paths else model_path)
+                                agent_signal_exit = TradingAgent(
+                                    model_path=model_for_signal_exit,
+                                    direction=dir_pre,
+                                    symbol=symbol,
+                                    session_id=session_id,
+                                    account_id=account_id,
+                                )
+                                agent_signal_exit.symbol = symbol
+                                agent_signal_exit.base_symbol = symbol
+                                agent_signal_exit._forced_exit_reason = "weak_signal_avg"
+                                agent_signal_exit.last_model_prediction = "exit:weak_signal_avg"
+                                agent_signal_exit._restore_position_from_exchange()
+                                pos_live = getattr(agent_signal_exit, 'current_position', None)
+                                pos_type_live = str((pos_live or {}).get('type') or '').strip().lower()
+                                pos_type_eff = pos_type_live or pos_type_hint_pre or dir_pre
+                                if pos_live:
+                                    trade_result_signal = (
+                                        agent_signal_exit._execute_cover_short()
+                                        if pos_type_eff == 'short'
+                                        else agent_signal_exit._execute_sell()
+                                    )
+                                    if isinstance(trade_result_signal, dict) and trade_result_signal.get('success'):
+                                        try:
+                                            sset("pos_open", "0")
+                                            sset("last_exit_ts_ms", int(now_bucket_pre))
+                                            sdel("pos_entry_ts")
+                                        except Exception:
+                                            pass
+                                        try:
+                                            status_signal = agent_signal_exit.get_trading_status()
+                                            status_signal['last_model_prediction'] = 'weak_signal_avg_exit'
+                                            status_signal['session_id'] = session_id
+                                            status_signal['bybit_account_id'] = account_id
+                                            set_session_status(rc, session_id, status_signal)
+                                        except Exception:
+                                            pass
+                                        return {
+                                            "success": True,
+                                            "decision": ("buy" if pos_type_eff == 'short' else "sell"),
+                                            "trade_result": trade_result_signal,
+                                            "signal_exit": True,
+                                            "symbol": symbol,
+                                            "avg_signal": avg_signal_pre,
+                                            "avg_threshold": avg_threshold_pre,
+                                        }
+        except Exception as _signal_exit_guard_e:
+            logger.warning("[execute_trade] signal-exit guard failed for %s: %s", symbol, _signal_exit_guard_e)
 
         max_window = 0
         try:
@@ -1897,26 +3183,23 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         except Exception:
             pass
 
-        # 2.5) long-short режим: выбираем подмножество моделей по роли (per-symbol) и режиму рынка
+        # 2.5) long-short режим: роли моделей читаем для диагностики и будущего decision layer.
+        # Важно: model_paths не фильтруем до prediction, чтобы long и short считались всегда.
         trade_mode = 'single'
         model_roles_map = {}
-        # Для UI/диагностики: покажем, какая роль/какие модели реально активировались в long-short
+        # Для UI/диагностики: покажем, какая роль была бы целевой по старому regime rule.
         ls_target_role = None
         ls_models_before = list(model_paths) if isinstance(model_paths, list) else []
         ls_models_after = None
         try:
             if rc is not None:
-                tm = rc.get(f'trading:trade_mode:{symbol}')
-                if isinstance(tm, (bytes, bytearray)):
-                    tm = tm.decode('utf-8', errors='ignore')
+                tm = sget('trade_mode')
                 tm = str(tm).strip() if tm else ''
                 if tm == 'long-short':
                     trade_mode = 'long-short'
-                raw_roles = rc.get(f'trading:model_roles:{symbol}')
+                raw_roles = sget_json('model_roles', {})
                 if raw_roles:
-                    if isinstance(raw_roles, (bytes, bytearray)):
-                        raw_roles = raw_roles.decode('utf-8', errors='ignore')
-                    parsed = json.loads(raw_roles)
+                    parsed = raw_roles if isinstance(raw_roles, dict) else {}
                     if isinstance(parsed, dict):
                         # Нормализуем ключи так же, как model_paths (абсолютный путь внутри /workspace)
                         for k, v in parsed.items():
@@ -1932,25 +3215,27 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             model_roles_map = {}
 
         try:
+            ignore_trend_filter = str(sget('ignore_trend_filter', session_doc.get('ignore_trend_filter'))).strip().lower() in ('1', 'true', 'yes', 'on')
             if trade_mode == 'long-short' and isinstance(model_paths, list) and model_paths:
                 target_role = None
-                if market_regime == 'uptrend':
-                    target_role = 'long'
-                elif market_regime == 'downtrend':
-                    target_role = 'short'
+                if not ignore_trend_filter:
+                    if market_regime == 'uptrend':
+                        target_role = 'long'
+                    elif market_regime == 'downtrend':
+                        target_role = 'short'
                 ls_target_role = target_role
                 if target_role:
                     mp_before = list(model_paths)
                     mp_filtered = [p for p in model_paths if model_roles_map.get(str(p)) == target_role]
-                    if mp_filtered:
-                        model_paths = mp_filtered
                     ls_models_before = mp_before
-                    ls_models_after = list(model_paths)
+                    ls_models_after = list(mp_filtered) if mp_filtered else list(model_paths)
                     try:
-                        logger.warning("[long-short] symbol=%s regime=%s target_role=%s models_before=%s models_after=%s",
-                                       symbol, market_regime, target_role, len(mp_before), len(model_paths))
+                        logger.warning("[long-short] symbol=%s regime=%s target_role=%s models_for_prediction=%s target_role_models=%s",
+                                       symbol, market_regime, target_role, len(model_paths), len(mp_filtered))
                     except Exception:
                         pass
+                    # ВАЖНО: model_paths не фильтруем до prediction, чтобы long и short считались всегда.
+                    # model_paths = ls_models_after
         except Exception:
             pass
 
@@ -1959,11 +3244,9 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         consensus_cfg = None
         try:
             if rc is not None:
-                # Сначала пробуем для конкретного символа
-                _c = rc.get(f'trading:consensus:{symbol}')
+                _c = sget_json('consensus', {})
                 if _c:
-                    consensus_cfg = json.loads(_c)
-                # Не используем больше глобальный фолбэк, чтобы BNB не перетирал BTC
+                    consensus_cfg = _c
         except Exception as e:
             logger.warning(f"Ошибка при получении консенсуса для символа {symbol}: {e}")
             consensus_cfg = None
@@ -1981,36 +3264,110 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             "market_regime": market_regime,
             "market_regime_details": market_regime_details
         }
+        is_xgb_trade = bool(model_paths) and all('/models/xgb/' in str(p).replace('\\', '/') for p in model_paths)
+        threshold_override = None
+        threshold_overrides_by_model = {}
+        xgb_signal_snapshot = None
         try:
-            resp = requests.post(serving_url, json=payload, timeout=30)
-            # Пытаемся извлечь тело при ошибке
-            if not resp.ok:
-                body = None
+            if is_xgb_trade:
+                from tasks.xgb_live import predict_xgb_live
+                import time as _time
+
                 try:
-                    body = resp.text
+                    if rc is not None:
+                        for model_path_item in model_paths:
+                            model_path_key = str(model_path_item or '').replace('\\', '/')
+                            model_path_abs = model_path_key if model_path_key.startswith('/') else ('/workspace/' + model_path_key.lstrip('/'))
+                            role_name = str(model_roles_map.get(model_path_key) or model_roles_map.get(model_path_abs) or '').strip().lower()
+                            if role_name not in ('long', 'short'):
+                                continue
+                            thr_override = sget(f"xgb_entry_threshold_{role_name}")
+                            if thr_override not in (None, ""):
+                                threshold_overrides_by_model[str(model_path_item)] = float(thr_override)
                 except Exception:
+                    threshold_overrides_by_model = {}
+
+                missing_1m_marker = "missing 1m candles for 5m timestamp="
+                last_missing_1m_error = None
+                for attempt in range(6):
+                    try:
+                        pred_json = predict_xgb_live(
+                            symbol=symbol,
+                            model_paths=[str(p) for p in model_paths],
+                            df_5m=df_5m,
+                            threshold_override=threshold_override,
+                            threshold_overrides_by_model=threshold_overrides_by_model or None,
+                        )
+                        last_missing_1m_error = None
+                        break
+                    except Exception as e:
+                        msg = str(e)
+                        if missing_1m_marker in msg:
+                            last_missing_1m_error = msg
+                            if attempt < 5:
+                                try:
+                                    logger.warning(
+                                        "[xgb_live] missing 1m candles; retry in 10s (%s/6): %s",
+                                        attempt + 1,
+                                        msg,
+                                    )
+                                except Exception:
+                                    pass
+                                _time.sleep(10)
+                                continue
+                        raise
+                if last_missing_1m_error:
+                    pred_json = {
+                        "success": False,
+                        "error": last_missing_1m_error,
+                        "error_code": "missing_1m_candles",
+                        "error_human": "не загрузились 1m свечи",
+                    }
+            else:
+                resp = requests.post(serving_url, json=payload, timeout=30)
+                # Пытаемся извлечь тело при ошибке
+                if not resp.ok:
                     body = None
-                return {"success": False, "error": f"serving error: {resp.status_code} {resp.reason}", "body": body}
-            pred_json = resp.json()
+                    try:
+                        body = resp.text
+                    except Exception:
+                        body = None
+                    return {"success": False, "error": f"serving error: {resp.status_code} {resp.reason}", "body": body}
+                pred_json = resp.json()
         except Exception as e:
             return {"success": False, "error": f"serving error: {e}"}
 
         if not pred_json.get('success'):
             error_msg = pred_json.get('error', 'serving failed')
+            error_code = pred_json.get('error_code') if isinstance(pred_json, dict) else None
+            error_human = pred_json.get('error_human') if isinstance(pred_json, dict) else None
+            fallback_model_path = None
+            try:
+                if isinstance(model_paths, list) and model_paths:
+                    fallback_model_path = str(model_paths[0])
+            except Exception:
+                fallback_model_path = None
             # Сохраняем ошибку в предсказания
             try:
                 from orm.models import ModelPrediction
                 from orm.database import get_db_session
                 with get_db_session() as session:
                     prediction = ModelPrediction(
-                        symbol=symbols[0],
+                        symbol=symbol,
                         action='error',
                         confidence=0.0,
                         q_values='[]',
                         current_price=0.0,
                         position_status='none',
-                        model_path='error',
-                        market_conditions=json.dumps({"error": str(error_msg)}, ensure_ascii=False),
+                        model_path=fallback_model_path or '',
+                        market_conditions=json.dumps(
+                            {
+                                "error": str(error_msg),
+                                "error_code": str(error_code) if error_code else None,
+                                "error_human": str(error_human) if error_human else None,
+                            },
+                            ensure_ascii=False,
+                        ),
                         created_at=datetime.utcnow()
                     )
                     session.add(prediction)
@@ -2025,7 +3382,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         # Здесь приводим q_values и action к "каноническому" формату [hold,buy,sell] путём swap(1<->2) для моделей роли short.
         try:
             preds_list0 = pred_json.get('predictions') or []
-            if isinstance(preds_list0, list) and preds_list0:
+            if (not is_xgb_trade) and isinstance(preds_list0, list) and preds_list0:
                 for _p in preds_list0:
                     try:
                         mp0 = str((_p or {}).get('model_path') or '').replace('\\', '/')
@@ -2049,16 +3406,38 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         except Exception:
             pass
 
+        try:
+            if is_xgb_trade and rc is not None:
+                signal_exit_window_cfg = XGB_SIGNAL_EXIT_WINDOW_DEFAULT
+                try:
+                    raw_window = sget('xgb_signal_exit_window')
+                    if raw_window not in (None, ''):
+                        signal_exit_window_cfg = max(1, int(float(raw_window)))
+                except Exception:
+                    signal_exit_window_cfg = XGB_SIGNAL_EXIT_WINDOW_DEFAULT
+                signal_snapshot = _extract_xgb_signal_snapshot(
+                    pred_json,
+                    model_paths=[str(p) for p in (model_paths or []) if p],
+                    threshold_override=threshold_override,
+                )
+                xgb_signal_snapshot = signal_snapshot
+                if isinstance(signal_snapshot, dict):
+                    signal_snapshot['ts_ms'] = int(_last_closed_ts_ms() or 0)
+                    _append_xgb_signal_history(rc, session_id, signal_snapshot, signal_exit_window_cfg)
+        except Exception:
+            pass
+
         # Подготовим пороги Q-gate: per-symbol Redis > ENV/Config > JSON > дефолт
         qgate_cfg = pred_json.get('qgate') or {}
 
-        sym0 = (symbols[0] if isinstance(symbols, list) and symbols else None)
+        sym0 = symbol
 
         def _pick_threshold(config_key: str, default_val: float, redis_key: str | None = None) -> float:
             # 0) per-symbol в Redis
             try:
-                if redis_key and sym0 and rc is not None:
-                    v = rc.get(f'{redis_key}:{sym0}') or rc.get(redis_key)
+                    if redis_key and sym0 and rc is not None:
+                        field_name = redis_key.replace('trading:', '')
+                        v = sget(field_name)
                     if v is not None and str(v).strip() != '':
                         return float(v)
             except Exception:
@@ -2087,6 +3466,8 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         postexit = None
         try:
             if rc is not None and sym0:
+                if is_xgb_trade:
+                    _sync_last_exit_from_db()
                 # time bucket: last closed 5m candle
                 try:
                     now_utc = datetime.utcnow()
@@ -2096,20 +3477,40 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 except Exception:
                     now_bucket_ts = 0
 
-                ex_ts_raw = rc.get(f"trading:last_exit_ts_ms:{sym0}")
-                ex_reason_raw = rc.get(f"trading:last_exit_reason:{sym0}")
+                ex_ts_raw = sget("last_exit_ts_ms")
+                ex_reason_raw = sget("last_exit_reason")
                 try:
                     ex_ts = int(ex_ts_raw) if ex_ts_raw is not None and str(ex_ts_raw).strip() != '' else None
                 except Exception:
                     ex_ts = None
                 ex_reason = str(ex_reason_raw or '').strip().lower()
                 allowed_reasons = ('stop_loss', 'take_profit', 'trailing')
-                if ex_ts and now_bucket_ts and ex_reason in allowed_reasons and now_bucket_ts >= ex_ts:
-                    candles_since = int((now_bucket_ts - ex_ts) // 300000)
+                if is_xgb_trade:
+                    allowed_reasons = (
+                        'stop_loss', 'take_profit', 'trailing', 'timeout',
+                        'weak_signal_avg', 'manual', 'signal', 'holdstep', 'unknown',
+                    )
+                postexit_enabled = True
+                if is_xgb_trade:
+                    raw_enabled = sget("xgb_postexit_guard_enabled", "0")
+                    postexit_enabled = str(raw_enabled or '').strip().lower() in ('1', 'true', 'yes', 'on')
+                def _bucket_last_closed_5m_ms(ts_ms: int) -> int:
+                    try:
+                        epoch_sec = int(int(ts_ms) / 1000)
+                        last_closed = (epoch_sec // 300) * 300 - 300
+                        return int(last_closed * 1000)
+                    except Exception:
+                        return 0
+
+                ex_bucket_ts = _bucket_last_closed_5m_ms(int(ex_ts)) if ex_ts else 0
+                if postexit_enabled and ex_bucket_ts and now_bucket_ts and ex_reason in allowed_reasons and now_bucket_ts >= ex_bucket_ts:
+                    candles_since = int((now_bucket_ts - ex_bucket_ts) // 300000)
 
                     def _pick_int(key: str, default_val: int) -> int:
                         try:
-                            v = rc.get(f'{key}:{sym0}') or rc.get(key)
+                            v = sget(key)
+                            if v is None:
+                                v = rc.get(f'{key}:{sym0}') or rc.get(key)
                             if v is not None and str(v).strip() != '':
                                 return int(float(v))
                         except Exception:
@@ -2136,12 +3537,24 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     except Exception:
                         sl_streak = 0
 
-                    if ex_reason == 'stop_loss' and sl_streak >= 1:
+                    if is_xgb_trade:
+                        cooldown_candles = _pick_int('xgb_postexit_cooldown_candles', 5)
+                    elif ex_reason == 'stop_loss' and sl_streak >= 1:
                         idx_esc = min(sl_streak - 1, len(sl_escalation_steps) - 1)
                         cooldown_candles = int(sl_escalation_steps[idx_esc])
                     else:
                         cooldown_candles = _pick_int('trading:postexit_cooldown_candles', 48)
-                    boost_candles = _pick_int('trading:postexit_boost_candles', 10)
+                    boost_candles = (
+                        _pick_int('xgb_postexit_boost_candles', 20)
+                        if is_xgb_trade
+                        else _pick_int('trading:postexit_boost_candles', 10)
+                    )
+                    xgb_boost_pct = None
+                    if is_xgb_trade:
+                        try:
+                            xgb_boost_pct = float(sget("xgb_postexit_threshold_boost_pct", 10) or 10)
+                        except Exception:
+                            xgb_boost_pct = 10.0
 
                     # boosted thresholds (absolute) from DB/Redis; fallback: multipliers
                     post_T1 = None
@@ -2173,6 +3586,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
 
                     postexit = {
                         'exit_ts_ms': int(ex_ts),
+                        'exit_bucket_ts_ms': int(ex_bucket_ts),
                         'exit_reason': ex_reason,
                         'now_bucket_ts_ms': int(now_bucket_ts),
                         'candles_since_exit': int(candles_since),
@@ -2180,6 +3594,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         'boost_candles': int(boost_candles),
                         'boost_T1': post_T1,
                         'boost_T2': post_T2,
+                        'xgb_threshold_boost_pct': xgb_boost_pct,
                         'sl_streak': int(sl_streak),
                         'sl_escalation_steps': list(sl_escalation_steps),
                     }
@@ -2197,7 +3612,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     pred_json['postexit'] = postexit
 
                     # apply boosted thresholds during boost window (after cooldown)
-                    if candles_since >= cooldown_candles and candles_since < (cooldown_candles + boost_candles):
+                    if (not is_xgb_trade) and candles_since >= cooldown_candles and candles_since < (cooldown_candles + boost_candles):
                         try:
                             if isinstance(post_T1, (int, float)) and post_T1 > float(T1):
                                 T1 = float(post_T1)
@@ -2234,8 +3649,13 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         eff_T1 = T1
         eff_T2 = T2
 
-        pred_json['qgate_T1'] = float(T1)
-        pred_json['qgate_T2'] = float(T2)
+        if is_xgb_trade:
+            pred_json['qgate_T1'] = None
+            pred_json['qgate_T2'] = None
+            pred_json['xgb_qgate_disabled'] = True
+        else:
+            pred_json['qgate_T1'] = float(T1)
+            pred_json['qgate_T2'] = float(T2)
 
         # 3.1) Консенсус по ансамблю на стороне оркестратора
         preds_list = pred_json.get('predictions') or []
@@ -2248,6 +3668,15 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         # Заполним сводку по голосам/порогам для последующего сохранения в prediction.market_conditions
         votes = {'buy': 0, 'sell': 0, 'hold': 0}
         total_sel = len(model_paths)
+        total_sel_buy = total_sel
+        total_sel_sell = total_sel
+        try:
+            if str(trade_mode).strip() == 'long-short':
+                total_sel_buy = sum(1 for p in model_paths if str(model_roles_map.get(str(p).replace('\\', '/')) or '').strip().lower() == 'long')
+                total_sel_sell = sum(1 for p in model_paths if str(model_roles_map.get(str(p).replace('\\', '/')) or '').strip().lower() == 'short')
+        except Exception:
+            pass
+            
         req_flat = None
         req_trend = None
         required = None
@@ -2259,9 +3688,11 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 for p in preds_list:
                     act = str(p.get('action') or 'hold').lower()
                     qv = p.get('q_values') or []
-                    gate_ok = False
+                    gate_ok = True if is_xgb_trade else False
                     try:
-                        if isinstance(qv, list) and len(qv) >= 3:
+                        if is_xgb_trade:
+                            gate_ok = True
+                        elif isinstance(qv, list) and len(qv) >= 3:
                             if act == 'buy':
                                 q_buy = float(qv[1])
                                 other = max(float(qv[0]), float(qv[2]))
@@ -2281,10 +3712,13 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     except Exception:
                         gate_ok = (act == 'hold')
                     # Remap action для short-моделей: buy↔sell (action 1=ENTER_SHORT→sell, action 2=COVER→buy)
+                    # Только для multiclass моделей! У бинарных уже правильный action.
                     vote_act = act
                     try:
                         mp_key = str(p.get('model_path') or '').replace('\\', '/')
-                        if model_roles_map.get(mp_key) == 'short':
+                        task_name = str(p.get('task') or '').strip().lower()
+                        is_binary = task_name.startswith('entry') or task_name.startswith('exit')
+                        if model_roles_map.get(mp_key) == 'short' and not is_binary:
                             if act == 'buy':
                                 vote_act = 'sell'
                             elif act == 'sell':
@@ -2305,23 +3739,24 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         req_flat = int(max(1, counts.get('flat')))
                     if isinstance(counts.get('trend'), (int, float)):
                         req_trend = int(max(1, counts.get('trend')))
-                # Фолбэки: если counts не заданы — фиксируем требование без процентов
-                # По умолчанию: 2 для total>=3; для 2 моделей — 2; для 1 — 1
-                default_req = 2 if total_sel >= 3 else max(1, total_sel)
-                if req_flat is None:
-                    req_flat = default_req
-                if req_trend is None:
-                    req_trend = default_req
-                # Ограничим максимумом total_sel
-                req_flat = int(min(max(1, req_flat), total_sel))
-                req_trend = int(min(max(1, req_trend), total_sel))
+                
                 required_type = 'trend' if market_regime in ('uptrend','downtrend') else 'flat'
-                required = req_trend if required_type == 'trend' else req_flat
+                
+                def calc_req(tsel):
+                    req = 2 if tsel >= 3 else max(1, tsel)
+                    cfg_val = req_trend if required_type == 'trend' else req_flat
+                    if cfg_val is not None:
+                        req = cfg_val
+                    return int(min(max(1, req), max(1, tsel)))
+                
+                required_buy = calc_req(total_sel_buy)
+                required_sell = calc_req(total_sel_sell)
+                
                 # Правило консенсуса: если хватает голосов BUY → buy, если SELL → sell; иначе hold
-                if votes['buy'] >= required and votes['buy'] > votes['sell']:
+                if votes['buy'] >= required_buy and votes['buy'] > votes['sell']:
                     decision = 'buy'
                     consensus_from_qgate = True
-                elif votes['sell'] >= required and votes['sell'] > votes['buy']:
+                elif votes['sell'] >= required_sell and votes['sell'] > votes['buy']:
                     decision = 'sell'
                     consensus_from_qgate = True
                 else:
@@ -2331,7 +3766,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         # --- Server-side Q-gate ---
         try:
             # Если решение уже получено через консенсус моделей, прошедших Q‑gate, не блокируем финальным агрегатом
-            if not consensus_from_qgate:
+            if (not consensus_from_qgate) and (not is_xgb_trade):
                 q_values = pred_json.get('q_values')
                 if not isinstance(q_values, list):
                     preds_list_tmp = pred_json.get('predictions') or []
@@ -2350,6 +3785,31 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         print(f"Q‑gate: {'PASS' if passed else 'BLOCK'} (maxQ={maxQ:.3f}, gapQ={gapQ:.3f}, T1={eff_T1:.3f}, T2={eff_T2:.3f})")
                     except Exception:
                         pass
+        except Exception:
+            pass
+
+        # --- Opposite Signal Max Gate ---
+        try:
+            if is_xgb_trade and decision in ('buy', 'sell'):
+                long_sig, short_sig = _extract_xgb_long_short_signals(pred_json)
+                if decision == 'buy':
+                    opp_max = get_runtime_value(rc, session_id, 'xgb_short_signal_max_for_long_entry')
+                    if opp_max not in (None, '') and short_sig is not None:
+                        if float(short_sig) > float(opp_max):
+                            decision = 'hold'
+                            try:
+                                pred_json['opposite_signal_gate'] = {'blocked': True, 'reason': 'short_signal_too_strong', 'short_sig': float(short_sig), 'max': float(opp_max)}
+                            except Exception:
+                                pass
+                elif decision == 'sell':
+                    opp_max = get_runtime_value(rc, session_id, 'xgb_long_signal_max_for_short_entry')
+                    if opp_max not in (None, '') and long_sig is not None:
+                        if float(long_sig) > float(opp_max):
+                            decision = 'hold'
+                            try:
+                                pred_json['opposite_signal_gate'] = {'blocked': True, 'reason': 'long_signal_too_strong', 'long_sig': float(long_sig), 'max': float(opp_max)}
+                            except Exception:
+                                pass
         except Exception:
             pass
 
@@ -2739,7 +4199,12 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 candles_since = int(pe.get('candles_since_exit')) if pe.get('candles_since_exit') is not None else None
                 cooldown = int(pe.get('cooldown_candles')) if pe.get('cooldown_candles') is not None else None
                 reason = str(pe.get('exit_reason') or '').strip().lower()
-                if candles_since is not None and cooldown is not None and candles_since < cooldown and reason in ('stop_loss', 'take_profit', 'trailing'):
+                reason_allowed = reason in ('stop_loss', 'take_profit', 'trailing')
+                if is_xgb_trade:
+                    reason_allowed = reason_allowed or reason in (
+                        'timeout', 'weak_signal_avg', 'manual', 'signal', 'holdstep', 'unknown',
+                    )
+                if candles_since is not None and cooldown is not None and candles_since < cooldown and reason_allowed:
                     _sl_streak_val = int(pe.get('sl_streak') or 0)
                     _hours_left = round((cooldown - candles_since) * 5 / 60, 1)
                     pred_json['decision_before_postexit_cooldown'] = str(decision)
@@ -2760,26 +4225,113 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         except Exception:
             pass
 
+        # --- XGB post-exit boosted threshold gate ---
+        # После cooldown вход не запрещаем полностью, но требуем signal выше threshold на заданный процент.
+        def _apply_xgb_postexit_cooldown_gate(current_decision: str, stage: str = "runtime") -> str:
+            try:
+                pe = pred_json.get('postexit') if isinstance(pred_json, dict) else None
+                if not (is_xgb_trade and current_decision == _entry_signal and isinstance(pe, dict)):
+                    return current_decision
+                candles_since = int(pe.get('candles_since_exit')) if pe.get('candles_since_exit') is not None else None
+                cooldown = int(pe.get('cooldown_candles')) if pe.get('cooldown_candles') is not None else None
+                reason = str(pe.get('exit_reason') or '').strip().lower()
+                if candles_since is None or cooldown is None or candles_since >= cooldown:
+                    return current_decision
+                pred_json.setdefault('decision_before_postexit_cooldown', str(current_decision))
+                pred_json[f'postexit_cooldown_gate_{stage}'] = {
+                    'blocked': True,
+                    'candles_left': int(cooldown - candles_since),
+                    'cooldown_candles': int(cooldown),
+                    'candles_since_exit': int(candles_since),
+                    'reason': reason,
+                }
+                pred_json['decision'] = 'hold'
+                for _p in (pred_json.get('predictions') or []):
+                    if isinstance(_p, dict):
+                        _p['action'] = 'hold'
+                logger.warning(
+                    "[postexit_cooldown_final] session=%s symbol=%s blocked entry stage=%s reason=%s candles_since=%s cooldown=%s",
+                    session_id, symbol, stage, reason, candles_since, cooldown
+                )
+                return 'hold'
+            except Exception:
+                return current_decision
+
+        def _apply_xgb_postexit_threshold_gate(current_decision: str) -> str:
+            try:
+                pe = pred_json.get('postexit') if isinstance(pred_json, dict) else None
+                if not (is_xgb_trade and current_decision == _entry_signal and isinstance(pe, dict)):
+                    return current_decision
+                phase = str(pe.get('phase') or '').strip().lower()
+                boost_pct = float(pe.get('xgb_threshold_boost_pct') or 0.0)
+                if phase != 'boost' or boost_pct <= 0:
+                    return current_decision
+                snapshot = xgb_signal_snapshot
+                if not isinstance(snapshot, dict):
+                    snapshot = _extract_xgb_signal_snapshot(
+                        pred_json,
+                        model_paths=[str(p) for p in (model_paths or []) if p],
+                        threshold_override=threshold_override,
+                    )
+                signal_value = float(snapshot.get('signal')) if isinstance(snapshot, dict) and snapshot.get('signal') is not None else None
+                base_threshold = float(snapshot.get('threshold')) if isinstance(snapshot, dict) and snapshot.get('threshold') is not None else None
+                if signal_value is None or base_threshold is None:
+                    gate_doc = {'blocked': True, 'reason': 'missing_signal_or_threshold', 'boost_pct': float(boost_pct)}
+                else:
+                    boosted_threshold = base_threshold * (1.0 + boost_pct / 100.0)
+                    pe['xgb_signal'] = float(signal_value)
+                    pe['xgb_base_threshold'] = float(base_threshold)
+                    pe['xgb_boosted_threshold'] = float(boosted_threshold)
+                    gate_doc = {
+                        'blocked': bool(signal_value < boosted_threshold),
+                        'signal': float(signal_value),
+                        'base_threshold': float(base_threshold),
+                        'boosted_threshold': float(boosted_threshold),
+                        'boost_pct': float(boost_pct),
+                    }
+                pred_json['xgb_postexit_threshold_gate'] = gate_doc
+                if not gate_doc.get('blocked'):
+                    return current_decision
+                pred_json.setdefault('decision_before_xgb_postexit_threshold', str(current_decision))
+                pred_json['decision'] = 'hold'
+                for _p in (pred_json.get('predictions') or []):
+                    if isinstance(_p, dict):
+                        _p['action'] = 'hold'
+                return 'hold'
+            except Exception:
+                return current_decision
+
+        decision = _apply_xgb_postexit_cooldown_gate(decision, "pre_agent")
+        decision = _apply_xgb_postexit_threshold_gate(decision)
+
         # 4) Торговля через TradingAgent (без docker exec)
         # Направление из Redis per-symbol
         try:
-            _rc = get_redis_client()
-            _dir = _rc.get(f'trading:direction:{symbol}')
-            if isinstance(_dir, (bytes, bytearray)):
-                _dir = _dir.decode('utf-8')
-            _dir = (str(_dir).strip().lower() if _dir else 'long')
+            _dir = str(sget('direction', session_doc.get('direction') or 'long')).strip().lower() or 'long'
         except Exception:
             _dir = 'long'
         # long-short: направление выбираем по market_regime (uptrend->long, downtrend->short)
         try:
+            ignore_trend_filter = str(sget('ignore_trend_filter', session_doc.get('ignore_trend_filter'))).strip().lower() in ('1', 'true', 'yes', 'on')
             if (str(trade_mode).strip() == 'long-short'):
-                if market_regime == 'uptrend':
-                    _dir = 'long'
-                elif market_regime == 'downtrend':
-                    _dir = 'short'
+                if ignore_trend_filter:
+                    _dir = 'long' if decision == 'buy' else 'short' if decision == 'sell' else _dir
+                else:
+                    if market_regime == 'uptrend':
+                        _dir = 'long'
+                    elif market_regime == 'downtrend':
+                        _dir = 'short'
+                    else: # flat
+                        _dir = 'long' if decision == 'buy' else 'short' if decision == 'sell' else _dir
         except Exception:
             pass
-        agent = TradingAgent(model_path=(model_paths[0] if model_paths else None), direction=_dir, symbol=symbol)
+        agent = TradingAgent(
+            model_path=(model_paths[0] if model_paths else None),
+            direction=_dir,
+            symbol=symbol,
+            session_id=session_id,
+            account_id=account_id,
+        )
         agent.symbols = syms
         agent.symbol = symbol
         agent.base_symbol = symbol
@@ -2847,12 +4399,40 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 current_price = None
             position_status = 'open' if getattr(agent, 'current_position', None) else 'none'
             preds_list = pred_json.get('predictions') or []
+            is_xgb_trade = any('/models/xgb/' in str(p).replace('\\', '/') for p in (model_paths or []))
+            try:
+                if is_xgb_trade and rc is not None:
+                    signal_exit_window_cfg = XGB_SIGNAL_EXIT_WINDOW_DEFAULT
+                    raw_window = sget('xgb_signal_exit_window', session_doc.get('xgb_signal_exit_window'))
+                    if raw_window not in (None, ''):
+                        signal_exit_window_cfg = max(1, int(float(raw_window)))
+                    signal_snapshot = xgb_signal_snapshot
+                    if not isinstance(signal_snapshot, dict):
+                        signal_snapshot = _extract_xgb_signal_snapshot(
+                            pred_json,
+                            model_paths=[str(p) for p in (model_paths or []) if p],
+                            threshold_override=threshold_override,
+                        )
+                    if isinstance(signal_snapshot, dict):
+                        signal_snapshot = dict(signal_snapshot)
+                        signal_snapshot['ts_ms'] = int(_last_closed_ts_ms() or 0)
+                        _append_xgb_signal_history(rc, session_id, signal_snapshot, signal_exit_window_cfg)
+                        logger.warning(
+                            "[xgb_signal_exit] appended session=%s signal=%.6f threshold=%.6f window=%s",
+                            session_id,
+                            float(signal_snapshot.get('signal')),
+                            float(signal_snapshot.get('threshold')),
+                            signal_exit_window_cfg,
+                        )
+            except Exception:
+                logger.exception("[xgb_signal_exit] failed to append from prediction save session=%s", session_id)
             # Общий ID группы ансамбля для этого тика, чтобы фронт мог объединять карточки
             ensemble_group_id = str(uuid.uuid4()) if preds_list else None
+            entry_shap_snapshot = None
             # Сохраним текущую группу в Redis, чтобы DDD-исполнение могло дописать exec_error в эти же карточки
             try:
                 if rc is not None and ensemble_group_id:
-                    rc.setex(f"trading:last_ensemble_group_id:{symbol}", 900, str(ensemble_group_id))
+                    rc.setex(session_runtime_key(session_id, "last_ensemble_group_id"), 900, str(ensemble_group_id))
             except Exception:
                 pass
             # 4.1.a) GigaChat (LLM) — добавляем текст ответа в market_conditions каждой карточки предсказания
@@ -2935,7 +4515,13 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                                 q_pass = True
                     except Exception:
                         q_pass = (str(act or 'hold').lower() == 'hold')
+                    if is_xgb_trade:
+                        q_max = None
+                        q_gap = None
+                        q_pass = True
                     mc = {
+                        'session_id': session_id,
+                        'account_id': account_id,
                         'ensemble_total': int(total_sel),
                         'ensemble_votes_buy': int(votes.get('buy', 0)),
                         'ensemble_votes_sell': int(votes.get('sell', 0)),
@@ -2957,12 +4543,34 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         'regime_weights': list(market_regime_details.get('weights', [])) if isinstance(market_regime_details, dict) else [],
                         'regime_voting': (market_regime_details.get('voting') if isinstance(market_regime_details, dict) else None),
                         'regime_tie_break': (market_regime_details.get('tie_break') if isinstance(market_regime_details, dict) else None),
-                        'qgate_T1': float(T1),
-                        'qgate_T2': float(T2),
-                        'qgate_maxQ': float(q_max) if q_max is not None else None,
-                        'qgate_gapQ': float(q_gap) if q_gap is not None else None,
-                        'qgate_filtered': (False if q_pass is None else (not q_pass)),
+                        'qgate_T1': (None if is_xgb_trade else float(T1)),
+                        'qgate_T2': (None if is_xgb_trade else float(T2)),
+                        'qgate_maxQ': (None if is_xgb_trade else (float(q_max) if q_max is not None else None)),
+                        'qgate_gapQ': (None if is_xgb_trade else (float(q_gap) if q_gap is not None else None)),
+                        'qgate_filtered': (False if is_xgb_trade else (False if q_pass is None else (not q_pass))),
+                        'xgb_qgate_disabled': bool(is_xgb_trade),
                     }
+                    try:
+                        shap_doc = p.get('xgb_shap') if isinstance(p, dict) else None
+                        if (
+                            is_xgb_trade
+                            and isinstance(shap_doc, dict)
+                            and str(decision or '').lower() in ('buy', 'sell')
+                            and str(act or '').lower() == str(decision or '').lower()
+                        ):
+                            mc['xgb_shap'] = shap_doc
+                            mc['entered_trade_candidate'] = True
+                            if entry_shap_snapshot is None:
+                                entry_shap_snapshot = {
+                                    'model_path': str(mp) if mp is not None else '',
+                                    'action': str(act or ''),
+                                    'confidence': float(max(qv)) if isinstance(qv, list) and qv else None,
+                                    'current_price': current_price,
+                                    'xgb_shap': shap_doc,
+                                    'ensemble_group_id': ensemble_group_id,
+                                }
+                    except Exception:
+                        pass
                     # Добавим результат GigaChat в каждую карточку
                     try:
                         if isinstance(gigachat_mc, dict) and gigachat_mc:
@@ -2974,6 +4582,16 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     try:
                         mp_key = str(mp).replace('\\', '/')
                         mc['model_role'] = model_roles_map.get(mp_key)
+                    except Exception:
+                        pass
+                    try:
+                        if is_xgb_trade and isinstance(p, dict):
+                            if p.get('task') is not None:
+                                mc['xgb_task'] = p.get('task')
+                            if p.get('direction') is not None:
+                                mc['xgb_direction'] = p.get('direction')
+                            if p.get('xgb_runtime_threshold') is not None:
+                                mc['xgb_runtime_threshold'] = p.get('xgb_runtime_threshold')
                     except Exception:
                         pass
                     # Прокинем причины runtime-гейтов в market_conditions, чтобы UI (/agent/<symbol>) их показывал.
@@ -2991,6 +4609,8 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                                 'postexit',
                                 'decision_before_postexit_cooldown',
                                 'postexit_cooldown_gate',
+                                'decision_before_xgb_postexit_threshold',
+                                'xgb_postexit_threshold_gate',
                             ):
                                 if k in pred_json:
                                     mc[k] = pred_json.get(k)
@@ -3008,6 +4628,50 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                 except Exception:
                     # Не ломаем торговый цикл из-за БД
                     pass
+            if is_xgb_trade and not preds_list:
+                try:
+                    fallback_model_path = None
+                    if isinstance(model_paths, list) and model_paths:
+                        fallback_model_path = str(model_paths[0])
+                    fallback_mc = {
+                        'session_id': session_id,
+                        'account_id': account_id,
+                        'ensemble_total': int(total_sel),
+                        'ensemble_votes_buy': int(votes.get('buy', 0)),
+                        'ensemble_votes_sell': int(votes.get('sell', 0)),
+                        'ensemble_votes_hold': int(votes.get('hold', 0)),
+                        'ensemble_required': int(required) if required is not None else None,
+                        'ensemble_required_type': required_type,
+                        'ensemble_regime': market_regime,
+                        'ensemble_decision': decision,
+                        'trade_mode': str(trade_mode) if trade_mode else None,
+                        'trade_direction': (str(_dir) if _dir else None),
+                        'active_role': (
+                            str(ls_target_role)
+                            if (str(trade_mode).strip() == 'long-short' and ls_target_role)
+                            else None
+                        ),
+                        'regime_windows': list(market_regime_details.get('windows', [])) if isinstance(market_regime_details, dict) else [],
+                        'regime_labels': list(market_regime_details.get('labels', [])) if isinstance(market_regime_details, dict) else [],
+                        'regime_weights': list(market_regime_details.get('weights', [])) if isinstance(market_regime_details, dict) else [],
+                        'regime_voting': (market_regime_details.get('voting') if isinstance(market_regime_details, dict) else None),
+                        'regime_tie_break': (market_regime_details.get('tie_break') if isinstance(market_regime_details, dict) else None),
+                        'prediction_source': 'xgb_decision_fallback',
+                    }
+                    if isinstance(gigachat_mc, dict) and gigachat_mc:
+                        for k, v in gigachat_mc.items():
+                            fallback_mc[k] = v
+                    create_model_prediction(
+                        symbol=symbol,
+                        action=str(decision or 'hold'),
+                        q_values=[],
+                        current_price=current_price,
+                        position_status=position_status,
+                        model_path=fallback_model_path or '',
+                        market_conditions=fallback_mc,
+                    )
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -3015,7 +4679,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         try:
             has_active_intent = False
             if rc is not None:
-                aid = rc.get(f'exec:active_intent:{symbol}')
+                aid = rc.get(f'exec:active_intent:{session_id}')
                 if aid:
                     raw_intent = rc.get(f'exec:intent:{aid}')
                     if raw_intent:
@@ -3030,7 +4694,6 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
 
         # Debug-buy (ENV only): форсировать BUY при любом предсказании, если включён в окружении
         try:
-            import os
             def _truthy(v):
                 try:
                     return str(v).strip().lower() in ('1','true','yes','on')
@@ -3054,7 +4717,11 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         except Exception:
             pass
 
+        # NOTE: prediction-level BUY notifications were sending "signals" without an executed entry.
+        # Entry notifications are now tied to actual opened positions via signal_notifier trade_entry events.
+
         trade_result = None
+        entry_executed_now = False
         if dry_run:
             trade_result = {"success": True, "action": "dry_run"}
         else:
@@ -3066,26 +4733,23 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             risk_type_exec = None
             try:
                 if rc is not None:
-                    _em = rc.get(f'trading:execution_mode:{symbol}')
+                    _em = sget('execution_mode', session_doc.get('execution_mode'))
                     if _em:
                         exec_mode = str(_em).strip()
-                    _lc = rc.get(f'trading:limit_config:{symbol}')
+                    _lc = sget_json('limit_config', session_doc.get('limit_config'))
                     if _lc:
-                        try:
-                            limit_cfg = json.loads(_lc)
-                        except Exception:
-                            limit_cfg = None
-                    _xm = rc.get(f'trading:exit_mode:{symbol}')
+                        limit_cfg = _lc if isinstance(_lc, dict) else None
+                    _xm = sget('exit_mode', session_doc.get('exit_mode'))
                     if _xm:
                         exit_mode = str(_xm).strip()
-                    _lev = rc.get(f'trading:leverage:{symbol}')
+                    _lev = sget('leverage', session_doc.get('leverage'))
                     if _lev:
                         try:
                             leverage_val = max(1, min(5, int(str(_lev))))
                         except Exception:
                             leverage_val = 1
                     # читаем тип риск-менеджмента, чтобы управлять выходом
-                    _rt = rc.get(f'trading:risk_management_type:{symbol}') or rc.get('trading:risk_management_type')
+                    _rt = sget('risk_management_type', session_doc.get('risk_management_type'))
                     if _rt is not None and str(_rt).strip() != '':
                         risk_type_exec = str(_rt).strip()
             except Exception:
@@ -3137,7 +4801,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     # Дополнительно: удаляем активный DDD‑интент и отменяем его ордер, если висит
                     try:
                         if rc is not None:
-                            aid_flat = rc.get(f'exec:active_intent:{symbol}')
+                            aid_flat = rc.get(f'exec:active_intent:{session_id}')
                             if aid_flat:
                                 raw_flat = rc.get(f'exec:intent:{aid_flat}')
                                 exch_id_flat = None
@@ -3156,7 +4820,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                                     rc.delete(f'exec:intent:{aid_flat}')
                                 except Exception:
                                     pass
-                                rc.delete(f'exec:active_intent:{symbol}')
+                                rc.delete(f'exec:active_intent:{session_id}')
                                 try:
                                     logger.warning(f"[cleanup] flat state: cleared active intent {aid_flat}")
                                 except Exception:
@@ -3199,14 +4863,186 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             except Exception:
                 dir_now = 'long'
 
+            # Hold-steps exit mode for XGB: keep position until timeout, then force close.
+            try:
+                if getattr(agent, 'current_position', None) and str(exit_mode or '').strip().lower() == 'hold_steps':
+                    max_hold_steps_cfg = None
+                    entry_ts_ms = None
+                    signal_exit_enabled = False
+                    signal_exit_start_step = None
+                    signal_exit_window = XGB_SIGNAL_EXIT_WINDOW_DEFAULT
+                    signal_exit_threshold = XGB_SIGNAL_EXIT_THRESHOLD_DEFAULT
+                    now_bucket_ts = _last_closed_ts_ms()
+                    try:
+                        if rc is not None:
+                            raw_mhs = sget('max_hold_steps', session_doc.get('max_hold_steps'))
+                            if raw_mhs is not None and str(raw_mhs).strip() != '':
+                                max_hold_steps_cfg = int(float(raw_mhs))
+                            raw_signal_exit_enabled = sget('xgb_signal_exit_enabled', session_doc.get('xgb_signal_exit_enabled'))
+                            signal_exit_enabled = str(raw_signal_exit_enabled or '').strip().lower() in ('1', 'true', 'yes', 'on')
+                            signal_exit_role = 'short' if (str(pos_type or '').strip().lower() == 'short' or dir_now == 'short') else 'long'
+                            raw_role_enabled = sget(
+                                f'xgb_signal_exit_{signal_exit_role}_enabled',
+                                session_doc.get(f'xgb_signal_exit_{signal_exit_role}_enabled'),
+                            )
+                            if raw_role_enabled not in (None, ''):
+                                signal_exit_enabled = str(raw_role_enabled or '').strip().lower() in ('1', 'true', 'yes', 'on')
+                            raw_signal_exit_start = sget(
+                                f'xgb_signal_exit_{signal_exit_role}_start_step',
+                                session_doc.get(f'xgb_signal_exit_{signal_exit_role}_start_step'),
+                            )
+                            if raw_signal_exit_start in (None, ''):
+                                raw_signal_exit_start = sget('xgb_signal_exit_start_step', session_doc.get('xgb_signal_exit_start_step'))
+                            if raw_signal_exit_start not in (None, ''):
+                                signal_exit_start_step = int(float(raw_signal_exit_start))
+                            raw_signal_exit_window = sget('xgb_signal_exit_window', session_doc.get('xgb_signal_exit_window'))
+                            if raw_signal_exit_window not in (None, ''):
+                                signal_exit_window = max(1, int(float(raw_signal_exit_window)))
+                            raw_signal_exit_threshold = sget(
+                                f'xgb_signal_exit_{signal_exit_role}_threshold',
+                                session_doc.get(f'xgb_signal_exit_{signal_exit_role}_threshold'),
+                            )
+                            if raw_signal_exit_threshold in (None, ''):
+                                raw_signal_exit_threshold = sget(
+                                    'xgb_signal_exit_threshold',
+                                    session_doc.get('xgb_signal_exit_threshold', XGB_SIGNAL_EXIT_THRESHOLD_DEFAULT),
+                                )
+                            if raw_signal_exit_threshold not in (None, ''):
+                                signal_exit_threshold = float(raw_signal_exit_threshold)
+                    except Exception:
+                        max_hold_steps_cfg = None
+                    try:
+                        if rc is not None:
+                            raw_ets = sget('pos_entry_ts')
+                            if raw_ets is not None and str(raw_ets).strip() not in ('', '0'):
+                                entry_ts_ms = int(raw_ets)
+                    except Exception:
+                        entry_ts_ms = None
+
+                    candles_in_pos = None
+                    if now_bucket_ts and entry_ts_ms and int(now_bucket_ts) >= int(entry_ts_ms):
+                        candles_in_pos = int((int(now_bucket_ts) - int(entry_ts_ms)) // 300000)
+                    remaining_hold_steps = None
+                    if isinstance(max_hold_steps_cfg, int) and max_hold_steps_cfg > 0 and candles_in_pos is not None:
+                        remaining_hold_steps = max(0, int(max_hold_steps_cfg) - int(candles_in_pos))
+                    if remaining_hold_steps == 10 and rc is not None and entry_ts_ms is not None:
+                        try:
+                            notify_key = session_runtime_key(
+                                session_id,
+                                f"xgb_exit_soon_notified:{int(entry_ts_ms)}:{int(max_hold_steps_cfg)}",
+                            )
+                            if rc.set(notify_key, "1", nx=True, ex=86400 * 30):
+                                publish_signal_event(rc, {
+                                    "signal_id": f"{session_id}:{symbol}:{int(entry_ts_ms)}:{int(max_hold_steps_cfg)}:xgb_exit_soon",
+                                    "event_type": "xgb_exit_soon",
+                                    "session_id": session_id,
+                                    "account_id": account_id,
+                                    "symbol": symbol,
+                                    "action": "exit_soon",
+                                    "direction": dir_now,
+                                    "position_type": pos_type,
+                                    "price": locals().get("current_price"),
+                                    "remaining_steps": remaining_hold_steps,
+                                    "max_hold_steps": int(max_hold_steps_cfg),
+                                    "candles_in_pos": int(candles_in_pos),
+                                    "entry_ts_ms": int(entry_ts_ms),
+                                    "now_bucket_ts_ms": int(now_bucket_ts) if now_bucket_ts is not None else None,
+                                    "extend_steps": 50,
+                                    "model_paths": model_paths,
+                                })
+                        except Exception:
+                            logger.exception("[signal_notifier] failed to publish xgb_exit_soon session=%s symbol=%s", session_id, symbol)
+
+                    try:
+                        pred_json['hold_steps'] = {
+                            'enabled': True,
+                            'max_hold_steps': int(max_hold_steps_cfg) if max_hold_steps_cfg is not None else None,
+                            'entry_ts_ms': int(entry_ts_ms) if entry_ts_ms is not None else None,
+                            'now_bucket_ts_ms': int(now_bucket_ts) if now_bucket_ts is not None else None,
+                            'candles_in_pos': int(candles_in_pos) if candles_in_pos is not None else None,
+                            'remaining_steps': int(remaining_hold_steps) if remaining_hold_steps is not None else None,
+                            'signal_exit': {
+                                'enabled': bool(signal_exit_enabled),
+                                'start_step': int(signal_exit_start_step) if isinstance(signal_exit_start_step, int) else None,
+                                'window': int(signal_exit_window),
+                                'threshold': float(signal_exit_threshold),
+                            },
+                        }
+                    except Exception:
+                        pass
+
+                    signal_exit_triggered = False
+                    if (
+                        signal_exit_enabled
+                        and isinstance(signal_exit_start_step, int)
+                        and signal_exit_start_step > 0
+                        and candles_in_pos is not None
+                        and candles_in_pos >= int(signal_exit_start_step)
+                    ):
+                        signal_samples = _load_xgb_signal_history(rc, session_id, signal_exit_window)
+                        try:
+                            pred_json['hold_steps']['signal_exit']['history_size'] = len(signal_samples)
+                        except Exception:
+                            pass
+                        if len(signal_samples) >= int(signal_exit_window):
+                            avg_signal = float(sum(float(item['signal']) for item in signal_samples) / len(signal_samples))
+                            avg_threshold = float(signal_exit_threshold)
+                            try:
+                                pred_json['hold_steps']['signal_exit']['avg_signal'] = avg_signal
+                                pred_json['hold_steps']['signal_exit']['avg_threshold'] = avg_threshold
+                                pred_json['hold_steps']['signal_exit']['ready'] = True
+                            except Exception:
+                                pass
+                            if avg_signal < avg_threshold:
+                                signal_exit_triggered = True
+                                if pos_type == 'long':
+                                    decision = 'sell'
+                                elif pos_type == 'short':
+                                    decision = 'buy'
+                                try:
+                                    if rc is not None:
+                                        rc.setex(session_runtime_key(session_id, "forced_exit_reason"), 3600, "weak_signal_avg")
+                                    pred_json['hold_steps']['phase'] = 'signal_exit'
+                                    pred_json['hold_steps']['signal_exit']['triggered'] = True
+                                except Exception:
+                                    pass
+                        else:
+                            try:
+                                pred_json['hold_steps']['signal_exit']['ready'] = False
+                            except Exception:
+                                pass
+
+                    if isinstance(max_hold_steps_cfg, int) and max_hold_steps_cfg > 0 and candles_in_pos is not None:
+                        if signal_exit_triggered:
+                            pass
+                        elif candles_in_pos >= int(max_hold_steps_cfg):
+                            if pos_type == 'long':
+                                decision = 'sell'
+                            elif pos_type == 'short':
+                                decision = 'buy'
+                            try:
+                                if rc is not None:
+                                    rc.setex(session_runtime_key(session_id, "forced_exit_reason"), 3600, "timeout")
+                                pred_json['hold_steps']['phase'] = 'timeout_exit'
+                            except Exception:
+                                pass
+                        else:
+                            decision = 'hold'
+                            try:
+                                pred_json['hold_steps']['phase'] = 'holding'
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
             # Сбрасываем gate лимитного входа, если позиция уже открыта
             try:
                 _rc_gate_reset = Redis(host='redis', port=6379, db=0, decode_responses=True)
                 if getattr(agent, 'current_position', None):
-                    _rc_gate_reset.delete(f"trading:limit_entry:first_ts:{symbol}")
-                    _rc_gate_reset.delete(f"trading:limit_entry:attempts:{symbol}")
-                    _rc_gate_reset.delete(f"trading:market_entry:first_ts:{symbol}")
-                    _rc_gate_reset.delete(f"trading:market_entry:attempts:{symbol}")
+                    _rc_gate_reset.delete(session_runtime_key(session_id, "limit_entry:first_ts"))
+                    _rc_gate_reset.delete(session_runtime_key(session_id, "limit_entry:attempts"))
+                    _rc_gate_reset.delete(session_runtime_key(session_id, "market_entry:first_ts"))
+                    _rc_gate_reset.delete(session_runtime_key(session_id, "market_entry:attempts"))
             except Exception:
                 pass
 
@@ -3231,18 +5067,67 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
             except Exception:
                 pass
 
+            try:
+                if is_xgb_trade and getattr(agent, 'current_position', None):
+                    pred_json['xgb_in_position_block'] = True
+                    pred_json['xgb_in_position_reason'] = 'already_in_position'
+                    preds_adj = pred_json.get('predictions') or []
+                    if isinstance(preds_adj, list):
+                        for _p in preds_adj:
+                            try:
+                                _p['action'] = 'hold'
+                                _mc0 = _p.get('market_conditions') if isinstance(_p.get('market_conditions'), dict) else {}
+                                _mc0['xgb_in_position_block'] = True
+                                _mc0['xgb_in_position_reason'] = 'already_in_position'
+                                _p['market_conditions'] = _mc0
+                            except Exception:
+                                continue
+                    pred_json['decision'] = 'hold'
+                    decision = 'hold'
+                elif is_xgb_trade and not getattr(agent, 'current_position', None):
+                    pred_json['xgb_in_position_block'] = False
+            except Exception:
+                pass
+
+            # Final hard guard before any market/limit ENTRY. This prevents later runtime code
+            # from re-enabling an XGB entry inside the post-exit boosted-threshold window.
+            try:
+                decision = _apply_xgb_postexit_cooldown_gate(decision, "final")
+                decision = _apply_xgb_postexit_threshold_gate(decision)
+            except Exception:
+                pass
+
+            # Entry dedupe: only one worker may start a fresh entry for this session/symbol.
+            try:
+                if (not getattr(agent, 'current_position', None)) and ((decision == 'buy' and dir_now == 'long') or (decision == 'sell' and dir_now == 'short')):
+                    if rc is not None:
+                        _entry_lock_key = session_runtime_key(session_id, "entry:lock")
+                        _entry_lock_token = str(uuid.uuid4())
+                        _entry_lock_ok = rc.set(_entry_lock_key, _entry_lock_token, nx=True, ex=90)
+                        if not _entry_lock_ok:
+                            pred_json['entry_lock_block'] = {
+                                'blocked': True,
+                                'reason': 'entry already in progress',
+                                'ttl_sec': rc.ttl(_entry_lock_key),
+                            }
+                            trade_result = {"success": False, "action": "entry_lock_blocked", "reason": "entry already in progress"}
+                            logger.warning("[entry_lock] session=%s symbol=%s blocked duplicate entry", session_id, symbol)
+                            decision = 'hold'
+            except Exception:
+                pass
+
             # --- Market entry gate: ограничиваем число рыночных входов за окно ---
             if decision in ('buy', 'sell') and str(exec_mode or '').strip() != 'limit_post_only':
                 try:
                     _rc_mgate = Redis(host='redis', port=6379, db=0, decode_responses=True)
-                    _mma_raw = _rc_mgate.get(f"trading:market_entry_max_attempts:{symbol}") or _rc_mgate.get("trading:market_entry_max_attempts")
-                    _mws_raw = _rc_mgate.get(f"trading:market_entry_window_sec:{symbol}") or _rc_mgate.get("trading:market_entry_window_sec")
+                    _mma_raw = sget("market_entry_max_attempts", _rc_mgate.get("trading:market_entry_max_attempts"))
+                    _mws_raw = sget("market_entry_window_sec", _rc_mgate.get("trading:market_entry_window_sec"))
                     _m_max = int(float(_mma_raw)) if (_mma_raw is not None and str(_mma_raw).strip() != '') else 2
                     _m_win = int(float(_mws_raw)) if (_mws_raw is not None and str(_mws_raw).strip() != '') else 1800
                     _m_max = max(1, min(100, _m_max))
                     _m_win = max(60, min(24 * 3600, _m_win))
-                    _mfk = f"trading:market_entry:first_ts:{symbol}"
-                    _mak = f"trading:market_entry:attempts:{symbol}"
+                    _mfk = session_runtime_key(session_id, "market_entry:first_ts")
+                    _mak = session_runtime_key(session_id, "market_entry:attempts")
                     _mnow = float(time.time())
                     _mft = 0.0
                     try:
@@ -3278,6 +5163,13 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
 
             if (not agent.current_position) and ((decision == 'buy' and dir_now == 'long') or (decision == 'sell' and dir_now == 'short')):
                 entry_side = 'buy' if decision == 'buy' else 'sell'
+                try:
+                    if isinstance(entry_shap_snapshot, dict) and entry_shap_snapshot:
+                        setattr(agent, '_last_xgb_shap_snapshot', entry_shap_snapshot)
+                    else:
+                        setattr(agent, '_last_xgb_shap_snapshot', None)
+                except Exception:
+                    pass
                 if exec_mode == 'limit_post_only':
                     try:
                         # Gate: не даём лимитному входу крутиться бесконечно каждые 5 минут
@@ -3286,15 +5178,15 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                         try:
                             _rc_gate = Redis(host='redis', port=6379, db=0, decode_responses=True)
                             # Настройки: per-symbol -> global -> defaults
-                            _ma_raw = _rc_gate.get(f"trading:limit_entry_max_attempts:{symbol}") or _rc_gate.get("trading:limit_entry_max_attempts")
-                            _ws_raw = _rc_gate.get(f"trading:limit_entry_window_sec:{symbol}") or _rc_gate.get("trading:limit_entry_window_sec")
+                            _ma_raw = sget("limit_entry_max_attempts", _rc_gate.get("trading:limit_entry_max_attempts"))
+                            _ws_raw = sget("limit_entry_window_sec", _rc_gate.get("trading:limit_entry_window_sec"))
                             max_attempts = int(float(_ma_raw)) if (_ma_raw is not None and str(_ma_raw).strip() != '') else 6
                             window_sec = int(float(_ws_raw)) if (_ws_raw is not None and str(_ws_raw).strip() != '') else 1800  # 30 минут
                             max_attempts = max(1, min(100, int(max_attempts)))
                             window_sec = max(60, min(24 * 3600, int(window_sec)))
 
-                            first_key = f"trading:limit_entry:first_ts:{symbol}"
-                            att_key = f"trading:limit_entry:attempts:{symbol}"
+                            first_key = session_runtime_key(session_id, "limit_entry:first_ts")
+                            att_key = session_runtime_key(session_id, "limit_entry:attempts")
                             now_ts = float(time.time())
                             first_ts = 0.0
                             try:
@@ -3355,6 +5247,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                             base_qty = float(getattr(agent, 'trade_amount', 0.0)) or 0.0
                             qty_entry = _apply_safety_buffer_qty(base_qty) if base_qty > 0 else None
                             start_execution_strategy.apply_async(kwargs={
+                                'session_id': session_id,
                                 'symbol': symbol,
                                 'execution_mode': 'limit_post_only',
                                 'side': entry_side,
@@ -3387,6 +5280,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
 
                     if entry_splits <= 1:
                         trade_result = agent._execute_buy() if entry_side == 'buy' else agent._execute_open_short()
+                        entry_executed_now = bool(isinstance(trade_result, dict) and trade_result.get('success') is True)
                     else:
                         total_qty = 0.0
                         try:
@@ -3424,6 +5318,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                             "qty_each": float(part_qty),
                             "results": results,
                         }
+                        entry_executed_now = bool(ok_all)
 
                     # После рыночного лонга — выставим TP/SL (как раньше). Для шорта риск-ордера ставятся через ensure_risk_orders ниже.
                     if entry_side == 'buy':
@@ -3431,9 +5326,15 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                             tp_pct = 1.0; sl_pct = 1.0; rtype = 'exchange_orders'
                             try:
                                 if rc is not None:
-                                    tp_raw = rc.get('trading:take_profit_pct')
-                                    sl_raw = rc.get('trading:stop_loss_pct')
-                                    rt = rc.get('trading:risk_management_type')
+                                    tp_raw = get_runtime_value(rc, session_id, 'take_profit_pct_long', session_doc.get('take_profit_pct_long'))
+                                    sl_raw = get_runtime_value(rc, session_id, 'stop_loss_pct_long', session_doc.get('stop_loss_pct_long'))
+                                    if _pick_num(tp_raw) is None or _pick_num(sl_raw) is None:
+                                        tp_default, sl_default = _xgb_side_risk_defaults(session_doc, 'long')
+                                        if _pick_num(tp_raw) is None:
+                                            tp_raw = tp_default
+                                        if _pick_num(sl_raw) is None:
+                                            sl_raw = sl_default
+                                    rt = get_runtime_value(rc, session_id, 'risk_management_type', session_doc.get('risk_management_type'))
                                     if rt is not None and str(rt).strip() != '':
                                         rtype = str(rt)
                                     if tp_raw is not None and str(tp_raw).strip() != '':
@@ -3512,6 +5413,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                             if sell_strategy.get('sell_all') and sell_qty <= 0:
                                 sell_qty = None
                             start_execution_strategy.apply_async(kwargs={
+                                'session_id': session_id,
                                 'symbol': symbol,
                                 'execution_mode': 'limit_post_only',
                                 'side': 'sell',
@@ -3543,10 +5445,139 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     # Для limit_post_only первый ensure лучше делать позже, чтобы попасть ближе к фактическому fill.
                     # Для market/прочих режимов 2s норм.
                     _first = 20 if str(exec_mode or '').strip() == 'limit_post_only' else 2
-                    ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=_first, queue='trade')
+                    ensure_risk_orders.apply_async(kwargs={'session_id': session_id, 'symbol': symbol}, countdown=_first, queue='trade')
                     if str(exec_mode or '').strip() == 'limit_post_only':
-                        ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=15, queue='trade')
-                        ensure_risk_orders.apply_async(kwargs={'symbol': symbol}, countdown=60, queue='trade')
+                        ensure_risk_orders.apply_async(kwargs={'session_id': session_id, 'symbol': symbol}, countdown=15, queue='trade')
+                        ensure_risk_orders.apply_async(kwargs={'session_id': session_id, 'symbol': symbol}, countdown=60, queue='trade')
+        except Exception:
+            pass
+
+        # Для hold_steps время входа нужно сохранять не только через ensure_risk,
+        # иначе UI может увидеть открытую позицию раньше, чем появится ключ в Redis.
+        try:
+            if rc is not None and getattr(agent, 'current_position', None):
+                _ets_key = session_runtime_key(session_id, 'pos_entry_ts')
+                _ets_raw = rc.get(_ets_key)
+                _pos = getattr(agent, 'current_position', None) or {}
+                try:
+                    sset('pos_open', '1')
+                    if _pos.get('type'):
+                        sset('pos_type', str(_pos.get('type')))
+                    if _pos.get('entry_price') not in (None, ''):
+                        sset('pos_entry_price', str(float(_pos.get('entry_price'))))
+                except Exception:
+                    pass
+                _should_write_entry_ts = bool(entry_executed_now) or _ets_raw in (None, '', '0')
+                try:
+                    _last_exit_raw = sget('last_exit_ts_ms')
+                    if _last_exit_raw not in (None, '') and _ets_raw not in (None, '', '0'):
+                        _should_write_entry_ts = _should_write_entry_ts or int(float(_last_exit_raw)) >= int(float(_ets_raw))
+                except Exception:
+                    pass
+                if _should_write_entry_ts:
+                    _entry_ts = None
+                    try:
+                        _entry_time = _pos.get('entry_time')
+                        if _entry_time is not None and hasattr(_entry_time, 'timestamp'):
+                            _entry_ts = int(_entry_time.timestamp() * 1000)
+                    except Exception:
+                        _entry_ts = None
+                    if not _entry_ts:
+                        _entry_ts = _last_closed_ts_ms()
+                    if _entry_ts:
+                        rc.set(_ets_key, str(int(_entry_ts)))
+
+                # Publish bot event only when a position is actually open (covers market + delayed fills).
+                try:
+                    _pos_type_pub = str(_pos.get('type') or '').strip().lower()
+                    if _pos_type_pub in ('long', 'short'):
+                        _ets_val = rc.get(_ets_key)
+                        _ets_val = _ets_val.decode() if isinstance(_ets_val, (bytes, bytearray)) else _ets_val
+                        _entry_ts_ms_pub = int(float(_ets_val)) if _ets_val not in (None, '', '0') else None
+                        if not _entry_ts_ms_pub:
+                            raise RuntimeError("pos_entry_ts is required to publish trade_entry")
+                        _pub_key = f"signals:published_entry:{session_id}:{symbol}:{int(_entry_ts_ms_pub)}"
+                        if rc.set(_pub_key, "1", nx=True, ex=86400 * 90):
+                            _entry_price_pub = None
+                            try:
+                                if _pos.get('entry_price') not in (None, ''):
+                                    _entry_price_pub = float(_pos.get('entry_price'))
+                            except Exception:
+                                _entry_price_pub = None
+                            publish_signal_event(rc, {
+                                "event_type": "trade_entry",
+                                "entry_executed": True,
+                                "signal_id": f"{session_id}:{symbol}:{int(_entry_ts_ms_pub)}:{_pos_type_pub}:entry",
+                                "session_id": session_id,
+                                "account_id": account_id,
+                                "symbol": symbol,
+                                "action": ("buy" if _pos_type_pub == "long" else "sell"),
+                                "price": _entry_price_pub,
+                                "position_type": _pos_type_pub,
+                                "entry_ts_ms": int(_entry_ts_ms_pub),
+                                "trade_mode": str(trade_mode) if trade_mode else None,
+                                "model_paths": model_paths,
+                                "trade_number": str((_pos.get('trade_number') if _pos else None) or (trade_result.get('trade_number') if isinstance(trade_result, dict) else '') or ''),
+                            })
+                            try:
+                                _pos_side_notify = str((_pos.get('type') if _pos and _pos.get('type') else None) or entry_side or '').strip().lower()
+                                _sl_raw_notify = (
+                                    get_runtime_value(
+                                        rc,
+                                        session_id,
+                                        f'stop_loss_pct_{_pos_side_notify}',
+                                        session_doc.get(f'stop_loss_pct_{_pos_side_notify}'),
+                                    )
+                                    if _pos_side_notify in ('long', 'short')
+                                    else None
+                                )
+                                if _sl_raw_notify in (None, '') and _pos_side_notify in ('long', 'short'):
+                                    _, _sl_raw_notify = _xgb_side_risk_defaults(session_doc, _pos_side_notify)
+                                _sl_notify = float(_sl_raw_notify) if _sl_raw_notify not in (None, '') else None
+                            except Exception:
+                                _sl_notify = None
+                            try:
+                                _notify_max_position_entry(
+                                    rc=rc,
+                                    session_id=session_id,
+                                    symbol=symbol,
+                                    side=str((_pos.get('type') if _pos and _pos.get('type') else None) or entry_side or '').strip().lower(),
+                                    entry_price=float(_pos.get('entry_price')) if _pos and _pos.get('entry_price') not in (None, '') else None,
+                                    entry_time=(_pos.get('entry_time') if _pos else None) or datetime.now(),
+                                    stop_loss_pct=_sl_notify,
+                                    trade_number=str((_pos.get('trade_number') if _pos else None) or (trade_result.get('trade_number') if isinstance(trade_result, dict) else '') or ''),
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                _notify_telegram_position_entry(
+                                    rc=rc,
+                                    session_id=session_id,
+                                    symbol=symbol,
+                                    side=str((_pos.get('type') if _pos and _pos.get('type') else None) or entry_side or '').strip().lower(),
+                                    entry_price=float(_pos.get('entry_price')) if _pos and _pos.get('entry_price') not in (None, '') else None,
+                                    entry_time=(_pos.get('entry_time') if _pos else None) or datetime.now(),
+                                    stop_loss_pct=_sl_notify,
+                                    trade_number=str((_pos.get('trade_number') if _pos else None) or (trade_result.get('trade_number') if isinstance(trade_result, dict) else '') or ''),
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                from tasks.celery_task_copy_trade import copy_trade_for_clients
+                                copy_trade_for_clients.apply_async(
+                                    kwargs={
+                                        "session_id": str(session_id),
+                                        "symbol": str(symbol),
+                                        "action": "entry",
+                                        "position_type": str((_pos.get('type') if _pos and _pos.get('type') else None) or entry_side or "long").strip().lower(),
+                                        "entry_price": float(_pos.get('entry_price')) if _pos and _pos.get('entry_price') not in (None, '') else None,
+                                    },
+                                    queue="celery"
+                                )
+                            except Exception as e_cp:
+                                logger.exception("[copy_trade] entry trigger failed: %s", e_cp)
+                except Exception:
+                    logger.exception("[signal_notifier] failed to publish trade_entry session=%s symbol=%s", session_id, symbol)
         except Exception:
             pass
 
@@ -3555,6 +5586,44 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         # 5) Сохранение результата в Redis (как раньше)
         try:
             if rc is not None:
+                try:
+                    was_flat_before = not bool((current_status_before or {}).get('position'))
+                except Exception:
+                    was_flat_before = False
+                if is_xgb_trade and was_flat_before:
+                    long_signal_v, short_signal_v = _extract_xgb_long_short_signals(pred_json)
+                    entry_state = 'ожидание'
+                    try:
+                        if bool(entry_executed_now):
+                            dir_now_v = str(locals().get('dir_now') or '').strip().lower()
+                            decision_v = str(decision or '').strip().lower()
+                            if dir_now_v == 'short' and decision_v == 'sell':
+                                entry_state = 'вход short'
+                            elif dir_now_v == 'long' and decision_v == 'buy':
+                                entry_state = 'вход long'
+                            else:
+                                pos_type_v = str((getattr(agent, 'current_position', None) or {}).get('type') or '').strip().lower()
+                                if pos_type_v == 'short':
+                                    entry_state = 'вход short'
+                                elif pos_type_v == 'long':
+                                    entry_state = 'вход long'
+                    except Exception:
+                        entry_state = 'ожидание'
+                    bybit_account_id_v = None
+                    try:
+                        bybit_account_id_v = str(account_id or '').strip() or None
+                    except Exception:
+                        bybit_account_id_v = None
+                    _append_xgb_entry_attempt_history(rc, {
+                        'ts_ms': int(time.time() * 1000),
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'session_id': str(session_id),
+                        'symbol': str(symbol),
+                        'long_signal': long_signal_v,
+                        'short_signal': short_signal_v,
+                        'state': entry_state,
+                        'bybit_account_id': bybit_account_id_v,
+                    })
                 # Упакуем предсказания по моделям для UI
                 try:
                     preds_list = pred_json.get('predictions') or []
@@ -3574,6 +5643,7 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
 
                 result_data = {
                     'timestamp': datetime.now().isoformat(),
+                    'session_id': session_id,
                     'symbols': syms,
                     'model_paths': model_paths,
                     'decision': decision,
@@ -3594,13 +5664,12 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
                     'trade_result': trade_result,
                     'exit_mode': exit_mode,
                 }
-                rc.setex(f'trading:latest_result_{datetime.now().strftime("%Y%m%d_%H%M%S")}', 3600, json.dumps(result_data, default=str))
-                # Сохраняем статус для конкретного символа
-                symbol = syms[0] if syms else 'ALL'
-                rc.set(f'trading:status:{symbol}', json.dumps(status_after, default=str))
-                # НЕ перезаписываем общий статус, чтобы не убить другие агенты
-                # rc.set('trading:current_status', json.dumps(status_after, default=str))
-                rc.set('trading:current_status_ts', datetime.utcnow().isoformat())
+                rc.setex(session_runtime_key(session_id, "latest_result"), 3600, json.dumps(result_data, default=str))
+                status_after['session_id'] = session_id
+                status_after['symbol'] = symbol
+                status_after['symbol_display'] = symbol
+                status_after['bybit_account_id'] = account_id
+                set_session_status(rc, session_id, status_after)
         except Exception:
             pass
 
@@ -3618,12 +5687,8 @@ def execute_trade(self, symbols: list, model_path: str | None = None, model_path
         return {"success": False, "error": str(e)}
 
 @celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='trade')
-def start_trading_task(self, symbols, model_path=None):
-    """
-    Оркестратор: получает параметры, делает Redis-лок, публикует provisional-статус
-    и кладёт торговую задачу в очередь trade (без docker exec).
-    """
-    import os
+def start_trading_task(self, session_id: str):
+    """Оркестратор запускает один trade-cycle для конкретной session."""
     from datetime import datetime
 
     def _is_trade_worker_alive() -> bool:
@@ -3633,321 +5698,117 @@ def start_trading_task(self, symbols, model_path=None):
                 return False
             active_queues = insp.active_queues() or {}
             for queues in active_queues.values():
-                if not queues:
-                    continue
-                for q in queues:
+                for q in queues or []:
                     if q.get('name') == 'trade':
                         return True
             return False
-        except Exception as e:
-            print(f"[start_trading_task] инспекция очередей Celery не удалась: {e}")
-            # Если не удалось проверить — не блокируем запуск
+        except Exception:
             return True
 
-    def _mark_trade_worker_down(sym_list, reason_msg):
-        try:
-            rc = get_redis_client()
-            if not isinstance(sym_list, list) or not sym_list:
-                logger.error("Не переданы символы для обработки статуса торгового воркера")
-                return {
-                    "success": False, 
-                    "error": "Не указаны символы для обработки статуса торгового воркера"
-                }
-            
-            status_payload = {
-                'success': False,
-                'is_trading': False,
-                'trading_status': 'Ошибка',
-                'trading_status_emoji': '🔴',
-                'trading_status_full': '🔴 Ошибка: воркер celery-trade не запущен',
-                'reason': reason_msg,
-                'last_error': reason_msg,
-                'timestamp': datetime.utcnow().isoformat()
-            }
-            import json as _json
-            for sym in sym_list:
-                sym_u = str(sym).upper()
-                payload = dict(status_payload)
-                payload['symbol'] = sym_u
-                payload['symbol_display'] = sym_u
-                rc.set(f'trading:status:{sym_u}', _json.dumps(payload, ensure_ascii=False))
-            
-            # Обновим глобальный статус, чтобы /api/trading/status тоже сообщал об ошибке
-            try:
-                rc.set('trading:current_status', _json.dumps(payload, ensure_ascii=False))
-                rc.set('trading:current_status_ts', datetime.utcnow().isoformat())
-            except Exception:
-                pass
-        except Exception as err:
-            print(f"[start_trading_task] Не удалось записать статус об ошибке celery-trade: {err}")
+    rc = get_redis_client()
+    session_doc = load_session(rc, session_id) if rc is not None else None
+    if not isinstance(session_doc, dict):
+        return {"success": False, "skipped": True, "reason": "session_not_found"}
 
-    # Проверяем, должна ли работать торговля
+    symbol = str(session_doc.get('symbol') or '').strip().upper()
+    if not symbol:
+        return {"success": False, "skipped": True, "reason": "symbol_missing"}
+
     trading_enabled = str(get_config_value('ENABLE_TRADING_BEAT', '0')).lower() in ('1', 'true', 'yes', 'on')
     if not trading_enabled:
         return {"success": False, "skipped": True, "reason": "ENABLE_TRADING_BEAT=0"}
 
-    # Проверяем, что воркер с очередью trade жив; иначе сообщаем в UI и прекращаем
     if not _is_trade_worker_alive():
-        reason_msg = 'Воркер celery-trade не запущен (очередь trade недоступна). Перезапустите celery-trade.'
-        _mark_trade_worker_down(symbols, reason_msg)
-        return {
-            "success": False,
-            "skipped": True,
-            "reason": "celery_trade_unavailable",
-            "error": reason_msg
+        payload = {
+            'success': False,
+            'session_id': session_id,
+            'symbol': symbol,
+            'symbol_display': symbol,
+            'is_trading': False,
+            'trading_status': 'Ошибка',
+            'trading_status_emoji': '🔴',
+            'trading_status_full': '🔴 Ошибка: воркер celery-trade не запущен',
+            'reason': 'celery_trade_unavailable',
+            'last_error': 'Воркер celery-trade не запущен (очередь trade недоступна).',
+            'timestamp': datetime.utcnow().isoformat(),
         }
+        if rc is not None:
+            set_session_status(rc, session_id, payload)
+        return {"success": False, "skipped": True, "reason": "celery_trade_unavailable"}
 
-    # Определяем символы для торговли
-    final_symbols = symbols
-    if not final_symbols:
-        from redis import Redis
-        import json
-        rc = Redis(host='redis', port=6379, db=0, decode_responses=True)
-        symbols_raw = rc.get('trading:symbols')
-        logger.warning(f"DEBUG: start_trading_task received empty symbols, trying to get from Redis. symbols_raw = {symbols_raw}")
-
-        if not symbols_raw:
-            logger.warning("DEBUG: No symbols found in trading:symbols from start_trading_task")
-            return {"success": False, "skipped": True, "reason": "no_symbols_in_redis", "error": "Не удалось найти символы для торговли в Redis"}
-        
-        try:
-            parsed_symbols = json.loads(symbols_raw)
-            if not isinstance(parsed_symbols, list):
-                raise ValueError("Символы из Redis не являются списком")
-            final_symbols = parsed_symbols
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"DEBUG: JSON/Value Error in start_trading_task: {e}")
-            return {"success": False, "skipped": True, "reason": "symbols_parsing_error", "error": "Ошибка парсинга символов из Redis"}
-
-        if not final_symbols:
-            logger.warning("DEBUG: Parsed symbols list is empty from start_trading_task")
-            return {"success": False, "skipped": True, "reason": "empty_symbols_list", "error": "Список символов из Redis пуст"}
-        
-        logger.warning(f"DEBUG: Using symbols from Redis: {final_symbols}")
-
-    # Нормализация: приводим итоговые символы к формату БД (TONUSDT) вне зависимости от источника
+    lock_key = session_lock_key(session_id)
+    got_lock = False
     try:
-        from utils.cctx_utils import normalize_to_db as _normalize_to_db
-        if isinstance(final_symbols, (list, tuple)):
-            final_symbols = [_normalize_to_db(str(s)) for s in final_symbols if s]
-        elif isinstance(final_symbols, str) and final_symbols:
-            final_symbols = [_normalize_to_db(final_symbols)]
-    except Exception:
-        try:
-            if isinstance(final_symbols, (list, tuple)):
-                final_symbols = [str(s).replace('/', '').replace(' ', '').upper().strip() for s in final_symbols if s]
-            elif isinstance(final_symbols, str) and final_symbols:
-                final_symbols = [str(final_symbols).replace('/', '').replace(' ', '').upper().strip()]
-        except Exception:
-            pass
-
-    # Фильтр: исключаем символы, вручную отключённые пользователем
-    try:
-        from redis import Redis as _Redis
-        _rcd = _Redis(host='redis', port=6379, db=0, decode_responses=True)
-        filtered = []
-        for s in (final_symbols or []):
-            try:
-                if _rcd.get(f'trading:disabled:{str(s).upper()}'):
-                    continue
-            except Exception:
-                pass
-            filtered.append(s)
-        final_symbols = filtered
-    except Exception:
-        pass
-
-    if not final_symbols:
-        return {"success": False, "skipped": True, "reason": "all_symbols_disabled"}
-
-    # Определяем lock_symbol из final_symbols
-    lock_symbol = final_symbols[0] if final_symbols else None
-    if not lock_symbol:
-        logger.error(f"Не удалось определить lock_symbol для торговли. Итоговые символы: {final_symbols}")
-        return {"success": False, "skipped": True, "reason": "symbol_undefined", "error": "Не удалось определить символ для торговли"}
-
-    # Redis-лок: предотвращаем параллельные запуски в пределах ~5 минут (per-symbol)
-    _rc_lock = None # Инициализируем здесь, чтобы было доступно в finally
-    lock_acquired_by_this_task = False # Флаг для отслеживания получения блокировки
-    try:
-        from redis import Redis as _Redis
-        _rc_lock = _Redis(host='redis', port=6379, db=0, decode_responses=True)
-        
-        lock_key = f'trading:agent_lock:{lock_symbol}'
-        # TTL 600с (10 минут) — чтобы агент не терял lock во время работы
-        got_lock = _rc_lock.set(lock_key, self.request.id, nx=True, ex=600)
+        if rc is not None:
+            got_lock = bool(rc.set(lock_key, self.request.id, nx=True, ex=600))
         if not got_lock:
             return {"success": False, "skipped": True, "reason": "agent_lock_active"}
-        lock_acquired_by_this_task = True # Блокировка успешно получена
 
-        symbols = final_symbols # Обновляем переданные символы, чтобы остальной код использовал их
-        
-        print(f"🚀 Оркестрация торговли: symbols={symbols} | model_path={model_path if model_path else 'default'}")
-        self.update_state(state="IN_PROGRESS", meta={"progress": 0})
+        prev = get_session_status(rc, session_id) if rc is not None else {}
+        provisional = {
+            'success': True,
+            'session_id': session_id,
+            'symbol': symbol,
+            'symbol_display': symbol,
+            'bybit_account_id': str(session_doc.get('account_id') or '').strip(),
+            'is_trading': True,
+            'trading_status': 'Активна',
+            'trading_status_emoji': '🟢',
+            'trading_status_full': '🟢 Активна',
+            'amount': None,
+            'amount_display': 'Не указано',
+            'amount_usdt': 0.0,
+            'position': None,
+            'trades_count': 0,
+            'balance': {},
+            'current_price': 0.0,
+            'last_model_prediction': None,
+        }
+        if isinstance(prev, dict):
+            for key in (
+                'position',
+                'amount',
+                'amount_display',
+                'amount_usdt',
+                'trades_count',
+                'balance',
+                'current_price',
+                'last_model_prediction',
+            ):
+                if provisional.get(key) in (None, 0.0, 0, {}, 'Не указано') and prev.get(key) not in (None, '', {}, 0.0, 0):
+                    provisional[key] = prev.get(key)
+        if rc is not None:
+            set_session_status(rc, session_id, provisional)
 
-        # Получаем список путей моделей для конкретного символа
-        model_paths = None
+        res = execute_trade.apply_async(kwargs={'session_id': session_id}, queue='trade')
+        return {"success": True, "enqueued": True, "task_ids": [res.id]}
+    finally:
         try:
-            from redis import Redis as _Redis
-            _r2 = _Redis(host='redis', port=6379, db=0, decode_responses=True)
-            
-            # Определяем символ для чтения моделей
-            if not symbols:
-                logger.error("Не переданы символы для торговли")
-                return {
-                    "success": False, 
-                    "skipped": True, 
-                    "reason": "symbols_not_provided", 
-                    "error": "Не указаны символы для торговли"
-                }
-            
-            symbol = symbols[0]
-            
-            # Читаем модели для конкретного символа
-            _mps = _r2.get(f'trading:model_paths:{symbol}')
-            if _mps:
-                import json as _json
-                parsed = _json.loads(_mps)
-                if isinstance(parsed, list) and parsed:
-                    model_paths = parsed
-            
-            # Фолбэк: если не нашли для символа — пробуем общие
-            if (model_paths is None or not model_paths):
-                _mps = _r2.get('trading:model_paths')
-                if _mps:
-                    import json as _json
-                    parsed = _json.loads(_mps)
-                    if isinstance(parsed, list) and parsed:
-                        model_paths = parsed
-            
-            # Фолбэк: если не нашли актуальные пути — попробуем последние сохранённые
-            if (model_paths is None or not model_paths):
-                _last = _r2.get('trading:last_model_paths')
-                if _last:
-                    import json as _json
-                    parsed_last = _json.loads(_last)
-                    if isinstance(parsed_last, list) and parsed_last:
-                        model_paths = parsed_last
-        except Exception:
-            model_paths = None
-        if (model_paths is None or not model_paths) and model_path:
-            model_paths = [model_path]
-        # Если нашли список — синхронизируем model_path для совместимости
-        if (not model_path) and isinstance(model_paths, list) and len(model_paths) > 0:
-            model_path = model_paths[0]
-
-        # Если моделей нет — пробуем использовать дефолтную модель
-        if not model_paths:
-            # Fallback: используем дефолтную модель если Redis пуст после рестарта
-            default_model_path = '/workspace/models/btc/ensemble-a/current/dqn_model.pth'
-            try:
-                import os
-                if os.path.exists(default_model_path):
-                    model_paths = [default_model_path]
-                    model_path = default_model_path
-                    print(f"🔄 Используем дефолтную модель: {default_model_path}")
-                else:
-                    # Снять лок, чтобы не блокировать следующий запуск
-                    if _rc_lock:
-                        _rc_lock.delete(lock_key)
-                    return {"success": False, "skipped": True, "reason": "no_model_paths"}
-            except Exception:
-                # Снять лок, чтобы не блокировать следующий запуск
-                if _rc_lock:
-                    _rc_lock.delete(lock_key)
-                return {"success": False, "skipped": True, "reason": "no_model_paths"}
-
-        # Промежуточный статус в Redis для UI
-        try:
-            from redis import Redis as _Redis
-            import json as _json
-            # Если нет путей моделей — помечаем как остановлена с причиной
-            has_models = bool(model_paths and isinstance(model_paths, list) and len(model_paths) > 0)
-            provisional = {
-                'success': True,
-                'is_trading': bool(has_models),
-                'trading_status': ('Активна' if has_models else 'Остановлена'),
-                'trading_status_emoji': ('🟢' if has_models else '🔴'),
-                'trading_status_full': ('🟢 Активна' if has_models else '🔴 Остановлена (нет моделей)'),
-                'symbol': (symbols[0] if symbols else None),
-                'symbol_display': (symbols[0] if symbols else 'Не указана'),
-                'amount': None,
-                'amount_display': 'Не указано',
-                'amount_usdt': 0.0,
-                'position': None,
-                'trades_count': 0,
-                'balance': {}, 
-                'current_price': 0.0,
-                'last_model_prediction': None,
-            }
-            _rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
-            # Сохраняем статус для конкретного символа
-            symbol = symbols[0] if symbols else 'ALL'
-            _rc.set(f'trading:status:{symbol}', _json.dumps(provisional, ensure_ascii=False))
-            # НЕ перезаписываем общий статус, чтобы не убить другие агенты
-            # _rc.set('trading:current_status', _json.dumps(provisional, ensure_ascii=False))
-            from datetime import datetime as _dt
-            _rc.set('trading:current_status_ts', _dt.utcnow().isoformat())
-            # Обновим last_* для фолбэка следующего тика
-            try:
-                if has_models:
-                    _rc.set('trading:last_model_paths', _json.dumps(model_paths, ensure_ascii=False))
-                    # Если использовали дефолтную модель - сохраняем её как основную
-                    if not _rc.get('trading:model_paths'):
-                        _rc.set('trading:model_paths', _json.dumps(model_paths, ensure_ascii=False))
-                # last_consensus больше не ведём глобально, чтобы не перетирать per‑symbol
-                # Мерджим trading:symbols: добавляем текущие, не дублируем
-                try:
-                    existing_raw = _rc.get('trading:symbols')
-                    existing = _json.loads(existing_raw) if existing_raw else []
-                    if not isinstance(existing, list):
-                        existing = []
-                except Exception:
-                    existing = []
-                merged = []
-                try:
-                    for s in (existing + (symbols or [])):
-                        if s and (s not in merged):
-                            merged.append(s)
-                except Exception:
-                    merged = (symbols or [])
-                # Перед сохранением нормализуем merged (могли попасть кривые значения из старого Redis)
-                try:
-                    from utils.cctx_utils import normalize_to_db as _normalize_to_db3
-                    merged = [_normalize_to_db3(str(s)) for s in merged if s]
-                except Exception:
-                    try:
-                        merged = [str(s).replace('/', '').replace(' ', '').upper().strip() for s in merged if s]
-                    except Exception:
-                        pass
-                _rc.set('trading:symbols', _json.dumps(merged, ensure_ascii=False))
-            except Exception:
-                pass
+            if rc is not None and got_lock:
+                rc.delete(lock_key)
         except Exception:
             pass
 
-        # Кладём торговые задачи в очередь trade
-        try:
-            task_ids = []
-            # Если несколько символов — создаём отдельную задачу на каждый, чтобы все получали предсказания
-            for _sym in symbols:
-                # ВАЖНО: специализированный воркер слушает очередь 'trade' (см. docker-compose). Не менять на 'celery-trade'.
-                res = execute_trade.apply_async(kwargs={
-                    'symbols': [_sym],
-                    'model_path': None, # пусть подберётся по Redis/дефолтам внутри execute_trade
-                    'model_paths': None,
-                }, queue='trade')
-                task_ids.append(res.id)
-            return {"success": True, "enqueued": True, "task_ids": task_ids}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
 
-    finally:
-        # Гарантируем снятие блокировки в Redis, если она была успешно получена этой задачей
-        if _rc_lock and lock_symbol and lock_acquired_by_this_task:
-            lock_key = f'trading:agent_lock:{lock_symbol}'
-            _rc_lock.delete(lock_key)
-            logger.warning(f"DEBUG: Redis lock for {lock_symbol} released by this task.")
+@celery.task(bind=True, autoretry_for=(Exception,), retry_kwargs={'max_retries': 0}, queue='trade')
+def run_active_trading_sessions(self):
+    """Периодически раскладывает trade-cycle по всем активным session."""
+    rc = get_redis_client()
+    session_ids = list_session_ids(rc) if rc is not None else []
+    enqueued = []
+    for session_id in session_ids:
+        sid = str(session_id or '').strip()
+        if not sid:
+            continue
+        session_doc = load_session(rc, sid) if rc is not None else None
+        if not isinstance(session_doc, dict):
+            continue
+        disabled = str(get_runtime_value(rc, sid, 'disabled', '') or '').strip().lower()
+        if disabled in ('1', 'true', 'yes', 'on'):
+            continue
+        result = start_trading_task.apply_async(args=[sid], countdown=0, expires=300, queue='trade')
+        enqueued.append({'session_id': sid, 'task_id': result.id})
+    return {'success': True, 'total_sessions': len(session_ids), 'enqueued': enqueued}
 
 
 # --- Периодический апдейтер статуса в Redis ---

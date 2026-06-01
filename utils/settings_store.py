@@ -21,6 +21,16 @@ def ensure_settings_table() -> None:
         _bootstrap_bybit_from_env()
     except Exception:
         pass
+    # Bootstrap: Telegram bot credentials from ENV into app_settings.
+    try:
+        _bootstrap_telegram_from_env()
+    except Exception:
+        pass
+    # Bootstrap: MAX bot credentials from ENV into app_settings.
+    try:
+        _bootstrap_max_from_env()
+    except Exception:
+        pass
     # Bootstrap: дефолты для LLM (GigaChat) — чтобы они появлялись в /settings без ручных вызовов.
     try:
         _bootstrap_gigachat_defaults()
@@ -90,6 +100,80 @@ def _bootstrap_bybit_from_env() -> None:
                 row.is_secret = bool(is_secret)
                 row.value = val if (val is None or str(val).strip()) else None
                 session.add(row)
+        session.commit()
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+def _bootstrap_telegram_from_env() -> None:
+    import os
+    session = get_db_session()
+    try:
+        existing = session.query(AppSetting).filter(
+            AppSetting.scope == 'api',
+            AppSetting.group == 'telegram',
+        ).limit(1).all()
+        if existing:
+            return
+
+        bot_token = str(os.getenv('TELEGRAM_BOT_TOKEN') or '').strip()
+        chat_ids = str(os.getenv('TELEGRAM_CHAT_IDS') or '').strip()
+        if not bot_token and not chat_ids:
+            return
+
+        rows = [
+            ('TELEGRAM_BOT_TOKEN', 'string', True, bot_token, 'Telegram bot token', 'Bot token from @BotFather.'),
+            ('TELEGRAM_CHAT_IDS', 'string', False, chat_ids, 'Telegram chat IDs', 'Comma-separated Telegram chat IDs for signal delivery.'),
+        ]
+        for key_name, vt, is_secret, val, label, desc in rows:
+            row = AppSetting(scope='api', group='telegram', key=key_name)
+            row.value_type = vt
+            row.is_secret = bool(is_secret)
+            row.value = val if str(val or '').strip() else None
+            row.label = label
+            row.description = desc
+            session.add(row)
+        session.commit()
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+def _bootstrap_max_from_env() -> None:
+    import os
+    session = get_db_session()
+    try:
+        existing = session.query(AppSetting).filter(
+            AppSetting.scope == 'api',
+            AppSetting.group == 'max',
+        ).limit(1).all()
+        if existing:
+            return
+
+        api_url = str(os.getenv('MAX_API_URL') or '').strip()
+        bot_token = str(os.getenv('MAX_BOT_TOKEN') or '').strip()
+        chat_ids = str(os.getenv('MAX_CHAT_IDS') or '').strip()
+        if not api_url and not bot_token and not chat_ids:
+            return
+
+        rows = [
+            ('MAX_API_URL', 'string', False, api_url, 'MAX API URL', 'MAX Bot API base URL.'),
+            ('MAX_BOT_TOKEN', 'string', True, bot_token, 'MAX bot token', 'Bot token for MAX.'),
+            ('MAX_CHAT_IDS', 'string', False, chat_ids, 'MAX chat IDs', 'Comma-separated MAX chat IDs for signal delivery.'),
+        ]
+        for key_name, vt, is_secret, val, label, desc in rows:
+            row = AppSetting(scope='api', group='max', key=key_name)
+            row.value_type = vt
+            row.is_secret = bool(is_secret)
+            row.value = val if str(val or '').strip() else None
+            row.label = label
+            row.description = desc
+            session.add(row)
         session.commit()
     finally:
         try:
@@ -253,6 +337,14 @@ def _bootstrap_xgb_grid_full_defaults() -> None:
                 '200',
                 'Proxy trades max',
                 'Максимум trades в proxy_pnl для приоритетного ранжирования в grid_full.',
+            ),
+            (
+                'XGB_GRID_FULL_PARALLEL_WORKERS',
+                'number',
+                False,
+                '30',
+                'Parallel workers',
+                'Количество параллельных процессов для XGB grid_full (макс. количество ядер).',
             ),
         ]
 

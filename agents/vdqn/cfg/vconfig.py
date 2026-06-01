@@ -3,6 +3,7 @@ from typing import Dict, Any
 import os
 import torch
 from datetime import datetime
+from utils.time_log import msk_tag
 from .gpu_configs import get_optimal_config, apply_gpu_config_to_vconfig
    
 @dataclass
@@ -104,11 +105,11 @@ class vDqnConfig:
             except Exception:
                 pass
             
-            print(f"🚀 Применены оптимальные настройки для {gpu_config.name}")
+            print(msk_tag(f"🚀 Применены оптимальные настройки для {gpu_config.name}"))
             
         except Exception as e:
-            print(f"⚠️ Ошибка применения GPU оптимизации: {e}")
-            print("🔄 Используем настройки по умолчанию")
+            print(msk_tag(f"⚠️ Ошибка применения GPU оптимизации: {e}"))
+            print(msk_tag("🔄 Используем настройки по умолчанию"))
     
     # === оптимизации скорости ===
     use_mixed_precision: bool = True   # Mixed Precision Training

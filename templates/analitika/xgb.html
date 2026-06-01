@@ -36,6 +36,7 @@
                                     <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Task</th>
                                     <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Symbol</th>
                                     <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Progress</th>
+                                    <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">ETA</th>
                                     <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">task_id</th>
                                 </tr>
                             </thead>
@@ -48,6 +49,19 @@
                                     <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
                                         {% if t.done is not none and t.total is not none %}
                                             <b>{{ t.done }}</b> / <b>{{ t.total }}</b>
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </td>
+                                    <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
+                                        {% if t.eta_sec is not none %}
+                                            {% set dd = (t.eta_sec // 86400) %}
+                                            {% set hh = ((t.eta_sec % 86400) // 3600) %}
+                                            {% set mm = ((t.eta_sec % 3600) // 60) %}
+                                            <b>{{ dd }} д {{ hh }} ч {{ mm }} мин</b>
+                                            {% if t.avg_per_run_sec is not none %}
+                                                <div style="font-size:12px; color:#666;">~{{ '%.1f'|format(t.avg_per_run_sec) }}s/run</div>
+                                            {% endif %}
                                         {% else %}
                                             —
                                         {% endif %}

@@ -21,6 +21,7 @@
   <h3>📋 Навигация</h3>
   <ul class="sidebar-nav">
     <li><a href="/">🏠 Главная</a></li>
+    <li><a id="nextUiLink" href="http://192.168.0.21:3001/">🆕 Новый UI</a></li>
     <li>
       <details open>
         <summary>💰 Торговый агент</summary>
@@ -96,6 +97,7 @@
               <ul class="submenu">
                 <li><a href="/settings">⚙️ Настройки</a></li>
                 <li><a href="/settings/api">🔑 API</a></li>
+                <li><a href="/settings/bots">🤖 Боты</a></li>
                 <li><a href="/settings/encoders">Работа с энкодерами</a></li>
               </ul>
             </details>
@@ -114,6 +116,10 @@
 <script>
   (function(){
     try{
+      const nextUiLink = document.getElementById('nextUiLink');
+      if(nextUiLink && window.location.hostname){
+        nextUiLink.href = `${window.location.protocol}//${window.location.hostname}:3001/`;
+      }
       const defaults = ['BTCUSDT','ETHUSDT','SOLUSDT','TONUSDT','ADAUSDT','BNBUSDT','XRPUSDT'];
       const ul = document.getElementById('sidebarSymbols');
       if(!ul) return;

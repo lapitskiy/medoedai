@@ -192,6 +192,7 @@ def db_get_or_fetch_ohlcv(
     include_error: bool = False,
     override_api_key: str | None = None,
     override_secret_key: str | None = None,
+    force_fetch: bool = False,
                         ) -> pd.DataFrame:
     """
     Загружает OHLCV данные из базы данных. Если данных недостаточно или есть разрывы,
@@ -269,9 +270,15 @@ def db_get_or_fetch_ohlcv(
                 return 0
 
             tf_ms_local = _tf_to_ms(timeframe)
-            if last_db_timestamp and int(total_count or 0) >= int(limit_candles or 0) and tf_ms_local > 0:
+            if (
+                not force_fetch
+                and last_db_timestamp
+                and int(total_count or 0) >= int(limit_candles or 0)
+                and tf_ms_local > 0
+            ):
                 now_local_ms = int(time.time() * 1000)
-                if now_local_ms - int(last_db_timestamp) <= tf_ms_local * 2:
+                freshness_ms = 10 * 60_000 if str(timeframe or "").strip().lower() == "1m" else tf_ms_local * 2
+                if now_local_ms - int(last_db_timestamp) <= freshness_ms:
                     db_candles = session.query(OHLCV).filter_by(
                         symbol_id=symbol_obj.id,
                         timeframe=timeframe
@@ -959,9 +966,19 @@ def db_get_or_fetch_ohlcv(
         session.close()
 
 
-def db_get_ohlcv_only(symbol_name: str, timeframe: str, limit_candles: int = 1000) -> pd.DataFrame:
+def db_get_ohlcv_only(
+    symbol_name: str,
+    timeframe: str,
+    limit_candles: int = 1000,
+    freshness_max_age_sec: int = 3600,
+    exchange_id: str = 'bybit',
+    allow_api_fallback: bool = True,
+    end_ts_ms: int | None = None,
+) -> pd.DataFrame:
     """
-    Возвращает OHLCV строго из Postgres (без докачки с биржи).
+    Возвращает OHLCV из Postgres, но контролирует свежесть данных.
+    Если allow_api_fallback=True (по умолчанию), при пустых/устаревших данных
+    автоматически запускает db_get_or_fetch_ohlcv.
 
     symbol_name может быть 'BTCUSDT' или 'BTC/USDT' — внутри нормализуем к формату БД.
     """
@@ -973,17 +990,74 @@ def db_get_ohlcv_only(symbol_name: str, timeframe: str, limit_candles: int = 100
             symbol_db = str(symbol_name).replace("/", "").upper()
         symbol_obj = session.query(Symbol).filter_by(name=symbol_db).first()
         if not symbol_obj:
-            return pd.DataFrame()
+            if not allow_api_fallback:
+                return pd.DataFrame()
+            logging.warning(
+                f"[DB_ONLY] symbol not found in DB: {symbol_name} {timeframe}. "
+                f"Triggering db_get_or_fetch_ohlcv({exchange_id})."
+            )
+            return db_get_or_fetch_ohlcv(
+                symbol_name=symbol_name,
+                timeframe=timeframe,
+                limit_candles=limit_candles,
+                exchange_id=exchange_id,
+            )
 
+        query = session.query(OHLCV).filter_by(symbol_id=symbol_obj.id, timeframe=timeframe)
+        if end_ts_ms is not None:
+            query = query.filter(OHLCV.timestamp <= int(end_ts_ms))
         rows = (
-            session.query(OHLCV)
-            .filter_by(symbol_id=symbol_obj.id, timeframe=timeframe)
+            query
             .order_by(OHLCV.timestamp.desc())
             .limit(int(limit_candles))
             .all()
         )
         if not rows:
-            return pd.DataFrame()
+            if not allow_api_fallback:
+                return pd.DataFrame()
+            logging.warning(
+                f"[DB_ONLY] no rows in DB: {symbol_name} {timeframe}. "
+                f"Triggering db_get_or_fetch_ohlcv({exchange_id})."
+            )
+            return db_get_or_fetch_ohlcv(
+                symbol_name=symbol_name,
+                timeframe=timeframe,
+                limit_candles=limit_candles,
+                exchange_id=exchange_id,
+            )
+
+        # rows идут по убыванию timestamp, первый элемент — самый свежий
+        last_ts = int(rows[0].timestamp)
+        now_ms = int(time.time() * 1000)
+        freshness_ms = max(1, int(freshness_max_age_sec)) * 1000
+        age_ms = now_ms - last_ts
+
+        if age_ms > freshness_ms:
+            if not allow_api_fallback:
+                return pd.DataFrame(
+                    [
+                        {
+                            "timestamp": c.timestamp,
+                            "open": c.open,
+                            "high": c.high,
+                            "low": c.low,
+                            "close": c.close,
+                            "volume": c.volume,
+                        }
+                        for c in reversed(rows)
+                    ]
+                )
+            logging.warning(
+                f"[DB_ONLY] stale data for {symbol_name} {timeframe}: "
+                f"age={age_ms/1000:.0f}s > {freshness_max_age_sec}s. "
+                f"Triggering db_get_or_fetch_ohlcv({exchange_id})."
+            )
+            return db_get_or_fetch_ohlcv(
+                symbol_name=symbol_name,
+                timeframe=timeframe,
+                limit_candles=limit_candles,
+                exchange_id=exchange_id,
+            )
 
         df = pd.DataFrame(
             [

@@ -12,6 +12,7 @@ import requests # type: ignore
 from flask import Flask, request, jsonify, render_template, current_app # type: ignore
 from flask import redirect, url_for
 from pathlib import Path
+from datetime import datetime, timedelta
 
 import redis # type: ignore
 
@@ -43,6 +44,7 @@ import re
 from tasks.celery_tasks import search_lstm_task, train_dqn, train_dqn_multi_crypto, train_dqn_symbol
 from utils.db_utils import load_latest_candles_from_csv_to_db
 from utils.parser import parser_download_and_combine_with_library
+from utils.time_log import msk_tag
 from utils.trade_utils import (
     get_recent_trades, 
     get_trade_statistics, 
@@ -67,7 +69,18 @@ import docker # type: ignore
 from tasks.celery_task_trade import start_trading_task
 from utils.celery_utils import ensure_symbol_worker
 
-logging.basicConfig(level=logging.INFO)
+def _msk_time_converter(ts: float):
+    # Force app log timestamps to MSK regardless of container TZ.
+    return (datetime.utcfromtimestamp(ts) + timedelta(hours=3)).timetuple()
+
+
+logging.Formatter.converter = staticmethod(_msk_time_converter)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    force=True,
+)
 
 # Создаем Flask приложение
 app = Flask(__name__)
@@ -1863,11 +1876,18 @@ def get_prediction_statistics_api():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))  # Получаем порт из переменной окружения
     debug_mode = os.environ.get("FLASK_DEBUG", "False").lower() == "true"
-    print(f"🚀 Запускаю Flask сервер на порту {port}...")
-    print(f"🌐 Откройте: http://localhost:{port}")
-    print(f"🔧 Debug режим: {'ВКЛЮЧЕН' if debug_mode else 'ОТКЛЮЧЕН'}")
+    print(msk_tag(f"🚀 Запускаю Flask сервер на порту {port}..."))
+    print(msk_tag(f"🌐 Откройте: http://localhost:{port}"))
+    print(msk_tag(f"🔧 Debug режим: {'ВКЛЮЧЕН' if debug_mode else 'ОТКЛЮЧЕН'}"))
+    if os.environ.get("ENABLE_TELEGRAM_BOT_POLLING", "1").lower() in ("1", "true", "yes", "on"):
+        from utils.telegram_bot_poller import start_telegram_bot_poller
+        start_telegram_bot_poller()
+    from utils.max_bot_poller import start_max_bot_poller
+    start_max_bot_poller()
     
     # Убираем инициализацию торгового агента
     # init_trading_agent()
     
-    app.run(host="0.0.0.0", port=port, debug=debug_mode)
+    # threaded=True: OOS batch UI polls /xgb_oos_test_status for many Celery tasks in parallel;
+    # default threaded=False cannot drain ~80 short polls/s and progress appears stuck at 0/N.
+    app.run(host="0.0.0.0", port=port, debug=debug_mode, threaded=True)

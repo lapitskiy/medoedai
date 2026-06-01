@@ -127,6 +127,15 @@
                     <div style="margin-bottom:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                         <button class="btn btn-info" onclick="startBatchOos()">▶️ Run Selected OOS</button>
                         <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
+                            prod ensemble
+                            <select id="prodEnsemble" class="form-control" style="width:150px;">
+                                <option value="ensemble-a" selected>ensemble-a</option>
+                                <option value="ensemble-b">ensemble-b</option>
+                                <option value="ensemble-c">ensemble-c</option>
+                            </select>
+                        </label>
+                        <button class="btn btn-success" onclick="copySelectedRunsToProd()">📦 Скопировать модели в прод</button>
+                        <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
                             select (for delete)
                             <select id="predSelectMode" class="form-control" style="width:280px;">
                                 <option value="all_safe" selected>✅ ALL safe (без acc_delta)</option>
@@ -163,6 +172,22 @@
                         <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
                             <input type="checkbox" class="cb-oos-days" value="90" checked>90
                         </label>
+                        <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0 0 0 8px;">
+                            <input id="xgbOosPeGridEnabled" type="checkbox">
+                            p_enter grid
+                        </label>
+                        <label class="mono" style="display:inline-flex; gap:4px; align-items:center; margin:0;">
+                            from
+                            <input id="xgbOosPeFrom" class="form-control" type="number" min="0.01" max="0.99" step="0.01" value="0.86" style="width:78px;">
+                        </label>
+                        <label class="mono" style="display:inline-flex; gap:4px; align-items:center; margin:0;">
+                            to
+                            <input id="xgbOosPeTo" class="form-control" type="number" min="0.01" max="0.99" step="0.01" value="0.68" style="width:78px;">
+                        </label>
+                        <label class="mono" style="display:inline-flex; gap:4px; align-items:center; margin:0;">
+                            step
+                            <input id="xgbOosPeStep" class="form-control" type="number" min="0.001" max="0.5" step="0.001" value="0.02" style="width:78px;">
+                        </label>
                         <span class="mono" style="color:#6b7280; margin-left:8px;">Exit grid:</span>
                         <label class="mono" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
                             <input type="checkbox" class="cb-oos-exit" value="policy" checked>policy
@@ -176,6 +201,7 @@
                         <span id="selectedInfo" class="mono" style="color:#6b7280;">Выбрано: 0</span>
                     </div>
                     <div id="batchStatus" class="status info" style="display:none; margin-bottom:10px; white-space:pre-wrap;"></div>
+                    <div id="copyProdStatus" class="status info" style="display:none; margin-bottom:10px; white-space:pre-wrap;"></div>
                     <div id="xgbDeleteStatus" class="status info" style="display:none; margin-bottom:10px; white-space:pre-wrap;"></div>
 
                     {% if not xgb_runs %}
@@ -271,6 +297,37 @@
         }
 
         /* ---------- delete ---------- */
+        async function copySelectedRunsToProd(){
+            const paths = [...document.querySelectorAll('.cb-run:checked')].map(c=>c.value);
+            const ensemble = (document.getElementById('prodEnsemble')?.value || 'ensemble-a').trim();
+            const st = document.getElementById('copyProdStatus');
+            if(!paths.length){ alert('Выберите модели галочками'); return; }
+            if(!confirm(`Скопировать ${paths.length} model(s) в models/xgb/*/${ensemble}?`)) return;
+            if(st){ st.style.display='block'; st.className='status info'; st.textContent='Копирую модели в прод…'; }
+            try{
+                const resp = await fetch('/xgb_oos_copy_to_prod', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json','Accept':'application/json'},
+                    body: JSON.stringify({paths, ensemble})
+                });
+                const d = await resp.json().catch(()=>null);
+                if(!d || !d.success){
+                    if(st){ st.className='status error'; st.textContent='❌ '+((d && d.error) || 'unknown'); }
+                    return;
+                }
+                const copied = Array.isArray(d.copied) ? d.copied : [];
+                const preview = copied.slice(0, 10).map(x => `${x.symbol_dir}/${x.ensemble}/${x.version} <= ${x.run_id}`);
+                let text = `✅ Скопировано: ${d.copied_count} в ${ensemble}`;
+                if(preview.length) text += `\n${preview.join('\n')}`;
+                if(Array.isArray(d.errors) && d.errors.length){
+                    text += `\n⚠️ Ошибок: ${d.errors.length}`;
+                }
+                if(st){ st.className='status success'; st.textContent=text; }
+            }catch(e){
+                if(st){ st.className='status error'; st.textContent='❌ '+e.message; }
+            }
+        }
+
         async function deleteSelectedRuns(){
             const paths = [...document.querySelectorAll('.cb-run:checked')].map(c=>c.value);
             if(!paths.length){ alert('Ничего не выбрано'); return; }
@@ -418,7 +475,118 @@
             el.className = 'status ' + (cls || 'info');
             el.textContent = msg;
         }
+        function _shortRunName(resultDir){
+            const s = String(resultDir || '').replace(/\\/g, '/');
+            const parts = s.split('/').filter(Boolean);
+            return parts.length ? parts[parts.length - 1] : 'unknown-run';
+        }
+        function _batchLineForTask(taskMeta, res, failedByState){
+            const run = _shortRunName(taskMeta?.result_dir || res?.run_dir || '');
+            const days = taskMeta?.days ?? res?.days ?? '—';
+            const exitMode = taskMeta?.exit_mode ?? res?.exit_mode ?? '—';
+            const peThr = taskMeta?.p_enter_threshold ?? res?.cfg_snapshot?.p_enter_threshold ?? null;
+            const pePart = (peThr !== null && peThr !== undefined) ? ` pe=${Number(peThr).toFixed(2)}` : '';
+            const prefix = `[${run}] d=${days} exit=${exitMode}${pePart}`;
+            if(failedByState){
+                return `❌ ${prefix} :: FAILURE (task crashed)`;
+            }
+            if(!res || res.success !== true){
+                const err = String((res && res.error) || 'unknown error');
+                return `❌ ${prefix} :: ${err}`;
+            }
+            const m = res.oos_metrics || {};
+            const bt = res.backtest || {};
+            const valAcc = (m.val_acc != null) ? Number(m.val_acc).toFixed(4) : '—';
+            const roi = (bt && bt.roi_pct != null) ? Number(bt.roi_pct).toFixed(2) : '—';
+            const trades = (bt && bt.trades_count != null) ? bt.trades_count : '—';
+            return `✅ ${prefix} :: val_acc=${valAcc} roi=${roi}% trades=${trades}`;
+        }
+        function _buildPEnterGrid(){
+            const from = _pnum(document.getElementById('xgbOosPeFrom')?.value);
+            const to = _pnum(document.getElementById('xgbOosPeTo')?.value);
+            const step = Math.abs(_pnum(document.getElementById('xgbOosPeStep')?.value));
+            if(!Number.isFinite(from) || !Number.isFinite(to) || !Number.isFinite(step) || step <= 0){
+                throw new Error('bad p_enter grid values');
+            }
+            if(from <= 0 || from >= 1 || to <= 0 || to >= 1){
+                throw new Error('p_enter grid values must be between 0 and 1');
+            }
+            const dir = from >= to ? -1 : 1;
+            const out = [];
+            for(let v = from, guard = 0; guard < 200; v += dir * step, guard++){
+                if((dir < 0 && v < to - 1e-9) || (dir > 0 && v > to + 1e-9)) break;
+                out.push(Number(v.toFixed(6)));
+            }
+            return [...new Set(out)];
+        }
+        function _renderBatchProgress(done, total, lines, header){
+            const head = (header && String(header).trim()) ? String(header).trim() + '\n\n' : '';
+            const preview = lines.slice(-20);
+            const text = `⏳ ${head}${done}/${total} готово…` + (preview.length ? `\n\n${preview.join('\n')}` : '');
+            _showBatch(text, 'info');
+        }
         function _fmt(v, d=4){ return (v != null && v !== '') ? Number(v).toFixed(d) : '—'; }
+        function _prefetchFailText(resp){
+            const d = resp || {};
+            const p = (d && typeof d.prefetch === 'object') ? d.prefetch : {};
+            const sym = p.symbol || '—';
+            const age = (p.age_sec != null) ? String(p.age_sec) : '—';
+            const lastTs = (p.db_last_ts != null) ? String(p.db_last_ts) : '—';
+            const ferr = p.fetch_error ? String(p.fetch_error) : '';
+            const started = !!p.prefetch_task_started;
+            const tId = p.prefetch_task_id ? String(p.prefetch_task_id) : '';
+            let text = `❌ ${d.error || 'Prefetch failed'}`;
+            if(started){
+                text += `\n⏳ Пытаюсь скачать последние свечи в фоне (prefetch task_id=${tId || '—'}).`;
+            }else{
+                text += `\n⏳ Попытка скачать последние свечи выполнена, но обновить БД не удалось.`;
+            }
+            text += `\nOOS НЕ запущен: данные в БД не свежие (требуется <=24ч).`;
+            text += `\n[sym=${sym}] age_sec=${age} db_last_ts=${lastTs}`;
+            if(ferr) text += `\nfetch_error: ${ferr}`;
+            return text;
+        }
+        function _prefetchTaskId(resp){
+            const p = (resp && typeof resp.prefetch === 'object') ? resp.prefetch : {};
+            return p.prefetch_task_id ? String(p.prefetch_task_id) : '';
+        }
+        function _watchPrefetchTask(resp, showFn, onReady){
+            const taskId = _prefetchTaskId(resp);
+            if(!taskId) return;
+            const base = _prefetchFailText(resp);
+            const poll = async()=>{
+                try{
+                    const r = await fetch('/xgb_oos_test_status?task_id='+encodeURIComponent(taskId));
+                    const s = await r.json();
+                    if(s.state === 'SUCCESS'){
+                        const res = s.result || {};
+                        if(res.success){
+                            if(typeof onReady === 'function'){
+                                window.__oosPrefetchAutoRetryCount = (window.__oosPrefetchAutoRetryCount || 0) + 1;
+                                if(window.__oosPrefetchAutoRetryCount <= 3){
+                                    showFn(base + `\n\n✅ Prefetch завершён: свечи догружены.\n⏳ Автоматически повторяю запуск OOS…`, 'info');
+                                    setTimeout(onReady, 1000);
+                                }else{
+                                    showFn(base + `\n\n✅ Prefetch завершён, но авто-повтор остановлен после 3 попыток. Запусти OOS вручную.`, 'success');
+                                }
+                            }else{
+                                showFn(base + `\n\n✅ Prefetch завершён: свечи догружены. Можно заново запускать OOS.`, 'success');
+                            }
+                        }else{
+                            showFn(base + `\n\n❌ Prefetch завершился, но данные не починились: ${res.error || 'unknown'}`, 'error');
+                        }
+                        return;
+                    }
+                    if(s.state === 'FAILURE'){
+                        showFn(base + '\n\n❌ Prefetch task crashed.', 'error');
+                        return;
+                    }
+                    showFn(base + `\n\n⏳ Prefetch ещё выполняется: ${s.state || 'PENDING'}…`, 'info');
+                    setTimeout(poll, 3000);
+                }catch(e){ setTimeout(poll, 5000); }
+            };
+            setTimeout(poll, 1200);
+        }
 
         function _renderResult(data){
             const el = document.getElementById('xgbOosResult');
@@ -474,7 +642,7 @@
                 const entry_sl_pct = (slPct === '' || slPct == null) ? null : (_pnum(slPct) / 100.0);
                 const entry_trail_pct = (trPct === '' || trPct == null) ? null : (_pnum(trPct) / 100.0);
                 if(!runDir){ _showStatus('Выбери run.', 'error'); return; }
-                _showStatus('⏳ Ставлю задачу...', 'info');
+                _showStatus('⏳ Шаг 1/2: пытаюсь скачать и обновить последние свечи в БД…', 'info');
                 _renderResult(null);
                 const bodyObj = { result_dir: runDir, days, exit_mode, atr_len, atr_mult };
                 if(direction_override) bodyObj.direction_override = direction_override;
@@ -492,8 +660,16 @@
                     body: JSON.stringify(bodyObj)
                 });
                 const d = await r.json().catch(()=>null);
-                if(!d||!d.success){ _showStatus('❌ '+(d&&d.error||'unknown'),'error'); return; }
-                _showStatus('⏳ task_id='+d.task_id+' …','info');
+                if(!d || !d.success){
+                    if(d && String(d.error || '').includes('Prefetch stale')){
+                        _showStatus(_prefetchFailText(d), 'error');
+                        _watchPrefetchTask(d, _showStatus, startXgbOos);
+                    }else{
+                        _showStatus('❌ '+(d&&d.error||'unknown'), 'error');
+                    }
+                    return;
+                }
+                _showStatus('⏳ Шаг 2/2: prefetch OK, task_id='+d.task_id+' …', 'info');
                 _pollTask(d.task_id, res=>{
                     if(res.success){ _showStatus('✅ Готово','success'); _renderResult(res); }
                     else _showStatus('❌ '+(res.error||'fail'),'error');
@@ -531,6 +707,13 @@
             const direction_override = (document.getElementById('xgbDirection')?.value || '').trim() || null;
             const peThrRaw = document.getElementById('xgbPEnterThr')?.value;
             const p_enter_threshold = (peThrRaw === '' || peThrRaw == null) ? null : _pnum(peThrRaw);
+            const p_enter_grid_enabled = !!document.getElementById('xgbOosPeGridEnabled')?.checked;
+            let p_enter_thresholds = [];
+            if(p_enter_grid_enabled){
+                try{ p_enter_thresholds = _buildPEnterGrid(); }
+                catch(e){ _showBatch('❌ '+e.message, 'error'); return; }
+                if(!p_enter_thresholds.length){ _showBatch('❌ p_enter grid is empty', 'error'); return; }
+            }
             const override_exit_policy = !!document.getElementById('xgbOverrideExitPolicy')?.checked;
             const tpPct = document.getElementById('xgbEntryTpPct')?.value;
             const slPct = document.getElementById('xgbEntrySlPct')?.value;
@@ -538,13 +721,16 @@
             const entry_tp_pct = (tpPct === '' || tpPct == null) ? null : (_pnum(tpPct) / 100.0);
             const entry_sl_pct = (slPct === '' || slPct == null) ? null : (_pnum(slPct) / 100.0);
             const entry_trail_pct = (trPct === '' || trPct == null) ? null : (_pnum(trPct) / 100.0);
-            _showBatch(`⏳ Запускаю OOS: ${dirs.length} моделей × ${days_grid.length} days × ${exit_modes.length} exit…`, 'info');
+            _showBatch(`⏳ Шаг 1/2: пытаюсь скачать и обновить последние свечи в БД для ${dirs.length} моделей…`, 'info');
 
             let resp;
             try{
                 const bodyObj = { result_dirs: dirs, days_grid, exit_modes, atr_len, atr_mult };
                 if(direction_override) bodyObj.direction_override = direction_override;
-                if(p_enter_threshold !== null && Number.isFinite(p_enter_threshold)){
+                if(p_enter_grid_enabled){
+                    bodyObj.p_enter_grid_enabled = true;
+                    bodyObj.p_enter_thresholds = p_enter_thresholds;
+                }else if(p_enter_threshold !== null && Number.isFinite(p_enter_threshold)){
                     bodyObj.p_enter_threshold = p_enter_threshold;
                 }
                 if(override_exit_policy){
@@ -559,58 +745,93 @@
                 });
             }catch(e){ _showBatch('❌ '+e.message,'error'); return; }
             const bd = await resp.json().catch(()=>null);
-            if(!bd||!bd.success){ _showBatch('❌ '+(bd&&bd.error||'unknown'),'error'); return; }
-
-            const tasks = bd.tasks; // [{result_dir, task_id}]
-            const total = tasks.length;
-            let done = 0;
-            const results = [];
-
-            const checkAll = ()=>{
-                if(done >= total) finishBatch(results);
-            };
-
-            for(const t of tasks){
-                _pollTask(t.task_id, res=>{
-                    results.push(res);
-                    done++;
-                    _showBatch(`⏳ ${done}/${total} готово…`, 'info');
-                    checkAll();
-                }, ()=>{
-                    // keep placeholder so CSV step can show a meaningful error
-                    results.push({success:false, error:'FAILURE', task_id:t.task_id, result_dir:t.result_dir, days:t.days});
-                    done++;
-                    _showBatch(`⏳ ${done}/${total} готово (есть ошибки)…`, 'info');
-                    checkAll();
-                });
-            }
-        }
-
-        async function finishBatch(results){
-            const ok = (results || []).filter(r=>r && r.success);
-            if(!ok.length){
-                _showBatch('❌ Нет успешных результатов OOS (все задачи упали или вернули success=false). CSV не сохранён.', 'error');
+            if(!bd || !bd.success){
+                if(bd && String(bd.error || '').includes('Prefetch stale')){
+                    _showBatch(_prefetchFailText(bd), 'error');
+                    _watchPrefetchTask(bd, _showBatch, startBatchOos);
+                }else{
+                    _showBatch('❌ '+(bd&&bd.error||'unknown'), 'error');
+                }
                 return;
             }
-            _showBatch(`✅ Все ${results.length} тестов завершены. Успешных: ${ok.length}. Сохраняю CSV…`, 'info');
-            try{
-                const r = await fetch('/xgb_oos_batch_save_csv', {
-                    method:'POST', headers:{'Content-Type':'application/json'},
-                    body: JSON.stringify({ results: ok })
-                });
+
+            const tasks = bd.tasks; // [{result_dir, task_id}]
+            const batchId = bd.batch_id;
+            const total = tasks.length;
+            const peCount = p_enter_grid_enabled ? p_enter_thresholds.length : 1;
+            let done = 0;
+            const results = [];
+            const progressLines = [];
+            const header = `Шаг 2/2: prefetch OK — ${dirs.length} моделей × ${days_grid.length} days × ${exit_modes.length} exit × ${peCount} p_enter`;
+            _renderBatchProgress(0, total, progressLines, header);
+
+            const checkAll = ()=>{
+                if(done >= total) finishBatch(results, batchId);
+            };
+
+            /* Stagger polls: hundreds of parallel fetches hit the browser per-host limit (~6)
+               and progressLines never updated until the queue drains. */
+            tasks.forEach((t, idx) => {
+                setTimeout(() => {
+                    _pollTask(t.task_id, res=>{
+                        try{
+                            results.push(res);
+                            done++;
+                            progressLines.push(_batchLineForTask(t, res, false));
+                            _renderBatchProgress(done, total, progressLines, header);
+                            checkAll();
+                        }catch(e){
+                            results.push({success:false, error:String(e.message||e), task_id:t.task_id, result_dir:t.result_dir, days:t.days});
+                            done++;
+                            progressLines.push(`❌ poll callback error: ${String(e.message||e)}`);
+                            _renderBatchProgress(done, total, progressLines, header);
+                            checkAll();
+                        }
+                    }, ()=>{
+                        results.push({success:false, error:'FAILURE', task_id:t.task_id, result_dir:t.result_dir, days:t.days, p_enter_threshold:t.p_enter_threshold, exit_mode:t.exit_mode});
+                        done++;
+                        progressLines.push(_batchLineForTask(t, null, true));
+                        _renderBatchProgress(done, total, progressLines, header);
+                        checkAll();
+                    });
+                }, idx * 40);
+            });
+        }
+
+        async function _waitForBatchCsv(batchId){
+            const t0 = Date.now();
+            while(Date.now() - t0 < 30*60*1000){
+                const r = await fetch('/xgb_oos_batch_status?batch_id='+encodeURIComponent(batchId));
                 const d = await r.json();
-                if(d.success){
-                    _showBatch(`✅ CSV сохранён: ${d.filename} (${d.rows} строк)`, 'success');
-                    const link = document.createElement('a');
-                    link.href = '/xgb_oos_csv_download/'+encodeURIComponent(d.filename);
-                    link.textContent = '📥 Скачать '+d.filename;
-                    link.style.cssText = 'display:inline-block;margin-top:6px;font-weight:600;';
-                    document.getElementById('batchStatus').appendChild(document.createElement('br'));
-                    document.getElementById('batchStatus').appendChild(link);
-                    loadCsvList();
-                }else{
-                    _showBatch('❌ CSV ошибка: '+(d.error||'unknown'), 'error');
-                }
+                if(!d.success) throw new Error(d.error||'batch status failed');
+                if(d.status === 'done' && d.csv_filename) return d;
+                if(d.status === 'failed') throw new Error(d.error||'batch CSV failed');
+                await new Promise(res=>setTimeout(res, 2000));
+            }
+            throw new Error('timeout waiting for server CSV');
+        }
+
+        async function finishBatch(results, batchId){
+            const ok = (results || []).filter(r=>r && r.success);
+            if(!ok.length){
+                _showBatch('❌ Нет успешных результатов OOS (все задачи упали или вернули success=false).', 'error');
+                return;
+            }
+            if(!batchId){
+                _showBatch('❌ batch_id отсутствует — перезапустите batch (CSV пишется на сервере).', 'error');
+                return;
+            }
+            _showBatch(`✅ Все ${results.length} тестов завершены. Успешных: ${ok.length}. Ожидаю CSV на сервере…`, 'info');
+            try{
+                const d = await _waitForBatchCsv(batchId);
+                _showBatch(`✅ CSV сохранён на сервере: ${d.csv_filename} (${d.csv_rows||ok.length} строк)`, 'success');
+                const link = document.createElement('a');
+                link.href = '/xgb_oos_csv_download/'+encodeURIComponent(d.csv_filename);
+                link.textContent = '📥 Скачать '+d.csv_filename;
+                link.style.cssText = 'display:inline-block;margin-top:6px;font-weight:600;';
+                document.getElementById('batchStatus').appendChild(document.createElement('br'));
+                document.getElementById('batchStatus').appendChild(link);
+                loadCsvList();
             }catch(e){ _showBatch('❌ '+e.message,'error'); }
         }
 

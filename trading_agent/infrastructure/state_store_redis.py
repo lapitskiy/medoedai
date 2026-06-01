@@ -11,17 +11,21 @@ from trading_agent.domain.models import Intent, IntentState, Side, LimitConfig
 
 
 class RedisStateStore(StateStore):
-    def __init__(self, host: str = 'redis', port: int = 6379, db: int = 0):
+    def __init__(self, host: str = 'redis', port: int = 6379, db: int = 0, scope: str | None = None):
         self.r = redis.Redis(host=host, port=port, db=db, decode_responses=True)
+        self.scope = str(scope or '').strip() or None
+
+    def _scope_value(self, symbol: str) -> str:
+        return str(self.scope or symbol)
 
     def _k_intent(self, intent_id: str) -> str:
         return f"exec:intent:{intent_id}"
 
     def _k_pending(self, symbol: str) -> str:
-        return f"exec:pending:{symbol}"
+        return f"exec:pending:{self._scope_value(symbol)}"
 
     def _k_symbol_active(self, symbol: str) -> str:
-        return f"exec:active_intent:{symbol}"
+        return f"exec:active_intent:{self._scope_value(symbol)}"
 
     def save_intent(self, intent: Intent) -> None:
         self.r.set(self._k_intent(intent.intent_id), json.dumps(intent, default=lambda o: o.__dict__))

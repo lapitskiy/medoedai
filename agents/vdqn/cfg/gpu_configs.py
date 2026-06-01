@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Dict, Any
 import os
 import torch
+from utils.time_log import msk_tag
 
 @dataclass
 class GPUConfig:
@@ -220,8 +221,8 @@ def detect_gpu() -> str:
         
         global _gpu_detect_printed
         if not _gpu_detect_printed:
-            print(f"🔍 Обнаружена GPU: {torch.cuda.get_device_name(0)}")
-            print(f"💾 VRAM: {gpu_memory:.1f} GB")
+            print(msk_tag(f"🔍 Обнаружена GPU: {torch.cuda.get_device_name(0)}"))
+            print(msk_tag(f"💾 VRAM: {gpu_memory:.1f} GB"))
             _gpu_detect_printed = True
         
         # Определяем тип GPU по названию
@@ -268,13 +269,13 @@ def get_gpu_config(gpu_key: str = None) -> GPUConfig:
             global _gpu_forced_source_printed
             if forced_gpu in GPU_CONFIGS:
                 if not _gpu_forced_source_printed:
-                    print(f"🔧 Принудительно выбрана GPU конфигурация (settings): {forced_gpu}")
+                    print(msk_tag(f"🔧 Принудительно выбрана GPU конфигурация (settings): {forced_gpu}"))
                     _gpu_forced_source_printed = True
                 gpu_key = forced_gpu
             else:
                 global _gpu_forced_invalid_printed
                 if not _gpu_forced_invalid_printed:
-                    print(f"⚠️ settings FORCE_GPU_CONFIG='{forced_gpu}' не распознана; доступно: {sorted(GPU_CONFIGS.keys())}")
+                    print(msk_tag(f"⚠️ settings FORCE_GPU_CONFIG='{forced_gpu}' не распознана; доступно: {sorted(GPU_CONFIGS.keys())}"))
                     _gpu_forced_invalid_printed = True
                 gpu_key = detect_gpu()
         else:
@@ -282,21 +283,21 @@ def get_gpu_config(gpu_key: str = None) -> GPUConfig:
             gpu_key = detect_gpu()
     
     if gpu_key not in GPU_CONFIGS:
-        print(f"⚠️ Неизвестная GPU: {gpu_key}, используем CPU конфигурацию")
+        print(msk_tag(f"⚠️ Неизвестная GPU: {gpu_key}, используем CPU конфигурацию"))
         gpu_key = "cpu"
     
     config = GPU_CONFIGS[gpu_key]
     # Применяем override torch.compile только из /settings (никаких env-фолбеков)
     config = _apply_compile_override_from_settings(config)
     if not _gpu_info_printed:
-        print(f"✅ Выбрана конфигурация: {config.name}")
-        print(f"📊 Batch size: {config.batch_size}")
-        print(f"💾 Memory size: {config.memory_size}")
-        print(f"🧠 Hidden sizes: {config.hidden_sizes}")
-        print(f"🔄 Train repeats: {config.train_repeats}")
-        print(f"⚡ AMP: {config.use_amp}")
-        print(f"💾 GPU storage: {config.use_gpu_storage}")
-        print(f"🧩 torch.compile: {config.use_torch_compile}")
+        print(msk_tag(f"✅ Выбрана конфигурация: {config.name}"))
+        print(msk_tag(f"📊 Batch size: {config.batch_size}"))
+        print(msk_tag(f"💾 Memory size: {config.memory_size}"))
+        print(msk_tag(f"🧠 Hidden sizes: {config.hidden_sizes}"))
+        print(msk_tag(f"🔄 Train repeats: {config.train_repeats}"))
+        print(msk_tag(f"⚡ AMP: {config.use_amp}"))
+        print(msk_tag(f"💾 GPU storage: {config.use_gpu_storage}"))
+        print(msk_tag(f"🧩 torch.compile: {config.use_torch_compile}"))
         _gpu_info_printed = True
 
     # Отдельный лог про настройки compile из settings (один раз)
@@ -307,9 +308,9 @@ def get_gpu_config(gpu_key: str = None) -> GPUConfig:
             if disable is None:
                 disable = _get_bool_setting('rl', None, 'DISABLE_TORCH_COMPILE')
             if disable is True:
-                print("⚠️ torch.compile отключен через настройки (/settings): DISABLE_TORCH_COMPILE=true")
+                print(msk_tag("⚠️ torch.compile отключен через настройки (/settings): DISABLE_TORCH_COMPILE=true"))
             elif disable is False:
-                print("✅ torch.compile разрешен через настройки (/settings): DISABLE_TORCH_COMPILE=false")
+                print(msk_tag("✅ torch.compile разрешен через настройки (/settings): DISABLE_TORCH_COMPILE=false"))
         except Exception:
             pass
         _gpu_compile_settings_printed = True

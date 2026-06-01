@@ -51,9 +51,29 @@ services:
     working_dir: /workspace
     command: >
       sh -c "
-        echo '✅ Redis готов, запускаю Flask...' &&
+        python -c \"from utils.time_log import msk_tag; print(msk_tag('✅ Redis готов, запускаю Flask...'))\" &&
         python main.py
       "
+
+  frontend-next:
+    image: node:22-alpine
+    container_name: frontend-next
+    depends_on:
+      medoedai:
+        condition: service_started
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+      MEDOED_BACKEND_URL: http://medoedai:5050
+      NEXT_PUBLIC_LEGACY_UI_BASE_URL: http://localhost:5050
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./frontend-next:/app
+    working_dir: /app
+    command: ["sh", "-lc", "npm run dev -- --hostname 0.0.0.0 --port 3000"]
 
   celery-worker:
     build: .

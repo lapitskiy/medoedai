@@ -1,0 +1,37 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "telegram-proxy",
+      "listen": "0.0.0.0",
+      "listen_port": 1080
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-out",
+      "server": "45.66.228.8",
+      "server_port": 443,
+      "uuid": "8c5e212e-600b-4667-8aad-c0d75d79b56a",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "server_name": "www.microsoft.com",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "wWQTQuzw_46wajPk4cDHFd4qPlov6khMQiInQIN-HDE",
+          "short_id": "c9200ef4b5f91e60"
+        }
+      }
+    }
+  ]
+}

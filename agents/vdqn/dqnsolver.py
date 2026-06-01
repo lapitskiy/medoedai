@@ -14,13 +14,14 @@ import math
 from collections import deque
 import heapq
 from pathlib import Path
+from utils.time_log import msk_tag
 
 # Ваши импорты
 from agents.vdqn.cfg.vconfig import vDqnConfig
 
 cfg = vDqnConfig()
 
-print(f"Используемое устройство для PyTorch: {cfg.device}")
+print(msk_tag(f"Используемое устройство для PyTorch: {cfg.device}"))
 
 def _is_wsl() -> bool:
     """True если процесс внутри WSL/WSL2 (часто Docker Desktop на Windows)."""

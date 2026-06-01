@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Настройки ботов</title>
+    <style>
+        .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+        .hint { color:#6c757d; font-size: 12px; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+        .model-list { display:grid; gap:8px; margin-top:10px; }
+        .model-row { display:flex; gap:10px; align-items:flex-start; padding:10px; border:1px solid #e2e8f0; border-radius:8px; background:#fff; }
+        .model-title { font-weight:600; }
+        .model-path { font-size:11px; color:#64748b; word-break:break-all; }
+        @media (max-width: 900px){ .grid2 { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    {% include 'include/_sidebar.html' %}
+    <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <div class="container">
+        <div class="main-content">
+            <div class="header">
+                <h1>⚙️ Настройки → 🤖 Боты</h1>
+                <p class="hint">Telegram/MAX настройки сохраняются в Postgres, таблица <code>app_settings</code>.</p>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h5>Telegram</h5>
+                </div>
+                <div class="grid2">
+                    <div class="form-group">
+                        <label>Bot token</label>
+                        <input id="botToken" class="form-control mono" type="password" placeholder="123456:ABC..." autocomplete="off" />
+                        <div id="tokenHint" class="hint">Текущий token: не загружен</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Chat IDs</label>
+                        <input id="chatIds" class="form-control mono" placeholder="123456789,-1001234567890" />
+                        <div class="hint">Несколько chat_id укажи через запятую.</div>
+                    </div>
+                </div>
+                <div class="form-group" style="margin-top:10px;">
+                    <label>VPN (VLESS URL)</label>
+                    <input id="vlessUrl" class="form-control mono" placeholder="vless://uuid@host:443?encryption=none&flow=xtls-rprx-vision&security=reality..." autocomplete="off" />
+                    <div class="hint">Одна строка VLESS для Telegram VPN инфраструктуры.</div>
+                </div>
+                <div style="margin-top:10px; display:flex; gap:10px; align-items:center;">
+                    <button class="btn btn-primary" onclick="saveTelegramBot()">💾 Сохранить</button>
+                    <button class="btn btn-secondary" onclick="loadTelegramBot()">🔄 Обновить</button>
+                    <div id="telegramSaveStatus" class="status info" style="display:none;"></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h5>MAX</h5>
+                </div>
+                <div class="grid2">
+                    <div class="form-group">
+                        <label>Bot token</label>
+                        <input id="maxBotToken" class="form-control mono" type="password" placeholder="MAX bot token" autocomplete="off" />
+                        <div id="maxTokenHint" class="hint">Текущий token: не загружен</div>
+                    </div>
+                    <div class="form-group">
+                        <label>API URL</label>
+                        <input id="maxApiUrl" class="form-control mono" placeholder="https://..." />
+                        <div class="hint">Base URL для MAX Bot API.</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Chat IDs</label>
+                        <input id="maxChatIds" class="form-control mono" placeholder="123456789,987654321" />
+                        <div class="hint">Несколько chat_id укажи через запятую.</div>
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label style="display:flex; gap:10px; align-items:flex-start; cursor:pointer;">
+                            <input id="maxEnablePolling" type="checkbox" />
+                            <span>Long polling (<code>/updates</code>) — регистрация пользователей; не включать вместе с Webhook. Только <code>app_settings</code>, не ENV.</span>
+                        </label>
+                    </div>
+                </div>
+                <div style="margin-top:10px; display:flex; gap:10px; align-items:center;">
+                    <button class="btn btn-primary" onclick="saveMaxBot()">💾 Сохранить</button>
+                    <button class="btn btn-secondary" onclick="loadMaxBot()">🔄 Обновить</button>
+                    <div id="maxSaveStatus" class="status info" style="display:none;"></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h5>Оповещения по XGB-моделям</h5>
+                </div>
+                <p class="hint">
+                    Список берётся из активных XGB trading sessions. Если фильтр ещё не сохранён — поведение старое, уведомления разрешены всем моделям.
+                </p>
+                <div id="notifyModelsList" class="model-list">
+                    <div class="status info" style="opacity:0.6;">Проверка активных моделей…</div>
+                </div>
+                <div style="margin-top:10px; display:flex; gap:10px; align-items:center;">
+                    <button class="btn btn-primary" onclick="saveNotificationModels()">💾 Сохранить выбор</button>
+                    <button class="btn btn-secondary" onclick="loadNotificationModels()">🔄 Обновить</button>
+                    <div id="notifyModelsStatus" class="status info" style="display:none;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/sidebar.js"></script>
+    <script>
+        function showStatus(id, type, message) {
+            const el = document.getElementById(id);
+            if(!el) return;
+            el.textContent = message;
+            el.className = `status ${type}`;
+            el.style.display = 'block';
+            setTimeout(() => { try{ el.style.display = 'none'; }catch(_){ } }, 6000);
+        }
+
+        function escapeHtml(s){
+            return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+        }
+
+        function modelLabel(path, meta){
+            const parts = String(path || '').split('/').filter(Boolean);
+            const ver = parts.find(p => /^v\d+$/i.test(p));
+            const file = parts[parts.length - 1] || path || 'model';
+            const bits = [meta?.symbol, meta?.task, ver, file].filter(Boolean);
+            return bits.join(' / ');
+        }
+
+        async function loadTelegramBot(){
+            try{
+                const r = await fetch('/api/settings/bots/telegram');
+                const j = await r.json();
+                if(!j.success) throw new Error(j.error || 'load failed');
+                const tg = j.telegram || {};
+                document.getElementById('chatIds').value = tg.chat_ids || '';
+                document.getElementById('vlessUrl').value = tg.vless_url || '';
+                document.getElementById('tokenHint').textContent = tg.has_bot_token
+                    ? `Текущий token: ${tg.bot_token_masked || '***'}`
+                    : 'Текущий token: не задан';
+            }catch(e){
+                showStatus('telegramSaveStatus', 'error', 'Ошибка загрузки: ' + e.message);
+            }
+        }
+
+        async function loadMaxBot(){
+            try{
+                const r = await fetch('/api/settings/bots/max');
+                const j = await r.json();
+                if(!j.success) throw new Error(j.error || 'load failed');
+                const max = j.max || {};
+                document.getElementById('maxApiUrl').value = max.api_url || '';
+                document.getElementById('maxChatIds').value = max.chat_ids || '';
+                document.getElementById('maxEnablePolling').checked = !!max.enable_max_bot_polling;
+                document.getElementById('maxTokenHint').textContent = max.has_bot_token
+                    ? `Текущий token: ${max.bot_token_masked || '***'}`
+                    : 'Текущий token: не задан';
+            }catch(e){
+                showStatus('maxSaveStatus', 'error', 'Ошибка загрузки: ' + e.message);
+            }
+        }
+
+        async function saveTelegramBot(){
+            try{
+                const bot_token = (document.getElementById('botToken')?.value || '').trim();
+                const chat_ids = (document.getElementById('chatIds')?.value || '').trim();
+                const vless_url = (document.getElementById('vlessUrl')?.value || '').trim();
+                const r = await fetch('/api/settings/bots/telegram/save', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({bot_token, chat_ids, vless_url})
+                });
+                const j = await r.json();
+                if(!j.success) throw new Error(j.error || 'save failed');
+                document.getElementById('botToken').value = '';
+                showStatus('telegramSaveStatus', 'success', 'Сохранено в Postgres');
+                await loadTelegramBot();
+            }catch(e){
+                showStatus('telegramSaveStatus', 'error', e.message);
+            }
+        }
+
+        async function saveMaxBot(){
+            try{
+                const bot_token = (document.getElementById('maxBotToken')?.value || '').trim();
+                const api_url = (document.getElementById('maxApiUrl')?.value || '').trim();
+                const chat_ids = (document.getElementById('maxChatIds')?.value || '').trim();
+                const enable_max_bot_polling = !!document.getElementById('maxEnablePolling')?.checked;
+                const r = await fetch('/api/settings/bots/max/save', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({bot_token, api_url, chat_ids, enable_max_bot_polling})
+                });
+                const j = await r.json();
+                if(!j.success) throw new Error(j.error || 'save failed');
+                document.getElementById('maxBotToken').value = '';
+                showStatus('maxSaveStatus', 'success', 'Сохранено в Postgres');
+                await loadMaxBot();
+            }catch(e){
+                showStatus('maxSaveStatus', 'error', e.message);
+            }
+        }
+
+        async function loadNotificationModels(){
+            const listEl = document.getElementById('notifyModelsList');
+            try{
+                const [settingsResp, agentsResp] = await Promise.all([
+                    fetch('/api/settings/bots/notification-models'),
+                    fetch('/api/trading/status_all')
+                ]);
+                const settings = await settingsResp.json();
+                const agents = await agentsResp.json();
+                if(!settings.success) throw new Error(settings.error || 'settings load failed');
+                if(!agents.success) throw new Error(agents.error || 'active models load failed');
+
+                const selected = new Set((settings.selected_model_paths || []).map(p => String(p).replace(/\\/g, '/')));
+                const models = new Map();
+                for(const a of (agents.active_agents || [])){
+                    if(!a.is_xgb) continue;
+                    const paths = Array.isArray(a.model_paths) && a.model_paths.length ? a.model_paths : [a.model_path];
+                    for(const rawPath of paths){
+                        const path = String(rawPath || '').replace(/\\/g, '/').trim();
+                        if(!path) continue;
+                        models.set(path, {symbol:a.symbol, session_id:a.session_id, task:a.xgb_task, active:true});
+                    }
+                }
+                for(const path of selected){
+                    if(path && !models.has(path)) models.set(path, {active:false});
+                }
+
+                if(models.size === 0){
+                    listEl.innerHTML = '<div class="status info">Активных XGB-моделей не найдено</div>';
+                    return;
+                }
+                let html = '';
+                for(const [path, meta] of models.entries()){
+                    const checked = settings.configured ? selected.has(path) : true;
+                    const inactive = meta.active ? '' : ' <span class="hint">(сейчас не активна)</span>';
+                    html += '<label class="model-row">';
+                    html += '<input type="checkbox" class="notify-model-check" value="' + escapeHtml(path) + '" ' + (checked ? 'checked' : '') + ' />';
+                    html += '<span><span class="model-title">' + escapeHtml(modelLabel(path, meta)) + inactive + '</span>';
+                    html += '<div class="model-path mono">' + escapeHtml(path) + '</div></span></label>';
+                }
+                listEl.innerHTML = html;
+            }catch(e){
+                listEl.innerHTML = '<div class="status error">Ошибка загрузки: ' + escapeHtml(e.message) + '</div>';
+            }
+        }
+
+        async function saveNotificationModels(){
+            try{
+                const model_paths = Array.from(document.querySelectorAll('.notify-model-check:checked')).map(el => el.value);
+                const r = await fetch('/api/settings/bots/notification-models/save', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({model_paths})
+                });
+                const j = await r.json();
+                if(!j.success) throw new Error(j.error || 'save failed');
+                showStatus('notifyModelsStatus', 'success', 'Сохранено в Postgres');
+                await loadNotificationModels();
+            }catch(e){
+                showStatus('notifyModelsStatus', 'error', e.message);
+            }
+        }
+
+        window.addEventListener('load', () => {
+            loadTelegramBot();
+            loadMaxBot();
+            loadNotificationModels();
+        });
+    </script>
+</body>
+</html>

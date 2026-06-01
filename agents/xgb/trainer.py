@@ -266,6 +266,13 @@ class XgbTrainer:
                             h = highs[train_n : train_n + len(pred)]
                     except Exception:
                         h = None
+                    l = None
+                    try:
+                        lows = aux.get("lows")
+                        if isinstance(lows, np.ndarray) and lows.ndim == 1:
+                            l = lows[train_n : train_n + len(pred)]
+                    except Exception:
+                        l = None
 
                     pnls: list[float] = []
                     pos = None  # {'entry':float, 'idx':int, 'peak':float}
@@ -284,10 +291,22 @@ class XgbTrainer:
                                     except Exception:
                                         ph = px
                                 pos["peak"] = max(float(pos["peak"]), float(ph))
+                            else:
+                                pl = px
+                                if l is not None and i < len(l):
+                                    try:
+                                        pl = float(l[i])
+                                    except Exception:
+                                        pl = px
+                                pos["peak"] = min(float(pos["peak"]), float(pl))
+                            
                             raw_ret = (px - float(pos["entry"])) / max(float(pos["entry"]), 1e-12) if is_long else (float(pos["entry"]) - px) / max(float(pos["entry"]), 1e-12)
 
-                            if trail_pct is not None and is_long:
-                                dd = (float(pos["peak"]) - px) / max(float(pos["peak"]), 1e-12)
+                            if trail_pct is not None:
+                                if is_long:
+                                    dd = (float(pos["peak"]) - px) / max(float(pos["peak"]), 1e-12)
+                                else:
+                                    dd = (px - float(pos["peak"])) / max(float(pos["peak"]), 1e-12)
                                 if dd >= float(trail_pct):
                                     pnls.append(float(raw_ret) - float(fee_frac))
                                     pos = None
@@ -303,12 +322,20 @@ class XgbTrainer:
                                 pos = None
 
                         if pos is None and int(pred[i]) == 1:
-                            pk = px
-                            if is_long and h is not None and i < len(h):
-                                try:
-                                    pk = float(h[i])
-                                except Exception:
-                                    pk = px
+                            if is_long:
+                                pk = px
+                                if h is not None and i < len(h):
+                                    try:
+                                        pk = float(h[i])
+                                    except Exception:
+                                        pk = px
+                            else:
+                                pk = px
+                                if l is not None and i < len(l):
+                                    try:
+                                        pk = float(l[i])
+                                    except Exception:
+                                        pk = px
                             pos = {"entry": px, "idx": i, "peak": pk}
 
                     if pos is not None and len(c) > 0:
@@ -391,6 +418,21 @@ class XgbTrainer:
         os.makedirs(run_dir, exist_ok=True)
 
         model_path = os.path.join(run_dir, "model.json")
+        manifest_path = os.path.join(run_dir, "manifest.json")
+        # Write minimal manifest early to keep symbol metadata
+        # even if training/export is interrupted later.
+        _atomic_write_json(
+            manifest_path,
+            {
+                "symbol": symbol,
+                "symbol_code": sym,
+                "run_name": run_name,
+                "model_type": "xgb",
+                "model_path": model_path,
+                "status": "started",
+                "started_at": datetime.utcnow().isoformat() + "Z",
+            },
+        )
         model.save_model(model_path)
 
         metrics = {
@@ -419,6 +461,7 @@ class XgbTrainer:
             "model_path": model_path,
             "metrics_path": os.path.join(run_dir, "metrics.json"),
             "meta_path": os.path.join(run_dir, "meta.json"),
+            "status": "done",
             "proxy_pnl_val": {
                 "enabled": bool(proxy_pnl.get("enabled")),
                 "pnl_sum": proxy_pnl.get("pnl_sum"),
@@ -427,7 +470,7 @@ class XgbTrainer:
         }
         _atomic_write_json(manifest["metrics_path"], metrics)
         _atomic_write_json(manifest["meta_path"], meta)
-        _atomic_write_json(os.path.join(run_dir, "manifest.json"), manifest)
+        _atomic_write_json(manifest_path, manifest)
 
         return {
             "success": True,

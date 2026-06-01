@@ -150,3 +150,122 @@ class AppSetting(Base):
     __table_args__ = (
         UniqueConstraint('scope', 'group', 'key', name='uix_app_settings_scope_group_key'),
     )
+
+
+class BotUser(Base):
+    """
+    Человек, который пользуется ботами MedoedAI.
+
+    Не привязан к Telegram напрямую: один user может иметь identity в telegram,
+    max или другой платформе.
+    """
+    __tablename__ = 'bot_users'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    status = Column(String, nullable=False, default='active')  # active/blocked/deleted
+    role = Column(String, nullable=False, default='user')      # user/admin/support
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    last_seen_at = Column(DateTime, nullable=True)
+
+    identities = relationship("BotUserIdentity", back_populates="user")
+    subscriptions = relationship("BotSubscription", back_populates="user")
+
+
+class BotUserIdentity(Base):
+    """
+    Аккаунт пользователя на конкретной платформе: telegram/max/etc.
+    platform_user_id должен быть строкой, потому что у разных платформ разные форматы ID.
+    """
+    __tablename__ = 'bot_user_identities'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('bot_users.id'), nullable=False)
+
+    platform = Column(String, nullable=False)          # telegram / max / etc
+    platform_user_id = Column(String, nullable=False)  # telegram_id, max user id, etc
+    username = Column(String, nullable=True)
+    first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
+    display_name = Column(String, nullable=True)
+    language_code = Column(String, nullable=True)
+    raw_profile = Column(Text, nullable=True)          # JSON snapshot от платформы
+
+    bybit_api_key = Column(String, nullable=True)
+    bybit_api_secret = Column(String, nullable=True)
+    bybit_leverage = Column(Integer, nullable=True, default=1)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    last_seen_at = Column(DateTime, nullable=True)
+
+    user = relationship("BotUser", back_populates="identities")
+
+    __table_args__ = (
+        UniqueConstraint('platform', 'platform_user_id', name='uix_bot_identity_platform_user'),
+    )
+
+
+class BotPromoCode(Base):
+    """Выпущенные промокоды для доступа к боту."""
+    __tablename__ = 'bot_promo_codes'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String, unique=True, nullable=False)    # Например: MEDOED-A7F3-K2
+    duration_days = Column(Integer, nullable=False)       # На сколько дней выдается доступ
+    max_uses = Column(Integer, nullable=False, default=1) # Лимит активаций
+    used_count = Column(Integer, nullable=False, default=0)
+    valid_from = Column(DateTime, nullable=True)          # С какой даты действует
+    valid_until = Column(DateTime, nullable=True)         # До какой даты можно активировать
+    is_active = Column(Boolean, nullable=False, default=True) # Вкл/выкл вручную
+    note = Column(String, nullable=True)                  # Комментарий для себя
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    redemptions = relationship("BotPromoRedemption", back_populates="promo_code")
+
+
+class BotPromoRedemption(Base):
+    """Аудит активаций промокодов пользователями."""
+    __tablename__ = 'bot_promo_redemptions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    promo_code_id = Column(Integer, ForeignKey('bot_promo_codes.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('bot_users.id'), nullable=False)
+    
+    paid_until_after = Column(DateTime, nullable=False)   # До какой даты продлили
+    redeemed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    promo_code = relationship("BotPromoCode", back_populates="redemptions")
+    user = relationship("BotUser")
+
+    __table_args__ = (
+        UniqueConstraint('promo_code_id', 'user_id', name='uix_promo_redemption_code_user'),
+    )
+
+
+class BotSubscription(Base):
+    """Платный доступ пользователя к продукту/функции."""
+    __tablename__ = 'bot_subscriptions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('bot_users.id'), nullable=False)
+
+    product_code = Column(String, nullable=False, default='signals')  # signals/pro/etc
+    plan_code = Column(String, nullable=False, default='monthly')
+    status = Column(String, nullable=False, default='inactive')       # active/inactive/canceled/expired
+    paid_until = Column(DateTime, nullable=True)
+
+    provider = Column(String, nullable=True)              # telegram_stars/yookassa/manual/etc
+    provider_payment_id = Column(String, nullable=True)
+    provider_subscription_id = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    user = relationship("BotUser", back_populates="subscriptions")
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'product_code', name='uix_bot_subscription_user_product'),
+    )

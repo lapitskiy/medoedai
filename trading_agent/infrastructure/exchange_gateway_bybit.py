@@ -21,48 +21,22 @@ class BybitExchangeGateway(ExchangeGateway):
     Приватный WS для ордеров планируется добавить; пока используется опрос статуса при необходимости.
     """
 
-    def __init__(self, symbol_for_markets: Optional[str] = None):
-        # Строгий режим: если выбран account_id в Redis — НИКАКИХ фолбэков.
-        selected = None
+    def __init__(self, symbol_for_markets: Optional[str] = None, account_id: Optional[str] = None):
+        selected = str(account_id or '').strip() or None
+        if not selected:
+            raise RuntimeError('account_id is required for BybitExchangeGateway')
         try:
-            r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
-            selected = None
-            try:
-                if symbol_for_markets:
-                    sym = str(symbol_for_markets).strip()
-                    if sym:
-                        selected = r.get(f'trading:account_id:{sym}')
-            except Exception:
-                selected = None
-            if selected is None:
-                selected = r.get('trading:account_id')
-            selected = str(selected).strip() if selected else None
+            ensure_settings_table()
+            api_key = get_setting_value('api', 'bybit', f'BYBIT_{selected}_API_KEY')
+            secret = get_setting_value('api', 'bybit', f'BYBIT_{selected}_SECRET_KEY')
         except Exception:
-            selected = None
-
-        if selected:
-            try:
-                ensure_settings_table()
-                api_key = get_setting_value('api', 'bybit', f'BYBIT_{selected}_API_KEY')
-                secret = get_setting_value('api', 'bybit', f'BYBIT_{selected}_SECRET_KEY')
-            except Exception:
-                api_key = None
-                secret = None
-        else:
-            try:
-                ensure_settings_table()
-                api_key = get_setting_value('api', 'bybit', 'BYBIT_1_API_KEY') or os.getenv('BYBIT_API_KEY')
-                secret = get_setting_value('api', 'bybit', 'BYBIT_1_SECRET_KEY') or os.getenv('BYBIT_SECRET_KEY')
-            except Exception:
-                api_key = os.getenv('BYBIT_1_API_KEY') or os.getenv('BYBIT_API_KEY')
-                secret = os.getenv('BYBIT_1_SECRET_KEY') or os.getenv('BYBIT_SECRET_KEY')
+            api_key = None
+            secret = None
         if not api_key or not secret:
-            if selected:
-                raise RuntimeError(
-                    f'Bybit API keys not set for selected account id={selected} '
-                    f'(need BYBIT_{selected}_API_KEY and BYBIT_{selected}_SECRET_KEY)'
-                )
-            raise RuntimeError('Bybit API keys not set in environment')
+            raise RuntimeError(
+                f'Bybit API keys not set for selected account id={selected} '
+                f'(need BYBIT_{selected}_API_KEY and BYBIT_{selected}_SECRET_KEY)'
+            )
         self.ex = ccxt.bybit({
             'apiKey': api_key,
             'secret': secret,

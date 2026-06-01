@@ -10,6 +10,7 @@ from celery import Celery
 from kombu import Queue
 from celery.schedules import crontab
 from utils.config_loader import get_config_value
+from utils.time_log import msk_tag
 
 # Подавляем DeprecationWarning от distutils, которые могут исходить из setuptools
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*distutils.*")
@@ -60,32 +61,44 @@ celery.conf.task_routes = {
     'tasks.xgb_tasks.train_xgb_symbol': {'queue': 'celery'},
     'tasks.xgb_tasks.train_xgb_grid': {'queue': 'celery'},
     'tasks.xgb_tasks.train_xgb_grid_entry_exit': {'queue': 'celery'},
+    'tasks.xgb_tasks.train_xgb_grid_full': {'queue': 'train'},
     'tasks.celery_task_trade.execute_trade': {'queue': 'trade'},
+    'tasks.celery_task_trade.run_active_trading_sessions': {'queue': 'trade'},
     'tasks.celery_task_trade.start_trading_task': {'queue': 'trade'},
     'tasks.celery_task_trade.refresh_trading_status': {'queue': 'celery'},
     'tasks.oos_tasks.run_oos_test': {'queue': 'oos'},
     'tasks.xgb_oos_tasks.run_xgb_oos_test': {'queue': 'oos'},
+    'tasks.xgb_oos_tasks.finalize_xgb_oos_batch_csv': {'queue': 'oos'},
     'tasks.stock_tasks.train_stock_dqn': {'queue': 'train'},
+    'tasks.celery_task_copy_trade.copy_trade_for_clients': {'queue': 'celery'},
 }
+
+celery.conf.beat_schedule = {
+    'watchdog-xgb-oos-batches-every-5-minutes': {
+        'task': 'tasks.xgb_oos_tasks.watchdog_xgb_oos_batches',
+        'schedule': crontab(minute='*/5'),
+        'args': ()
+    }
+}
+celery.conf.timezone = 'UTC'
 
 # Включаем периодический запуск торговли
 if str(get_config_value('ENABLE_TRADING_BEAT', '0')).lower() in ('1', 'true', 'yes', 'on'):
-    celery.conf.beat_schedule = {
+    celery.conf.beat_schedule.update({
         'start-trading-every-5-minutes': {
-            'task': 'tasks.celery_task_trade.start_trading_task',
+            'task': 'tasks.celery_task_trade.run_active_trading_sessions',
             'schedule': crontab(minute='*/5'),
-            'args': ([], None)
+            'args': ()
         },
         'refresh-trading-status-every-minute': {
             'task': 'tasks.celery_task_trade.refresh_trading_status',
             'schedule': crontab(minute='*'),
             'args': (),
         },
-    }
-    celery.conf.timezone = 'UTC'
-    print("✅ Периодическая торговля включена (каждые 5 минут)")
+    })
+    print(msk_tag("✅ Периодическая торговля включена (каждые 5 минут)"))
 else:
-    print("⚠️ Периодическая торговля отключена (ENABLE_TRADING_BEAT=0)")
+    print(msk_tag("⚠️ Периодическая торговля отключена (ENABLE_TRADING_BEAT=0)"))
 
 # Импортируем модули с задачами, чтобы Celery их обнаружил
 import tasks.celery_tasks
@@ -95,3 +108,4 @@ import tasks.sac_tasks
 import tasks.xgb_tasks
 import tasks.xgb_oos_tasks
 import tasks.stock_tasks
+import tasks.celery_task_copy_trade

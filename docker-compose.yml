@@ -56,10 +56,30 @@ services:
     working_dir: /workspace
     command: >
       sh -c "
-        echo '✅ Redis готов, запускаю Flask...' &&
+        python -c \"from utils.time_log import msk_tag; print(msk_tag('✅ Redis готов, запускаю Flask...'))\" &&
         python -W ignore::DeprecationWarning main.py
       "
     # CPU-only по умолчанию. GPU добавляется через docker-compose.gpu.yml
+
+  frontend-next:
+    image: node:22-alpine
+    container_name: frontend-next
+    depends_on:
+      medoedai:
+        condition: service_started
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+      MEDOED_BACKEND_URL: http://medoedai:5050
+      NEXT_PUBLIC_LEGACY_UI_BASE_URL: http://localhost:5050
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./frontend-next:/app
+    working_dir: /app
+    command: ["sh", "-lc", "npm run dev -- --hostname 0.0.0.0 --port 3000"]
 
   celery-worker:
     build: .
@@ -79,7 +99,7 @@ services:
       PYTHONWARNINGS: "ignore::DeprecationWarning"
       # Параллелизм Celery (обычные очереди)
       CELERY_POOL: prefork
-      CELERY_CONCURRENCY: "6"
+      CELERY_CONCURRENCY: "8"
       # Ограничение потоков внутри NumPy/MKL/Torch
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
@@ -93,7 +113,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /workspace
     # Исключаем очередь train из общего воркера, чтобы не конкурировать за CPU
-    command: ["sh","-lc","python -c \"from utils.redis_utils import get_redis_client; rc=get_redis_client(); [rc.delete(k) for k in rc.keys('celery:train:xgb:*')]\" 2>/dev/null; python -W ignore::DeprecationWarning -m celery -A tasks worker -Q celery -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-6} --loglevel=info"]
+    command: ["sh","-lc","python -c \"import xgboost\" >/dev/null 2>&1 || pip install --no-cache-dir xgboost; python -c \"from utils.redis_utils import get_redis_client; rc=get_redis_client(); [rc.delete(k) for k in rc.keys('celery:train:xgb:*')]\" 2>/dev/null; python -W ignore::DeprecationWarning -m celery -A tasks worker -Q celery -P ${CELERY_POOL:-prefork} -c ${CELERY_CONCURRENCY:-8} --loglevel=info"]
     # CPU-only воркер: GPU не требуется
 
   # Специализированный воркер для торговли
@@ -128,6 +148,46 @@ services:
         echo '✅ Redis-блокировки удалены, запускаю Celery-воркер...' &&
         python -W ignore::DeprecationWarning -m celery -A tasks worker -Q trade -P prefork -c 8 --loglevel=info
       "
+
+  signal-notifier:
+    build:
+      context: ./signal_notifier
+    container_name: signal-notifier
+    profiles: ["notifications"]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      SIGNAL_STREAM_NAME: ${SIGNAL_STREAM_NAME:-signals:events}
+      SIGNAL_CONSUMER_GROUP: ${SIGNAL_CONSUMER_GROUP:-signal-notifier}
+      SIGNAL_CONSUMER_NAME: ${SIGNAL_CONSUMER_NAME:-signal-notifier-1}
+      SIGNAL_NOTIFIER_CHANNELS: ${SIGNAL_NOTIFIER_CHANNELS:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
+      MAX_API_URL: ${MAX_API_URL:-}
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+      MAX_CHAT_IDS: ${MAX_CHAT_IDS:-}
+
+  telegram-vless-proxy:
+    image: ghcr.io/sagernet/sing-box:latest
+    container_name: telegram-vless-proxy
+    restart: unless-stopped
+    environment:
+      VLESS_SERVER: ${VLESS_SERVER:-}
+      VLESS_PORT: ${VLESS_PORT:-}
+      VLESS_UUID: ${VLESS_UUID:-}
+      VLESS_SECURITY: ${VLESS_SECURITY:-reality}
+      VLESS_SNI: ${VLESS_SNI:-}
+      VLESS_PUBLIC_KEY: ${VLESS_PUBLIC_KEY:-}
+      VLESS_SHORT_ID: ${VLESS_SHORT_ID:-}
+      VLESS_FLOW: ${VLESS_FLOW:-}
+      VLESS_FINGERPRINT: ${VLESS_FINGERPRINT:-chrome}
+    volumes:
+      - ./infra/telegram-vless-proxy/start.sh:/start.sh:ro
+      - ./infra/telegram-vless-proxy:/config:ro
+    entrypoint: ["/bin/sh", "/start.sh"]
 
   # Специализированный воркер для обучения, использует все CPU ядра
 
@@ -219,16 +279,16 @@ services:
       SERVING_URL: http://serving:8000/predict_ensemble
       PYTHONWARNINGS: "ignore::DeprecationWarning"
       # ограничим потоки у научных либ, OOS CPU-bound
-      OMP_NUM_THREADS: "4"
-      MKL_NUM_THREADS: "4"
-      TORCH_NUM_THREADS: "4"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TORCH_NUM_THREADS: "1"
       CUDA_VISIBLE_DEVICES: ""
     env_file:
       - .env
     volumes:
       - .:/workspace
     working_dir: /workspace
-    command: ["sh","-lc","python -W ignore::DeprecationWarning -m celery -A tasks worker -Q oos -P prefork -c 2 --loglevel=info"]
+    command: ["sh","-lc","python -W ignore::DeprecationWarning -m celery -A tasks worker -Q oos -P prefork -c 30 --loglevel=info"]
 
   serving:
     build:

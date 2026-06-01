@@ -869,10 +869,18 @@ def train_xgb_grid_full_route():
             return cast(v)
         return v
 
+    def _bool(key):
+        v = data.get(key)
+        if isinstance(v, bool):
+            return v
+        return str(v or "").strip().lower() in ("1", "true", "yes", "on")
+
     task = train_xgb_grid_full.apply_async(kwargs={
         'symbol': _get('symbol') or 'BTCUSDT',
         'direction': _get('direction') or 'long',
         'task': _get('task') or 'entry_long',
+        'parallel_mode': _bool('parallel_mode'),
+        'parallel_workers': _get('parallel_workers', int),
         'limit_candles': _get('limit_candles', int),
         'cutoff_days': _get('cutoff_days', int) or 90,
         'p_enter_threshold_list': data.get('p_enter_threshold_list'),
@@ -898,7 +906,13 @@ def train_xgb_grid_full_route():
         'scale_pos_weight_list': data.get('scale_pos_weight_list'),
         'early_stopping_rounds': _get('early_stopping_rounds', int) or 50,
         'keep_top_n': _get('keep_top_n', int) or 20,
-    }, queue='celery')
+        'use_1m_microvol': _bool('use_1m_microvol'),
+        'use_1m_momentum': _bool('use_1m_momentum'),
+        'use_1m_candle_structure': _bool('use_1m_candle_structure'),
+        'use_1m_volume': _bool('use_1m_volume'),
+        'use_1d_regime': _bool('use_1d_regime'),
+        'use_sr_features': True if 'use_sr_features' not in data else _bool('use_sr_features'),
+    }, queue='train')
 
     try:
         redis_client.lrem("ui:tasks", 0, task.id)
@@ -946,22 +960,49 @@ def xgb_active_training():
     try:
         keys = redis_client.keys("celery:train:xgb:*")
         active = []
+        seen_task_ids = set()
+        inspected_active = {}
+        try:
+            inspected = celery.control.inspect(timeout=1).active() or {}
+        except Exception:
+            inspected = {}
+        for worker_tasks in inspected.values():
+            if not isinstance(worker_tasks, list):
+                continue
+            for task in worker_tasks:
+                if not isinstance(task, dict):
+                    continue
+                task_name_full = str(task.get("name") or task.get("type") or "")
+                task_id = str(task.get("id") or "").strip()
+                if task_id and task_name_full.startswith("tasks.xgb_tasks."):
+                    inspected_active[task_id] = task
+
         for key in keys:
+            try:
+                key_type = redis_client.type(key)
+                if isinstance(key_type, bytes):
+                    key_type = key_type.decode()
+                if str(key_type) != "string":
+                    continue
+            except Exception:
+                continue
+
             task_id = redis_client.get(key)
             if not task_id:
                 continue
             if isinstance(task_id, bytes):
                 task_id = task_id.decode()
             key_str = key.decode() if isinstance(key, bytes) else key
+            if str(key_str).startswith("celery:train:xgb:progress:"):
+                continue
 
             ar = AsyncResult(task_id, app=celery)
             state = ar.state
+            active_by_worker = task_id in inspected_active
+            if active_by_worker and state in ("SUCCESS", "FAILURE", "REVOKED"):
+                state = "PROGRESS"
 
-            if state in ("SUCCESS", "FAILURE", "REVOKED"):
-                try:
-                    redis_client.delete(key)
-                except Exception:
-                    pass
+            if state in ("SUCCESS", "FAILURE", "REVOKED") and not active_by_worker:
                 continue
 
             parts = key_str.replace("celery:train:xgb:", "").split(":")
@@ -1028,6 +1069,97 @@ def xgb_active_training():
                 info["total"] = 0
 
             active.append(info)
+            seen_task_ids.add(task_id)
+
+        for key in redis_client.keys("celery:train:xgb:progress:*"):
+            key_str = key.decode() if isinstance(key, bytes) else key
+            task_id = str(key_str).replace("celery:train:xgb:progress:", "", 1)
+            if not task_id or task_id in seen_task_ids:
+                continue
+
+            ar = AsyncResult(task_id, app=celery)
+            state = ar.state
+            active_by_worker = task_id in inspected_active
+            if active_by_worker and state in ("SUCCESS", "FAILURE", "REVOKED"):
+                state = "PROGRESS"
+            if state in ("SUCCESS", "FAILURE", "REVOKED") and not active_by_worker:
+                try:
+                    redis_client.delete(key)
+                except Exception:
+                    pass
+                continue
+
+            progress = redis_client.hgetall(key) or {}
+            meta = ar.info if isinstance(ar.info, dict) else {}
+            logs = meta.get("logs", []) if isinstance(meta.get("logs", []), list) else []
+            symbol = meta.get("symbol") or progress.get("symbol") or ""
+            task_name = meta.get("task") or progress.get("task") or ""
+
+            try:
+                done = int(meta.get("done", progress.get("done", 0)) or 0)
+            except Exception:
+                done = 0
+            try:
+                total = int(meta.get("total", progress.get("total", 0)) or 0)
+            except Exception:
+                total = 0
+
+            info = {
+                "task_id": task_id,
+                "state": state,
+                "grid_type": "gridfull",
+                "symbol": symbol,
+                "task_name": task_name,
+                "done": done,
+                "total": total,
+                "started_at": meta.get("started_at") or (inspected_active.get(task_id) or {}).get("time_start"),
+                "last_log": logs[-1] if logs else "",
+                "logs_tail": logs[-5:] if logs else [],
+            }
+            sa = info.get("started_at")
+            if sa and done > 0 and total > 0:
+                elapsed = _time.time() - float(sa)
+                avg_per_run = elapsed / done
+                info["elapsed_sec"] = round(elapsed)
+                info["eta_sec"] = round((total - done) * avg_per_run)
+                info["avg_per_run_sec"] = round(avg_per_run, 1)
+
+            active.append(info)
+            seen_task_ids.add(task_id)
+
+        for task_id, task in inspected_active.items():
+            task_name_full = str(task.get("name") or task.get("type") or "")
+            if not task_name_full.startswith("tasks.xgb_tasks."):
+                continue
+            if not task_id or task_id in seen_task_ids:
+                continue
+            kwargs = task.get("kwargs") if isinstance(task.get("kwargs"), dict) else {}
+            progress = redis_client.hgetall(f"celery:train:xgb:progress:{task_id}") or {}
+            try:
+                done = int(progress.get("done", 0) or 0)
+            except Exception:
+                done = 0
+            try:
+                total = int(progress.get("total", 0) or 0)
+            except Exception:
+                total = 0
+            active.append({
+                "task_id": task_id,
+                "state": "PROGRESS",
+                "grid_type": task_name_full.rsplit(".", 1)[-1].replace("train_xgb_", ""),
+                "symbol": kwargs.get("symbol") or progress.get("symbol") or "",
+                "task_name": kwargs.get("task") or progress.get("task") or kwargs.get("direction") or "",
+                "done": done,
+                "total": total,
+                "started_at": task.get("time_start"),
+                "last_log": "Celery worker reports this XGB task as active",
+                "logs_tail": ["Celery worker reports this XGB task as active"],
+            })
+            if task.get("time_start") and done > 0 and total > 0:
+                active[-1]["elapsed_sec"] = round(_time.time() - float(task["time_start"]))
+                active[-1]["avg_per_run_sec"] = round(active[-1]["elapsed_sec"] / done, 1)
+                active[-1]["eta_sec"] = round((total - done) * active[-1]["avg_per_run_sec"])
+            seen_task_ids.add(task_id)
 
         return jsonify({"success": True, "active": active})
     except Exception as e:

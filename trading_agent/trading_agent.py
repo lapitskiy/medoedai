@@ -22,7 +22,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class TradingAgent:
-    def __init__(self, model_path: str = "/workspace/models/btc/ensemble-a/current/dqn_model.pth", direction: str = None, symbol: str | None = None):
+    def __init__(
+        self,
+        model_path: str = "/workspace/models/btc/ensemble-a/current/dqn_model.pth",
+        direction: str = None,
+        symbol: str | None = None,
+        session_id: str | None = None,
+        account_id: str | None = None,
+    ):
         """
         Инициализация торгового агента
         
@@ -30,6 +37,8 @@ class TradingAgent:
             model_path: путь к обученной модели
         """
         self.model_path = model_path
+        self.session_id = str(session_id).strip() if session_id else None
+        self.account_id = str(account_id).strip() if account_id else None
         try:
             self.direction = (direction or os.getenv("AGENT_DIRECTION", "long")).strip().lower()
         except Exception:
@@ -74,6 +83,50 @@ class TradingAgent:
             self._restore_position_from_exchange()
         except Exception:
             pass
+
+    def _trade_meta(self) -> dict:
+        meta = {}
+        try:
+            if getattr(self, 'session_id', None):
+                meta['session_id'] = str(self.session_id)
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'account_id', None):
+                meta['account_id'] = str(self.account_id)
+        except Exception:
+            pass
+        try:
+            meta['leverage'] = int(self._get_target_leverage())
+        except Exception:
+            pass
+        try:
+            exit_reason = str(getattr(self, '_forced_exit_reason', '') or '').strip()
+            if exit_reason:
+                meta['exit_reason'] = exit_reason
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'model_path', None):
+                meta['model_path'] = str(self.model_path)
+                meta['model_family'] = (
+                    'xgb'
+                    if '/models/xgb/' in str(self.model_path).replace('\\', '/')
+                    else 'dqn'
+                )
+        except Exception:
+            pass
+        try:
+            shap_snapshot = getattr(self, '_last_xgb_shap_snapshot', None)
+            if isinstance(shap_snapshot, dict) and shap_snapshot:
+                meta['xgb_shap'] = shap_snapshot.get('xgb_shap')
+                meta['xgb_shap_model_path'] = shap_snapshot.get('model_path')
+                meta['xgb_shap_confidence'] = shap_snapshot.get('confidence')
+                meta['xgb_shap_current_price'] = shap_snapshot.get('current_price')
+                meta['xgb_shap_ensemble_group_id'] = shap_snapshot.get('ensemble_group_id')
+        except Exception:
+            pass
+        return meta
     
     def _load_model(self):
         """Загрузка обученной модели (поддержка torch.save(obj) и torch.save(state_dict))"""
@@ -122,72 +175,24 @@ class TradingAgent:
     def _init_exchange(self):
         """Инициализация подключения к бирже Bybit для деривативов"""
         try:
-            # API ключи: приоритет — выбранный аккаунт из Redis (per-symbol -> global)
             api_key = None
             secret_key = None
-            selected_account_id = None
+            selected_account_id = str(getattr(self, 'account_id', '') or '').strip() or None
+            if not selected_account_id:
+                raise RuntimeError("account_id is required for TradingAgent")
             try:
-                r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
-                sel = None
-                try:
-                    sym = str(getattr(self, 'symbol', '') or '').strip().upper()
-                    if sym:
-                        sel = r.get(f'trading:account_id:{sym}')
-                except Exception:
-                    sel = None
-                if sel is None:
-                    sel = r.get('trading:account_id')
-                if sel:
-                    selected_account_id = str(sel).strip()
-                    try:
-                        from utils.settings_store import ensure_settings_table, get_setting_value
-                        ensure_settings_table()
-                        api_key = get_setting_value('api', 'bybit', f'BYBIT_{selected_account_id}_API_KEY') or None
-                        secret_key = get_setting_value('api', 'bybit', f'BYBIT_{selected_account_id}_SECRET_KEY') or None
-                    except Exception:
-                        api_key = None
-                        secret_key = None
+                from utils.settings_store import ensure_settings_table, get_setting_value
+                ensure_settings_table()
+                api_key = get_setting_value('api', 'bybit', f'BYBIT_{selected_account_id}_API_KEY') or None
+                secret_key = get_setting_value('api', 'bybit', f'BYBIT_{selected_account_id}_SECRET_KEY') or None
             except Exception:
                 api_key = None
                 secret_key = None
-            # Строгий режим: если аккаунт выбран — НИКАКИХ фолбэков.
-            # Если ключей нет — считаем это ошибкой конфигурации и не запускаем торговлю.
-            if selected_account_id and (not api_key or not secret_key):
+            if not api_key or not secret_key:
                 raise RuntimeError(
                     f"Bybit API keys missing for selected account id={selected_account_id} "
                     f"(need BYBIT_{selected_account_id}_API_KEY and BYBIT_{selected_account_id}_SECRET_KEY)"
                 )
-            # Фолбэк: автоскан BYBIT_<ID>_API_KEY, если аккаунт в Redis не выбран
-            if (not selected_account_id) and (not api_key or not secret_key):
-                try:
-                    from utils.settings_store import ensure_settings_table, list_settings, get_setting_value
-                    ensure_settings_table()
-                    # Сначала BYBIT_1_*
-                    api_key = api_key or get_setting_value('api', 'bybit', 'BYBIT_1_API_KEY')
-                    secret_key = secret_key or get_setting_value('api', 'bybit', 'BYBIT_1_SECRET_KEY')
-                    if not api_key or not secret_key:
-                        # Автоскан по первому доступному индексу из настроек
-                        rows = list_settings(scope='api', group='bybit')
-                        ids = []
-                        for r in rows:
-                            k = str(r.get('key') or '')
-                            m = re.match(r'^BYBIT_(\d+)_API_KEY$', k)
-                            if m:
-                                ids.append(int(m.group(1)))
-                        ids = sorted(set(ids))
-                        for idx in ids:
-                            ak = get_setting_value('api', 'bybit', f'BYBIT_{idx}_API_KEY')
-                            sk = get_setting_value('api', 'bybit', f'BYBIT_{idx}_SECRET_KEY')
-                            if ak and sk:
-                                api_key = ak
-                                secret_key = sk
-                                break
-                except Exception:
-                    pass
-            
-            if not api_key or not secret_key:
-                logger.error("API ключи не настроены")
-                return
             
             # Настраиваем для работы с деривативами (фьючерсы)
             self.exchange = ccxt.bybit({
@@ -437,7 +442,22 @@ class TradingAgent:
                 return
             size = float(size)
             # Определяем направление
-            position_type = 'long' if size > 0 else 'short'
+            position_type = None
+            try:
+                ccxt_side = pos.get('side')
+                if ccxt_side in ('long', 'short'):
+                    position_type = ccxt_side
+            except Exception:
+                pass
+            if not position_type:
+                try:
+                    info_side = pos.get('info', {}).get('side')
+                    if info_side:
+                        position_type = 'long' if str(info_side).lower() == 'buy' else 'short'
+                except Exception:
+                    pass
+            if not position_type:
+                position_type = 'long' if size > 0 else 'short'
             # Цена входа
             entry = None
             try:
@@ -755,38 +775,55 @@ class TradingAgent:
         except Exception:
             return 0
 
-    def _ensure_no_leverage(self, symbol: str) -> bool:
-        """Пытается выставить 1x и isolated для символа. Возвращает True, если условия соблюдены.
-        Если не удаётся (например, retCode 110012 или активное плечо >1), возвращает False.
-        """
+    def _get_target_leverage(self) -> int:
+        try:
+            if not getattr(self, 'session_id', None):
+                return 1
+            r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
+            from utils.trading_sessions import get_runtime_value, load_session
+            
+            # Читаем session_doc для фоллбека
+            session_doc = load_session(r, self.session_id)
+            default_leverage = 1
+            if isinstance(session_doc, dict):
+                default_leverage = session_doc.get('leverage', 1)
+                
+            raw = get_runtime_value(r, self.session_id, 'leverage', default_leverage)
+            return max(1, min(5, int(float(raw or 1))))
+        except Exception:
+            return 1
+
+    def _ensure_no_leverage(self, symbol: str, target_leverage: int = 1) -> bool:
+        """Выставляет нужное плечо и isolated для символа."""
         ok = True
         try:
-            # Установка плеча 1x
+            target_leverage = max(1, min(5, int(float(target_leverage or 1))))
+        except Exception:
+            target_leverage = 1
+        try:
             if hasattr(self.exchange, 'set_leverage'):
                 try:
-                    # Пытаемся разными сигнатурами ccxt/bybit
                     try:
-                        self.exchange.set_leverage(1, symbol)
-                        logger.info(f"Установлено плечо 1x для {symbol}")
+                        self.exchange.set_leverage(target_leverage, symbol)
+                        logger.info(f"Установлено плечо {target_leverage}x для {symbol}")
                     except Exception as inner_e:
-                        # Вариант с параметрами buy/sell
                         try:
-                            self.exchange.set_leverage('1', symbol, {'buyLeverage': '1', 'sellLeverage': '1'})
-                            logger.info(f"Установлено плечо (buy/sell) 1x для {symbol}")
+                            lev_s = str(target_leverage)
+                            self.exchange.set_leverage(lev_s, symbol, {'buyLeverage': lev_s, 'sellLeverage': lev_s})
+                            logger.info(f"Установлено плечо (buy/sell) {target_leverage}x для {symbol}")
                         except Exception as inner_e2:
                             msg = f"{inner_e} | {inner_e2}"
-                            # Bybit 110043: leverage not modified — это не ошибка, уже 1x
                             if '110043' in msg or 'leverage not modified' in msg.lower():
-                                logger.info(f"Плечо уже 1x для {symbol} (Bybit 110043)")
+                                logger.info(f"Плечо уже {target_leverage}x для {symbol} (Bybit 110043)")
                             else:
-                                logger.warning(f"Не удалось установить плечо 1x для {symbol}: {msg}")
+                                logger.warning(f"Не удалось установить плечо {target_leverage}x для {symbol}: {msg}")
                                 ok = False
                 except Exception as e:
                     msg = str(e)
                     if '110043' in msg or 'leverage not modified' in msg.lower():
-                        logger.info(f"Плечо уже 1x для {symbol} (Bybit 110043)")
+                        logger.info(f"Плечо уже {target_leverage}x для {symbol} (Bybit 110043)")
                     else:
-                        logger.warning(f"Не удалось установить плечо 1x для {symbol}: {e}")
+                        logger.warning(f"Не удалось установить плечо {target_leverage}x для {symbol}: {e}")
                         ok = False
             # Установка режима маржи isolated (не критично для ok)
             if hasattr(self, 'exchange') and hasattr(self.exchange, 'set_margin_mode'):
@@ -805,8 +842,8 @@ class TradingAgent:
                         lev = p.get('leverage') or p.get('info', {}).get('leverage')
                         if lev is not None:
                             try:
-                                if float(lev) > 1:
-                                    logger.warning(f"У символа {symbol} активное плечо {lev} (>1).")
+                                if float(lev) > target_leverage:
+                                    logger.warning(f"У символа {symbol} активное плечо {lev} (>{target_leverage}).")
                                     ok = False
                             except Exception:
                                 pass
@@ -1007,12 +1044,28 @@ class TradingAgent:
             
             # Доля счёта для сделки (по умолчанию 100%)
             account_pct = 100
+            
+            # Пробуем получить account_pct из session_doc
+            try:
+                if getattr(self, 'session_id', None):
+                    from utils.trading_sessions import load_session
+                    r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True, socket_connect_timeout=2)
+                    session_doc = load_session(r, self.session_id)
+                    if isinstance(session_doc, dict) and session_doc.get('account_pct') is not None:
+                        _ap_session = session_doc.get('account_pct')
+                        if str(_ap_session).strip() != '':
+                            account_pct = max(1, min(100, int(float(str(_ap_session)))))
+            except Exception:
+                pass
+                
             # 1) Пробуем Postgres (app_settings): scope=trading, group=sizing, key=ACCOUNT_PCT
             try:
                 from utils.settings_store import get_setting_value as _get_setting_value
                 _ap_db = _get_setting_value('trading', 'sizing', 'ACCOUNT_PCT')
                 if _ap_db is not None and str(_ap_db).strip() != '':
-                    account_pct = max(1, min(100, int(float(str(_ap_db)))))
+                    # Если нашли в базе, но не было в сессии (или не удалось)
+                    if account_pct == 100: # только если не переопределено сессией
+                        account_pct = max(1, min(100, int(float(str(_ap_db)))))
             except Exception:
                 pass
             # 2) Фолбэк на Redis (старое поведение)
@@ -1021,28 +1074,33 @@ class TradingAgent:
                 _rc = _Redis(host='redis', port=6379, db=0, decode_responses=True)
                 _ap = _rc.get('trading:account_pct')
                 if _ap is not None and str(_ap).strip() != '':
-                    account_pct = max(1, min(100, int(str(_ap))))
+                    if account_pct == 100: # только если не переопределено сессией
+                        account_pct = max(1, min(100, int(str(_ap))))
             except Exception:
                 pass
+            target_leverage = self._get_target_leverage()
             # Минимальная/максимальная стоимость из лимитов биржи
             min_trade_usdt = max(10.0, float(bybit_limits['min_cost']))
             max_trade_usdt = float(bybit_limits['max_cost']) if bybit_limits['max_cost'] else float('inf')
 
-            # Рассчитываем количество USDT для торговли как долю свободного USDT
-            pre_trade_usdt = float(usdt_balance) * (float(account_pct) / 100.0)
+            # account_pct задает margin-долю, leverage увеличивает notional позиции.
+            margin_usdt = float(usdt_balance) * (float(account_pct) / 100.0)
+            pre_trade_usdt = margin_usdt * float(target_leverage)
 
             # Ограничиваем по требованиям биржи
             trade_usdt = max(min_trade_usdt, min(pre_trade_usdt, max_trade_usdt))
             try:
                 logger.info(
                     f"[SIZE] symbol={self.symbol} USDT_free={usdt_balance:.4f} account_pct={account_pct}% "
-                    f"pre_usdt={pre_trade_usdt:.4f} clamp[min={min_trade_usdt:.2f},max={max_trade_usdt if max_trade_usdt!=float('inf') else 'inf'}] -> usdt={trade_usdt:.4f}"
+                    f"leverage={target_leverage}x margin_usdt={margin_usdt:.4f} pre_usdt={pre_trade_usdt:.4f} "
+                    f"clamp[min={min_trade_usdt:.2f},max={max_trade_usdt if max_trade_usdt!=float('inf') else 'inf'}] -> usdt={trade_usdt:.4f}"
                 )
             except Exception:
                 pass
             
             # Если USDT недостаточно, используем баланс базовой валюты
-            if trade_usdt > usdt_balance:
+            required_margin_usdt = trade_usdt / float(target_leverage)
+            if required_margin_usdt > usdt_balance:
                 base_currency = self.base_symbol.replace('USDT', '').replace('USD', '')
                 base_balance = balance_result['balance'].get(base_currency, 0.0)
                 
@@ -1992,24 +2050,24 @@ class TradingAgent:
                 price=0,  # Будет обновлено после исполнения
                 model_prediction=self.last_model_prediction,
                 current_balance=balance,
+                error_message=json.dumps(self._trade_meta(), ensure_ascii=False),
                 is_successful=False
             )
             
             # Нормализуем количество под шаг qtyStep
             amount = self._normalize_amount(self.trade_amount)
 
-            # Выполняем покупку фьючерса (long позиция)
-            # Гарантируем отсутствие плеча — если не удаётся, отменяем покупку
-            if not self._ensure_no_leverage(self.symbol):
+            target_leverage = self._get_target_leverage()
+            if not self._ensure_no_leverage(self.symbol, target_leverage):
                 return {
                     "success": False,
-                    "error": "Невозможно купить с 1x: активна позиция с плечом или недостаточно свободной маржи. Покупка отменена."
+                    "error": f"Невозможно купить с {target_leverage}x: активна позиция с большим плечом или недостаточно свободной маржи."
                 }
             order = self.exchange.create_market_buy_order(
                 self.symbol,
                 amount,
                 {
-                    'leverage': '1',
+                    'leverage': str(target_leverage),
                     'marginMode': 'isolated',
                     'recv_window': 20000,
                     'recvWindow': 20000,
@@ -2025,6 +2083,7 @@ class TradingAgent:
                 status='executed',
                 price=executed_price,
                 exchange_order_id=order.get('id'),
+                error_message=json.dumps(self._trade_meta(), ensure_ascii=False),
                 is_successful=True
             )
             
@@ -2052,6 +2111,8 @@ class TradingAgent:
                 self._last_trade_ts_ms = self._get_last_closed_ts_ms('5m')
             except Exception:
                 pass
+
+            self._trigger_copy_trade(action="entry", position_type="long", entry_price=executed_price)
 
             return {
                 "success": True,
@@ -2220,6 +2281,7 @@ class TradingAgent:
                 price=0,  # Будет обновлено после исполнения
                 model_prediction=self.last_model_prediction,
                 current_balance=balance,
+                error_message=json.dumps(self._trade_meta(), ensure_ascii=False),
                 is_successful=False
             )
             
@@ -2253,6 +2315,7 @@ class TradingAgent:
                 price=exit_price,
                 exchange_order_id=order.get('id'),
                 position_pnl=pnl,
+                error_message=json.dumps(self._trade_meta(), ensure_ascii=False),
                 is_successful=True
             )
             
@@ -2276,6 +2339,8 @@ class TradingAgent:
                 self._last_trade_ts_ms = self._get_last_closed_ts_ms('5m')
             except Exception:
                 pass
+
+            self._trigger_copy_trade(action="exit", position_type="long", entry_price=exit_price)
 
             return {
                 "success": True,
@@ -2336,20 +2401,21 @@ class TradingAgent:
                 price=0,
                 model_prediction=self.last_model_prediction,
                 current_balance=balance,
+                error_message=json.dumps(self._trade_meta(), ensure_ascii=False),
                 is_successful=False
             )
 
             amount = self._normalize_amount(self.trade_amount)
 
-            # Плечо 1x и isolated — симметрично BUY
-            if not self._ensure_no_leverage(self.symbol):
-                return {"success": False, "error": "Невозможно открыть шорт с 1x"}
+            target_leverage = self._get_target_leverage()
+            if not self._ensure_no_leverage(self.symbol, target_leverage):
+                return {"success": False, "error": f"Невозможно открыть шорт с {target_leverage}x"}
 
             order = self.exchange.create_market_sell_order(
                 self.symbol,
                 amount,
                 {
-                    'leverage': '1',
+                    'leverage': str(target_leverage),
                     'marginMode': 'isolated',
                     'recv_window': 20000,
                     'recvWindow': 20000,
@@ -2362,6 +2428,7 @@ class TradingAgent:
                 status='executed',
                 price=executed_price,
                 exchange_order_id=order.get('id'),
+                error_message=json.dumps(self._trade_meta(), ensure_ascii=False),
                 is_successful=True
             )
 
@@ -2385,6 +2452,8 @@ class TradingAgent:
                 self._last_trade_ts_ms = self._get_last_closed_ts_ms('5m')
             except Exception:
                 pass
+
+            self._trigger_copy_trade(action="entry", position_type="short", entry_price=executed_price)
 
             return {
                 "success": True,
@@ -2420,6 +2489,7 @@ class TradingAgent:
                 price=0,
                 model_prediction=self.last_model_prediction,
                 current_balance=balance,
+                error_message=json.dumps(self._trade_meta(), ensure_ascii=False),
                 is_successful=False
             )
 
@@ -2445,6 +2515,7 @@ class TradingAgent:
                 price=exit_price,
                 exchange_order_id=order.get('id'),
                 position_pnl=pnl,
+                error_message=json.dumps(self._trade_meta(), ensure_ascii=False),
                 is_successful=True
             )
 
@@ -2465,6 +2536,8 @@ class TradingAgent:
                 self._last_trade_ts_ms = self._get_last_closed_ts_ms('5m')
             except Exception:
                 pass
+
+            self._trigger_copy_trade(action="exit", position_type="short", entry_price=exit_price)
 
             return {
                 "success": True,
@@ -2576,6 +2649,7 @@ class TradingAgent:
                 price=0,  # Будет обновлено после исполнения
                 model_prediction=self.last_model_prediction,
                 current_balance=balance,
+                error_message=json.dumps(self._trade_meta(), ensure_ascii=False),
                 is_successful=False
             )
             
@@ -2606,6 +2680,7 @@ class TradingAgent:
                 price=exit_price,
                 exchange_order_id=order.get('id'),
                 position_pnl=pnl,
+                error_message=json.dumps(self._trade_meta(), ensure_ascii=False),
                 is_successful=True
             )
             
@@ -2673,6 +2748,22 @@ class TradingAgent:
                 "error": str(e)
             }
     
+    def _trigger_copy_trade(self, action: str, position_type: str, entry_price: float = None):
+        try:
+            from tasks.celery_task_copy_trade import copy_trade_for_clients
+            copy_trade_for_clients.apply_async(
+                kwargs={
+                    "session_id": str(self.session_id),
+                    "symbol": self.symbol,
+                    "action": action,
+                    "position_type": position_type,
+                    "entry_price": entry_price
+                },
+                queue="celery"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to trigger copy trade: {e}")
+
     def get_trading_history(self) -> Dict:
         """Получение истории торговли"""
         return {

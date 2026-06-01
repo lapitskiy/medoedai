@@ -2,9 +2,11 @@ from flask import Blueprint, render_template, request, jsonify
 from pathlib import Path
 import json
 import shutil
+import time
 from typing import Any, Dict, List
 
 from tasks import celery
+from utils.redis_utils import get_redis_client
 
 analytics_bp = Blueprint('analytics', __name__)
 
@@ -67,6 +69,11 @@ def _active_xgb_tasks() -> List[Dict[str, Any]]:
     Returns active XGB Celery tasks with progress meta (done/total) if available.
     """
     out: List[Dict[str, Any]] = []
+    by_task_id: Dict[str, Dict[str, Any]] = {}
+    try:
+        rc = get_redis_client()
+    except Exception:
+        rc = None
     try:
         insp = celery.control.inspect(timeout=1.0)
         active = insp.active() or {}
@@ -88,7 +95,48 @@ def _active_xgb_tasks() -> List[Dict[str, Any]]:
                 meta = info if isinstance(info, dict) else {}
                 done = meta.get("done")
                 total = meta.get("total")
-                out.append({
+                started_at = meta.get("started_at")
+                eta_sec = None
+                avg_per_run_sec = None
+                # Monotonic progress from Redis (works even without celery-worker restart).
+                if task_id and rc is not None:
+                    pkey = f"analytics:xgb:progress:{task_id}"
+                    try:
+                        prev_done = int(rc.hget(pkey, "done") or 0)
+                        prev_total = int(rc.hget(pkey, "total") or 0)
+                        cur_done = int(done or 0)
+                        cur_total = int(total or 0)
+                        done = max(cur_done, prev_done)
+                        total = max(cur_total, prev_total)
+                        prev_started = rc.hget(pkey, "started_at")
+                        if started_at is None and prev_started:
+                            started_at = float(prev_started)
+                        if started_at is not None:
+                            try:
+                                started_at = min(float(started_at), float(prev_started)) if prev_started else float(started_at)
+                            except Exception:
+                                pass
+                        rc.hset(pkey, mapping={
+                            "done": int(done or 0),
+                            "total": int(total or 0),
+                            "started_at": float(started_at) if started_at is not None else "",
+                        })
+                        rc.expire(pkey, 7 * 24 * 3600)
+                    except Exception:
+                        pass
+                try:
+                    d_i = int(done) if done is not None else 0
+                    t_i = int(total) if total is not None else 0
+                    sa_f = float(started_at) if started_at is not None else 0.0
+                    if sa_f > 0 and d_i > 0 and t_i > d_i:
+                        elapsed = max(0.0, time.time() - sa_f)
+                        avg_per_run_sec = elapsed / max(1, d_i)
+                        eta_sec = int(max(0.0, (t_i - d_i) * avg_per_run_sec))
+                except Exception:
+                    eta_sec = None
+                    avg_per_run_sec = None
+
+                row = {
                     "task_id": task_id,
                     "name": name,
                     "hostname": hostname,
@@ -97,9 +145,44 @@ def _active_xgb_tasks() -> List[Dict[str, Any]]:
                     "direction": kwargs.get("direction"),
                     "done": done,
                     "total": total,
-                })
+                    "started_at": started_at,
+                    "eta_sec": eta_sec,
+                    "avg_per_run_sec": avg_per_run_sec,
+                    "workers_seen": 1,
+                }
+                if not task_id:
+                    out.append(row)
+                    continue
+                prev = by_task_id.get(task_id)
+                if prev is None:
+                    by_task_id[task_id] = row
+                else:
+                    # Same task_id can be visible in several worker slots (re-delivery/stale active entries).
+                    # Keep a single row and preserve max progress so UI does not jump backwards.
+                    prev["workers_seen"] = int(prev.get("workers_seen", 1)) + 1
+                    try:
+                        prev["done"] = max(int(prev.get("done") or 0), int(done or 0))
+                    except Exception:
+                        pass
+                    try:
+                        prev["total"] = max(int(prev.get("total") or 0), int(total or 0))
+                    except Exception:
+                        pass
+                    # Recompute ETA after merged max(done/total).
+                    try:
+                        d_i = int(prev.get("done") or 0)
+                        t_i = int(prev.get("total") or 0)
+                        sa_f = float(prev.get("started_at") or 0.0)
+                        if sa_f > 0 and d_i > 0 and t_i > d_i:
+                            elapsed = max(0.0, time.time() - sa_f)
+                            avg_per_run_sec = elapsed / max(1, d_i)
+                            prev["avg_per_run_sec"] = avg_per_run_sec
+                            prev["eta_sec"] = int(max(0.0, (t_i - d_i) * avg_per_run_sec))
+                    except Exception:
+                        pass
             except Exception:
                 continue
+    out.extend(by_task_id.values())
     return out
 
 

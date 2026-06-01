@@ -19,6 +19,43 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
         self.gateway = gateway
         self._log = logging.getLogger(__name__)
 
+    def _runtime_value(self, rc, name: str, symbol: str):
+        session_id = str(getattr(self.store, "scope", "") or "").strip()
+        if session_id:
+            try:
+                from utils.trading_sessions import get_runtime_value
+                value = get_runtime_value(rc, session_id, name)
+                if value not in (None, ""):
+                    return value
+                from utils.trading_sessions import load_session
+                session_doc = load_session(rc, session_id)
+                if isinstance(session_doc, dict) and session_doc.get(name) not in (None, ""):
+                    return session_doc.get(name)
+                if isinstance(session_doc, dict) and name.startswith(("take_profit_pct_", "stop_loss_pct_")):
+                    side = name.rsplit("_", 1)[-1]
+                    model_paths = [str(item) for item in (session_doc.get("model_paths") or []) if item]
+                    roles = session_doc.get("model_roles") if isinstance(session_doc.get("model_roles"), dict) else {}
+                    side_path = None
+                    for model_path in model_paths:
+                        path_key = str(model_path).replace("\\", "/")
+                        path_abs = path_key if path_key.startswith("/") else ("/workspace/" + path_key.lstrip("/"))
+                        role = str(roles.get(model_path) or roles.get(path_abs) or "").strip().lower()
+                        if role == side:
+                            side_path = model_path
+                            break
+                    if side_path is None and len(model_paths) == 1 and str(session_doc.get("direction") or "").strip().lower() == side:
+                        side_path = model_paths[0]
+                    if side_path:
+                        from tasks.xgb_live import _load_xgb_runtime_meta
+                        cfg, _, _ = _load_xgb_runtime_meta(side_path)
+                        attr = "entry_tp_pct" if name.startswith("take_profit_pct_") else "entry_sl_pct"
+                        raw = getattr(cfg, attr, None)
+                        if raw not in (None, ""):
+                            return abs(float(raw)) * 100.0
+            except Exception:
+                pass
+        return rc.get(f"trading:{name}:{symbol}") or rc.get(f"trading:{name}")
+
     def place_intent(self, symbol: str, side: Side, qty: float, cfg: Optional[LimitConfig] = None) -> Intent:
         cfg = cfg or LimitConfig()
         # Guard: если позиция уже есть на бирже, не ставим новый входящий лимит вообще.
@@ -69,13 +106,14 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
             atr_min_sl_mult = 1.0
             try:
                 if rc is not None:
-                    _tp = rc.get(f'trading:take_profit_pct:{symbol}') or rc.get('trading:take_profit_pct')
-                    _sl = rc.get(f'trading:stop_loss_pct:{symbol}') or rc.get('trading:stop_loss_pct')
-                    _rt = rc.get(f'trading:risk_management_type:{symbol}') or rc.get('trading:risk_management_type')
-                    _rsm = rc.get(f'trading:risk_stop_mode:{symbol}') or rc.get('trading:risk_stop_mode')
-                    _ak = rc.get(f'trading:atr_k:{symbol}') or rc.get('trading:atr_k')
-                    _am = rc.get(f'trading:atr_m:{symbol}') or rc.get('trading:atr_m')
-                    _ams = rc.get(f'trading:atr_min_sl_mult:{symbol}') or rc.get('trading:atr_min_sl_mult')
+                    side_name = 'long' if side == Side.BUY else 'short'
+                    _tp = self._runtime_value(rc, f'take_profit_pct_{side_name}', symbol)
+                    _sl = self._runtime_value(rc, f'stop_loss_pct_{side_name}', symbol)
+                    _rt = self._runtime_value(rc, 'risk_management_type', symbol)
+                    _rsm = self._runtime_value(rc, 'risk_stop_mode', symbol)
+                    _ak = self._runtime_value(rc, 'atr_k', symbol)
+                    _am = self._runtime_value(rc, 'atr_m', symbol)
+                    _ams = self._runtime_value(rc, 'atr_min_sl_mult', symbol)
                     if _rt is not None and str(_rt).strip() != '':
                         risk_type = str(_rt)
                     if _tp is not None and str(_tp).strip() != '':
@@ -636,13 +674,14 @@ class LimitPostOnlyStrategy(ExecutionStrategy):
                 atr_m = 1.8
                 atr_min_sl_mult = 1.0
                 if rc is not None:
-                    _tp = rc.get(f'trading:take_profit_pct:{cur.symbol}') or rc.get('trading:take_profit_pct')
-                    _sl = rc.get(f'trading:stop_loss_pct:{cur.symbol}') or rc.get('trading:stop_loss_pct')
-                    _rt = rc.get(f'trading:risk_management_type:{cur.symbol}') or rc.get('trading:risk_management_type')
-                    _rsm = rc.get(f'trading:risk_stop_mode:{cur.symbol}') or rc.get('trading:risk_stop_mode')
-                    _ak = rc.get(f'trading:atr_k:{cur.symbol}') or rc.get('trading:atr_k')
-                    _am = rc.get(f'trading:atr_m:{cur.symbol}') or rc.get('trading:atr_m')
-                    _ams = rc.get(f'trading:atr_min_sl_mult:{cur.symbol}') or rc.get('trading:atr_min_sl_mult')
+                    side_name = 'long' if cur.side == Side.BUY else 'short'
+                    _tp = self._runtime_value(rc, f'take_profit_pct_{side_name}', cur.symbol)
+                    _sl = self._runtime_value(rc, f'stop_loss_pct_{side_name}', cur.symbol)
+                    _rt = self._runtime_value(rc, 'risk_management_type', cur.symbol)
+                    _rsm = self._runtime_value(rc, 'risk_stop_mode', cur.symbol)
+                    _ak = self._runtime_value(rc, 'atr_k', cur.symbol)
+                    _am = self._runtime_value(rc, 'atr_m', cur.symbol)
+                    _ams = self._runtime_value(rc, 'atr_min_sl_mult', cur.symbol)
                     if _rt is not None and str(_rt).strip() != '':
                         risk_type = str(_rt)
                     if _tp is not None and str(_tp).strip() != '':

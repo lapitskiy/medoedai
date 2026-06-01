@@ -65,5 +65,9 @@ result/
 .env.local
 .env.*.local
 .env.example
+node_modules/
+**/node_modules/
+.next/
+**/.next/
 plots/
 env.json

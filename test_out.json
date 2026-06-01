@@ -1,0 +1,37 @@
+{
+  "batch_id": "dc66b35309dc4432bbb51e2465e6651d",
+  "days_grid": [
+    30
+  ],
+  "exit_modes": [
+    "policy"
+  ],
+  "p_enter_thresholds": [
+    0.5
+  ],
+  "prefetch": [
+    {
+      "last_ts": 1779571200000,
+      "limit": 8790,
+      "oos_end_ts": 1779571200000,
+      "oos_lag_hours": 2.0,
+      "rows": 8790,
+      "symbol": "BTCUSDT"
+    }
+  ],
+  "signal_exit_thresholds": [
+    null
+  ],
+  "success": true,
+  "tasks": [
+    {
+      "days": 30,
+      "exit_mode": "policy",
+      "p_enter_threshold": 0.5,
+      "result_dir": "result/xgb/BTC/runs/xgb-02737c",
+      "signal_exit_threshold": null,
+      "task_id": "d0230092-9c3c-4fa7-8842-b2351a0d1035"
+    }
+  ],
+  "total": 1
+}

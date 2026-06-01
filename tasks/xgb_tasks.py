@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
+import multiprocessing as mp
 import os
 import shutil
 import time
@@ -17,6 +19,21 @@ from utils.db_utils import db_get_or_fetch_ohlcv, load_latest_candles_from_csv_t
 from utils.parser import parser_download_and_combine_with_library
 from utils.redis_utils import get_redis_client
 from utils.settings_store import get_setting_value as _get_setting_value
+
+XGB_RUNNING_TTL_SEC = int(os.environ.get("XGB_RUNNING_TTL_SEC", str(7 * 24 * 3600)))
+
+
+def _set_running_task(rc, running_key: str, task_id: str) -> None:
+    """Write active-task key with long TTL (UI relies on this key)."""
+    rc.setex(running_key, XGB_RUNNING_TTL_SEC, task_id)
+
+
+def _refresh_running_task_ttl(rc, running_key: str, task_id: str | None = None) -> None:
+    """Keep active-task key alive while long training is still running."""
+    if task_id and not rc.exists(running_key):
+        _set_running_task(rc, running_key, task_id)
+        return
+    rc.expire(running_key, XGB_RUNNING_TTL_SEC)
 
 
 def _api_hint(symbol: str) -> str:
@@ -79,6 +96,7 @@ def _fetch_ohlcv_with_fallback(symbol: str, fetch_limit: int, push_log, max_atte
     return None, last_err
 
 from agents.xgb.config import XgbConfig
+from agents.xgb.features import uses_1m_features, uses_1d_regime
 from agents.xgb.trainer import XgbTrainer
 
 
@@ -148,6 +166,173 @@ def _env_int(name: str, default: int) -> int:
         return int(str(raw).strip())
     except Exception:
         return int(default)
+
+
+_GRIDFULL_SHARED: Dict[str, Any] = {}
+
+
+def _gridfull_run_one_combo(lc_dict: Dict[str, Any], mc_dict: Dict[str, Any], *, xgb_n_jobs: int) -> tuple[Dict[str, Any] | None, str | None]:
+    shared = _GRIDFULL_SHARED or {}
+    dfs = shared.get("dfs")
+    symbol = shared.get("symbol")
+    direction = shared.get("direction")
+    task_name = shared.get("task_name")
+    grid_id = shared.get("grid_id")
+    is_binary = bool(shared.get("is_binary"))
+    use_1m_microvol = bool(shared.get("use_1m_microvol"))
+    use_1m_momentum = bool(shared.get("use_1m_momentum"))
+    use_1m_candle_structure = bool(shared.get("use_1m_candle_structure"))
+    use_1m_volume = bool(shared.get("use_1m_volume"))
+    use_1d_regime = bool(shared.get("use_1d_regime"))
+    use_sr_features = bool(shared.get("use_sr_features"))
+    early_stopping_rounds = int(shared.get("early_stopping_rounds") or 0)
+    entry_tp_pct = shared.get("entry_tp_pct")
+    entry_sl_pct = shared.get("entry_sl_pct")
+    entry_trail_pct = shared.get("entry_trail_pct")
+
+    if not isinstance(dfs, dict) or not symbol or not direction or not task_name:
+        return None, "gridfull shared context is not initialized"
+
+    cfg = XgbConfig(direction=str(direction))
+    cfg.use_atr_feature = False
+    _apply_xgb_feature_flags(
+        cfg,
+        use_1m_microvol=use_1m_microvol,
+        use_1m_momentum=use_1m_momentum,
+        use_1m_candle_structure=use_1m_candle_structure,
+        use_1m_volume=use_1m_volume,
+        use_1d_regime=use_1d_regime,
+        use_sr_features=use_sr_features,
+    )
+    cfg.task = str(task_name)
+    cfg.early_stopping_rounds = int(early_stopping_rounds)
+    cfg.n_jobs = max(1, int(xgb_n_jobs))
+
+    if task_name == "directional":
+        cfg.horizon_steps = int(lc_dict["horizon_steps"])
+        cfg.threshold = float(lc_dict["threshold"])
+    else:
+        cfg.max_hold_steps = int(lc_dict["max_hold_steps"])
+        cfg.min_profit = float(lc_dict["min_profit"])
+        cfg.fee_bps = float(lc_dict["fee_bps"])
+
+    cfg.max_depth = int(mc_dict["max_depth"])
+    cfg.learning_rate = float(mc_dict["learning_rate"])
+    cfg.n_estimators = int(mc_dict["n_estimators"])
+    cfg.subsample = float(mc_dict["subsample"])
+    cfg.colsample_bytree = float(mc_dict["colsample_bytree"])
+    cfg.reg_lambda = float(mc_dict["reg_lambda"])
+    cfg.min_child_weight = float(mc_dict["min_child_weight"])
+    cfg.gamma = float(mc_dict["gamma"])
+    cfg.scale_pos_weight = float(mc_dict["scale_pos_weight"])
+    if is_binary and "p_enter_threshold" in mc_dict:
+        cfg.p_enter_threshold = float(mc_dict["p_enter_threshold"])
+
+    if str(task_name).startswith("entry"):
+        try:
+            cfg.entry_tp_pct = float(mc_dict.get("entry_tp_pct")) if mc_dict.get("entry_tp_pct") is not None else None
+        except Exception:
+            cfg.entry_tp_pct = None
+        try:
+            cfg.entry_sl_pct = float(mc_dict.get("entry_sl_pct")) if mc_dict.get("entry_sl_pct") is not None else None
+        except Exception:
+            cfg.entry_sl_pct = None
+        try:
+            cfg.entry_trail_pct = float(mc_dict.get("entry_trail_pct")) if mc_dict.get("entry_trail_pct") is not None else None
+        except Exception:
+            cfg.entry_trail_pct = None
+    else:
+        try:
+            cfg.entry_tp_pct = float(entry_tp_pct) if entry_tp_pct is not None else None
+        except Exception:
+            cfg.entry_tp_pct = None
+        try:
+            cfg.entry_sl_pct = float(entry_sl_pct) if entry_sl_pct is not None else None
+        except Exception:
+            cfg.entry_sl_pct = None
+        try:
+            cfg.entry_trail_pct = float(entry_trail_pct) if entry_trail_pct is not None else None
+        except Exception:
+            cfg.entry_trail_pct = None
+
+    try:
+        if cfg.entry_tp_pct is not None and float(cfg.entry_tp_pct) < 0:
+            cfg.entry_tp_pct = abs(float(cfg.entry_tp_pct))
+    except Exception:
+        pass
+    try:
+        if cfg.entry_sl_pct is not None and float(cfg.entry_sl_pct) > 0:
+            cfg.entry_sl_pct = -abs(float(cfg.entry_sl_pct))
+    except Exception:
+        pass
+    try:
+        if cfg.entry_trail_pct is not None and float(cfg.entry_trail_pct) < 0:
+            cfg.entry_trail_pct = abs(float(cfg.entry_trail_pct))
+    except Exception:
+        pass
+
+    try:
+        trainer = XgbTrainer(cfg)
+        r = trainer.train(symbol=str(symbol), dfs=dfs, result_root="result")
+        try:
+            if isinstance(r, dict) and r.get("result_dir") and grid_id:
+                _safe_patch_manifest(str(r["result_dir"]), {"source": "grid_full", "grid_id": str(grid_id)})
+        except Exception:
+            pass
+        m = r.get("metrics") if isinstance(r.get("metrics"), dict) else {}
+        if is_binary:
+            f1v = m.get("f1_val")
+            score = float(f1v[1]) if isinstance(f1v, list) and len(f1v) > 1 else float(m.get("val_acc", 0.0))
+        else:
+            score = float(m.get("f1_buy_sell_val") if m.get("f1_buy_sell_val") is not None else m.get("val_acc", 0.0))
+        item = {
+            **lc_dict,
+            **mc_dict,
+            "entry_tp_pct": cfg.entry_tp_pct,
+            "entry_sl_pct": cfg.entry_sl_pct,
+            "entry_trail_pct": cfg.entry_trail_pct,
+            "score": score,
+            "metrics": m,
+            "run_name": r.get("run_name"),
+            "result_dir": r.get("result_dir"),
+        }
+        if is_binary:
+            pp = m.get("proxy_pnl_val") if isinstance(m.get("proxy_pnl_val"), dict) else {}
+            try:
+                item["proxy_pnl_sum"] = float(pp.get("pnl_sum", 0.0) or 0.0)
+            except Exception:
+                item["proxy_pnl_sum"] = 0.0
+            try:
+                item["proxy_trades"] = int(pp.get("trades", 0) or 0)
+            except Exception:
+                item["proxy_trades"] = 0
+        return item, None
+    except Exception as exc:
+        return None, str(exc)
+
+
+@contextmanager
+def _limit_blas_threads(per_thread: int):
+    """Process-wide BLAS/OpenMP caps. Avoids N pool threads × M BLAS threads oversubscription."""
+    keys = (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    )
+    prev = {k: os.environ.get(k) for k in keys}
+    val = str(max(1, int(per_thread)))
+    for k in keys:
+        os.environ[k] = val
+    try:
+        yield
+    finally:
+        for k, old in prev.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
 
 
 def _env_opt_float(name: str) -> float | None:
@@ -249,7 +434,11 @@ def _passes_trading_filters_entry_exit(metrics: Dict[str, Any]) -> tuple[bool, D
         "y_max": y_max,
     }
 
-def _build_dfs_from_5m(df_5min: pd.DataFrame) -> Dict[str, Any]:
+def _build_dfs_from_5m(
+    df_5min: pd.DataFrame,
+    df_1min: pd.DataFrame | None = None,
+    df_1d: pd.DataFrame | None = None,
+) -> Dict[str, Any]:
     df_5min = df_5min.copy()
     df_5min["datetime"] = pd.to_datetime(df_5min["timestamp"], unit="ms")
     df_5min.set_index("datetime", inplace=True)
@@ -266,7 +455,98 @@ def _build_dfs_from_5m(df_5min: pd.DataFrame) -> Dict[str, Any]:
         .reset_index()
     )
     df_5min.reset_index(drop=False, inplace=True)
-    return {"df_5min": df_5min, "df_15min": df_15min, "df_1h": df_1h}
+    out: Dict[str, Any] = {"df_5min": df_5min, "df_15min": df_15min, "df_1h": df_1h}
+    if df_1min is not None:
+        out["df_1min"] = df_1min.copy()
+    if df_1d is not None:
+        out["df_1d"] = df_1d.copy()
+    return out
+
+
+def _filter_1m_to_5m_window(df_1min: pd.DataFrame, df_5min: pd.DataFrame) -> pd.DataFrame:
+    if df_1min is None or df_1min.empty:
+        raise ValueError("1m dataframe is empty")
+    if df_5min is None or df_5min.empty:
+        raise ValueError("5m dataframe is empty")
+    start_ts = int(float(df_5min["timestamp"].min()))
+    end_ts = int(float(df_5min["timestamp"].max())) + 5 * 60 * 1000
+    out = df_1min[(df_1min["timestamp"] >= start_ts) & (df_1min["timestamp"] < end_ts)].copy()
+    if out.empty:
+        raise ValueError(f"No 1m candles in 5m window: {start_ts}..{end_ts}")
+    return out
+
+
+def _fetch_1m_for_xgb(symbol: str, df_5min: pd.DataFrame, fetch_limit_5m: int, push_log) -> pd.DataFrame:
+    limit_1m = int(max(1000, int(fetch_limit_5m) * 5 + 1000))
+    push_log(f"📥 Load 1m candles for enabled XGB 1m features: limit={limit_1m}")
+    df_1min, err = db_get_or_fetch_ohlcv(
+        symbol_name=symbol,
+        timeframe="1m",
+        limit_candles=limit_1m,
+        exchange_id="bybit",
+        include_error=True,
+    )
+    if df_1min is None or df_1min.empty:
+        raise ValueError(f"No 1m candles for {symbol}; reason={err}")
+    return _filter_1m_to_5m_window(df_1min, df_5min)
+
+
+def _filter_1d_to_5m_window(df_1d: pd.DataFrame, df_5min: pd.DataFrame) -> pd.DataFrame:
+    if df_1d is None or df_1d.empty:
+        raise ValueError("1d dataframe is empty")
+    if df_5min is None or df_5min.empty:
+        raise ValueError("5m dataframe is empty")
+    start_ts = int(float(df_5min["timestamp"].min())) - 90 * 24 * 60 * 60 * 1000
+    end_ts = int(float(df_5min["timestamp"].max())) + 24 * 60 * 60 * 1000
+    out = df_1d[(df_1d["timestamp"] >= start_ts) & (df_1d["timestamp"] <= end_ts)].copy()
+    if out.empty:
+        raise ValueError(f"No 1d candles around 5m window: {start_ts}..{end_ts}")
+    return out
+
+
+def _fetch_1d_for_xgb(symbol: str, df_5min: pd.DataFrame, fetch_limit_5m: int, push_log) -> pd.DataFrame:
+    limit_1d = int(max(120, int(fetch_limit_5m) // _BARS_PER_DAY_5M + 120))
+    push_log(f"📥 Load 1d candles for enabled XGB daily regime: limit={limit_1d}")
+    df_1d, err = db_get_or_fetch_ohlcv(
+        symbol_name=symbol,
+        timeframe="1d",
+        limit_candles=limit_1d,
+        exchange_id="bybit",
+        include_error=True,
+    )
+    if df_1d is None or df_1d.empty:
+        raise ValueError(f"No 1d candles for {symbol}; reason={err}")
+    return _filter_1d_to_5m_window(df_1d, df_5min)
+
+
+def _apply_xgb_feature_flags(
+    cfg: XgbConfig,
+    *,
+    use_1m_microvol: bool = False,
+    use_1m_momentum: bool = False,
+    use_1m_candle_structure: bool = False,
+    use_1m_volume: bool = False,
+    use_1d_regime: bool = False,
+    use_sr_features: bool = True,
+) -> None:
+    cfg.use_1m_microvol = bool(use_1m_microvol)
+    cfg.use_1m_momentum = bool(use_1m_momentum)
+    cfg.use_1m_candle_structure = bool(use_1m_candle_structure)
+    cfg.use_1m_volume = bool(use_1m_volume)
+    cfg.use_1d_regime = bool(use_1d_regime)
+    cfg.use_sr_features = bool(use_sr_features)
+
+
+def _optional_feature_dfs(
+    symbol: str,
+    df_5min: pd.DataFrame,
+    fetch_limit: int,
+    cfg: XgbConfig,
+    push_log,
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    df_1min = _fetch_1m_for_xgb(symbol, df_5min, fetch_limit, push_log) if uses_1m_features(cfg) else None
+    df_1d = _fetch_1d_for_xgb(symbol, df_5min, fetch_limit, push_log) if uses_1d_regime(cfg) else None
+    return df_1min, df_1d
 
 
 _BARS_PER_DAY_5M = 288  # 24*60/5
@@ -317,6 +597,12 @@ def train_xgb_symbol(
     entry_stride: int | None = None,
     max_trades: int | None = None,
     cutoff_days: int | None = None,
+    use_1m_microvol: bool = False,
+    use_1m_momentum: bool = False,
+    use_1m_candle_structure: bool = False,
+    use_1m_volume: bool = False,
+    use_1d_regime: bool = False,
+    use_sr_features: bool = True,
 ) -> Dict[str, Any]:
     symbol = (symbol or "BTCUSDT").upper()
     direction = (direction or "long").strip().lower()
@@ -329,13 +615,17 @@ def train_xgb_symbol(
         ts = datetime.utcnow().strftime("%H:%M:%S")
         entry = f"[{ts}] {message}"
         logs.append(entry)
+        try:
+            _refresh_running_task_ttl(rc, running_key, getattr(getattr(self, "request", None), "id", None))
+        except Exception:
+            pass
         self.update_state(state="PROGRESS", meta={"logs": list(logs), "symbol": symbol, "direction": direction})
 
     # Dedup: if already running, fail fast
     try:
         if rc.exists(running_key):
             return {"success": False, "error": f"XGB training for {symbol} ({direction}) already running"}
-        rc.setex(running_key, 6 * 3600, getattr(getattr(self, "request", None), "id", "1"))
+        _set_running_task(rc, running_key, getattr(getattr(self, "request", None), "id", "1"))
     except Exception:
         pass
 
@@ -366,12 +656,18 @@ def train_xgb_symbol(
         df_5min, cutoff_info = _apply_cutoff_and_tail(df_5min, train_window=train_window, cutoff_days=cd)
         push_log(f"🗓 cutoff_days={cutoff_info.get('cutoff_days')} cutoff_dt={cutoff_info.get('cutoff_dt')} train_window={train_window} fetched={fetch_limit}")
 
-        # Build 15m and 1h from 5m (matches existing DQN task behavior)
-        dfs = _build_dfs_from_5m(df_5min)
-
         cfg = XgbConfig(direction=direction)
         # Disable ATR feature for NEW training runs (keeps shape stable; ATR column is zeroed).
         cfg.use_atr_feature = False
+        _apply_xgb_feature_flags(
+            cfg,
+            use_1m_microvol=use_1m_microvol,
+            use_1m_momentum=use_1m_momentum,
+            use_1m_candle_structure=use_1m_candle_structure,
+            use_1m_volume=use_1m_volume,
+            use_1d_regime=use_1d_regime,
+            use_sr_features=use_sr_features,
+        )
         if task is not None:
             cfg.task = str(task).strip().lower()
         if horizon_steps is not None:
@@ -390,6 +686,10 @@ def train_xgb_symbol(
             cfg.entry_stride = int(entry_stride)
         if max_trades is not None:
             cfg.max_trades = int(max_trades)
+
+        # Build 15m/1h from 5m; add higher/lower TF data only when explicitly enabled.
+        df_1min, df_1d = _optional_feature_dfs(symbol, df_5min, fetch_limit, cfg, push_log)
+        dfs = _build_dfs_from_5m(df_5min, df_1min=df_1min, df_1d=df_1d)
 
         push_log(f"🧠 Train: task={cfg.task}, dir={cfg.direction}, horizon={cfg.horizon_steps}, thr={cfg.threshold}, max_hold={cfg.max_hold_steps}, fee_bps={cfg.fee_bps}")
         trainer = XgbTrainer(cfg)
@@ -416,6 +716,12 @@ def train_xgb_grid(
     base_max_hold_steps: int | None = None,
     base_min_profit: float | None = None,
     cutoff_days: int | None = None,
+    use_1m_microvol: bool = False,
+    use_1m_momentum: bool = False,
+    use_1m_candle_structure: bool = False,
+    use_1m_volume: bool = False,
+    use_1d_regime: bool = False,
+    use_sr_features: bool = True,
 ) -> Dict[str, Any]:
     """
     Быстрый grid (horizon/threshold/direction + max_hold_steps/min_profit) на ограниченном окне и малом числе деревьев,
@@ -431,12 +737,16 @@ def train_xgb_grid(
         ts = datetime.utcnow().strftime("%H:%M:%S")
         entry = f"[{ts}] {message}"
         logs.append(entry)
+        try:
+            _refresh_running_task_ttl(rc, running_key, getattr(getattr(self, "request", None), "id", None))
+        except Exception:
+            pass
         self.update_state(state="PROGRESS", meta={"logs": list(logs), "symbol": symbol, "started_at": started_at})
 
     try:
         if rc.exists(running_key):
             return {"success": False, "error": f"XGB grid for {symbol} already running"}
-        rc.setex(running_key, 6 * 3600, getattr(getattr(self, "request", None), "id", "1"))
+        _set_running_task(rc, running_key, getattr(getattr(self, "request", None), "id", "1"))
     except Exception:
         pass
 
@@ -477,12 +787,27 @@ def train_xgb_grid(
         df_5min_full, cutoff_info = _apply_cutoff_and_tail(df_5min_full, train_window=int(limit_candles_final), cutoff_days=cd)
         push_log(f"🗓 cutoff_dt={cutoff_info.get('cutoff_dt')} train_window={limit_candles_final}")
 
+        feature_cfg = XgbConfig()
+        _apply_xgb_feature_flags(
+            feature_cfg,
+            use_1m_microvol=use_1m_microvol,
+            use_1m_momentum=use_1m_momentum,
+            use_1m_candle_structure=use_1m_candle_structure,
+            use_1m_volume=use_1m_volume,
+            use_1d_regime=use_1d_regime,
+            use_sr_features=use_sr_features,
+        )
+        df_1min_full, df_1d_full = _optional_feature_dfs(symbol, df_5min_full, fetch_limit, feature_cfg, push_log)
         df_5min_quick = df_5min_full.tail(limit_candles_quick).copy()
-        dfs_quick = _build_dfs_from_5m(df_5min_quick)
+        df_1min_quick = _filter_1m_to_5m_window(df_1min_full, df_5min_quick) if df_1min_full is not None else None
+        df_1d_quick = _filter_1d_to_5m_window(df_1d_full, df_5min_quick) if df_1d_full is not None else None
+        dfs_quick = _build_dfs_from_5m(df_5min_quick, df_1min=df_1min_quick, df_1d=df_1d_quick)
 
         total_runs = len(directions) * len(horizons) * len(thresholds) * len(max_hold_steps_list) * len(min_profit_list)
         push_log(f"🧪 Quick grid: {total_runs} runs, n_estimators={quick_n_estimators}")
         results: List[Dict[str, Any]] = []
+        errors_count = 0
+        error_examples: List[str] = []
         best = None
         best_score = -1e9
         grid_id = f"grid-{str(uuid.uuid4())[:6].lower()}"
@@ -493,6 +818,15 @@ def train_xgb_grid(
                     for mh in max_hold_steps_list:
                         for mp in min_profit_list:
                             cfg = XgbConfig(direction=direction)
+                            _apply_xgb_feature_flags(
+                                cfg,
+                                use_1m_microvol=use_1m_microvol,
+                                use_1m_momentum=use_1m_momentum,
+                                use_1m_candle_structure=use_1m_candle_structure,
+                                use_1m_volume=use_1m_volume,
+                                use_1d_regime=use_1d_regime,
+                                use_sr_features=use_sr_features,
+                            )
                             cfg.horizon_steps = int(H)
                             cfg.threshold = float(thr)
                             cfg.max_hold_steps = int(mh)
@@ -530,9 +864,18 @@ def train_xgb_grid(
         push_log(f"🏁 Best quick: dir={best['direction']} H={best['horizon_steps']} thr={best['threshold']} score={best_score:.4f}")
 
         # Final train on full window with best config
-        dfs_final = _build_dfs_from_5m(df_5min_full)
+        dfs_final = _build_dfs_from_5m(df_5min_full, df_1min=df_1min_full, df_1d=df_1d_full)
         cfg_final = XgbConfig(direction=str(best["direction"]))
         cfg_final.use_atr_feature = False
+        _apply_xgb_feature_flags(
+            cfg_final,
+            use_1m_microvol=use_1m_microvol,
+            use_1m_momentum=use_1m_momentum,
+            use_1m_candle_structure=use_1m_candle_structure,
+            use_1m_volume=use_1m_volume,
+            use_1d_regime=use_1d_regime,
+            use_sr_features=use_sr_features,
+        )
         cfg_final.horizon_steps = int(best["horizon_steps"])
         cfg_final.threshold = float(best["threshold"])
         cfg_final.max_hold_steps = int(best.get("max_hold_steps", base_max_hold_steps))
@@ -605,6 +948,12 @@ def train_xgb_grid_entry_exit(
     base_fee_bps: float | None = None,
     base_min_profit: float | None = None,
     cutoff_days: int | None = None,
+    use_1m_microvol: bool = False,
+    use_1m_momentum: bool = False,
+    use_1m_candle_structure: bool = False,
+    use_1m_volume: bool = False,
+    use_1d_regime: bool = False,
+    use_sr_features: bool = True,
 ) -> Dict[str, Any]:
     """
     Grid for entry_* / exit_* tasks.
@@ -622,12 +971,16 @@ def train_xgb_grid_entry_exit(
         ts = datetime.utcnow().strftime("%H:%M:%S")
         entry = f"[{ts}] {message}"
         logs.append(entry)
+        try:
+            _refresh_running_task_ttl(rc, running_key, getattr(getattr(self, "request", None), "id", None))
+        except Exception:
+            pass
         self.update_state(state="PROGRESS", meta={"logs": list(logs), "symbol": symbol, "task": task, "started_at": started_at})
 
     try:
         if rc.exists(running_key):
             return {"success": False, "error": f"XGB grid for {symbol} ({task}) already running"}
-        rc.setex(running_key, 6 * 3600, getattr(getattr(self, "request", None), "id", "1"))
+        _set_running_task(rc, running_key, getattr(getattr(self, "request", None), "id", "1"))
     except Exception:
         pass
 
@@ -667,9 +1020,22 @@ def train_xgb_grid_entry_exit(
         df_5min_full, cutoff_info = _apply_cutoff_and_tail(df_5min_full, train_window=int(limit_candles_final), cutoff_days=cd)
         push_log(f"🗓 cutoff_dt={cutoff_info.get('cutoff_dt')} train_window={limit_candles_final}")
 
+        feature_cfg = XgbConfig(direction=direction)
+        _apply_xgb_feature_flags(
+            feature_cfg,
+            use_1m_microvol=use_1m_microvol,
+            use_1m_momentum=use_1m_momentum,
+            use_1m_candle_structure=use_1m_candle_structure,
+            use_1m_volume=use_1m_volume,
+            use_1d_regime=use_1d_regime,
+            use_sr_features=use_sr_features,
+        )
+        df_1min_full, df_1d_full = _optional_feature_dfs(symbol, df_5min_full, fetch_limit, feature_cfg, push_log)
         df_5min_quick = df_5min_full.tail(limit_candles_quick).copy()
-        dfs_quick = _build_dfs_from_5m(df_5min_quick)
-        dfs_final = _build_dfs_from_5m(df_5min_full)
+        df_1min_quick = _filter_1m_to_5m_window(df_1min_full, df_5min_quick) if df_1min_full is not None else None
+        df_1d_quick = _filter_1d_to_5m_window(df_1d_full, df_5min_quick) if df_1d_full is not None else None
+        dfs_quick = _build_dfs_from_5m(df_5min_quick, df_1min=df_1min_quick, df_1d=df_1d_quick)
+        dfs_final = _build_dfs_from_5m(df_5min_full, df_1min=df_1min_full, df_1d=df_1d_full)
 
         combos = len(hold_steps) * len(fee_bps_list) * len(min_profit_list)
         push_log(f"🧪 Quick grid {task}: combos={combos}, n_estimators={quick_n_estimators}")
@@ -688,6 +1054,15 @@ def train_xgb_grid_entry_exit(
                 for mp in min_profit_list:
                         cfg = XgbConfig(direction=direction)
                         cfg.use_atr_feature = False
+                        _apply_xgb_feature_flags(
+                            cfg,
+                            use_1m_microvol=use_1m_microvol,
+                            use_1m_momentum=use_1m_momentum,
+                            use_1m_candle_structure=use_1m_candle_structure,
+                            use_1m_volume=use_1m_volume,
+                            use_1d_regime=use_1d_regime,
+                            use_sr_features=use_sr_features,
+                        )
                         cfg.task = task
                         cfg.max_hold_steps = int(mh)
                         cfg.fee_bps = float(fb)
@@ -782,6 +1157,15 @@ def train_xgb_grid_entry_exit(
 
         cfg_final = XgbConfig(direction=direction)
         cfg_final.use_atr_feature = False
+        _apply_xgb_feature_flags(
+            cfg_final,
+            use_1m_microvol=use_1m_microvol,
+            use_1m_momentum=use_1m_momentum,
+            use_1m_candle_structure=use_1m_candle_structure,
+            use_1m_volume=use_1m_volume,
+            use_1d_regime=use_1d_regime,
+            use_sr_features=use_sr_features,
+        )
         cfg_final.task = task
         cfg_final.max_hold_steps = int(best["max_hold_steps"])
         cfg_final.fee_bps = float(best["fee_bps"])
@@ -890,6 +1274,8 @@ def train_xgb_grid_full(
     symbol: str,
     direction: str = "long",
     task: str = "entry_long",
+    parallel_mode: bool = False,
+    parallel_workers: int | None = None,
     limit_candles: int | None = None,
     cutoff_days: int | None = None,
     # entry_* policy (inference threshold + simple exits for entry backtest/OOS)
@@ -919,9 +1305,16 @@ def train_xgb_grid_full(
     scale_pos_weight_list: list | str | None = None,
     early_stopping_rounds: int = 50,
     keep_top_n: int = 20,
+    use_1m_microvol: bool = False,
+    use_1m_momentum: bool = False,
+    use_1m_candle_structure: bool = False,
+    use_1m_volume: bool = False,
+    use_1d_regime: bool = False,
+    use_sr_features: bool = True,
 ) -> Dict[str, Any]:
     """Full grid over BOTH labeling and model hyper-params. Saves top-N runs."""
     import itertools
+    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
     import numpy as np  # noqa: F811
 
     symbol = (symbol or "BTCUSDT").upper()
@@ -930,6 +1323,7 @@ def train_xgb_grid_full(
     rc = get_redis_client()
     logs: List[str] = []
     running_key = f"celery:train:xgb:gridfull:{symbol}:{task_name}"
+    progress_key = f"celery:train:xgb:progress:{getattr(getattr(self, 'request', None), 'id', '')}"
     # progress counters (also exposed to UI via task meta)
     total = 0
     done = 0
@@ -940,14 +1334,30 @@ def train_xgb_grid_full(
         ts = datetime.utcnow().strftime("%H:%M:%S")
         entry = f"[{ts}] {msg}"
         logs.append(entry)
+        try:
+            _refresh_running_task_ttl(rc, running_key, getattr(getattr(self, "request", None), "id", None))
+        except Exception:
+            pass
+        done_out = int(done)
+        total_out = int(total)
+        # Persist max progress in Redis to avoid UI regressions on duplicate deliveries.
+        try:
+            prev_done = int(rc.hget(progress_key, "done") or 0)
+            prev_total = int(rc.hget(progress_key, "total") or 0)
+            done_out = max(done_out, prev_done)
+            total_out = max(total_out, prev_total)
+            rc.hset(progress_key, mapping={"done": done_out, "total": total_out, "symbol": symbol, "task": task_name})
+            rc.expire(progress_key, 7 * 24 * 3600)
+        except Exception:
+            pass
         self.update_state(
             state="PROGRESS",
             meta={
                 "logs": list(logs),
                 "symbol": symbol,
                 "task": task_name,
-                "done": int(done),
-                "total": int(total),
+                "done": done_out,
+                "total": total_out,
                 "keep_top_n": int(topn),
                 "started_at": started_at,
             },
@@ -956,7 +1366,7 @@ def train_xgb_grid_full(
     try:
         if rc.exists(running_key):
             return {"success": False, "error": f"XGB grid-full for {symbol}/{task_name} already running"}
-        rc.setex(running_key, 12 * 3600, getattr(getattr(self, "request", None), "id", "1"))
+        _set_running_task(rc, running_key, getattr(getattr(self, "request", None), "id", "1"))
     except Exception:
         pass
 
@@ -1041,10 +1451,23 @@ def train_xgb_grid_full(
             return {"success": False, "error": f"No candles for {symbol} after 3 attempts. reason={_fetch_err} {_api_hint(symbol)}"}
         df_5min, cutoff_info = _apply_cutoff_and_tail(df_5min, train_window=int(limit_candles), cutoff_days=cd)
         push_log(f"🗓 cutoff_dt={cutoff_info.get('cutoff_dt')} train_window={limit_candles}")
-        dfs = _build_dfs_from_5m(df_5min)
+        feature_cfg = XgbConfig(direction=direction)
+        _apply_xgb_feature_flags(
+            feature_cfg,
+            use_1m_microvol=use_1m_microvol,
+            use_1m_momentum=use_1m_momentum,
+            use_1m_candle_structure=use_1m_candle_structure,
+            use_1m_volume=use_1m_volume,
+            use_1d_regime=use_1d_regime,
+            use_sr_features=use_sr_features,
+        )
+        df_1min, df_1d = _optional_feature_dfs(symbol, df_5min, fetch_limit, feature_cfg, push_log)
+        dfs = _build_dfs_from_5m(df_5min, df_1min=df_1min, df_1d=df_1d)
 
         grid_id = f"gridfull-{str(uuid.uuid4())[:6].lower()}"
         results: List[Dict[str, Any]] = []
+        errors_count = 0
+        error_examples: List[str] = []
         rank_by_proxy = bool(
             is_binary and _setting_bool(
                 "xgb",
@@ -1113,164 +1536,242 @@ def train_xgb_grid_full(
             # reverse-sort tuple
             return (1 if in_bounds else 0, pnl_sum if in_bounds else float("-inf"), score, f1_1)
 
-        def _periodic_cleanup(force: bool = False) -> None:
-            """
-            Prevents unbounded growth of result/xgb/*/runs during big grids.
-            Strategy: when accumulated successful runs reach 2×keep_top_n,
-            delete everything except current top-N by score and continue.
-            """
-            nonlocal results
+        def _run_one_combo(
+            lc_dict: Dict[str, Any],
+            mc_dict: Dict[str, Any],
+            *,
+            xgb_n_jobs: int,
+        ) -> tuple[Dict[str, Any] | None, str | None]:
+            cfg = XgbConfig(direction=direction)
+            cfg.use_atr_feature = False
+            _apply_xgb_feature_flags(
+                cfg,
+                use_1m_microvol=use_1m_microvol,
+                use_1m_momentum=use_1m_momentum,
+                use_1m_candle_structure=use_1m_candle_structure,
+                use_1m_volume=use_1m_volume,
+                use_1d_regime=use_1d_regime,
+                use_sr_features=use_sr_features,
+            )
+            cfg.task = task_name
+            cfg.early_stopping_rounds = int(early_stopping_rounds)
+            cfg.n_jobs = max(1, int(xgb_n_jobs))
+
+            if task_name == "directional":
+                cfg.horizon_steps = int(lc_dict["horizon_steps"])
+                cfg.threshold = float(lc_dict["threshold"])
+            else:
+                cfg.max_hold_steps = int(lc_dict["max_hold_steps"])
+                cfg.min_profit = float(lc_dict["min_profit"])
+                cfg.fee_bps = float(lc_dict["fee_bps"])
+
+            cfg.max_depth = int(mc_dict["max_depth"])
+            cfg.learning_rate = float(mc_dict["learning_rate"])
+            cfg.n_estimators = int(mc_dict["n_estimators"])
+            cfg.subsample = float(mc_dict["subsample"])
+            cfg.colsample_bytree = float(mc_dict["colsample_bytree"])
+            cfg.reg_lambda = float(mc_dict["reg_lambda"])
+            cfg.min_child_weight = float(mc_dict["min_child_weight"])
+            cfg.gamma = float(mc_dict["gamma"])
+            cfg.scale_pos_weight = float(mc_dict["scale_pos_weight"])
+            if is_binary and "p_enter_threshold" in mc_dict:
+                cfg.p_enter_threshold = float(mc_dict["p_enter_threshold"])
+
+            if task_name.startswith("entry"):
+                try:
+                    cfg.entry_tp_pct = float(mc_dict.get("entry_tp_pct")) if mc_dict.get("entry_tp_pct") is not None else None
+                except Exception:
+                    cfg.entry_tp_pct = None
+                try:
+                    cfg.entry_sl_pct = float(mc_dict.get("entry_sl_pct")) if mc_dict.get("entry_sl_pct") is not None else None
+                except Exception:
+                    cfg.entry_sl_pct = None
+                try:
+                    cfg.entry_trail_pct = float(mc_dict.get("entry_trail_pct")) if mc_dict.get("entry_trail_pct") is not None else None
+                except Exception:
+                    cfg.entry_trail_pct = None
+            else:
+                try:
+                    cfg.entry_tp_pct = float(entry_tp_pct) if entry_tp_pct is not None else None
+                except Exception:
+                    cfg.entry_tp_pct = None
+                try:
+                    cfg.entry_sl_pct = float(entry_sl_pct) if entry_sl_pct is not None else None
+                except Exception:
+                    cfg.entry_sl_pct = None
+                try:
+                    cfg.entry_trail_pct = float(entry_trail_pct) if entry_trail_pct is not None else None
+                except Exception:
+                    cfg.entry_trail_pct = None
+
             try:
-                if topn <= 0:
-                    return
-                trigger = max(2, int(topn) * 2)
-                if (not force) and (len(results) < trigger):
-                    return
-                results.sort(key=_grid_full_sort_key, reverse=True)
-                keep = results[:topn]
-                keep_dirs = set()
-                for it in keep:
-                    rd = str(it.get("result_dir") or "").strip()
-                    if rd:
-                        keep_dirs.add(rd)
-                deleted = 0
-                for it in results[topn:]:
-                    rd = str(it.get("result_dir") or "").strip()
-                    if not rd or rd in keep_dirs:
-                        continue
-                    if _safe_rmtree(rd):
-                        deleted += 1
-                # trim in-memory list too (so next trigger happens after another +topn runs)
-                results = keep
-                if deleted:
-                    push_log(f"🧹 Cleanup (periodic): kept top-{topn}, deleted {deleted} runs")
+                if cfg.entry_tp_pct is not None and float(cfg.entry_tp_pct) < 0:
+                    cfg.entry_tp_pct = abs(float(cfg.entry_tp_pct))
+            except Exception:
+                pass
+            try:
+                if cfg.entry_sl_pct is not None and float(cfg.entry_sl_pct) > 0:
+                    cfg.entry_sl_pct = -abs(float(cfg.entry_sl_pct))
+            except Exception:
+                pass
+            try:
+                if cfg.entry_trail_pct is not None and float(cfg.entry_trail_pct) < 0:
+                    cfg.entry_trail_pct = abs(float(cfg.entry_trail_pct))
+            except Exception:
+                pass
+
+            try:
+                trainer = XgbTrainer(cfg)
+                r = trainer.train(symbol=symbol, dfs=dfs, result_root="result")
+                try:
+                    if isinstance(r, dict) and r.get("result_dir"):
+                        _safe_patch_manifest(str(r["result_dir"]), {"source": "grid_full", "grid_id": grid_id})
+                except Exception:
+                    pass
+                m = r.get("metrics") if isinstance(r.get("metrics"), dict) else {}
+                if is_binary:
+                    f1v = m.get("f1_val")
+                    score = float(f1v[1]) if isinstance(f1v, list) and len(f1v) > 1 else float(m.get("val_acc", 0.0))
+                else:
+                    score = float(m.get("f1_buy_sell_val") if m.get("f1_buy_sell_val") is not None else m.get("val_acc", 0.0))
+                item = {
+                    **lc_dict,
+                    **mc_dict,
+                    "entry_tp_pct": cfg.entry_tp_pct,
+                    "entry_sl_pct": cfg.entry_sl_pct,
+                    "entry_trail_pct": cfg.entry_trail_pct,
+                    "score": score,
+                    "metrics": m,
+                    "run_name": r.get("run_name"),
+                    "result_dir": r.get("result_dir"),
+                }
+                if is_binary:
+                    pp = m.get("proxy_pnl_val") if isinstance(m.get("proxy_pnl_val"), dict) else {}
+                    try:
+                        item["proxy_pnl_sum"] = float(pp.get("pnl_sum", 0.0) or 0.0)
+                    except Exception:
+                        item["proxy_pnl_sum"] = 0.0
+                    try:
+                        item["proxy_trades"] = int(pp.get("trades", 0) or 0)
+                    except Exception:
+                        item["proxy_trades"] = 0
+                return item, None
             except Exception as exc:
-                push_log(f"⚠ Cleanup error: {exc}")
+                return None, str(exc)
 
-        for lc in label_combos:
-            lc_dict = dict(zip(label_keys, lc))
-            for mc in model_combos:
-                mc_dict = dict(zip(model_keys, mc))
-                cfg = XgbConfig(direction=direction)
-                cfg.use_atr_feature = False
-                cfg.task = task_name
-                cfg.early_stopping_rounds = int(early_stopping_rounds)
-                cfg.n_jobs = 2  # lower for grid parallelism
-                # labeling params
-                if task_name == "directional":
-                    cfg.horizon_steps = int(lc_dict["horizon_steps"])
-                    cfg.threshold = float(lc_dict["threshold"])
-                else:
-                    cfg.max_hold_steps = int(lc_dict["max_hold_steps"])
-                    cfg.min_profit = float(lc_dict["min_profit"])
-                    cfg.fee_bps = float(lc_dict["fee_bps"])
-                # model params
-                cfg.max_depth = int(mc_dict["max_depth"])
-                cfg.learning_rate = float(mc_dict["learning_rate"])
-                cfg.n_estimators = int(mc_dict["n_estimators"])
-                cfg.subsample = float(mc_dict["subsample"])
-                cfg.colsample_bytree = float(mc_dict["colsample_bytree"])
-                cfg.reg_lambda = float(mc_dict["reg_lambda"])
-                cfg.min_child_weight = float(mc_dict["min_child_weight"])
-                cfg.gamma = float(mc_dict["gamma"])
-                cfg.scale_pos_weight = float(mc_dict["scale_pos_weight"])
-                if is_binary and "p_enter_threshold" in mc_dict:
-                    cfg.p_enter_threshold = float(mc_dict["p_enter_threshold"])
+        combo_pairs = [
+            (dict(zip(label_keys, lc)), dict(zip(model_keys, mc)))
+            for lc in label_combos
+            for mc in model_combos
+        ]
 
-                # Exit policy snapshot for entry_* (used by labeling + proxy_pnl + OOS backtest for entry tasks)
-                if task_name.startswith("entry"):
-                    try:
-                        cfg.entry_tp_pct = float(mc_dict.get("entry_tp_pct")) if mc_dict.get("entry_tp_pct") is not None else None
-                    except Exception:
-                        cfg.entry_tp_pct = None
-                    try:
-                        cfg.entry_sl_pct = float(mc_dict.get("entry_sl_pct")) if mc_dict.get("entry_sl_pct") is not None else None
-                    except Exception:
-                        cfg.entry_sl_pct = None
-                    try:
-                        cfg.entry_trail_pct = float(mc_dict.get("entry_trail_pct")) if mc_dict.get("entry_trail_pct") is not None else None
-                    except Exception:
-                        cfg.entry_trail_pct = None
-                else:
-                    # Non-entry tasks: keep as provided (single values only)
-                    try:
-                        cfg.entry_tp_pct = float(entry_tp_pct) if entry_tp_pct is not None else None
-                    except Exception:
-                        cfg.entry_tp_pct = None
-                    try:
-                        cfg.entry_sl_pct = float(entry_sl_pct) if entry_sl_pct is not None else None
-                    except Exception:
-                        cfg.entry_sl_pct = None
-                    try:
-                        cfg.entry_trail_pct = float(entry_trail_pct) if entry_trail_pct is not None else None
-                    except Exception:
-                        cfg.entry_trail_pct = None
-
-                # Normalize signs (same as OOS route behavior):
-                # - tp should be positive
-                # - sl should be negative
-                # - trail should be positive
-                try:
-                    if cfg.entry_tp_pct is not None and float(cfg.entry_tp_pct) < 0:
-                        cfg.entry_tp_pct = abs(float(cfg.entry_tp_pct))
-                except Exception:
-                    pass
-                try:
-                    if cfg.entry_sl_pct is not None and float(cfg.entry_sl_pct) > 0:
-                        cfg.entry_sl_pct = -abs(float(cfg.entry_sl_pct))
-                except Exception:
-                    pass
-                try:
-                    if cfg.entry_trail_pct is not None and float(cfg.entry_trail_pct) < 0:
-                        cfg.entry_trail_pct = abs(float(cfg.entry_trail_pct))
-                except Exception:
-                    pass
-
-                try:
-                    trainer = XgbTrainer(cfg)
-                    r = trainer.train(symbol=symbol, dfs=dfs, result_root="result")
-                    try:
-                        if isinstance(r, dict) and r.get("result_dir"):
-                            _safe_patch_manifest(str(r["result_dir"]), {"source": "grid_full", "grid_id": grid_id})
-                    except Exception:
-                        pass
-                    m = r.get("metrics") if isinstance(r.get("metrics"), dict) else {}
-                    # Score: f1(1) for binary, f1_buy_sell for directional
-                    if is_binary:
-                        f1v = m.get("f1_val")
-                        score = float(f1v[1]) if isinstance(f1v, list) and len(f1v) > 1 else float(m.get("val_acc", 0.0))
-                    else:
-                        score = float(m.get("f1_buy_sell_val") if m.get("f1_buy_sell_val") is not None else m.get("val_acc", 0.0))
-                    item = {**lc_dict, **mc_dict,
-                            "entry_tp_pct": cfg.entry_tp_pct,
-                            "entry_sl_pct": cfg.entry_sl_pct,
-                            "entry_trail_pct": cfg.entry_trail_pct,
-                            "score": score, "metrics": m,
-                            "run_name": r.get("run_name"), "result_dir": r.get("result_dir")}
-                    if is_binary:
-                        pp = m.get("proxy_pnl_val") if isinstance(m.get("proxy_pnl_val"), dict) else {}
-                        try:
-                            item["proxy_pnl_sum"] = float(pp.get("pnl_sum", 0.0) or 0.0)
-                        except Exception:
-                            item["proxy_pnl_sum"] = 0.0
-                        try:
-                            item["proxy_trades"] = int(pp.get("trades", 0) or 0)
-                        except Exception:
-                            item["proxy_trades"] = 0
+        parallel_mode = True  # Force parallel mode to avoid OpenMP deadlocks and speed up grid search
+        if parallel_mode:
+            # Сначала пытаемся получить из БД настроек, затем из env, затем 4
+            try:
+                from utils.settings_store import get_setting_value
+                db_val = get_setting_value('xgb', 'grid_full', 'XGB_GRID_FULL_PARALLEL_WORKERS')
+                workers_cfg = int(db_val) if db_val is not None else int(parallel_workers or _env_int("XGB_GRID_FULL_PARALLEL_WORKERS", 4))
+            except Exception:
+                workers_cfg = int(parallel_workers or _env_int("XGB_GRID_FULL_PARALLEL_WORKERS", 4))
+            workers = max(1, min(workers_cfg, len(combo_pairs)))
+            cpus = int(os.cpu_count() or 8)
+            slot_threads = max(1, cpus // workers)
+            in_daemon = bool(mp.current_process().daemon)
+            if in_daemon:
+                # Celery prefork workers execute tasks inside daemonic child processes:
+                # ProcessPoolExecutor cannot spawn children here.
+                push_log(
+                    f"⚙️ Parallel mode ON (thread): workers={workers} threads_per_slot={slot_threads} "
+                    f"(celery daemon process: process-pool is not allowed)"
+                )
+                with _limit_blas_threads(slot_threads):
+                    with ThreadPoolExecutor(max_workers=workers) as executor:
+                        futures = [
+                            executor.submit(_run_one_combo, lc_dict, mc_dict, xgb_n_jobs=slot_threads)
+                            for lc_dict, mc_dict in combo_pairs
+                        ]
+                        for future in as_completed(futures):
+                            item, err_msg = future.result()
+                            if item is not None:
+                                results.append(item)
+                            else:
+                                errors_count += 1
+                                if err_msg is not None and len(error_examples) < 5:
+                                    error_examples.append(err_msg)
+                                push_log(f"⚠ Error: {err_msg}")
+                            done += 1
+                            if done % 10 == 0 or done == total:
+                                push_log(f"⏳ {done}/{total} done")
+            else:
+                push_log(f"⚙️ Parallel mode ON (process): workers={workers} xgb_n_jobs=1 (real multi-core; avoids GIL limits)")
+                _GRIDFULL_SHARED.clear()
+                _GRIDFULL_SHARED.update(
+                    {
+                        "dfs": dfs,
+                        "symbol": symbol,
+                        "direction": direction,
+                        "task_name": task_name,
+                        "grid_id": grid_id,
+                        "is_binary": is_binary,
+                        "use_1m_microvol": use_1m_microvol,
+                        "use_1m_momentum": use_1m_momentum,
+                        "use_1m_candle_structure": use_1m_candle_structure,
+                        "use_1m_volume": use_1m_volume,
+                        "use_1d_regime": use_1d_regime,
+                        "use_sr_features": use_sr_features,
+                        "early_stopping_rounds": early_stopping_rounds,
+                        "entry_tp_pct": entry_tp_pct,
+                        "entry_sl_pct": entry_sl_pct,
+                        "entry_trail_pct": entry_trail_pct,
+                    }
+                )
+                with _limit_blas_threads(1):
+                    ctx = mp.get_context("fork")
+                    with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as executor:
+                        futures = [executor.submit(_gridfull_run_one_combo, lc_dict, mc_dict, xgb_n_jobs=1) for lc_dict, mc_dict in combo_pairs]
+                        for future in as_completed(futures):
+                            item, err_msg = future.result()
+                            if item is not None:
+                                results.append(item)
+                            else:
+                                errors_count += 1
+                                if err_msg is not None and len(error_examples) < 5:
+                                    error_examples.append(err_msg)
+                                push_log(f"⚠ Error: {err_msg}")
+                            done += 1
+                            if done % 10 == 0 or done == total:
+                                push_log(f"⏳ {done}/{total} done")
+        else:
+            for lc_dict, mc_dict in combo_pairs:
+                item, err_msg = _run_one_combo(lc_dict, mc_dict, xgb_n_jobs=2)
+                if item is not None:
                     results.append(item)
-                except Exception as exc:
-                    push_log(f"⚠ Error: {exc}")
-
+                else:
+                    errors_count += 1
+                    if err_msg is not None and len(error_examples) < 5:
+                        error_examples.append(err_msg)
+                    push_log(f"⚠ Error: {err_msg}")
                 done += 1
                 if done % 10 == 0 or done == total:
                     push_log(f"⏳ {done}/{total} done")
-                # periodic cleanup for long grids (delete early, not only at the end)
-                if topn > 0 and len(results) >= max(2, topn * 2):
-                    _periodic_cleanup()
 
-        # Final cleanup + sort (ensure only top-N remains even if grid ended early)
-        _periodic_cleanup(force=True)
+        # Keep all run directories. keep_top_n limits only the saved top list.
         results.sort(key=_grid_full_sort_key, reverse=True)
+
+        if not results:
+            summary = error_examples[0] if error_examples else "Grid produced no successful runs"
+            push_log(f"❌ Grid-full failed: 0/{total} successful runs. First error: {summary}")
+            return {
+                "success": False,
+                "error": summary,
+                "symbol": symbol,
+                "task": task_name,
+                "grid_id": grid_id,
+                "total_runs": total,
+                "failed_runs": int(errors_count),
+                "error_examples": error_examples,
+            }
 
         # Save grid results
         sym_code = (symbol or "").upper().replace("USDT", "").replace("USD", "").replace("USDC", "").replace("BUSD", "").replace("USDP", "")
@@ -1303,6 +1804,10 @@ def train_xgb_grid_full(
     finally:
         try:
             rc.delete(running_key)
+        except Exception:
+            pass
+        try:
+            rc.delete(progress_key)
         except Exception:
             pass
 

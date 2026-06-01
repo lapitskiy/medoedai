@@ -19,6 +19,18 @@ class XgbConfig:
     # Features (keep feature shape stable for old models)
     # NOTE: If disabled, ATR column is kept but zeroed (so models can't learn from it).
     use_atr_feature: bool = True
+    use_1m_microvol: bool = False
+    use_1m_momentum: bool = False
+    use_1m_candle_structure: bool = False
+    use_1m_volume: bool = False
+    use_1d_regime: bool = False
+    use_sr_features: bool = False
+    sr_lookback_steps: int = 288  # 24h on 5m candles
+    sr_min_window_steps: int = 48  # wait for enough past candles before level features
+    sr_touch_tolerance_atr: float = 0.25
+    sr_swing_window_steps: int = 12
+    sr_consolidation_window_steps: int = 24
+    sr_consolidation_atr_threshold: float = 4.0
 
     # Entry/Exit labeling (position-aware)
     fee_bps: float = 6.0  # round-trip fee/slippage in basis points (0.01% = 1 bps)

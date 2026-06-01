@@ -25,6 +25,7 @@ _COOLDOWN_KEY = "bybit:cooldown_until"
 _MARKETS_TTL = 1800  # 30 min
 _RATE_WINDOW = 60    # 1 min sliding window
 _RATE_MAX = 10       # max requests per window across all containers
+_HARD_COOLDOWN_SEC = 900  # 15 min
 
 
 def _is_access_too_frequent(err: Exception | str) -> bool:
@@ -53,10 +54,14 @@ def acquire_slot(caller: str = "", timeout_sec: float = 120) -> bool:
                 until_ts = float(until_raw) if until_raw else 0.0
                 now_ts = time.time()
                 if until_ts and now_ts < until_ts:
-                    wait = min(max(0.5, until_ts - now_ts + 0.2), deadline - time.monotonic())
+                    # Hard cooldown must be respected fully (ignore caller timeout).
+                    wait = max(0.5, until_ts - now_ts + 0.2)
                     if wait > 0:
                         logger.warning(f"[BYBIT_RATE] cooldown active, waiting {wait:.1f}s… caller={caller}")
                         time.sleep(wait)
+                        # Cooldown sleep can exceed per-call timeout_sec.
+                        # Reset local deadline so we don't emit a false timeout immediately after wake-up.
+                        deadline = time.monotonic() + timeout_sec
                         continue
             except Exception:
                 pass
@@ -140,7 +145,7 @@ def load_markets_cached(exchange: ccxt.Exchange, force: bool = False) -> dict:
         if hard_cooldown:
             try:
                 r = _get_redis()
-                r.setex(_COOLDOWN_KEY, 360, str(time.time() + 300.0))
+                r.setex(_COOLDOWN_KEY, _HARD_COOLDOWN_SEC + 60, str(time.time() + float(_HARD_COOLDOWN_SEC)))
             except Exception:
                 pass
             # Do NOT double-hit API during Bybit cooldown.

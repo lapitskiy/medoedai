@@ -2,14 +2,19 @@
 <html lang="ru">
 <head>
     <link rel="stylesheet" href="/static/css/styles.css">
+    {% set show_sidebar = include_sidebar | default(true) %}
+    {% if show_sidebar %}
     <link rel="stylesheet" href="/static/css/sidebar.css">
+    {% endif %}
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>!Обучение XGB</title>
 </head>
 <body>
+    {% if show_sidebar %}
     {% include 'include/_sidebar.html' %}
     <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+    {% endif %}
 
     <div class="container">
         <div class="main-content">
@@ -19,13 +24,35 @@
             </div>
 
             <div class="content">
+                {% if show_sidebar %}
                 <a href="/" class="back-link">← Вернуться на главную</a>
+                {% endif %}
 
                 <!-- ========== ACTIVE TRAINING STATUS ========== -->
                 <div class="section" id="xgb-active-training" style="margin-bottom:18px;">
                     <h2>📊 Статус обучения XGB</h2>
                     <div id="xgbActiveStatus">
                         <div class="status info" style="opacity:0.6;">⏳ Проверка…</div>
+                    </div>
+                </div>
+
+                <div class="section" id="xgb-hold-extend" style="margin-bottom:18px;">
+                    <h2>⏱ Продлить hold_steps активной позиции</h2>
+                    <p class="text-muted" style="font-size:13px;">
+                        Увеличивает текущий <code>max_hold_steps</code> в runtime-сессии. Это значение используется guard-ом выхода из позиции.
+                    </p>
+                    <div id="xgbHoldExtendBox">
+                        <div class="status info" style="opacity:0.6;">⏳ Загрузка активных XGB-сессий…</div>
+                    </div>
+                </div>
+
+                <div class="section" id="xgb-signal-exit-threshold" style="margin-bottom:18px;">
+                    <h2>📉 Avg signal / threshold</h2>
+                    <p class="text-muted" style="font-size:13px;">
+                        Обновляет <code>xgb_signal_exit_threshold</code> для runtime-сессии. Guard закрывает позицию, если avg signal ниже threshold.
+                    </p>
+                    <div id="xgbSignalExitBox">
+                        <div class="status info" style="opacity:0.6;">⏳ Загрузка active XGB monitor…</div>
                     </div>
                 </div>
 
@@ -235,6 +262,33 @@
                         </div>
                     </div>
 
+                    <h3 style="margin-top:14px;">📊 1m features (real Bybit 1m OHLCV)</h3>
+                    <p class="text-muted" style="font-size:12px; margin:4px 0 8px;">
+                        Если включено, train/live/OOS требуют реальные 1m свечи. Синтетика из 5m не используется.
+                    </p>
+                    <div class="statistics-grid" style="grid-template-columns: repeat(4, 1fr); gap:10px;">
+                        <label><input id="gfUse1mMicrovol" type="checkbox"> micro-volatility</label>
+                        <label><input id="gfUse1mMomentum" type="checkbox"> momentum</label>
+                        <label><input id="gfUse1mCandleStructure" type="checkbox"> candle structure</label>
+                        <label><input id="gfUse1mVolume" type="checkbox"> volume proxy</label>
+                    </div>
+
+                    <h3 style="margin-top:14px;">📉 1d regime features (real Bybit 1d OHLCV)</h3>
+                    <p class="text-muted" style="font-size:12px; margin:4px 0 8px;">
+                        Daily trend regime: returns, EMA20 slope, close-vs-EMA20, downtrend flag, ATR% and range%.
+                    </p>
+                    <div class="statistics-grid" style="grid-template-columns: repeat(1, 1fr); gap:10px;">
+                        <label><input id="gfUse1dRegime" type="checkbox"> use 1d regime</label>
+                    </div>
+
+                    <h3 style="margin-top:14px;">📌 Support / resistance features</h3>
+                    <p class="text-muted" style="font-size:12px; margin:4px 0 8px;">
+                        Causal 5m levels from past candles only: distances, touches, near-level and breakout flags.
+                    </p>
+                    <div class="statistics-grid" style="grid-template-columns: repeat(1, 1fr); gap:10px;">
+                        <label><input id="gfUseSrFeatures" type="checkbox" checked> use support/resistance</label>
+                    </div>
+
                     <h3 style="margin-top:14px;">⚙️ Model hyper-params (from / to / step)</h3>
                     <div class="statistics-grid" style="grid-template-columns: repeat(3, 1fr); gap:10px;">
                         <div class="form-group">
@@ -401,6 +455,8 @@
         document.addEventListener('DOMContentLoaded', function(){
             loadXgbSymbolsForCreate();
             pollActiveTraining();
+            loadXgbHoldExtendBlock();
+            loadXgbSignalExitBlock();
         });
 
         /* ===== Active Training Polling ===== */
@@ -458,6 +514,135 @@
             } catch (e) {
                 div.innerHTML = '<div class="status error">Ошибка проверки: ' + e.message + '</div>';
                 _activePollTimer = setTimeout(pollActiveTraining, 10000);
+            }
+        }
+
+        function _xgbEsc(v){
+            return String(v ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+        }
+        function _fmtHoldRemaining(sec){
+            if(sec === null || sec === undefined) return '—';
+            const n = Math.max(0, Number(sec) || 0);
+            const h = Math.floor(n / 3600);
+            const m = Math.floor((n % 3600) / 60);
+            return h > 0 ? `${h}ч ${m}м` : `${m}м`;
+        }
+        async function loadXgbHoldExtendBlock(){
+            const box = document.getElementById('xgbHoldExtendBox');
+            if(!box) return;
+            try{
+                const resp = await fetch('/api/trading/status_all', {headers:{'Accept':'application/json'}});
+                const data = await resp.json();
+                const agents = (data.active_agents || []).filter(a => a && a.is_xgb && a.exit_mode === 'hold_steps');
+                if(!agents.length){
+                    box.innerHTML = '<div class="status" style="background:#f0f4f8;color:#64748b;border-left:4px solid #94a3b8;padding:10px 14px;">Активных XGB-сессий с exit_mode=hold_steps нет</div>';
+                    return;
+                }
+                box.innerHTML = agents.map(a => {
+                    const sid = _xgbEsc(a.session_id);
+                    const symbol = _xgbEsc(a.symbol || '');
+                    const current = a.max_hold_steps ?? '—';
+                    const left = _fmtHoldRemaining(a.hold_seconds_remaining);
+                    const pos = a.position ? 'позиция открыта' : 'позиции нет';
+                    return `<div class="trade-item" style="border-left:4px solid #2563eb;margin-top:10px;">
+                        <div class="trade-header"><span class="trade-action buy">🧠 ${symbol}</span><span>${_xgbEsc(pos)}</span></div>
+                        <div class="trade-details">
+                            <div class="trade-detail"><div class="label">Текущий max_hold_steps</div><div class="value" id="holdCur_${sid}">${current}</div></div>
+                            <div class="trade-detail"><div class="label">Осталось</div><div class="value" id="holdLeft_${sid}">${left}</div></div>
+                            <div class="trade-detail" style="min-width:260px;"><div class="label">Продлить на: <span id="holdVal_${sid}">5</span></div><input type="range" min="5" max="200" step="1" value="5" id="holdRange_${sid}" oninput="document.getElementById('holdVal_${sid}').textContent=this.value"></div>
+                            <div class="trade-detail"><div class="label">Действие</div><div class="value"><button class="btn btn-primary" onclick="extendXgbHoldSteps('${sid}')">Обновить</button></div></div>
+                        </div><div id="holdStatus_${sid}" style="margin-top:8px;"></div></div>`;
+                }).join('');
+            }catch(e){
+                box.innerHTML = '<div class="status error">❌ Ошибка загрузки hold_steps: ' + _xgbEsc(e.message || e) + '</div>';
+            }
+        }
+        async function extendXgbHoldSteps(sessionId){
+            const range = document.getElementById('holdRange_' + sessionId);
+            const status = document.getElementById('holdStatus_' + sessionId);
+            const increment = parseInt(range?.value || '5', 10);
+            if(status) status.innerHTML = '<div class="status info">⏳ Обновляю max_hold_steps…</div>';
+            try{
+                const resp = await fetch('/api/trading/xgb_hold_steps_extend', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json','Accept':'application/json'},
+                    body: JSON.stringify({session_id: sessionId, increment_steps: increment})
+                });
+                const data = await resp.json().catch(()=>null);
+                if(data && data.success){
+                    const cur = document.getElementById('holdCur_' + sessionId);
+                    if(cur) cur.textContent = data.max_hold_steps;
+                    if(status) status.innerHTML = `<div class="status success">✅ ${data.previous_max_hold_steps} + ${data.increment_steps} = ${data.max_hold_steps}</div>`;
+                    setTimeout(loadXgbHoldExtendBlock, 1200);
+                }else{
+                    if(status) status.innerHTML = '<div class="status error">❌ ' + _xgbEsc((data && data.error) || 'Ошибка') + '</div>';
+                }
+            }catch(e){
+                if(status) status.innerHTML = '<div class="status error">❌ Ошибка сети: ' + _xgbEsc(e.message || e) + '</div>';
+            }
+        }
+
+        function _xgbFmtNum(v, digits=4){
+            const n = Number(v);
+            return Number.isFinite(n) ? n.toFixed(digits) : '—';
+        }
+        async function loadXgbSignalExitBlock(){
+            const box = document.getElementById('xgbSignalExitBox');
+            if(!box) return;
+            try{
+                const resp = await fetch('/api/trading/status_all', {headers:{'Accept':'application/json'}});
+                const data = await resp.json();
+                const agents = (data.active_agents || []).filter(a => a && a.is_xgb && a.exit_mode === 'hold_steps');
+                if(!agents.length){
+                    box.innerHTML = '<div class="status" style="background:#f0f4f8;color:#64748b;border-left:4px solid #94a3b8;padding:10px 14px;">Активных XGB hold_steps-сессий нет</div>';
+                    return;
+                }
+                box.innerHTML = agents.map(a => {
+                    const sid = _xgbEsc(a.session_id);
+                    const symbol = _xgbEsc(a.symbol || '');
+                    const enabled = a.xgb_signal_exit_enabled ? 'enabled' : 'disabled';
+                    const ready = a.xgb_signal_exit_ready ? 'ready' : `history ${a.xgb_signal_exit_history_size || 0}/${a.xgb_signal_exit_window || '—'}`;
+                    const cur = Number.isFinite(Number(a.xgb_signal_exit_threshold)) ? Number(a.xgb_signal_exit_threshold) : 0.5;
+                    return `<div class="trade-item" style="border-left:4px solid #7c3aed;margin-top:10px;">
+                        <div class="trade-header"><span class="trade-action sell">📉 ${symbol}</span><span>${_xgbEsc(enabled)} / ${_xgbEsc(ready)}</span></div>
+                        <div class="trade-details">
+                            <div class="trade-detail"><div class="label">Avg signal</div><div class="value">${_xgbFmtNum(a.xgb_signal_exit_avg_signal)}</div></div>
+                            <div class="trade-detail"><div class="label">Threshold</div><div class="value" id="sigThrCur_${sid}">${_xgbFmtNum(cur)}</div></div>
+                            <div class="trade-detail"><div class="label">Last signal</div><div class="value">${_xgbFmtNum(a.xgb_signal_exit_last_signal)}</div></div>
+                            <div class="trade-detail" style="min-width:210px;"><div class="label">Новый threshold</div><input class="form-control" id="sigThrInput_${sid}" type="number" min="0.01" max="0.99" step="0.01" value="${cur.toFixed(4)}"></div>
+                            <div class="trade-detail"><div class="label">Действие</div><div class="value"><button class="btn btn-primary" onclick="updateXgbSignalExitThreshold('${sid}')">Обновить</button></div></div>
+                        </div><div id="sigThrStatus_${sid}" style="margin-top:8px;"></div></div>`;
+                }).join('');
+            }catch(e){
+                box.innerHTML = '<div class="status error">❌ Ошибка загрузки Avg signal / threshold: ' + _xgbEsc(e.message || e) + '</div>';
+            }
+        }
+        async function updateXgbSignalExitThreshold(sessionId){
+            const input = document.getElementById('sigThrInput_' + sessionId);
+            const status = document.getElementById('sigThrStatus_' + sessionId);
+            const threshold = Number(String(input?.value || '').replace(',', '.'));
+            if(!Number.isFinite(threshold) || threshold <= 0 || threshold >= 1){
+                if(status) status.innerHTML = '<div class="status error">❌ threshold должен быть между 0 и 1</div>';
+                return;
+            }
+            if(status) status.innerHTML = '<div class="status info">⏳ Обновляю threshold…</div>';
+            try{
+                const resp = await fetch('/api/trading/xgb_signal_exit_threshold', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json','Accept':'application/json'},
+                    body: JSON.stringify({session_id: sessionId, threshold})
+                });
+                const data = await resp.json().catch(()=>null);
+                if(data && data.success){
+                    const cur = document.getElementById('sigThrCur_' + sessionId);
+                    if(cur) cur.textContent = _xgbFmtNum(data.xgb_signal_exit_threshold);
+                    if(status) status.innerHTML = `<div class="status success">✅ threshold = ${_xgbFmtNum(data.xgb_signal_exit_threshold)}</div>`;
+                    setTimeout(loadXgbSignalExitBlock, 1200);
+                }else{
+                    if(status) status.innerHTML = '<div class="status error">❌ ' + _xgbEsc((data && data.error) || 'Ошибка') + '</div>';
+                }
+            }catch(e){
+                if(status) status.innerHTML = '<div class="status error">❌ Ошибка сети: ' + _xgbEsc(e.message || e) + '</div>';
             }
         }
 
@@ -526,6 +711,7 @@
             'gfEtpFrom','gfEtpTo','gfEtpStep',
             'gfEslFrom','gfEslTo','gfEslStep',
             'gfEtrFrom','gfEtrTo','gfEtrStep',
+            'gfUse1mMicrovol','gfUse1mMomentum','gfUse1mCandleStructure','gfUse1mVolume','gfUse1dRegime','gfUseSrFeatures',
             'gfMdFrom','gfMdTo','gfMdStep','gfLrFrom','gfLrTo','gfLrStep',
             'gfNeFrom','gfNeTo','gfNeStep','gfSsFrom','gfSsTo','gfSsStep',
             'gfCbFrom','gfCbTo','gfCbStep','gfRlFrom','gfRlTo','gfRlStep',
@@ -533,7 +719,10 @@
             'gfSpwFrom','gfSpwTo','gfSpwStep'];
         function gfCollectValues(){
             const d={};
-            GF_IDS.forEach(id=>{ const el=document.getElementById(id); if(el) d[id]=el.value; });
+            GF_IDS.forEach(id=>{
+                const el=document.getElementById(id);
+                if(el) d[id]=(el.type === 'checkbox') ? (el.checked ? '1' : '0') : el.value;
+            });
             return d;
         }
         function gfSaveCache(){
@@ -543,7 +732,13 @@
         }
         function gfApplyValues(d){
             if(!d || typeof d !== 'object') return;
-            GF_IDS.forEach(id=>{ const el=document.getElementById(id); if(el && d[id]!==undefined) el.value=d[id]; });
+            GF_IDS.forEach(id=>{
+                const el=document.getElementById(id);
+                if(el && d[id]!==undefined){
+                    if(el.type === 'checkbox') el.checked = String(d[id]) === '1' || String(d[id]).toLowerCase() === 'true';
+                    else el.value=d[id];
+                }
+            });
         }
         function gfLoadLocalCache(){
             try{
@@ -589,6 +784,10 @@
             const el=document.getElementById(id);
             if(el) el.addEventListener('change', gfSaveCache);
         });
+        ['gfUse1mMicrovol','gfUse1mMomentum','gfUse1mCandleStructure','gfUse1mVolume','gfUse1dRegime','gfUseSrFeatures'].forEach(id=>{
+            const el=document.getElementById(id);
+            if(el) el.addEventListener('change', gfSaveCache);
+        });
         setTimeout(async ()=>{
             await gfLoadServerOrLocalCache();
             gfUpdateLabels();
@@ -631,6 +830,12 @@
             payload.min_child_weight_list = gfRange('gfMcwFrom','gfMcwTo','gfMcwStep');
             payload.gamma_list = gfRange('gfGmFrom','gfGmTo','gfGmStep');
             payload.scale_pos_weight_list = gfRange('gfSpwFrom','gfSpwTo','gfSpwStep');
+            payload.use_1m_microvol = !!document.getElementById('gfUse1mMicrovol')?.checked;
+            payload.use_1m_momentum = !!document.getElementById('gfUse1mMomentum')?.checked;
+            payload.use_1m_candle_structure = !!document.getElementById('gfUse1mCandleStructure')?.checked;
+            payload.use_1m_volume = !!document.getElementById('gfUse1mVolume')?.checked;
+            payload.use_1d_regime = !!document.getElementById('gfUse1dRegime')?.checked;
+            payload.use_sr_features = !!document.getElementById('gfUseSrFeatures')?.checked;
 
             const total = parseInt(document.getElementById('gfTotalCombo').textContent) || 0;
             statusDiv.innerHTML = '<div class="status info">⏳ Запуск Full Grid: ' + total + ' комбинаций…</div>';
