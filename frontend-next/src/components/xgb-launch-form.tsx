@@ -499,6 +499,34 @@ export function XgbLaunchForm({
     setShortSignalExitThreshold(XGB_SIGNAL_EXIT_THRESHOLD_DEFAULT);
   }, [selectedShortModel]);
 
+  async function handleDeleteModel(symbolCode: string, ensembleName: string, versionId: string) {
+    try {
+      const response = await fetch(`/api/xgb/prod/models`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: symbolCode,
+          ensemble: ensembleName,
+          version: versionId,
+        }),
+      });
+      const data = await response.json() as { success?: boolean; error?: string };
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Не удалось удалить модель");
+      }
+      
+      const res = await fetch(`/api/xgb/ensembles?symbol=${encodeURIComponent(symbol)}`);
+      if (res.ok) {
+        const raw = await res.json() as { success?: boolean; ensembles?: unknown };
+        if (raw.success) {
+          setEnsemblesMap(mapEnsemblePayload(raw.ensembles));
+        }
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Ошибка удаления");
+    }
+  }
+
   async function handleLaunch() {
     setLaunchMessage(null);
     setLaunchError(null);
@@ -1191,16 +1219,39 @@ export function XgbLaunchForm({
                                     </p>
                                   ) : null}
                                 </div>
-                                {version.isCurrent ? (
-                                  <span className={`rounded-full px-2 py-1 text-xs font-semibold ${isSelected ? "bg-white/15 text-white" : "bg-emerald-50 text-emerald-700"}`}>
-                                    current
-                                  </span>
-                                ) : null}
-                                {isLaunchSelected ? (
-                                  <span className={`rounded-full px-2 py-1 text-xs font-semibold ${isSelected ? "bg-white/15 text-white" : "bg-blue-100 text-blue-700"}`}>
-                                    для запуска
-                                  </span>
-                                ) : null}
+                                <div className="flex flex-col items-end gap-2">
+                                  <div className="flex gap-2">
+                                    {version.isCurrent ? (
+                                      <span className={`rounded-full px-2 py-1 text-xs font-semibold ${isSelected ? "bg-white/15 text-white" : "bg-emerald-50 text-emerald-700"}`}>
+                                        current
+                                      </span>
+                                    ) : null}
+                                    {isLaunchSelected ? (
+                                      <span className={`rounded-full px-2 py-1 text-xs font-semibold ${isSelected ? "bg-white/15 text-white" : "bg-blue-100 text-blue-700"}`}>
+                                        для запуска
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      if (window.confirm(`Точно удалить модель ${version.version}?`)) {
+                                        await handleDeleteModel(symbol, ensemble, version.version);
+                                      }
+                                    }}
+                                    className={`p-1 transition-colors ${
+                                      isSelected
+                                        ? "text-slate-400 hover:text-white"
+                                        : "text-slate-400 hover:text-rose-600"
+                                    }`}
+                                    title="Удалить модель"
+                                  >
+                                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                  </button>
+                                </div>
                               </div>
 
                               {rank !== null ? (

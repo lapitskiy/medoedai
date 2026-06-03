@@ -149,9 +149,10 @@ def _identity_to_dict(identity: BotUserIdentity) -> dict[str, Any]:
                 break
                 
     active_promos = []
+    unread_support_count = 0
     try:
         from sqlalchemy.orm import object_session
-        from orm.models import BotPromoRedemption, BotPromoCode
+        from orm.models import BotPromoRedemption, BotPromoCode, BotSupportMessage
         session = object_session(identity)
         if session:
             redemptions = session.query(BotPromoCode.note).join(
@@ -160,6 +161,12 @@ def _identity_to_dict(identity: BotUserIdentity) -> dict[str, Any]:
             for r in redemptions:
                 if r[0]:
                     active_promos.append(r[0])
+                    
+            unread_support_count = session.query(BotSupportMessage).filter(
+                BotSupportMessage.user_id == user.id,
+                BotSupportMessage.direction == 'user_to_admin',
+                BotSupportMessage.is_read == False
+            ).count()
     except Exception:
         pass
 
@@ -181,4 +188,5 @@ def _identity_to_dict(identity: BotUserIdentity) -> dict[str, Any]:
         'bybit_leverage': getattr(identity, 'bybit_leverage', 1) or 1,
         'paid_until': paid_until,
         'active_promos': list(set(active_promos)),
+        'unread_support_count': unread_support_count,
     }

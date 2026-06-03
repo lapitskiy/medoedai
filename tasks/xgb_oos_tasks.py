@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import time
 import uuid
@@ -24,6 +25,8 @@ from agents.xgb.features import build_xgb_dataset, uses_1m_features, uses_1d_reg
 from agents.xgb.predictor import XgbPredictor
 from tasks.xgb_tasks import _build_dfs_from_5m, _filter_1m_to_5m_window, _filter_1d_to_5m_window
 
+
+logger = logging.getLogger(__name__)
 
 _TF_5M_MS = 5 * 60 * 1000
 _OOS_END_LAG_HOURS_DEFAULT = 2.0
@@ -1124,8 +1127,13 @@ def watchdog_xgb_oos_batches(self) -> None:
                     last_ts = float(last_activity)
                     # if more than 20 mins since last activity
                     if time.time() - last_ts > 1200:
-                        logger.warning(f"Watchdog: closing stalled batch {batch_id} (done={done}/{expected})")
+                        logger.warning(
+                            "Watchdog: closing stalled batch %s (done=%s/%s)",
+                            batch_id,
+                            done,
+                            expected,
+                        )
                         finalize_batch_csv(batch_id, error_status="partial_timeout")
                 except Exception:
-                    pass
+                    logger.exception("Watchdog: failed to finalize batch %s", batch_id)
 

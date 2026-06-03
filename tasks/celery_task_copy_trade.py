@@ -16,7 +16,7 @@ def _execute_client_trade(identity, symbol, action, position_type, entry_price):
     try:
         # Check permissions and keys
         if not identity.bybit_api_key or not identity.bybit_api_secret:
-            return {"success": False, "error": "No API keys"}
+            return {"success": True, "reason": "signal_only"}
 
         leverage = identity.bybit_leverage or 1
 
@@ -103,10 +103,23 @@ def _execute_client_trade(identity, symbol, action, position_type, entry_price):
         from utils.telegram_bot_poller import _send_message
         _send_message(
             identity.platform_user_id,
-            "⚠️ <b>Торговля остановлена.</b>\nВаш API ключ недействителен (удален или истек). Пожалуйста, обновите его в настройках (/settings).",
+            "⚠️ <b>Автоторговля остановлена.</b>\nВаши API ключи Bybit недействительны (удалены или истек срок). Бот переведен в режим «Только сигналы».\nПожалуйста, обновите ключи в настройках (/settings).",
             with_default_keyboard=False
         )
-        # We could also mark the keys as invalid in the DB here
+        
+        # Clear keys in DB
+        try:
+            session = get_db_session()
+            db_identity = session.query(BotUserIdentity).get(identity.id)
+            if db_identity:
+                db_identity.bybit_api_key = None
+                db_identity.bybit_api_secret = None
+                db_identity.disclaimer_accepted = False
+                session.commit()
+            session.close()
+        except Exception as e:
+            logger.error(f"Failed to clear invalid keys for user {identity.platform_user_id}: {e}")
+            
         return {"success": False, "error": "AuthenticationError"}
     except ccxt.InsufficientFunds as e:
         return {"success": False, "error": f"Insufficient funds: {e}"}
@@ -138,14 +151,12 @@ def copy_trade_for_clients(self, session_id: str, symbol: str, action: str, posi
     session = get_db_session()
     try:
         now = datetime.utcnow()
-        # Get users with active subscriptions and bybit keys
+        # Get users with active subscriptions
         active_users = (
             session.query(BotUserIdentity)
             .join(BotSubscription, BotUserIdentity.user_id == BotSubscription.user_id)
             .filter(
                 BotUserIdentity.platform == 'telegram',
-                BotUserIdentity.bybit_api_key.isnot(None),
-                BotUserIdentity.bybit_api_secret.isnot(None),
                 BotSubscription.product_code == 'signals',
                 BotSubscription.status == 'active',
                 BotSubscription.paid_until > now

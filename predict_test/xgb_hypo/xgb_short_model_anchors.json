@@ -1,0 +1,204 @@
+{
+  "schema_version": 1,
+  "direction": "short",
+  "symbol": "BTCUSDT",
+  "task": "entry_short",
+  "description": "Якорные short-модели XGB: параметры train + OOS. Добавляй новые объекты в models[].",
+  "updated_at": "2026-06-03T12:00:00Z",
+  "models": [
+    {
+      "run_name": "xgb-b07899",
+      "status": "anchor",
+      "rank_note": "Лучший OOS в batch 20260603_091200",
+      "paths": {
+        "result_dir": "result/xgb/BTC/runs/xgb-b07899",
+        "model_path": "result/xgb/BTC/runs/xgb-b07899/model.json",
+        "grid_id": "gridfull-305548"
+      },
+      "train": {
+        "label": {
+          "max_hold_steps": 104,
+          "min_profit_frac": 0.01,
+          "min_profit_pct": 1.0,
+          "fee_bps": 6.0,
+          "horizon_steps": 12,
+          "threshold_label": 0.002,
+          "p_enter_threshold": 0.5
+        },
+        "exit_policy": {
+          "entry_tp_pct": 1.2,
+          "entry_sl_pct": -0.7,
+          "entry_trail_pct": 0.6,
+          "entry_tp_frac": 0.012,
+          "entry_sl_frac": -0.007,
+          "entry_trail_frac": 0.006
+        },
+        "xgb": {
+          "n_estimators": 3000,
+          "early_stopping_rounds": 80,
+          "max_depth": 5,
+          "learning_rate": 0.04,
+          "subsample": 0.8,
+          "colsample_bytree": 0.9,
+          "reg_lambda": 4.0,
+          "min_child_weight": 2.0,
+          "gamma": 0.0,
+          "scale_pos_weight": -1
+        },
+        "features": {
+          "use_1m_microvol": true,
+          "use_1m_momentum": true,
+          "use_1m_candle_structure": true,
+          "use_1m_volume": true,
+          "use_1d_regime": true,
+          "use_sr_features": true
+        },
+        "data": {
+          "limit_candles_5m": 100000,
+          "cutoff_days": 90
+        },
+        "val_metrics": {
+          "val_acc": 0.652,
+          "proxy_pnl_val_sum": -0.151,
+          "proxy_pnl_val_trades": 155,
+          "f1_enter_val": 0.223
+        }
+      },
+      "oos": {
+        "primary_batch_csv": "predict_test/xgb_oos/xgb_oos_BTCUSDT_short_hold_steps_20260603_091200.csv",
+        "60d": {
+          "roi_pct": 17.85,
+          "profit_factor": 2.18,
+          "max_dd_pct": 4.42,
+          "trades": 58,
+          "best_p_enter": 0.502
+        },
+        "90d": {
+          "roi_pct": 20.91,
+          "profit_factor": 2.38,
+          "max_dd_pct": 4.29,
+          "trades": 60,
+          "best_p_enter": 0.504
+        },
+        "90d_at_train_p_enter_0.50": {
+          "roi_pct": 19.12,
+          "trades": 64
+        }
+      },
+      "notes": "Мягче regularization (rl=4, mcw=2). Val proxy_pnl отрицательный — OOS сильный. p_enter OOS ~0.50."
+    },
+    {
+      "run_name": "xgb-d54479",
+      "status": "anchor",
+      "rank_note": "Сильный OOS в batch 194000 и 091200; жёстче reg",
+      "paths": {
+        "result_dir": "result/xgb/BTC/runs/xgb-d54479",
+        "model_path": "result/xgb/BTC/runs/xgb-d54479/model.json",
+        "grid_id": "gridfull-f2310b"
+      },
+      "train": {
+        "label": {
+          "max_hold_steps": 112,
+          "min_profit_frac": 0.0125,
+          "min_profit_pct": 1.25,
+          "fee_bps": 6.0,
+          "horizon_steps": 12,
+          "threshold_label": 0.002,
+          "p_enter_threshold": 0.58
+        },
+        "exit_policy": {
+          "entry_tp_pct": 1.0,
+          "entry_sl_pct": -0.7,
+          "entry_trail_pct": 0.7,
+          "entry_tp_frac": 0.01,
+          "entry_sl_frac": -0.007,
+          "entry_trail_frac": 0.007
+        },
+        "xgb": {
+          "n_estimators": 3000,
+          "early_stopping_rounds": 65,
+          "max_depth": 4,
+          "learning_rate": 0.03,
+          "subsample": 0.8,
+          "colsample_bytree": 0.75,
+          "reg_lambda": 9.0,
+          "min_child_weight": 9.0,
+          "gamma": 0.0,
+          "scale_pos_weight": -1
+        },
+        "features": {
+          "use_1m_microvol": true,
+          "use_1m_momentum": true,
+          "use_1m_candle_structure": true,
+          "use_1m_volume": true,
+          "use_1d_regime": true,
+          "use_sr_features": true
+        },
+        "data": {
+          "limit_candles_5m": 100000,
+          "cutoff_days": 90
+        },
+        "val_metrics": {
+          "val_acc": 0.878,
+          "proxy_pnl_val_sum": 0.281,
+          "proxy_pnl_val_trades": 111,
+          "f1_enter_val": 0.136
+        }
+      },
+      "oos": {
+        "batches": [
+          {
+            "csv": "predict_test/xgb_oos/xgb_oos_BTCUSDT_short_hold_steps_20260603_091200.csv",
+            "60d": {
+              "roi_pct": 10.39,
+              "profit_factor": 1.93,
+              "max_dd_pct": 4.26,
+              "trades": 34,
+              "best_p_enter": 0.565
+            },
+            "90d": {
+              "roi_pct": 15.92,
+              "profit_factor": 1.88,
+              "max_dd_pct": 8.61,
+              "trades": 47,
+              "best_p_enter": 0.565
+            }
+          },
+          {
+            "csv": "predict_test/xgb_oos/xgb_oos_BTCUSDT_short_hold_steps_20260602_194000.csv",
+            "60d": {
+              "roi_pct": 8.45,
+              "profit_factor": 1.76,
+              "max_dd_pct": 4.31,
+              "trades": 33,
+              "best_p_enter": 0.564
+            },
+            "90d": {
+              "roi_pct": 15.52,
+              "profit_factor": 1.83,
+              "max_dd_pct": 7.03,
+              "trades": 49,
+              "best_p_enter": 0.564
+            }
+          }
+        ]
+      },
+      "notes": "Жёстче regularization (rl=9, mcw=9). Val proxy_pnl положительный. p_enter OOS ~0.56–0.57."
+    }
+  ],
+  "compare_keys": [
+    "train.label.max_hold_steps",
+    "train.label.min_profit_pct",
+    "train.exit_policy.entry_tp_pct",
+    "train.exit_policy.entry_sl_pct",
+    "train.exit_policy.entry_trail_pct",
+    "train.xgb.max_depth",
+    "train.xgb.learning_rate",
+    "train.xgb.reg_lambda",
+    "train.xgb.min_child_weight",
+    "train.xgb.colsample_bytree",
+    "train.label.p_enter_threshold",
+    "oos.90d.best_p_enter",
+    "oos.90d.roi_pct"
+  ]
+}

@@ -1,0 +1,837 @@
+{
+  "symbol": "BTCUSDT",
+  "run_dir": "/workspace/result/xgb/BTC/runs/xgb-e53e47",
+  "history": [
+    {
+      "ts": "2026-04-24T00:14:57.185523Z",
+      "days": 30,
+      "metrics": {
+        "val_acc": 0.4185422740524781,
+        "val_rows": 8575,
+        "y_counts_val": [
+          7847,
+          728
+        ],
+        "cm_val": [
+          [
+            3189,
+            4658
+          ],
+          [
+            328,
+            400
+          ]
+        ],
+        "precision_val": [
+          0.9067386977537674,
+          0.07908264136022143
+        ],
+        "recall_val": [
+          0.40639734930546706,
+          0.5494505494505495
+        ],
+        "f1_val": [
+          0.561246040126716,
+          0.13826477704804702
+        ],
+        "f1_buy_sell_val": null,
+        "y_non_hold_rate_val": 0.08489795918367347,
+        "pred_non_hold_rate_val": 0.5898542274052478
+      },
+      "backtest": {
+        "pnl_total": -6194.4666,
+        "roi_pct": -61.9447,
+        "winrate": 0.3333,
+        "profit_factor": 0.5855,
+        "max_dd": 0.629511,
+        "trades_count": 1065,
+        "wins": 355,
+        "losses": 710,
+        "avg_trade_pnl": -5.8164,
+        "avg_bars_held": 5.5,
+        "start_capital": 10000.0,
+        "equity_end": 3805.53,
+        "reason_counts": {
+          "atr_trail": 1065
+        },
+        "reason_share": {
+          "atr_trail": 1.0
+        },
+        "reason_pnl": {
+          "atr_trail": -6194.4666
+        },
+        "reason_wins": {
+          "atr_trail": 355
+        },
+        "reason_losses": {
+          "atr_trail": 710
+        },
+        "reason_forced_counts": {},
+        "signal_exit": {
+          "enabled": true,
+          "active": true,
+          "window": 20,
+          "start_step": 100,
+          "start_pct": 0.8,
+          "history_size": 9,
+          "last_signal": 0.602693,
+          "last_threshold": 0.76,
+          "avg_signal": null,
+          "avg_threshold": null,
+          "ready": false
+        }
+      }
+    },
+    {
+      "ts": "2026-04-24T00:14:57.185523Z",
+      "days": 30,
+      "metrics": {
+        "val_acc": 0.4185422740524781,
+        "val_rows": 8575,
+        "y_counts_val": [
+          7847,
+          728
+        ],
+        "cm_val": [
+          [
+            3189,
+            4658
+          ],
+          [
+            328,
+            400
+          ]
+        ],
+        "precision_val": [
+          0.9067386977537674,
+          0.07908264136022143
+        ],
+        "recall_val": [
+          0.40639734930546706,
+          0.5494505494505495
+        ],
+        "f1_val": [
+          0.561246040126716,
+          0.13826477704804702
+        ],
+        "f1_buy_sell_val": null,
+        "y_non_hold_rate_val": 0.08489795918367347,
+        "pred_non_hold_rate_val": 0.5898542274052478
+      },
+      "backtest": {
+        "pnl_total": 604.9276,
+        "roi_pct": 6.0493,
+        "winrate": 0.5362,
+        "profit_factor": 1.2193,
+        "max_dd": 0.105752,
+        "trades_count": 69,
+        "wins": 37,
+        "losses": 32,
+        "avg_trade_pnl": 8.7671,
+        "avg_bars_held": 109.3,
+        "start_capital": 10000.0,
+        "equity_end": 10604.93,
+        "reason_counts": {
+          "timeout": 24,
+          "weak_signal_avg": 44,
+          "eof": 1
+        },
+        "reason_share": {
+          "timeout": 0.34782608695652173,
+          "weak_signal_avg": 0.6376811594202898,
+          "eof": 0.014492753623188406
+        },
+        "reason_pnl": {
+          "timeout": -1642.8127,
+          "weak_signal_avg": 2169.5714,
+          "eof": 78.1689
+        },
+        "reason_wins": {
+          "weak_signal_avg": 30,
+          "timeout": 6,
+          "eof": 1
+        },
+        "reason_losses": {
+          "timeout": 18,
+          "weak_signal_avg": 14
+        },
+        "reason_forced_counts": {
+          "timeout": 24,
+          "eof": 1
+        },
+        "signal_exit": {
+          "enabled": true,
+          "active": true,
+          "window": 20,
+          "start_step": 100,
+          "start_pct": 0.8,
+          "history_size": 20,
+          "last_signal": 0.568578,
+          "last_threshold": 0.76,
+          "avg_signal": 0.779939,
+          "avg_threshold": 0.76,
+          "ready": true
+        }
+      }
+    },
+    {
+      "ts": "2026-04-24T00:14:57.185523Z",
+      "days": 30,
+      "metrics": {
+        "val_acc": 0.4185422740524781,
+        "val_rows": 8575,
+        "y_counts_val": [
+          7847,
+          728
+        ],
+        "cm_val": [
+          [
+            3189,
+            4658
+          ],
+          [
+            328,
+            400
+          ]
+        ],
+        "precision_val": [
+          0.9067386977537674,
+          0.07908264136022143
+        ],
+        "recall_val": [
+          0.40639734930546706,
+          0.5494505494505495
+        ],
+        "f1_val": [
+          0.561246040126716,
+          0.13826477704804702
+        ],
+        "f1_buy_sell_val": null,
+        "y_non_hold_rate_val": 0.08489795918367347,
+        "pred_non_hold_rate_val": 0.5898542274052478
+      },
+      "backtest": {
+        "pnl_total": -120.9321,
+        "roi_pct": -1.2093,
+        "winrate": 0.4375,
+        "profit_factor": 0.9715,
+        "max_dd": 0.111444,
+        "trades_count": 96,
+        "wins": 42,
+        "losses": 54,
+        "avg_trade_pnl": -1.2597,
+        "avg_bars_held": 76.4,
+        "start_capital": 10000.0,
+        "equity_end": 9879.07,
+        "reason_counts": {
+          "trail": 41,
+          "weak_signal_avg": 34,
+          "sl": 8,
+          "tp": 3,
+          "timeout": 9,
+          "eof": 1
+        },
+        "reason_share": {
+          "trail": 0.4270833333333333,
+          "weak_signal_avg": 0.3541666666666667,
+          "sl": 0.08333333333333333,
+          "tp": 0.03125,
+          "timeout": 0.09375,
+          "eof": 0.010416666666666666
+        },
+        "reason_pnl": {
+          "trail": -2355.3046,
+          "weak_signal_avg": 1869.5088,
+          "sl": -979.8249,
+          "tp": 858.9445,
+          "timeout": 344.9005,
+          "eof": 140.8436
+        },
+        "reason_wins": {
+          "weak_signal_avg": 25,
+          "trail": 8,
+          "tp": 3,
+          "timeout": 5,
+          "eof": 1
+        },
+        "reason_losses": {
+          "trail": 33,
+          "sl": 8,
+          "weak_signal_avg": 9,
+          "timeout": 4
+        },
+        "reason_forced_counts": {
+          "timeout": 9,
+          "eof": 1
+        },
+        "signal_exit": {
+          "enabled": true,
+          "active": true,
+          "window": 20,
+          "start_step": 100,
+          "start_pct": 0.8,
+          "history_size": 20,
+          "last_signal": 0.568578,
+          "last_threshold": 0.76,
+          "avg_signal": 0.780491,
+          "avg_threshold": 0.76,
+          "ready": true
+        }
+      }
+    },
+    {
+      "ts": "2026-04-24T00:14:57.185523Z",
+      "days": 60,
+      "metrics": {
+        "val_acc": 0.3690967179785071,
+        "val_rows": 17215,
+        "y_counts_val": [
+          15536,
+          1679
+        ],
+        "cm_val": [
+          [
+            5291,
+            10245
+          ],
+          [
+            616,
+            1063
+          ]
+        ],
+        "precision_val": [
+          0.8957169459962756,
+          0.0940042447824549
+        ],
+        "recall_val": [
+          0.3405638516992791,
+          0.6331149493746278
+        ],
+        "f1_val": [
+          0.49349438045049665,
+          0.16370216370216367
+        ],
+        "f1_buy_sell_val": null,
+        "y_non_hold_rate_val": 0.09753122277083938,
+        "pred_non_hold_rate_val": 0.6568690095846645
+      },
+      "backtest": {
+        "pnl_total": -12201.5866,
+        "roi_pct": -122.0159,
+        "winrate": 0.3367,
+        "profit_factor": 0.6484,
+        "max_dd": 1.227303,
+        "trades_count": 2180,
+        "wins": 734,
+        "losses": 1446,
+        "avg_trade_pnl": -5.5971,
+        "avg_bars_held": 5.9,
+        "start_capital": 10000.0,
+        "equity_end": -2201.59,
+        "reason_counts": {
+          "atr_trail": 2180
+        },
+        "reason_share": {
+          "atr_trail": 1.0
+        },
+        "reason_pnl": {
+          "atr_trail": -12201.5866
+        },
+        "reason_wins": {
+          "atr_trail": 734
+        },
+        "reason_losses": {
+          "atr_trail": 1446
+        },
+        "reason_forced_counts": {},
+        "signal_exit": {
+          "enabled": true,
+          "active": true,
+          "window": 20,
+          "start_step": 100,
+          "start_pct": 0.8,
+          "history_size": 9,
+          "last_signal": 0.602693,
+          "last_threshold": 0.76,
+          "avg_signal": null,
+          "avg_threshold": null,
+          "ready": false
+        }
+      }
+    },
+    {
+      "ts": "2026-04-24T00:14:57.185523Z",
+      "days": 60,
+      "metrics": {
+        "val_acc": 0.3690967179785071,
+        "val_rows": 17215,
+        "y_counts_val": [
+          15536,
+          1679
+        ],
+        "cm_val": [
+          [
+            5291,
+            10245
+          ],
+          [
+            616,
+            1063
+          ]
+        ],
+        "precision_val": [
+          0.8957169459962756,
+          0.0940042447824549
+        ],
+        "recall_val": [
+          0.3405638516992791,
+          0.6331149493746278
+        ],
+        "f1_val": [
+          0.49349438045049665,
+          0.16370216370216367
+        ],
+        "f1_buy_sell_val": null,
+        "y_non_hold_rate_val": 0.09753122277083938,
+        "pred_non_hold_rate_val": 0.6568690095846645
+      },
+      "backtest": {
+        "pnl_total": 1796.6147,
+        "roi_pct": 17.9661,
+        "winrate": 0.5255,
+        "profit_factor": 1.2739,
+        "max_dd": 0.142882,
+        "trades_count": 137,
+        "wins": 72,
+        "losses": 65,
+        "avg_trade_pnl": 13.114,
+        "avg_bars_held": 112.4,
+        "start_capital": 10000.0,
+        "equity_end": 11796.61,
+        "reason_counts": {
+          "timeout": 59,
+          "weak_signal_avg": 77,
+          "eof": 1
+        },
+        "reason_share": {
+          "timeout": 0.4306569343065693,
+          "weak_signal_avg": 0.5620437956204379,
+          "eof": 0.0072992700729927005
+        },
+        "reason_pnl": {
+          "timeout": -3509.1462,
+          "weak_signal_avg": 5252.2775,
+          "eof": 53.4833
+        },
+        "reason_wins": {
+          "timeout": 20,
+          "weak_signal_avg": 51,
+          "eof": 1
+        },
+        "reason_losses": {
+          "timeout": 39,
+          "weak_signal_avg": 26
+        },
+        "reason_forced_counts": {
+          "timeout": 59,
+          "eof": 1
+        },
+        "signal_exit": {
+          "enabled": true,
+          "active": true,
+          "window": 20,
+          "start_step": 100,
+          "start_pct": 0.8,
+          "history_size": 20,
+          "last_signal": 0.568578,
+          "last_threshold": 0.76,
+          "avg_signal": 0.727504,
+          "avg_threshold": 0.76,
+          "ready": true
+        }
+      }
+    },
+    {
+      "ts": "2026-04-24T00:14:57.185523Z",
+      "days": 60,
+      "metrics": {
+        "val_acc": 0.3690967179785071,
+        "val_rows": 17215,
+        "y_counts_val": [
+          15536,
+          1679
+        ],
+        "cm_val": [
+          [
+            5291,
+            10245
+          ],
+          [
+            616,
+            1063
+          ]
+        ],
+        "precision_val": [
+          0.8957169459962756,
+          0.0940042447824549
+        ],
+        "recall_val": [
+          0.3405638516992791,
+          0.6331149493746278
+        ],
+        "f1_val": [
+          0.49349438045049665,
+          0.16370216370216367
+        ],
+        "f1_buy_sell_val": null,
+        "y_non_hold_rate_val": 0.09753122277083938,
+        "pred_non_hold_rate_val": 0.6568690095846645
+      },
+      "backtest": {
+        "pnl_total": 538.5094,
+        "roi_pct": 5.3851,
+        "winrate": 0.4167,
+        "profit_factor": 1.0506,
+        "max_dd": 0.161587,
+        "trades_count": 228,
+        "wins": 95,
+        "losses": 133,
+        "avg_trade_pnl": 2.3619,
+        "avg_bars_held": 65.9,
+        "start_capital": 10000.0,
+        "equity_end": 10538.51,
+        "reason_counts": {
+          "trail": 121,
+          "sl": 19,
+          "tp": 16,
+          "weak_signal_avg": 54,
+          "timeout": 17,
+          "eof": 1
+        },
+        "reason_share": {
+          "trail": 0.5307017543859649,
+          "sl": 0.08333333333333333,
+          "tp": 0.07017543859649122,
+          "weak_signal_avg": 0.23684210526315788,
+          "timeout": 0.07456140350877193,
+          "eof": 0.0043859649122807015
+        },
+        "reason_pnl": {
+          "trail": -6246.3062,
+          "sl": -2309.7428,
+          "tp": 4603.4149,
+          "weak_signal_avg": 3190.0379,
+          "timeout": 1160.262,
+          "eof": 140.8436
+        },
+        "reason_wins": {
+          "trail": 27,
+          "tp": 16,
+          "weak_signal_avg": 37,
+          "timeout": 14,
+          "eof": 1
+        },
+        "reason_losses": {
+          "trail": 94,
+          "sl": 19,
+          "weak_signal_avg": 17,
+          "timeout": 3
+        },
+        "reason_forced_counts": {
+          "timeout": 17,
+          "eof": 1
+        },
+        "signal_exit": {
+          "enabled": true,
+          "active": true,
+          "window": 20,
+          "start_step": 100,
+          "start_pct": 0.8,
+          "history_size": 20,
+          "last_signal": 0.568578,
+          "last_threshold": 0.76,
+          "avg_signal": 0.758817,
+          "avg_threshold": 0.76,
+          "ready": true
+        }
+      }
+    },
+    {
+      "ts": "2026-04-24T00:14:57.185523Z",
+      "days": 90,
+      "metrics": {
+        "val_acc": 0.4690775478630826,
+        "val_rows": 25855,
+        "y_counts_val": [
+          23638,
+          2217
+        ],
+        "cm_val": [
+          [
+            10665,
+            12973
+          ],
+          [
+            754,
+            1463
+          ]
+        ],
+        "precision_val": [
+          0.9339696996234347,
+          0.1013438625658077
+        ],
+        "recall_val": [
+          0.45118030290210676,
+          0.6599007668019846
+        ],
+        "f1_val": [
+          0.6084376871951394,
+          0.17570407734342158
+        ],
+        "f1_buy_sell_val": null,
+        "y_non_hold_rate_val": 0.085747437632953,
+        "pred_non_hold_rate_val": 0.5583446141945465
+      },
+      "backtest": {
+        "pnl_total": -18490.3976,
+        "roi_pct": -184.904,
+        "winrate": 0.3385,
+        "profit_factor": 0.6508,
+        "max_dd": 1.85212,
+        "trades_count": 2895,
+        "wins": 980,
+        "losses": 1915,
+        "avg_trade_pnl": -6.387,
+        "avg_bars_held": 5.9,
+        "start_capital": 10000.0,
+        "equity_end": -8490.4,
+        "reason_counts": {
+          "atr_trail": 2895
+        },
+        "reason_share": {
+          "atr_trail": 1.0
+        },
+        "reason_pnl": {
+          "atr_trail": -18490.3976
+        },
+        "reason_wins": {
+          "atr_trail": 980
+        },
+        "reason_losses": {
+          "atr_trail": 1915
+        },
+        "reason_forced_counts": {},
+        "signal_exit": {
+          "enabled": true,
+          "active": true,
+          "window": 20,
+          "start_step": 100,
+          "start_pct": 0.8,
+          "history_size": 9,
+          "last_signal": 0.602693,
+          "last_threshold": 0.76,
+          "avg_signal": null,
+          "avg_threshold": null,
+          "ready": false
+        }
+      }
+    },
+    {
+      "ts": "2026-04-24T00:14:57.185523Z",
+      "days": 90,
+      "metrics": {
+        "val_acc": 0.4690775478630826,
+        "val_rows": 25855,
+        "y_counts_val": [
+          23638,
+          2217
+        ],
+        "cm_val": [
+          [
+            10665,
+            12973
+          ],
+          [
+            754,
+            1463
+          ]
+        ],
+        "precision_val": [
+          0.9339696996234347,
+          0.1013438625658077
+        ],
+        "recall_val": [
+          0.45118030290210676,
+          0.6599007668019846
+        ],
+        "f1_val": [
+          0.6084376871951394,
+          0.17570407734342158
+        ],
+        "f1_buy_sell_val": null,
+        "y_non_hold_rate_val": 0.085747437632953,
+        "pred_non_hold_rate_val": 0.5583446141945465
+      },
+      "backtest": {
+        "pnl_total": -138.2163,
+        "roi_pct": -1.3822,
+        "winrate": 0.4924,
+        "profit_factor": 0.989,
+        "max_dd": 0.314871,
+        "trades_count": 197,
+        "wins": 97,
+        "losses": 100,
+        "avg_trade_pnl": -0.7016,
+        "avg_bars_held": 111.1,
+        "start_capital": 10000.0,
+        "equity_end": 9861.78,
+        "reason_counts": {
+          "weak_signal_avg": 118,
+          "timeout": 78,
+          "eof": 1
+        },
+        "reason_share": {
+          "weak_signal_avg": 0.5989847715736041,
+          "timeout": 0.39593908629441626,
+          "eof": 0.005076142131979695
+        },
+        "reason_pnl": {
+          "weak_signal_avg": 7248.4589,
+          "timeout": -7440.1585,
+          "eof": 53.4833
+        },
+        "reason_wins": {
+          "weak_signal_avg": 74,
+          "timeout": 22,
+          "eof": 1
+        },
+        "reason_losses": {
+          "weak_signal_avg": 44,
+          "timeout": 56
+        },
+        "reason_forced_counts": {
+          "timeout": 78,
+          "eof": 1
+        },
+        "signal_exit": {
+          "enabled": true,
+          "active": true,
+          "window": 20,
+          "start_step": 100,
+          "start_pct": 0.8,
+          "history_size": 20,
+          "last_signal": 0.568578,
+          "last_threshold": 0.76,
+          "avg_signal": 0.727504,
+          "avg_threshold": 0.76,
+          "ready": true
+        }
+      }
+    },
+    {
+      "ts": "2026-04-24T00:14:57.185523Z",
+      "days": 90,
+      "metrics": {
+        "val_acc": 0.4690775478630826,
+        "val_rows": 25855,
+        "y_counts_val": [
+          23638,
+          2217
+        ],
+        "cm_val": [
+          [
+            10665,
+            12973
+          ],
+          [
+            754,
+            1463
+          ]
+        ],
+        "precision_val": [
+          0.9339696996234347,
+          0.1013438625658077
+        ],
+        "recall_val": [
+          0.45118030290210676,
+          0.6599007668019846
+        ],
+        "f1_val": [
+          0.6084376871951394,
+          0.17570407734342158
+        ],
+        "f1_buy_sell_val": null,
+        "y_non_hold_rate_val": 0.085747437632953,
+        "pred_non_hold_rate_val": 0.5583446141945465
+      },
+      "backtest": {
+        "pnl_total": -2340.1485,
+        "roi_pct": -23.4015,
+        "winrate": 0.3931,
+        "profit_factor": 0.8906,
+        "max_dd": 0.396095,
+        "trades_count": 407,
+        "wins": 160,
+        "losses": 247,
+        "avg_trade_pnl": -5.7498,
+        "avg_bars_held": 52.9,
+        "start_capital": 10000.0,
+        "equity_end": 7659.85,
+        "reason_counts": {
+          "weak_signal_avg": 81,
+          "trail": 256,
+          "sl": 23,
+          "tp": 29,
+          "timeout": 17,
+          "eof": 1
+        },
+        "reason_share": {
+          "weak_signal_avg": 0.19901719901719903,
+          "trail": 0.628992628992629,
+          "sl": 0.056511056511056514,
+          "tp": 0.07125307125307126,
+          "timeout": 0.04176904176904177,
+          "eof": 0.002457002457002457
+        },
+        "reason_pnl": {
+          "weak_signal_avg": 5464.8908,
+          "trail": -14466.1522,
+          "sl": -2860.5436,
+          "tp": 8318.9352,
+          "timeout": 1061.8777,
+          "eof": 140.8436
+        },
+        "reason_wins": {
+          "weak_signal_avg": 60,
+          "tp": 29,
+          "trail": 56,
+          "timeout": 14,
+          "eof": 1
+        },
+        "reason_losses": {
+          "trail": 200,
+          "sl": 23,
+          "weak_signal_avg": 21,
+          "timeout": 3
+        },
+        "reason_forced_counts": {
+          "timeout": 17,
+          "eof": 1
+        },
+        "signal_exit": {
+          "enabled": true,
+          "active": true,
+          "window": 20,
+          "start_step": 100,
+          "start_pct": 0.8,
+          "history_size": 20,
+          "last_signal": 0.568578,
+          "last_threshold": 0.76,
+          "avg_signal": 0.758817,
+          "avg_threshold": 0.76,
+          "ready": true
+        }
+      }
+    }
+  ]
+}

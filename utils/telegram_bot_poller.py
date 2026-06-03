@@ -186,15 +186,32 @@ def _handle_update(update: dict[str, Any]) -> None:
     state_key = f"tg:state:{chat_id_s}"
     state = r.get(state_key)
 
-    if text.lower() in ["/settings", "настройки"]:
-        status_text = "Подписка не активна ❌"
+    if text.lower() in ["инструкция", "/instruction"]:
+        from utils.bot_instruction import load_telegram_instruction
+        text_html = load_telegram_instruction("index")
+        _send_message(
+            chat_id_s,
+            text_html,
+            with_default_keyboard=False,
+            reply_markup={
+                "inline_keyboard": [
+                    [{"text": "1️⃣ Субаккаунт Bybit", "callback_data": "instruction:subaccount"}],
+                    [{"text": "2️⃣ API-ключ", "callback_data": "instruction:api_key"}],
+                    [{"text": "3️⃣ Плечо", "callback_data": "instruction:leverage"}],
+                    [{"text": "4️⃣ Доступ / оплата", "callback_data": "instruction:access"}]
+                ]
+            }
+        )
+        return
+
+    if text.lower() in ["/status", "статус"]:
         leverage_text = "Плечо: x1"
         bot_status_text = "Бот не активен"
+        mode_text = "🔔 Только сигналы (API-ключи не добавлены)"
         
         session = get_db_session()
         try:
-            from datetime import datetime
-            from orm.models import BotSubscription
+            from orm.models import BotUserIdentity
             identity = session.query(BotUserIdentity).filter(
                 BotUserIdentity.platform == "telegram",
                 BotUserIdentity.platform_user_id == str(user.get("id"))
@@ -203,21 +220,8 @@ def _handle_update(update: dict[str, Any]) -> None:
             if identity:
                 leverage = identity.bybit_leverage or 1
                 leverage_text = f"Плечо: x{leverage}"
-            
-            if identity and identity.user.status == 'active':
-                sub = session.query(BotSubscription).filter(
-                    BotSubscription.user_id == identity.user_id,
-                    BotSubscription.product_code == 'signals'
-                ).first()
-                if sub and sub.status == 'active' and sub.paid_until:
-                    now = datetime.utcnow()
-                    if sub.paid_until > now:
-                        days = (sub.paid_until - now).days
-                        if days > 0:
-                            status_text = f"Статус: Активна (осталось {days} дн.) ✅"
-                        else:
-                            hours = (sub.paid_until - now).seconds // 3600
-                            status_text = f"Статус: Активна (осталось {hours} ч.) ✅"
+                if identity.bybit_api_key:
+                    mode_text = "🤖 Автоторговля активна"
         finally:
             session.close()
 
@@ -271,16 +275,107 @@ def _handle_update(update: dict[str, Any]) -> None:
 
         _send_message(
             chat_id_s,
-            f"⚙️ <b>Настройки</b>\n\n{status_text}\n⚖️ {leverage_text}\n🤖 {bot_status_text}\n\nВыберите, что вы хотите настроить:",
-            with_default_keyboard=False,
-            reply_markup={
-                "inline_keyboard": [
-                    [{"text": "🔑 Указать API ключи", "callback_data": "settings:api_keys"}],
-                    [{"text": "⚖️ Указать плечо", "callback_data": "settings:leverage"}],
-                    [{"text": "💳 Оплата", "callback_data": "settings:payment"}]
-                ]
-            }
+            f"📊 <b>Статус</b>\n\nРежим: {mode_text}\n⚖️ {leverage_text}\n🤖 Состояние: {bot_status_text}"
         )
+        return
+
+    if text.lower() in ["/settings", "настройки"]:
+        status_text = "Не активна ❌"
+        disclaimer_text = ""
+        api_key_text = "Не указан ❌"
+        has_api_keys = False
+        
+        session = get_db_session()
+        try:
+            from datetime import datetime
+            from orm.models import BotSubscription, BotUserIdentity
+            identity = session.query(BotUserIdentity).filter(
+                BotUserIdentity.platform == "telegram",
+                BotUserIdentity.platform_user_id == str(user.get("id"))
+            ).first()
+            
+            if identity:
+                if identity.disclaimer_accepted:
+                    disclaimer_text = "Уведомление о рисках: Принято ✅\n"
+                
+                if identity.bybit_api_key:
+                    has_api_keys = True
+                    api_key = identity.bybit_api_key
+                    masked_key = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
+                    api_key_text = f"Указан ✅ (<code>{masked_key}</code>)"
+                    
+                if identity.user.status == 'active':
+                    sub = session.query(BotSubscription).filter(
+                        BotSubscription.user_id == identity.user_id,
+                        BotSubscription.product_code == 'signals'
+                    ).first()
+                    if sub and sub.status == 'active' and sub.paid_until:
+                        now = datetime.utcnow()
+                        if sub.paid_until > now:
+                            days = (sub.paid_until - now).days
+                            if days > 0:
+                                status_text = f"Активна (осталось {days} дн.) ✅"
+                            else:
+                                hours = (sub.paid_until - now).seconds // 3600
+                                status_text = f"Активна (осталось {hours} ч.) ✅"
+        finally:
+            session.close()
+
+        inline_keyboard = [
+            [{"text": "🔑 Указать API ключи", "callback_data": "settings:api_keys"}]
+        ]
+        
+        if has_api_keys:
+            inline_keyboard.append([{"text": "🗑 Удалить API ключи", "callback_data": "settings:delete_api_keys"}])
+            
+        inline_keyboard.extend([
+            [{"text": "⚖️ Указать плечо", "callback_data": "settings:leverage"}],
+            [{"text": "💳 Оплата", "callback_data": "settings:payment"}],
+            [{"text": "💬 Поддержка", "callback_data": "settings:support"}]
+        ])
+
+        _send_message(
+            chat_id_s,
+            f"⚙️ <b>Настройки</b>\n\nПодписка: {status_text}\n{disclaimer_text}API-ключ: {api_key_text}\n\nВыберите, что вы хотите настроить:",
+            with_default_keyboard=False,
+            reply_markup={"inline_keyboard": inline_keyboard}
+        )
+        return
+
+    if state == "wait_support_message":
+        if msg_id:
+            _delete_message(chat_id_s, msg_id)
+        r.delete(state_key)
+        
+        if not text:
+            _send_message(chat_id_s, "❌ Ошибка: сообщение не может быть пустым. Попробуйте еще раз: /settings")
+            return
+            
+        session = get_db_session()
+        try:
+            from orm.models import BotUserIdentity, BotSupportMessage
+            identity = session.query(BotUserIdentity).filter(
+                BotUserIdentity.platform == "telegram",
+                BotUserIdentity.platform_user_id == str(user.get("id"))
+            ).first()
+            
+            if identity:
+                support_msg = BotSupportMessage(
+                    user_id=identity.user_id,
+                    direction='user_to_admin',
+                    text=text,
+                    is_read=False
+                )
+                session.add(support_msg)
+                session.commit()
+                _send_message(chat_id_s, "✅ Ваше сообщение отправлено в поддержку. Мы ответим вам в ближайшее время.")
+            else:
+                _send_message(chat_id_s, "❌ Ошибка: Пользователь не найден.")
+        except Exception as e:
+            print(msk_tag(f"[telegram_bot] Error saving support message: {e}"), flush=True)
+            _send_message(chat_id_s, "❌ Ошибка при отправке сообщения.")
+        finally:
+            session.close()
         return
 
     if state == "wait_promo":
@@ -367,6 +462,7 @@ def _handle_update(update: dict[str, Any]) -> None:
                 # Save to DB
                 session = get_db_session()
                 try:
+                    from orm.models import BotUserIdentity
                     identity = session.query(BotUserIdentity).filter(
                         BotUserIdentity.platform == "telegram",
                         BotUserIdentity.platform_user_id == str(user.get("id"))
@@ -429,11 +525,73 @@ def _handle_callback_query(callback: dict[str, Any]) -> None:
     r = _get_redis()
     state_key = f"tg:state:{chat_id_s}"
 
-    if data == "settings:api_keys":
-        r.set(state_key, "wait_keys", ex=300)
-        _answer_callback_query(query_id, "Ожидаю ввода API ключей")
+    if data.startswith("instruction:"):
+        section = data.split(":", 1)[1]
+        from utils.bot_instruction import load_telegram_instruction
+        text_html = load_telegram_instruction(section)
+        _answer_callback_query(query_id, "Загрузка инструкции...")
+        
+        if section == "index":
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": "1️⃣ Субаккаунт Bybit", "callback_data": "instruction:subaccount"}],
+                    [{"text": "2️⃣ API-ключ", "callback_data": "instruction:api_key"}],
+                    [{"text": "3️⃣ Плечо", "callback_data": "instruction:leverage"}],
+                    [{"text": "4️⃣ Доступ / оплата", "callback_data": "instruction:access"}]
+                ]
+            }
+        else:
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": "◀️ Назад к разделам", "callback_data": "instruction:index"}]
+                ]
+            }
+            
+        _send_message(
+            chat_id_s,
+            text_html,
+            with_default_keyboard=False,
+            reply_markup=reply_markup
+        )
+        return
 
-        existing_keys_msg = ""
+    if data == "settings:support":
+        r.set(state_key, "wait_support_message", ex=3600)
+        _answer_callback_query(query_id, "Служба поддержки")
+        _send_message(
+            chat_id_s,
+            "✍️ <b>Служба поддержки</b>\n\nОпишите вашу проблему или задайте вопрос одним сообщением. Администратор ответит вам прямо в этом чате.",
+            with_default_keyboard=False
+        )
+        return
+
+    if data == "settings:support_resolved":
+        r.delete(state_key)
+        _answer_callback_query(query_id, "Вопрос решен")
+        
+        # Удаляем кнопки из сообщения, чтобы они не висели
+        msg_id = message.get("message_id")
+        if msg_id:
+            token = _get_token()
+            if token:
+                try:
+                    requests.post(
+                        f"https://api.telegram.org/bot{token}/editMessageReplyMarkup",
+                        json={"chat_id": chat_id_s, "message_id": msg_id, "reply_markup": {"inline_keyboard": []}},
+                        timeout=10,
+                        proxies=_telegram_proxies(),
+                    )
+                except Exception as exc:
+                    print(msk_tag(f"[telegram_bot] editMessageReplyMarkup failed: {_mask_secret(str(exc))}"), flush=True)
+
+        _send_message(
+            chat_id_s,
+            "✅ Отлично! Обращайтесь, если появятся новые вопросы.",
+            with_default_keyboard=False
+        )
+        return
+
+    if data == "settings:api_keys":
         session = get_db_session()
         try:
             from orm.models import BotUserIdentity
@@ -441,6 +599,25 @@ def _handle_callback_query(callback: dict[str, Any]) -> None:
                 BotUserIdentity.platform == "telegram",
                 BotUserIdentity.platform_user_id == str(user.get("id"))
             ).first()
+            
+            if identity and not identity.disclaimer_accepted:
+                _answer_callback_query(query_id, "Требуется согласие с рисками")
+                _send_message(
+                    chat_id_s,
+                    "⚠️ <b>Уведомление о рисках</b>\n\n"
+                    "Торговля криптовалютами сопряжена с высоким риском потери средств. Бот предоставляется «как есть».\n\n"
+                    "Нажимая «Согласен», вы подтверждаете, что прочитали и принимаете условия <a href='https://telegra.ph/Polzovatelskoe-soglashenie-i-Uvedomlenie-o-riskah-06-03'>Пользовательского соглашения и Уведомления о рисках</a>.",
+                    with_default_keyboard=False,
+                    reply_markup={
+                        "inline_keyboard": [
+                            [{"text": "✅ Согласен", "callback_data": "settings:disclaimer_accept"}],
+                            [{"text": "❌ Отказаться", "callback_data": "settings:disclaimer_decline"}]
+                        ]
+                    }
+                )
+                return
+            
+            existing_keys_msg = ""
             if identity and identity.bybit_api_key:
                 api_key = identity.bybit_api_key
                 masked_key = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
@@ -450,6 +627,8 @@ def _handle_callback_query(callback: dict[str, Any]) -> None:
         finally:
             session.close()
 
+        r.set(state_key, "wait_keys", ex=300)
+        _answer_callback_query(query_id, "Ожидаю ввода API ключей")
         _send_message(
             chat_id_s,
             f"{existing_keys_msg}Введите ваши ключи API через пробел:\n\n"
@@ -458,6 +637,79 @@ def _handle_callback_query(callback: dict[str, Any]) -> None:
             "<code>QW... TY...</code>",
             with_default_keyboard=False
         )
+        return
+
+    if data == "settings:disclaimer_accept":
+        session = get_db_session()
+        try:
+            from orm.models import BotUserIdentity
+            identity = session.query(BotUserIdentity).filter(
+                BotUserIdentity.platform == "telegram",
+                BotUserIdentity.platform_user_id == str(user.get("id"))
+            ).first()
+            if identity:
+                identity.disclaimer_accepted = True
+                session.commit()
+        except Exception as e:
+            print(msk_tag(f"[telegram_bot] Error accepting disclaimer: {e}"), flush=True)
+        finally:
+            session.close()
+        
+        _answer_callback_query(query_id, "Согласие принято")
+        # Перенаправляем на ввод ключей
+        callback["data"] = "settings:api_keys"
+        _handle_callback_query(callback)
+        return
+
+    if data == "settings:disclaimer_decline":
+        _answer_callback_query(query_id, "Отказ")
+        _send_message(chat_id_s, "❌ Без согласия с рисками добавление API-ключей и использование бота невозможно.")
+        return
+
+    if data == "settings:delete_api_keys":
+        _answer_callback_query(query_id, "Подтверждение удаления")
+        _send_message(
+            chat_id_s,
+            "⚠️ <b>Удаление API ключей</b>\n\n"
+            "Вы уверены, что хотите удалить свои API-ключи? Бот больше не сможет выставлять ордера на вашем аккаунте.\n\n"
+            "Также будет сброшено ваше согласие с Уведомлением о рисках.",
+            with_default_keyboard=False,
+            reply_markup={
+                "inline_keyboard": [
+                    [{"text": "✅ Да, удалить", "callback_data": "settings:confirm_delete_keys"}],
+                    [{"text": "❌ Отмена", "callback_data": "settings:cancel_delete_keys"}]
+                ]
+            }
+        )
+        return
+
+    if data == "settings:cancel_delete_keys":
+        _answer_callback_query(query_id, "Отмена")
+        _send_message(chat_id_s, "Действие отменено.")
+        return
+
+    if data == "settings:confirm_delete_keys":
+        session = get_db_session()
+        try:
+            from orm.models import BotUserIdentity
+            identity = session.query(BotUserIdentity).filter(
+                BotUserIdentity.platform == "telegram",
+                BotUserIdentity.platform_user_id == str(user.get("id"))
+            ).first()
+            if identity:
+                identity.bybit_api_key = None
+                identity.bybit_api_secret = None
+                identity.disclaimer_accepted = False
+                session.commit()
+                _answer_callback_query(query_id, "Ключи удалены")
+                _send_message(chat_id_s, "✅ API ключи успешно удалены. Согласие с рисками сброшено.")
+            else:
+                _answer_callback_query(query_id, "Ошибка")
+        except Exception as e:
+            print(msk_tag(f"[telegram_bot] Error deleting keys: {e}"), flush=True)
+            _answer_callback_query(query_id, "Ошибка при удалении")
+        finally:
+            session.close()
         return
 
     if data == "settings:leverage":

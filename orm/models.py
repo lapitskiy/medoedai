@@ -195,6 +195,7 @@ class BotUserIdentity(Base):
     bybit_api_key = Column(String, nullable=True)
     bybit_api_secret = Column(String, nullable=True)
     bybit_leverage = Column(Integer, nullable=True, default=1)
+    disclaimer_accepted = Column(Boolean, nullable=True, default=False)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -243,6 +244,22 @@ class BotPromoRedemption(Base):
     __table_args__ = (
         UniqueConstraint('promo_code_id', 'user_id', name='uix_promo_redemption_code_user'),
     )
+
+
+class BotSupportMessage(Base):
+    """Сообщения службы поддержки между пользователем и админом."""
+    __tablename__ = 'bot_support_messages'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('bot_users.id'), nullable=False)
+    
+    direction = Column(String, nullable=False)  # 'user_to_admin' или 'admin_to_user'
+    text = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False, nullable=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("BotUser", backref="support_messages")
 
 
 class BotSubscription(Base):

@@ -227,6 +227,7 @@ export type TelegramBotAccount = {
   leverage: number;
   paidUntil: string | null;
   activePromos: string[];
+  unreadSupportCount: number;
 };
 
 export type MaxBotAccount = {
@@ -510,6 +511,7 @@ export async function getTelegramBotAccounts(): Promise<TelegramBotAccount[]> {
       leverage: toNumberOrNull(user.bybit_leverage) ?? 1,
       paidUntil: user.paid_until ? String(user.paid_until) : null,
       activePromos: Array.isArray(user.active_promos) ? user.active_promos.map(String) : [],
+      unreadSupportCount: toNumberOrNull(user.unread_support_count) ?? 0,
     }));
   } catch {
     return [];
@@ -712,5 +714,42 @@ export async function getXgbExperiments(): Promise<XgbExperimentSummary[]> {
       .map((item) => mapXgbExperimentSummary(item));
   } catch {
     return [];
+  }
+}
+
+export type XgbShortAnchorData = {
+  schema_version?: number;
+  direction?: string;
+  symbol?: string;
+  task?: string;
+  description?: string;
+  updated_at?: string;
+  compare_keys?: string[];
+  models?: Record<string, any>[];
+};
+
+type XgbShortAnchorsApiResponse = {
+  success?: boolean;
+  data?: XgbShortAnchorData;
+  error?: string;
+};
+
+export async function getXgbShortAnchors(): Promise<XgbShortAnchorData | null> {
+  try {
+    const response = await fetch(`${INTERNAL_BACKEND_URL}/api/xgb/hypo/short_anchors`, {
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const resData = (await response.json()) as XgbShortAnchorsApiResponse;
+    if (resData.success && resData.data) {
+      return resData.data;
+    }
+    return null;
+  } catch {
+    return null;
   }
 }

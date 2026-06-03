@@ -1,0 +1,19 @@
+{
+  "symbol": "BTC",
+  "symbol_code": "BTC",
+  "run_name": "xgb-16647d",
+  "direction": "short",
+  "task": "entry_short",
+  "model_type": "xgb",
+  "model_path": "result/xgb/BTC/runs/xgb-16647d/model.json",
+  "metrics_path": "result/xgb/BTC/runs/xgb-16647d/metrics.json",
+  "meta_path": "result/xgb/BTC/runs/xgb-16647d/meta.json",
+  "status": "done",
+  "proxy_pnl_val": {
+    "enabled": true,
+    "pnl_sum": 0.0890525784545436,
+    "trades": 140
+  },
+  "source": "grid_full",
+  "grid_id": "gridfull-ea1172"
+}

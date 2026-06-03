@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { BotBroadcastForm } from "@/components/bot-broadcast-form";
 import {
@@ -87,6 +88,7 @@ export default async function BotAccountsPage() {
                 <th className="px-4 py-3 font-semibold">Пользователь</th>
                 <th className="px-4 py-3 font-semibold">Telegram ID</th>
                 <th className="px-4 py-3 font-semibold">Username</th>
+                <th className="px-4 py-3 font-semibold">Поддержка</th>
                 <th className="px-4 py-3 font-semibold">Ключи Bybit</th>
                 <th className="px-4 py-3 font-semibold">Плечо</th>
                 <th className="px-4 py-3 font-semibold">Оплачен до</th>
@@ -108,6 +110,21 @@ export default async function BotAccountsPage() {
                     </td>
                     <td className="px-4 py-3 text-slate-700">
                       {account.username ? `@${account.username}` : "нет данных"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Link
+                        href={`/bot/accounts/${account.userId}/support`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200 transition-colors"
+                      >
+                        💬 Чат
+                        {account.unreadSupportCount > 0 && (
+                          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
+                            {account.unreadSupportCount}
+                          </span>
+                        )}
+                      </Link>
                     </td>
                     <td className="px-4 py-3">
                       {account.hasActiveKeys ? (
@@ -152,7 +169,7 @@ export default async function BotAccountsPage() {
                 ))
               ) : (
                 <tr>
-                  <td className="px-4 py-6 text-center text-slate-500" colSpan={10}>
+                  <td className="px-4 py-6 text-center text-slate-500" colSpan={11}>
                     Telegram-регистраций пока нет.
                   </td>
                 </tr>

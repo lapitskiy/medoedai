@@ -42,6 +42,7 @@ const navGroups: NavGroup[] = [
           { label: "Обучение", href: "/xgb_training" },
           { label: "Продакшн", href: "/xgb_prod_models" },
           { label: "Эксперименты", href: "/xgb_experiments" },
+          { label: "Гипотезы grid", href: "/xgb_hypo_grid" },
         ],
       },
     ],

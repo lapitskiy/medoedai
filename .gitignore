@@ -25,7 +25,10 @@ plots/**
 
 # Большие файлы моделей и данных
 good_models/
-models/
+models/*
+!models/xgb/
+!models/xgb/**
+models/xgb/**/*.lock
 *.pkl
 *.pkl.bak
 *.pth
@@ -57,6 +60,10 @@ temp/train_results/
 
 celerybeat-schedule.*
  
+# predict_test: CSV прогонов — только на диске
+predict_test/*.csv
+predict_test/**/*.csv
+
 # Артефакты обучения
 result/
 

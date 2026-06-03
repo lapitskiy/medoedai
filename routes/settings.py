@@ -184,7 +184,7 @@ def api_internal_active_telegram_chats():
     try:
         now = datetime.utcnow()
         active_identities = (
-            session.query(BotUserIdentity.platform_user_id)
+            session.query(BotUserIdentity.platform_user_id, BotUserIdentity.bybit_api_key)
             .join(BotSubscription, BotUserIdentity.user_id == BotSubscription.user_id)
             .filter(
                 BotUserIdentity.platform == 'telegram',
@@ -194,10 +194,21 @@ def api_internal_active_telegram_chats():
             )
             .all()
         )
-        chat_ids = [str(r[0]) for r in active_identities if r[0]]
-        final_chat_ids = list(set(chat_ids + admin_chat_ids))
         
-        return jsonify({'success': True, 'chat_ids': final_chat_ids}), 200
+        chat_info = []
+        seen_ids = set()
+        for r in active_identities:
+            cid = str(r[0])
+            if cid and cid not in seen_ids:
+                chat_info.append({"chat_id": cid, "has_keys": bool(r[1])})
+                seen_ids.add(cid)
+                
+        for cid in admin_chat_ids:
+            if cid and cid not in seen_ids:
+                chat_info.append({"chat_id": cid, "has_keys": False})
+                seen_ids.add(cid)
+        
+        return jsonify({'success': True, 'chat_info': chat_info}), 200
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
@@ -347,6 +358,107 @@ def api_settings_get_telegram_bot():
                 'vless_url': vless_url,
             },
         }), 200
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@settings_bp.get('/api/bot/support/<int:user_id>')
+def api_bot_support_get(user_id):
+    try:
+        session = get_db_session()
+        try:
+            from orm.models import BotSupportMessage
+            messages = session.query(BotSupportMessage).filter(
+                BotSupportMessage.user_id == user_id
+            ).order_by(BotSupportMessage.created_at.asc()).all()
+            
+            result = []
+            for msg in messages:
+                result.append({
+                    'id': msg.id,
+                    'direction': msg.direction,
+                    'text': msg.text,
+                    'is_read': msg.is_read,
+                    'created_at': msg.created_at.isoformat()
+                })
+            return jsonify({'success': True, 'messages': result}), 200
+        finally:
+            session.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@settings_bp.post('/api/bot/support/<int:user_id>/read')
+def api_bot_support_mark_read(user_id):
+    try:
+        session = get_db_session()
+        try:
+            from orm.models import BotSupportMessage
+            session.query(BotSupportMessage).filter(
+                BotSupportMessage.user_id == user_id,
+                BotSupportMessage.direction == 'user_to_admin',
+                BotSupportMessage.is_read == False
+            ).update({'is_read': True})
+            session.commit()
+            return jsonify({'success': True}), 200
+        finally:
+            session.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@settings_bp.post('/api/bot/support/<int:user_id>')
+def api_bot_support_post(user_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        text = str(data.get('text') or '').strip()
+        if not text:
+            return jsonify({'success': False, 'error': 'text is required'}), 400
+            
+        session = get_db_session()
+        try:
+            from orm.models import BotUserIdentity, BotSupportMessage
+            identity = session.query(BotUserIdentity).filter(
+                BotUserIdentity.user_id == user_id,
+                BotUserIdentity.platform == 'telegram'
+            ).first()
+            
+            if not identity:
+                return jsonify({'success': False, 'error': 'user not found or not telegram'}), 404
+                
+            msg = BotSupportMessage(
+                user_id=user_id,
+                direction='admin_to_user',
+                text=text,
+                is_read=True  # Admin sent it, so admin read it
+            )
+            session.add(msg)
+            session.commit()
+            
+            # Send to Telegram
+            from utils.telegram_bot_poller import _send_message
+            _send_message(
+                identity.platform_user_id,
+                f"👨‍💻 <b>Служба поддержки:</b>\n\n{text}",
+                with_default_keyboard=False,
+                reply_markup={
+                    "inline_keyboard": [
+                        [{"text": "✅ Вопрос решен", "callback_data": "settings:support_resolved"}],
+                        [{"text": "💬 Ответить", "callback_data": "settings:support"}]
+                    ]
+                }
+            )
+            
+            return jsonify({
+                'success': True, 
+                'message': {
+                    'id': msg.id,
+                    'direction': msg.direction,
+                    'text': msg.text,
+                    'is_read': msg.is_read,
+                    'created_at': msg.created_at.isoformat()
+                }
+            }), 200
+        finally:
+            session.close()
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

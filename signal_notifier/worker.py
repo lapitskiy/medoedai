@@ -107,16 +107,19 @@ def _should_send_entry_signal(rc: redis.Redis, event: dict) -> bool:
     return False
 
 
-def _get_active_telegram_chat_ids(cfg: NotifierConfig, session_id: str) -> list[str]:
+def _get_active_telegram_chat_info(cfg: NotifierConfig, session_id: str) -> list[dict]:
     try:
         resp = requests.get(f"http://medoedai:5050/api/internal/active-telegram-chats?session_id={session_id}", timeout=5)
         if resp.ok:
             data = resp.json()
             if data.get("success"):
-                return data.get("chat_ids", [])
+                if "chat_info" in data:
+                    return data.get("chat_info", [])
+                else:
+                    return [{"chat_id": cid, "has_keys": False} for cid in data.get("chat_ids", [])]
     except Exception as e:
-        print(f"Failed to fetch active chat IDs: {e}", flush=True)
-    return cfg.telegram_chat_ids
+        print(f"Failed to fetch active chat info: {e}", flush=True)
+    return [{"chat_id": cid, "has_keys": False} for cid in cfg.telegram_chat_ids]
 
 
 def _send_event(rc: redis.Redis, cfg: NotifierConfig, event: dict) -> None:
@@ -126,24 +129,29 @@ def _send_event(rc: redis.Redis, cfg: NotifierConfig, event: dict) -> None:
     if not _should_send_entry_signal(rc, event):
         return
     signature = _signal_signature(event)
-    text = build_signal_text(event)
     telegram_markup, max_attachments = build_signal_controls(event)
 
     session_id = str(event.get("session_id") or "")
 
     if "telegram" in cfg.channels:
-        active_chat_ids = _get_active_telegram_chat_ids(cfg, session_id)
-        for chat_id in active_chat_ids:
+        active_chat_info = _get_active_telegram_chat_info(cfg, session_id)
+        for info in active_chat_info:
+            chat_id = info["chat_id"]
+            has_keys = info.get("has_keys", False)
+            
             if _already_sent(rc, "telegram", chat_id, signal_id):
                 continue
             if _already_sent_previous(rc, "telegram", chat_id, event, signature):
                 continue
+                
+            text = build_signal_text(event, has_keys=has_keys)
             send_telegram(cfg.telegram_bot_token or "", chat_id, text, reply_markup=telegram_markup)
             _mark_sent(rc, "telegram", chat_id, signal_id)
             _mark_previous_sent(rc, "telegram", chat_id, event, signature)
             _log_delivery(rc, event, "telegram", chat_id, True)
 
     if "max" in cfg.channels:
+        text = build_signal_text(event, has_keys=False)
         for chat_id in cfg.max_chat_ids:
             if _already_sent(rc, "max", chat_id, signal_id):
                 continue

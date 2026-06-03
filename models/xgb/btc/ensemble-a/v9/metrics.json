@@ -1,0 +1,54 @@
+{
+  "val_acc": 0.9173847695390781,
+  "train_rows": 79840,
+  "val_rows": 19960,
+  "y_counts_train": [
+    75573,
+    4267
+  ],
+  "y_counts_val": [
+    18905,
+    1055
+  ],
+  "cm_val": [
+    [
+      18080,
+      825
+    ],
+    [
+      824,
+      231
+    ]
+  ],
+  "precision_val": [
+    0.9564113415150233,
+    0.21875
+  ],
+  "recall_val": [
+    0.9563607511240413,
+    0.218957345971564
+  ],
+  "f1_val": [
+    0.9563860456505064,
+    0.21885362387494078
+  ],
+  "f1_buy_sell_val": null,
+  "task": "entry_long",
+  "y_non_hold_rate_val": 0.05285571142284569,
+  "pred_non_hold_rate_val": 0.05290581162324649,
+  "proxy_pnl_val": {
+    "enabled": true,
+    "task": "entry_long",
+    "trades": 75,
+    "pnl_sum": 0.007928323863181166,
+    "pnl_mean_per_trade": 0.00010571098484241555,
+    "fee_frac": 0.0006,
+    "max_hold_steps": 100,
+    "position_side": "long",
+    "exit_policy": {
+      "tp_pct": 0.027999999999999997,
+      "sl_pct": -0.011000000000000001,
+      "trail_pct": 0.016
+    }
+  }
+}

@@ -839,6 +839,20 @@ def xgb_oos_experiments():
     return jsonify({"success": True, "experiments": experiments})
 
 
+@xgb_oos_bp.get("/api/xgb/hypo/short_anchors")
+def xgb_hypo_short_anchors():
+    anchors_path = _XGB_HYPO_DIR / "xgb_short_model_anchors.json"
+    if not anchors_path.exists():
+        return jsonify({"success": False, "error": "File not found"}), 404
+    try:
+        with open(anchors_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return jsonify({"success": True, "data": data})
+    except Exception as e:
+        logger.error("Failed to read anchors json: %s", e)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @xgb_oos_bp.post("/xgb_oos_test_async")
 def xgb_oos_test_async():
     """

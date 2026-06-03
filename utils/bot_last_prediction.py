@@ -181,8 +181,7 @@ def telegram_reply_keyboard_markup() -> dict[str, Any]:
     """ReplyKeyboard (Telegram Bot API): кнопки."""
     return {
         "keyboard": [
-            [{"text": LABEL_LAST_PREDICTION}],
-            [{"text": "Настройки"}]
+            [{"text": "Статус"}, {"text": "Инструкция"}, {"text": "Настройки"}]
         ],
         "resize_keyboard": True,
     }

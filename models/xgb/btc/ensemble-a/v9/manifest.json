@@ -1,0 +1,19 @@
+{
+  "symbol": "BTCUSDT",
+  "symbol_code": "BTC",
+  "run_name": "xgb-e047fc",
+  "direction": "long",
+  "task": "entry_long",
+  "model_type": "xgb",
+  "model_path": "result/xgb/BTC/runs/xgb-e047fc/model.json",
+  "metrics_path": "result/xgb/BTC/runs/xgb-e047fc/metrics.json",
+  "meta_path": "result/xgb/BTC/runs/xgb-e047fc/meta.json",
+  "status": "done",
+  "proxy_pnl_val": {
+    "enabled": true,
+    "pnl_sum": 0.007928323863181166,
+    "trades": 75
+  },
+  "source": "grid_full",
+  "grid_id": "gridfull-87f177"
+}

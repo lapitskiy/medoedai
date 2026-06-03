@@ -11,7 +11,7 @@ def _as_int(value) -> int | None:
         return None
 
 
-def build_signal_text(event: dict) -> str:
+def build_signal_text(event: dict, has_keys: bool = False) -> str:
     if str(event.get("event_type") or "").strip().lower() == "xgb_exit_soon":
         symbol = str(event.get("symbol") or "").upper()
         session_id = event.get("session_id") or "unknown"
@@ -20,8 +20,11 @@ def build_signal_text(event: dict) -> str:
         candles_in_pos = _as_int(event.get("candles_in_pos"))
         direction = str(event.get("direction") or event.get("position_type") or "").upper()
         price = event.get("price")
+        
+        prefix = f"🤖 Бот готовится закрыть {direction} на вашем аккаунте" if has_keys else f"🔔 Сигнал: скоро выход из {direction}"
+        
         lines = [
-            f"XGB скоро выход: {symbol} {direction}".strip(),
+            f"{prefix}: {symbol}".strip(),
             f"Осталось hold_steps: {remaining if remaining is not None else 'n/a'}",
             f"В позиции: {candles_in_pos if candles_in_pos is not None else 'n/a'} / {max_hold if max_hold is not None else 'n/a'}",
             f"Цена: {price if price not in (None, '') else 'n/a'}",
@@ -46,8 +49,11 @@ def build_signal_text(event: dict) -> str:
                 entry_time = dt.strftime("%Y-%m-%d %H:%M")
         except Exception:
             entry_time = "n/a"
+            
+        prefix = f"🤖 Бот открыл сделку {action} на вашем аккаунте" if has_keys else f"🔔 Сигнал: {action}"
+            
         lines = [
-            f"ENTRY: {symbol} {action}".strip(),
+            f"{prefix} {symbol}".strip(),
             f"Side: {pos_type if pos_type else 'n/a'}",
             f"Entry time (MSK): {entry_time}",
             f"Price: {price if price not in (None, '') else 'n/a'}",
@@ -62,8 +68,10 @@ def build_signal_text(event: dict) -> str:
     regime = event.get("market_regime") or "unknown"
     session_id = event.get("session_id") or "unknown"
 
+    prefix = f"🤖 Бот обновил сделку {action} на вашем аккаунте" if has_keys else f"🔔 Сигнал: {action}"
+
     lines = [
-        f"Signal: {symbol} {action}",
+        f"{prefix} {symbol}",
         f"Price: {price if price not in (None, '') else 'n/a'}",
         f"Regime: {regime}",
         f"Session: {session_id}",
