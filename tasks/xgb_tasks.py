@@ -1305,6 +1305,8 @@ def train_xgb_grid_full(
     scale_pos_weight_list: list | str | None = None,
     early_stopping_rounds: int = 50,
     keep_top_n: int = 20,
+    rank_by_proxy_pnl: bool | None = None,
+    delete_rest: bool = True,
     use_1m_microvol: bool = False,
     use_1m_momentum: bool = False,
     use_1m_candle_structure: bool = False,
@@ -1468,14 +1470,17 @@ def train_xgb_grid_full(
         results: List[Dict[str, Any]] = []
         errors_count = 0
         error_examples: List[str] = []
-        rank_by_proxy = bool(
-            is_binary and _setting_bool(
-                "xgb",
-                "grid_full",
-                "XGB_GRID_FULL_RANK_BY_PROXY_PNL",
-                _env_flag("XGB_GRID_FULL_RANK_BY_PROXY_PNL", default=True),
+        if rank_by_proxy_pnl is not None:
+            rank_by_proxy = bool(is_binary and rank_by_proxy_pnl)
+        else:
+            rank_by_proxy = bool(
+                is_binary and _setting_bool(
+                    "xgb",
+                    "grid_full",
+                    "XGB_GRID_FULL_RANK_BY_PROXY_PNL",
+                    _env_flag("XGB_GRID_FULL_RANK_BY_PROXY_PNL", default=True),
+                )
             )
-        )
         proxy_trades_min = max(
             0,
             int(
@@ -1758,6 +1763,16 @@ def train_xgb_grid_full(
 
         # Keep all run directories. keep_top_n limits only the saved top list.
         results.sort(key=_grid_full_sort_key, reverse=True)
+
+        # Cleanup runs that didn't make it to topn
+        if delete_rest and len(results) > topn:
+            deleted = 0
+            for it in results[topn:]:
+                rd = str(it.get("result_dir") or "").strip()
+                if rd and _safe_rmtree(rd):
+                    deleted += 1
+            if deleted:
+                push_log(f"🧹 Cleanup: deleted {deleted} runs outside top {topn}")
 
         if not results:
             summary = error_examples[0] if error_examples else "Grid produced no successful runs"

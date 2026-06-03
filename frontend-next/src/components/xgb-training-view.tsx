@@ -119,6 +119,8 @@ const GF_IDS = [
   "gfLimitCandles",
   "gfEarlyStopping",
   "gfKeepTopN",
+  "gfRankByProxy",
+  "gfDeleteRest",
   "gfHsFrom",
   "gfHsTo",
   "gfHsStep",
@@ -188,6 +190,8 @@ const GF_DEFAULTS: FieldState = {
   gfLimitCandles: "100000",
   gfEarlyStopping: "50",
   gfKeepTopN: "20",
+  gfRankByProxy: "1",
+  gfDeleteRest: "1",
   gfHsFrom: "12",
   gfHsTo: "48",
   gfHsStep: "12",
@@ -431,6 +435,7 @@ export function XgbTrainingView() {
   );
 
   const [gfFields, setGfFields] = useState<FieldState>(GF_DEFAULTS);
+  const [isPresetLoaded, setIsPresetLoaded] = useState(false);
   const [gfStatus, setGfStatus] = useState<{ tone: "info" | "ok" | "bad"; text: string } | null>(
     null,
   );
@@ -543,8 +548,10 @@ export function XgbTrainingView() {
 
         if (cancelled) return;
         setGfFields(merged);
+        setIsPresetLoaded(true);
       } catch {
         // ignore preset load errors
+        if (!cancelled) setIsPresetLoaded(true);
       }
     })();
     return () => {
@@ -553,6 +560,8 @@ export function XgbTrainingView() {
   }, []);
 
   useEffect(() => {
+    if (!isPresetLoaded) return;
+
     // keep in local storage + debounce server save
     const values: Record<string, string> = {};
     for (const id of GF_IDS) values[id] = gfFields[id] ?? "";
@@ -568,7 +577,7 @@ export function XgbTrainingView() {
         body: JSON.stringify({ values }),
       }).catch(() => null);
     }, 350);
-  }, [gfFields]);
+  }, [gfFields, isPresetLoaded]);
 
   const resetFullGridFields = () => {
     setGfFields(GF_DEFAULTS);
@@ -706,6 +715,8 @@ export function XgbTrainingView() {
       limit_candles: Number.parseInt(gfFields.gfLimitCandles, 10) || 100000,
       early_stopping_rounds: Number.parseInt(gfFields.gfEarlyStopping, 10) || 50,
       keep_top_n: Number.parseInt(gfFields.gfKeepTopN, 10) || 20,
+      rank_by_proxy_pnl: gfFields.gfRankByProxy === "1",
+      delete_rest: gfFields.gfDeleteRest === "1",
     };
 
     if (task === "directional") {
@@ -1038,6 +1049,30 @@ export function XgbTrainingView() {
               min={1}
               step={1}
             />
+          </FieldGroup>
+          <FieldGroup label="rank_by_proxy_pnl">
+            <div className="flex h-full items-center">
+              <input
+                type="checkbox"
+                className="h-5 w-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                checked={gfFields.gfRankByProxy === "1"}
+                onChange={(e) =>
+                  setGfFields((s) => ({ ...s, gfRankByProxy: e.target.checked ? "1" : "0" }))
+                }
+              />
+            </div>
+          </FieldGroup>
+          <FieldGroup label="delete_rest">
+            <div className="flex h-full items-center">
+              <input
+                type="checkbox"
+                className="h-5 w-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                checked={gfFields.gfDeleteRest === "1"}
+                onChange={(e) =>
+                  setGfFields((s) => ({ ...s, gfDeleteRest: e.target.checked ? "1" : "0" }))
+                }
+              />
+            </div>
           </FieldGroup>
         </div>
 

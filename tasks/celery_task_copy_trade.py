@@ -20,14 +20,9 @@ def _execute_client_trade(identity, symbol, action, position_type, entry_price):
 
         leverage = identity.bybit_leverage or 1
 
-        exchange = ccxt.bybit({
-            'apiKey': identity.bybit_api_key,
-            'secret': identity.bybit_api_secret,
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'future'
-            }
-        })
+        from trading_agent.infrastructure.exchange_gateway_bybit import BybitExchangeGateway
+        gateway = BybitExchangeGateway(api_key=identity.bybit_api_key, secret=identity.bybit_api_secret)
+        exchange = gateway.ex
 
         # Set leverage (best effort)
         try:
@@ -57,7 +52,7 @@ def _execute_client_trade(identity, symbol, action, position_type, entry_price):
                 positions = exchange.fetch_positions([symbol])
                 pos = None
                 for p in positions:
-                    if p.get('symbol') == symbol:
+                    if p.get('symbol') == symbol or p.get('info', {}).get('symbol') == symbol:
                         pos = p
                         break
                 if pos and pos.get('contracts', 0) > 0:
@@ -90,11 +85,7 @@ def _execute_client_trade(identity, symbol, action, position_type, entry_price):
             # Calculate amount: (margin * leverage) / price
             raw_amount = (usable_margin * leverage) / current_price
             
-            # We need to round the amount to the exchange's precision (qtyStep)
-            # Load markets to get precision
-            exchange.load_markets()
-            market = exchange.market(symbol)
-            amount = exchange.amount_to_precision(symbol, raw_amount)
+            amount = gateway._normalize_qty(symbol, raw_amount)
             
             if float(amount) <= 0:
                  return {"success": False, "error": "Calculated amount is too small"}

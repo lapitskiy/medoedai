@@ -1503,10 +1503,22 @@ def ensure_risk_orders(self, session_id: str, symbol: str | None = None):
 
     def _detect_exit_event(_exchange, _symbol: str) -> dict:
         """Best-effort exit detector from closed reduceOnly order.
-        Returns: {reason, side, qty, price, order_id, ts_ms}."""
+        Returns: {reason, side, qty, price, order_id, ts_ms, closed_pnl}."""
         try:
             if _exchange is None:
                 return {'reason': 'unknown'}
+            
+            pnl_by_order = {}
+            try:
+                if hasattr(_exchange, 'privateGetV5PositionClosedPnl'):
+                    pnl_res = _exchange.privateGetV5PositionClosedPnl({'category': 'linear', 'symbol': _symbol, 'limit': 50})
+                    if pnl_res and 'result' in pnl_res and 'list' in pnl_res['result']:
+                        for p in pnl_res['result']['list']:
+                            if p.get('orderId') and p.get('closedPnl') is not None:
+                                pnl_by_order[str(p['orderId'])] = float(p['closedPnl'])
+            except Exception:
+                pass
+
             orders = []
             try:
                 if hasattr(_exchange, 'fetch_closed_orders'):
@@ -1574,13 +1586,19 @@ def ensure_risk_orders(self, session_id: str, symbol: str | None = None):
                     elif typ == 'limit':
                         reason = 'take_profit'
 
+                    order_id = od.get('id') or info.get('orderId') or info.get('orderID')
+                    closed_pnl = None
+                    if order_id and str(order_id) in pnl_by_order:
+                        closed_pnl = pnl_by_order[str(order_id)]
+
                     return {
                         'reason': reason,
                         'side': side or None,
                         'qty': float(qty),
                         'price': float(price),
-                        'order_id': od.get('id') or info.get('orderId') or info.get('orderID'),
+                        'order_id': order_id,
                         'ts_ms': _ts_ms(od) or None,
+                        'closed_pnl': closed_pnl,
                     }
                 except Exception:
                     continue
@@ -1758,7 +1776,9 @@ def ensure_risk_orders(self, session_id: str, symbol: str | None = None):
                             px = float(evt.get('price') or 0.0)
                             pnl = None
                             try:
-                                if ep and qty and px:
+                                if evt.get('closed_pnl') is not None:
+                                    pnl = float(evt.get('closed_pnl'))
+                                elif ep and qty and px:
                                     if action == 'sell':  # long close
                                         pnl = (px - ep) * qty
                                     elif action == 'buy': # short close

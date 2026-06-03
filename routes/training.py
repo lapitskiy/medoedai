@@ -906,6 +906,8 @@ def train_xgb_grid_full_route():
         'scale_pos_weight_list': data.get('scale_pos_weight_list'),
         'early_stopping_rounds': _get('early_stopping_rounds', int) or 50,
         'keep_top_n': _get('keep_top_n', int) or 20,
+        'rank_by_proxy_pnl': _bool('rank_by_proxy_pnl') if 'rank_by_proxy_pnl' in data else None,
+        'delete_rest': _bool('delete_rest') if 'delete_rest' in data else True,
         'use_1m_microvol': _bool('use_1m_microvol'),
         'use_1m_momentum': _bool('use_1m_momentum'),
         'use_1m_candle_structure': _bool('use_1m_candle_structure'),

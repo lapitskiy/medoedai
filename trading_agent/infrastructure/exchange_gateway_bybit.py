@@ -21,22 +21,23 @@ class BybitExchangeGateway(ExchangeGateway):
     Приватный WS для ордеров планируется добавить; пока используется опрос статуса при необходимости.
     """
 
-    def __init__(self, symbol_for_markets: Optional[str] = None, account_id: Optional[str] = None):
-        selected = str(account_id or '').strip() or None
-        if not selected:
-            raise RuntimeError('account_id is required for BybitExchangeGateway')
-        try:
-            ensure_settings_table()
-            api_key = get_setting_value('api', 'bybit', f'BYBIT_{selected}_API_KEY')
-            secret = get_setting_value('api', 'bybit', f'BYBIT_{selected}_SECRET_KEY')
-        except Exception:
-            api_key = None
-            secret = None
+    def __init__(self, symbol_for_markets: Optional[str] = None, account_id: Optional[str] = None, api_key: Optional[str] = None, secret: Optional[str] = None):
         if not api_key or not secret:
-            raise RuntimeError(
-                f'Bybit API keys not set for selected account id={selected} '
-                f'(need BYBIT_{selected}_API_KEY and BYBIT_{selected}_SECRET_KEY)'
-            )
+            selected = str(account_id or '').strip() or None
+            if not selected:
+                raise RuntimeError('account_id or (api_key and secret) is required for BybitExchangeGateway')
+            try:
+                ensure_settings_table()
+                api_key = get_setting_value('api', 'bybit', f'BYBIT_{selected}_API_KEY')
+                secret = get_setting_value('api', 'bybit', f'BYBIT_{selected}_SECRET_KEY')
+            except Exception:
+                api_key = None
+                secret = None
+            if not api_key or not secret:
+                raise RuntimeError(
+                    f'Bybit API keys not set for selected account id={selected} '
+                    f'(need BYBIT_{selected}_API_KEY and BYBIT_{selected}_SECRET_KEY)'
+                )
         self.ex = ccxt.bybit({
             'apiKey': api_key,
             'secret': secret,

@@ -16,6 +16,7 @@ xgb_bp = Blueprint("xgb", __name__)
 _XGB_GRID_PRESET_PATH = Path("predict_test") / "xgb_hypo" / "xgb_grid_full_preset.json"
 _XGB_GRID_PRESET_ALLOWED_KEYS = {
     "gfSymbol", "gfTask", "gfDirection", "gfLimitCandles", "gfEarlyStopping", "gfKeepTopN",
+    "gfRankByProxy", "gfDeleteRest", "gfUseSrFeatures",
     "gfHsFrom", "gfHsTo", "gfHsStep", "gfThrFrom", "gfThrTo", "gfThrStep",
     "gfMhFrom", "gfMhTo", "gfMhStep", "gfMpFrom", "gfMpTo", "gfMpStep",
     "gfFeeFrom", "gfFeeTo", "gfFeeStep",

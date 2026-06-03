@@ -2306,7 +2306,28 @@ class TradingAgent:
             if not exit_price or exit_price <= 0:
                 exit_price = self._get_current_price()
             entry_price = self.current_position['entry_price']
-            pnl = (exit_price - entry_price) * amount
+            
+            pnl = None
+            # Пытаемся получить точный PnL с биржи
+            try:
+                if hasattr(self.exchange, 'privateGetV5PositionClosedPnl'):
+                    import time
+                    time.sleep(0.5)  # Ждем полсекунды, чтобы биржа успела посчитать PnL
+                    pnl_res = self.exchange.privateGetV5PositionClosedPnl({'category': 'linear', 'symbol': self.symbol, 'limit': 10})
+                    if pnl_res and 'result' in pnl_res and 'list' in pnl_res['result']:
+                        for p in pnl_res['result']['list']:
+                            if p.get('orderId') == order.get('id') and p.get('closedPnl') is not None:
+                                pnl = float(p['closedPnl'])
+                                break
+            except Exception as e:
+                logger.warning(f"Не удалось получить точный PnL с биржи: {e}")
+                
+            if pnl is None:
+                pnl = (exit_price - entry_price) * amount
+                # Вычитаем примерную комиссию (taker 0.055% за вход и выход)
+                fee_rate = 0.00055
+                total_fee = (entry_price * amount * fee_rate) + (exit_price * amount * fee_rate)
+                pnl -= total_fee
             
             # Обновляем запись о сделке
             update_trade_status(
@@ -2507,7 +2528,28 @@ class TradingAgent:
 
             exit_price = self._extract_order_price(order) or self._get_current_price()
             entry_price = self.current_position['entry_price']
-            pnl = (entry_price - exit_price) * amount
+            
+            pnl = None
+            # Пытаемся получить точный PnL с биржи
+            try:
+                if hasattr(self.exchange, 'privateGetV5PositionClosedPnl'):
+                    import time
+                    time.sleep(0.5)  # Ждем полсекунды, чтобы биржа успела посчитать PnL
+                    pnl_res = self.exchange.privateGetV5PositionClosedPnl({'category': 'linear', 'symbol': self.symbol, 'limit': 10})
+                    if pnl_res and 'result' in pnl_res and 'list' in pnl_res['result']:
+                        for p in pnl_res['result']['list']:
+                            if p.get('orderId') == order.get('id') and p.get('closedPnl') is not None:
+                                pnl = float(p['closedPnl'])
+                                break
+            except Exception as e:
+                logger.warning(f"Не удалось получить точный PnL с биржи: {e}")
+                
+            if pnl is None:
+                pnl = (entry_price - exit_price) * amount
+                # Вычитаем примерную комиссию (taker 0.055% за вход и выход)
+                fee_rate = 0.00055
+                total_fee = (entry_price * amount * fee_rate) + (exit_price * amount * fee_rate)
+                pnl -= total_fee
 
             update_trade_status(
                 trade_record.trade_number,
@@ -2671,7 +2713,28 @@ class TradingAgent:
             if not exit_price or exit_price <= 0:
                 exit_price = self._get_current_price()
             entry_price = self.current_position['entry_price']
-            pnl = (exit_price - entry_price) * sell_amount
+            
+            pnl = None
+            # Пытаемся получить точный PnL с биржи
+            try:
+                if hasattr(self.exchange, 'privateGetV5PositionClosedPnl'):
+                    import time
+                    time.sleep(0.5)  # Ждем полсекунды, чтобы биржа успела посчитать PnL
+                    pnl_res = self.exchange.privateGetV5PositionClosedPnl({'category': 'linear', 'symbol': self.symbol, 'limit': 10})
+                    if pnl_res and 'result' in pnl_res and 'list' in pnl_res['result']:
+                        for p in pnl_res['result']['list']:
+                            if p.get('orderId') == order.get('id') and p.get('closedPnl') is not None:
+                                pnl = float(p['closedPnl'])
+                                break
+            except Exception as e:
+                logger.warning(f"Не удалось получить точный PnL с биржи: {e}")
+                
+            if pnl is None:
+                pnl = (exit_price - entry_price) * sell_amount
+                # Вычитаем примерную комиссию (taker 0.055% за вход и выход)
+                fee_rate = 0.00055
+                total_fee = (entry_price * sell_amount * fee_rate) + (exit_price * sell_amount * fee_rate)
+                pnl -= total_fee
             
             # Обновляем запись о сделке
             update_trade_status(
